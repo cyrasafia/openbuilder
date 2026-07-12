@@ -145,24 +145,45 @@ class ServerStore extends ChangeNotifier {
   /// (via `/experimental/worktree`), so multi-worktree projects like plan-travel
   /// show all their conversations. Subtask/child sessions (`parentID` set) and
   /// archived sessions are skipped, matching the opencode web UI.
+  ///
+  /// All per-project and per-worktree requests run concurrently via
+  /// [Future.wait] (instead of N×M serial round-trips), so a large server with
+  /// many projects/worktrees doesn't stall the first screen.
   Future<List<SessionModel>> _fetchAllSessions() async {
-    final all = <String, SessionModel>{};
+    final futures = <Future<List<SessionModel>>>[];
     for (final p in _projects) {
       if (p.id == 'global') {
-        _addSessions(all, await client!.sessions());
-        continue;
-      }
-      final dirs = [p.worktree, ...await _safeWorktrees(p.worktree)];
-      for (final dir in dirs) {
-        if (dir.isEmpty) continue;
-        try {
-          _addSessions(all, await client!.sessionsForDirectory(dir));
-        } catch (_) {
-          // non-git / inaccessible worktree — skip
-        }
+        futures.add(client!.sessions());
+      } else {
+        futures.add(_sessionsForProject(p));
       }
     }
+    final results = await Future.wait(futures);
+    final all = <String, SessionModel>{};
+    for (final list in results) {
+      _addSessions(all, list);
+    }
     return all.values.toList();
+  }
+
+  /// Sessions for one project: resolve its worktrees, then fetch sessions for
+  /// the main worktree and every worktree in parallel.
+  Future<List<SessionModel>> _sessionsForProject(ProjectModel p) async {
+    final dirs = [p.worktree, ...await _safeWorktrees(p.worktree)]
+        .where((d) => d.isNotEmpty)
+        .toList();
+    final lists = await Future.wait(dirs.map((dir) async {
+      try {
+        return await client!.sessionsForDirectory(dir);
+      } catch (_) {
+        return const <SessionModel>[]; // non-git / inaccessible worktree
+      }
+    }));
+    final out = <SessionModel>[];
+    for (final list in lists) {
+      out.addAll(list);
+    }
+    return out;
   }
 
   Future<List<String>> _safeWorktrees(String directory) async {
