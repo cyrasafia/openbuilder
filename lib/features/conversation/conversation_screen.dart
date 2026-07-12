@@ -160,6 +160,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
       case 'text':
         final baseColor =
             user ? const Color(0xFFD8F3E0) : Theme.of(context).colorScheme.onSurface;
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final codeBlockBg = isDark
+            ? const Color(0xFF161B22)
+            : const Color(0xFFF0F2F5);
+        final codeBlockBorder = isDark
+            ? const Color(0xFF30363D)
+            : const Color(0xFFDADDE3);
+        final inlineCodeBg = isDark
+            ? const Color(0xFF23272E)
+            : const Color(0xFFE9ECF1);
         return Padding(
           padding: const EdgeInsets.only(top: 4),
           child: MarkdownBody(
@@ -172,12 +182,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 fontSize: 13,
                 fontFamily: 'monospace',
                 color: baseColor,
-                backgroundColor: const Color(0xFF23272E),
+                backgroundColor: inlineCodeBg,
               ),
               codeblockDecoration: BoxDecoration(
-                color: const Color(0xFF161B22),
+                color: codeBlockBg,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFF30363D)),
+                border: Border.all(color: codeBlockBorder),
               ),
               codeblockPadding: const EdgeInsets.all(12),
               listBullet: TextStyle(color: baseColor),
