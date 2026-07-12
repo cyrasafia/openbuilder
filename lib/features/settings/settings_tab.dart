@@ -1,0 +1,187 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../app_state.dart';
+import '../../core/net/dio_factory.dart';
+import '../../data/api/opencode_client.dart';
+import '../../ui/theme.dart';
+
+/// Phase 0: server status card (health/version) + server management entry +
+/// minimal client settings (theme) + about.
+class SettingsTab extends StatefulWidget {
+  const SettingsTab({super.key});
+
+  @override
+  State<SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<SettingsTab> {
+  bool _checking = false;
+  HealthInfo? _health;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkHealth();
+  }
+
+  Future<void> _checkHealth() async {
+    final server = connectionStore.active;
+    if (server == null) return;
+    setState(() {
+      _checking = true;
+      _error = null;
+    });
+    try {
+      final h = await OpencodeClient(dioFor(server)).health();
+      setState(() => _health = h);
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: const Text('设置')),
+      body: ListenableBuilder(
+        listenable: connectionStore,
+        builder: (context, _) {
+          final server = connectionStore.active;
+          return ListView(
+            children: [
+              // Server status card
+              Container(
+                margin: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(_health != null
+                            ? Icons.check_circle
+                            : Icons.error_outline,
+                            color: _health != null
+                                ? Colors.green
+                                : (_error != null ? Colors.red : scheme.outline)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            server?.name ?? '未配置',
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: _checking ? null : _checkHealth,
+                          icon: _checking
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2))
+                              : const Icon(Icons.refresh, size: 18),
+                          label: const Text('检测'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    _kv('地址', server?.hostDisplay ?? '-'),
+                    _kv('opencode 版本',
+                        _health?.version ?? (_error != null ? '连接失败' : '—')),
+                    if (_error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(_error!,
+                            style: AppTheme.mono.copyWith(
+                                fontSize: 11, color: scheme.outline),
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                  ],
+                ),
+              ),
+              _section('服务器', [
+                ListTile(
+                  leading: const Icon(Icons.dns_outlined),
+                  title: const Text('服务器管理'),
+                  subtitle: Text('${connectionStore.servers.length} 个已配置'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.push('/servers'),
+                ),
+              ]),
+              _section('客户端', [
+                ListTile(
+                  leading: const Icon(Icons.dark_mode_outlined),
+                  title: const Text('深色模式'),
+                  trailing: Switch(
+                    value: themeMode.value == ThemeMode.dark,
+                    onChanged: (v) => setState(
+                        () => themeMode.value = v ? ThemeMode.dark : ThemeMode.light),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.language),
+                  title: const Text('语言'),
+                  trailing: const Text('简体中文'),
+                ),
+              ]),
+              _section('关于', [
+                ListTile(
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text('客户端版本'),
+                  trailing: const Text('0.1.0 (Phase 0)'),
+                ),
+              ]),
+              const SizedBox(height: 24),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          SizedBox(
+              width: 96,
+              child: Text(k,
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.outline,
+                      fontSize: 12))),
+          Expanded(child: Text(v, style: AppTheme.mono.copyWith(fontSize: 12))),
+        ],
+      ),
+    );
+  }
+
+  Widget _section(String title, List<Widget> children) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Text(title,
+              style: TextStyle(
+                  color: Theme.of(context).colorScheme.outline,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600)),
+        ),
+        ...children,
+        const Divider(height: 16),
+      ],
+    );
+  }
+}
