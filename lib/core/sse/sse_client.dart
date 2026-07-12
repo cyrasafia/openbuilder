@@ -21,6 +21,15 @@ class OpencodeEvent {
       );
 }
 
+/// Lifecycle state of the SSE connection, for UI indicators (specs §11).
+class SseState {
+  final bool connected;
+  final bool reconnecting;
+  /// Current reconnect attempt (1-based); 0 when connected / idle.
+  final int attempt;
+  const SseState({this.connected = false, this.reconnecting = false, this.attempt = 0});
+}
+
 /// Connects to `/event`, parses events, tracks the last id, and reconnects with
 /// exponential backoff on the IO transport (web's EventSource reconnects by
 /// itself). Reconciliation is driven by `server.connected` (re-emitted on each
@@ -31,14 +40,24 @@ class SseClient {
 
   StreamSubscription<String>? _sub;
   final _controller = StreamController<OpencodeEvent>.broadcast();
+  final _stateCtl = StreamController<SseState>.broadcast();
   String? _lastId;
   bool _stopped = true;
   int _backoff = 1;
+  bool _reconnecting = false;
+  int _reconnectAttempt = 0;
+  bool _reconnectPending = false;
 
   SseClient({required this.uri, this.headers = const {}});
 
   Stream<OpencodeEvent> get events => _controller.stream;
+  /// Lifecycle changes (connected / reconnecting + attempt), for UI banners.
+  Stream<SseState> get state => _stateCtl.stream;
   bool get isRunning => !_stopped;
+
+  void _emit(SseState s) {
+    if (!_stateCtl.isClosed) _stateCtl.add(s);
+  }
 
   void start() {
     if (!_stopped) return;
@@ -61,15 +80,26 @@ class SseClient {
     };
     _sub = transport.eventDataStream(uri, h).listen(
           _onData,
-          onError: (Object _) => _scheduleReconnect(),
-          onDone: () => _scheduleReconnect(),
+          onError: (_) => _onDrop(),
+          onDone: () => _onDrop(),
         );
   }
 
+  /// Transport dropped (error/done). Schedule one reconnect, guarding against
+  /// duplicate scheduling while a backoff is already pending.
+  void _onDrop() {
+    if (_stopped || _reconnectPending) return;
+    unawaited(_scheduleReconnect());
+  }
+
   Future<void> _scheduleReconnect() async {
-    if (_stopped) return;
+    _reconnectPending = true;
+    _reconnectAttempt++;
+    _reconnecting = true;
+    _emit(SseState(reconnecting: true, attempt: _reconnectAttempt));
     await Future.delayed(Duration(seconds: _backoff));
     _backoff = (_backoff * 2).clamp(1, 30);
+    _reconnectPending = false;
     if (_stopped) return;
     _connect();
   }
@@ -83,6 +113,11 @@ class SseClient {
       _controller.add(ev);
     } catch (_) {
       // ignore malformed frames
+    }
+    if (_reconnecting) {
+      _reconnecting = false;
+      _reconnectAttempt = 0;
+      _emit(const SseState(connected: true));
     }
   }
 }

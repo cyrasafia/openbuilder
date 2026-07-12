@@ -16,7 +16,13 @@ class ServerStore extends ChangeNotifier {
   OpencodeClient? client;
   SseClient? _sse;
   StreamSubscription<OpencodeEvent>? _sseSub;
+  StreamSubscription<SseState>? _sseStateSub;
   ConnectionProfile? _profile;
+
+  /// True while the SSE connection is in backoff reconnect (specs §11 banner).
+  bool reconnecting = false;
+  /// Current reconnect attempt (1-based); 0 when connected / idle.
+  int reconnectAttempt = 0;
 
   List<ProjectModel> _projects = [];
   List<SessionModel> _sessions = [];
@@ -116,6 +122,7 @@ class ServerStore extends ChangeNotifier {
     );
     await _bootstrap();
     _sseSub = _sse!.events.listen(_onEvent, onError: (Object e) => error = '$e');
+    _sseStateSub = _sse!.state.listen(_onSseState);
     _sse!.start();
     connected = true;
     notifyListeners();
@@ -220,6 +227,14 @@ class ServerStore extends ChangeNotifier {
       error = '$e';
     }
     notifyListeners();
+  }
+
+  void _onSseState(SseState s) {
+    if (s.reconnecting != reconnecting || s.attempt != reconnectAttempt) {
+      reconnecting = s.reconnecting;
+      reconnectAttempt = s.attempt;
+      notifyListeners();
+    }
   }
 
   void _onEvent(OpencodeEvent ev) {
