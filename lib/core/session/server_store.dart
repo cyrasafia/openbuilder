@@ -378,6 +378,8 @@ class ServerStore extends ChangeNotifier {
   Future<void> _teardown() async {
     await _sseSub?.cancel();
     _sseSub = null;
+    await _sseStateSub?.cancel();
+    _sseStateSub = null;
     await _sse?.stop();
     _sse = null;
     _conversations.clear();
