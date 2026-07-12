@@ -64,6 +64,17 @@ class OpencodeClient {
     return SessionModel.fromJson(_asMap(r.data));
   }
 
+  /// `GET /experimental/worktree?directory=<dir>` — all worktree directories
+  /// for a project (sandbox worktrees beyond the project's main worktree).
+  Future<List<String>> worktrees(String directory) async {
+    final r = await dio.get<dynamic>('/experimental/worktree',
+        queryParameters: {'directory': directory});
+    if (r.data is List) {
+      return (r.data as List).map((e) => e.toString()).toList();
+    }
+    return const [];
+  }
+
   /// `GET /session/status` → `{ sessionID: {type: idle|busy|retry} }`
   Future<Map<String, SessionStatusValue>> sessionStatus() async {
     final r = await dio.get<dynamic>('/session/status');

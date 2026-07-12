@@ -23,6 +23,7 @@ class ServerStore extends ChangeNotifier {
   final Map<String, SessionStatusValue> _statusMap = {};
   final Map<String, String> _lastMessage = {};
   final Map<String, ConversationStore> _conversations = {};
+  final Map<String, int> _lastMessageTime = {};
   bool connected = false;
   String? error;
 
@@ -47,9 +48,17 @@ class ServerStore extends ChangeNotifier {
   List<SessionModel> get sessions => List.unmodifiable(_sessions);
 
   Iterable<SessionModel> sortedSessions() {
-    final list = [..._sessions]..sort((a, b) => b.updated.compareTo(a.updated));
+    final list = [..._sessions]
+      ..sort((a, b) =>
+          (lastMessageTimeOf(b.id) ?? b.updated)
+              .compareTo(lastMessageTimeOf(a.id) ?? a.updated));
     return list;
   }
+
+  /// Timestamp (ms) of the last actual message, when known (captured during
+  /// preview backfill). `null` when not yet known, so callers fall back to the
+  /// session's `updated`.
+  int? lastMessageTimeOf(String id) => _lastMessageTime[id];
 
   SessionStatusValue statusOf(String id) =>
       _statusMap[id] ?? const SessionStatusValue('idle');
@@ -143,27 +152,45 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Aggregate sessions across all projects. Uses `GET /session?directory=<dir>`
-  /// per project (which returns only unarchived sessions per opencode's own
-  /// archive semantics — `/api/session` under-reports `time.archived`) plus the
-  /// global project's sessions. Subtask/child sessions (`parentID` set) and
+  /// Aggregate sessions across all projects. For each project, fetches
+  /// unarchived sessions for its main worktree AND every sandbox worktree
+  /// (via `/experimental/worktree`), so multi-worktree projects like plan-travel
+  /// show all their conversations. Subtask/child sessions (`parentID` set) and
   /// archived sessions are skipped, matching the opencode web UI.
   Future<List<SessionModel>> _fetchAllSessions() async {
     final all = <String, SessionModel>{};
     for (final p in _projects) {
-      List<SessionModel> list;
       if (p.id == 'global') {
-        list = await client!.sessions();
-      } else {
-        list = await client!.sessionsForDirectory(p.worktree);
+        _addSessions(all, await client!.sessions());
+        continue;
       }
-      for (final s in list) {
-        if (s.archived != null) continue; // archived
-        if (s.parentID != null) continue; // subtask / child session
-        all[s.id] = s;
+      final dirs = [p.worktree, ...await _safeWorktrees(p.worktree)];
+      for (final dir in dirs) {
+        if (dir.isEmpty) continue;
+        try {
+          _addSessions(all, await client!.sessionsForDirectory(dir));
+        } catch (_) {
+          // non-git / inaccessible worktree — skip
+        }
       }
     }
     return all.values.toList();
+  }
+
+  Future<List<String>> _safeWorktrees(String directory) async {
+    try {
+      return await client!.worktrees(directory);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  void _addSessions(Map<String, SessionModel> out, List<SessionModel> list) {
+    for (final s in list) {
+      if (s.archived != null) continue; // archived
+      if (s.parentID != null) continue; // subtask / child session
+      out[s.id] = s;
+    }
   }
 
   Future<void> _reconcile() async {
@@ -284,9 +311,14 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> _backfillPreview(String sid, ConversationStore conv) async {
     // After the conversation loads, surface its last message as the list preview
-    // (avoids bulk-proactive fetch but keeps viewed sessions informative).
+    // (avoids bulk-proactive fetch but keeps viewed sessions informative), and
+    // record the last message's timestamp so the list sorts/renders by real
+    // message activity rather than the session's `updated` (which can be bumped
+    // by non-message events).
     if (conv.messages.isEmpty) return;
     final last = conv.messages.last;
+    final t = last.info.created ?? 0;
+    if (t > 0) _lastMessageTime[sid] = t;
     var preview = '';
     for (var i = last.parts.length - 1; i >= 0; i--) {
       final dp = last.parts[i];
@@ -301,8 +333,8 @@ class ServerStore extends ChangeNotifier {
     if (preview.isNotEmpty) {
       _lastMessage[sid] =
           (last.info.role == 'user' ? '你: ' : '') + preview;
-      notifyListeners();
     }
+    notifyListeners();
   }
 
   void _upsertSession(SessionModel s) {
