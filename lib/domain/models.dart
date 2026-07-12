@@ -1,0 +1,265 @@
+import 'package:flutter/foundation.dart';
+
+class ProjectModel {
+  final String id;
+  final String worktree;
+  final String? vcs;
+  final String? name;
+  final ProjectIcon? icon;
+  final List<String> sandboxes;
+  final int created;
+
+  const ProjectModel({
+    required this.id,
+    required this.worktree,
+    this.vcs,
+    this.name,
+    this.icon,
+    this.sandboxes = const [],
+    this.created = 0,
+  });
+
+  factory ProjectModel.fromJson(Map<String, dynamic> j) => ProjectModel(
+        id: (j['id'] ?? '').toString(),
+        worktree: (j['worktree'] ?? '').toString(),
+        vcs: j['vcs']?.toString(),
+        name: j['name']?.toString(),
+        icon: j['icon'] is Map ? ProjectIcon.fromJson(j['icon']) : null,
+        sandboxes: (j['sandboxes'] as List? ?? [])
+            .map((e) => e.toString())
+            .toList(growable: false),
+        created: _i(j['time'] is Map ? (j['time'] as Map)['created'] : 0),
+      );
+
+  String get worktreeName =>
+      worktree.isEmpty || worktree == '/' ? 'global' : worktree.split('/').last;
+
+  String get displayName {
+    final n = name;
+    if (n != null && n.trim().isNotEmpty) return n;
+    return worktreeName;
+  }
+}
+
+class ProjectIcon {
+  final String? url;
+  final String? override;
+  final String? color;
+  const ProjectIcon({this.url, this.override, this.color});
+
+  factory ProjectIcon.fromJson(Map<String, dynamic> j) => ProjectIcon(
+        url: j['url']?.toString(),
+        override: j['override']?.toString(),
+        color: j['color']?.toString(),
+      );
+
+  /// Best image source (data URL or http URL); null → fallback to monogram.
+  String? get image => override ?? url;
+}
+
+class Tokens {
+  final int input;
+  final int output;
+  final int reasoning;
+  const Tokens({this.input = 0, this.output = 0, this.reasoning = 0});
+
+  int get total => input + output;
+
+  factory Tokens.fromJson(Map<String, dynamic> j) => Tokens(
+        input: _i(j['input']),
+        output: _i(j['output']),
+        reasoning: _i(j['reasoning']),
+      );
+}
+
+class SessionModel {
+  final String id;
+  final String projectID;
+  final String directory;
+  final String title;
+  final int created;
+  final int updated;
+  final int? archived;
+  final double cost;
+  final Tokens tokens;
+
+  const SessionModel({
+    required this.id,
+    required this.projectID,
+    required this.directory,
+    required this.title,
+    required this.created,
+    required this.updated,
+    this.archived,
+    this.cost = 0,
+    this.tokens = const Tokens(),
+  });
+
+  factory SessionModel.fromJson(Map<String, dynamic> j) {
+    final time = (j['time'] as Map?) ?? const {};
+    return SessionModel(
+      id: (j['id'] ?? '').toString(),
+      projectID: (j['projectID'] ?? '').toString(),
+      directory: (j['directory'] ?? '').toString(),
+      title: (j['title'] ?? 'Untitled').toString(),
+      created: _i(time['created']),
+      updated: _i(time['updated']),
+      archived: time['archived'] == null ? null : _i(time['archived']),
+      cost: _d(j['cost']),
+      tokens: j['tokens'] is Map
+          ? Tokens.fromJson(j['tokens'] as Map<String, dynamic>)
+          : const Tokens(),
+    );
+  }
+
+  String get dirName =>
+      directory.isEmpty ? 'global' : directory.split('/').last;
+}
+
+/// `idle` | `busy` | `retry`
+class SessionStatusValue {
+  final String type;
+  const SessionStatusValue(this.type);
+
+  factory SessionStatusValue.fromJson(Map<String, dynamic> j) =>
+      SessionStatusValue((j['type'] ?? 'idle').toString());
+}
+
+class MessageInfo {
+  final String id;
+  final String role; // user | assistant
+  final String? sessionID;
+  final int? created;
+  final int? completed;
+  final double cost;
+  final String? modelID;
+  final String? finish;
+  final Map<String, dynamic>? error;
+
+  const MessageInfo({
+    required this.id,
+    required this.role,
+    this.sessionID,
+    this.created,
+    this.completed,
+    this.cost = 0,
+    this.modelID,
+    this.finish,
+    this.error,
+  });
+
+  factory MessageInfo.fromJson(Map<String, dynamic> j) => MessageInfo(
+        id: (j['id'] ?? '').toString(),
+        role: (j['role'] ?? 'assistant').toString(),
+        sessionID: j['sessionID']?.toString(),
+        created: j['time'] is Map ? _i((j['time'] as Map)['created']) : null,
+        completed:
+            j['time'] is Map ? _i((j['time'] as Map)['completed']) : null,
+        cost: _d(j['cost']),
+        modelID: j['modelID']?.toString(),
+        finish: j['finish']?.toString(),
+        error: j['error'] is Map ? (j['error'] as Map).cast<String, dynamic>() : null,
+      );
+}
+
+/// Loose part wrapper over raw JSON. Types: text, reasoning, tool,
+/// step-start, step-finish, file, subtask, snapshot, patch, agent, ...
+@immutable
+class MessagePart {
+  final Map<String, dynamic> raw;
+  const MessagePart(this.raw);
+
+  String get type => (raw['type'] ?? '').toString();
+  String get id => (raw['id'] ?? '').toString();
+  String? get text => _str('text');
+  String? get tool => _str('tool');
+  Map<String, dynamic>? get state =>
+      raw['state'] is Map ? (raw['state'] as Map).cast<String, dynamic>() : null;
+  String? get stateStatus => state?['status']?.toString();
+  String? get stateTitle => state?['title']?.toString();
+  String? get stateOutput => state?['output']?.toString();
+
+  String? _str(String k) {
+    final v = raw[k];
+    return v is String ? v : null;
+  }
+
+  /// One-line preview for the session list (frontend §2.2 D1).
+  String get preview {
+    switch (type) {
+      case 'text':
+      case 'reasoning':
+        return (text ?? '').replaceAll('\n', ' ');
+      case 'tool':
+        final st = stateStatus ?? '';
+        return '${tool ?? 'tool'}${st.isEmpty ? '' : ' · $st'}';
+      default:
+        return '';
+    }
+  }
+}
+
+class MessageEntry {
+  final MessageInfo info;
+  final List<MessagePart> parts;
+  const MessageEntry({required this.info, required this.parts});
+
+  factory MessageEntry.fromJson(Map<String, dynamic> j) => MessageEntry(
+        info: MessageInfo.fromJson(
+            (j['info'] as Map?)?.cast<String, dynamic>() ?? const {}),
+        parts: ((j['parts'] as List?) ?? [])
+            .map((e) => MessagePart((e as Map).cast<String, dynamic>()))
+            .toList(growable: false),
+      );
+}
+
+class Todo {
+  final String? id;
+  final String content;
+  final String status; // pending | in_progress | completed | cancelled
+  final String priority;
+  const Todo({this.id, required this.content, required this.status, this.priority = 'medium'});
+
+  factory Todo.fromJson(Map<String, dynamic> j) => Todo(
+        id: j['id']?.toString(),
+        content: (j['content'] ?? '').toString(),
+        status: (j['status'] ?? 'pending').toString(),
+        priority: (j['priority'] ?? 'medium').toString(),
+      );
+
+  bool get done => status == 'completed';
+  bool get active => status == 'in_progress';
+}
+
+class Permission {
+  final String id;
+  final String type;
+  final String title;
+  final String sessionID;
+  const Permission({
+    required this.id,
+    required this.type,
+    required this.title,
+    required this.sessionID,
+  });
+
+  factory Permission.fromJson(Map<String, dynamic> j) => Permission(
+        id: (j['id'] ?? '').toString(),
+        type: (j['type'] ?? '').toString(),
+        title: (j['title'] ?? '').toString(),
+        sessionID: (j['sessionID'] ?? '').toString(),
+      );
+}
+
+int _i(dynamic v) {
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v) ?? 0;
+  return 0;
+}
+
+double _d(dynamic v) {
+  if (v is num) return v.toDouble();
+  if (v is String) return double.tryParse(v) ?? 0;
+  return 0;
+}

@@ -1,0 +1,189 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../app_state.dart';
+import '../../domain/models.dart';
+import '../../ui/theme.dart';
+import '../../ui/widgets.dart';
+
+class ProjectDetailScreen extends StatelessWidget {
+  final String projectId;
+  const ProjectDetailScreen({super.key, required this.projectId});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: serverStore,
+      builder: (context, _) {
+        final project = serverStore.projectOf(projectId);
+        if (project == null) {
+          return Scaffold(
+            appBar: AppBar(),
+            body: const Center(child: Text('项目不存在')),
+          );
+        }
+        final sessions = serverStore.sessions
+            .where((s) => s.projectID == projectId)
+            .toList()
+          ..sort((a, b) => b.updated.compareTo(a.updated));
+
+        return Scaffold(
+          appBar: AppBar(title: Text(project.displayName)),
+          body: ListView(
+            children: [
+              _Header(project: project, sessionCount: sessions.length),
+              const Divider(height: 1),
+              if (sessions.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Center(child: Text('无活跃会话')),
+                )
+              else if (project.id == 'global')
+                ..._groupedGlobal(context, sessions)
+              else
+                ...sessions.map((s) => _SessionRow(
+                      session: s,
+                      status: serverStore.statusOf(s.id).type,
+                      preview: serverStore.lastMessageOf(s.id),
+                      onTap: () => context.push('/session/${s.id}'),
+                    )),
+              const SizedBox(height: 16),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  List<Widget> _groupedGlobal(BuildContext context, List<SessionModel> all) {
+    final byDir = <String, List<SessionModel>>{};
+    for (final s in all) {
+      byDir.putIfAbsent(s.dirName, () => []).add(s);
+    }
+    final out = <Widget>[];
+    for (final entry in byDir.entries) {
+      out.add(_SectionHeader(name: entry.key, count: entry.value.length));
+      out.addAll(entry.value.map((s) => _SessionRow(
+            session: s,
+            status: serverStore.statusOf(s.id).type,
+            preview: serverStore.lastMessageOf(s.id),
+            onTap: () => context.push('/session/${s.id}'),
+          )));
+    }
+    return out;
+  }
+}
+
+class _Header extends StatelessWidget {
+  final ProjectModel project;
+  final int sessionCount;
+  const _Header({required this.project, required this.sessionCount});
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.outline;
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          ProjectAvatar(name: project.displayName, icon: project.icon, size: 52),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(project.displayName,
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text(project.worktree,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTheme.mono.copyWith(fontSize: 12, color: muted)),
+                const SizedBox(height: 6),
+                Text('$sessionCount 个未存档会话',
+                    style: TextStyle(fontSize: 12, color: muted)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final String name;
+  final int count;
+  const _SectionHeader({required this.name, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(children: [
+        Icon(Icons.call_split,
+            size: 14, color: Theme.of(context).colorScheme.outline),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTheme.mono.copyWith(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.onSurface)),
+        ),
+        Text('$count',
+            style: TextStyle(
+                fontSize: 11, color: Theme.of(context).colorScheme.outline)),
+      ]),
+    );
+  }
+}
+
+class _SessionRow extends StatelessWidget {
+  final SessionModel session;
+  final String status;
+  final String? preview;
+  final VoidCallback onTap;
+  const _SessionRow(
+      {required this.session,
+      required this.status,
+      required this.preview,
+      required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.outline;
+    return ListTile(
+      onTap: onTap,
+      dense: true,
+      title: Row(
+        children: [
+          StatusDot(type: status),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(session.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(width: 8),
+          Text(relTime(session.updated),
+              style: TextStyle(fontSize: 11.5, color: muted)),
+        ],
+      ),
+      subtitle: preview == null
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(left: 17, top: 2),
+              child: Text(preview!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: muted)),
+            ),
+    );
+  }
+}

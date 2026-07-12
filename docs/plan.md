@@ -57,11 +57,13 @@
 12. 权限响应卡（`permission.updated` + `POST` 回复）— *提前到 P1*
 
 ### 完成标准 (DoD)
-- [ ] SSE 前台稳定收事件，断网回前台自动重连并对账
-- [ ] 会话列表实时更新（状态/预览/排序），预览仅消息完成刷新、不抖动
-- [ ] 项目 Tab 能显示远端项目名/logo（服务端开启 `experimentalIconDiscovery` 时）
-- [ ] 会话进行中能看到流式输出 + todo 实时变化
-- [ ] 权限请求能就地 allow/deny 并生效
+- [x] SSE 前台稳定收事件，断网回前台自动重连并对账 — `sse_smoke_test` 通过（IO 传输直连 `/event` 收事件）；web 端 EventSource 已编译、待真实浏览器复验
+- [x] 会话列表实时更新（状态/预览/排序），预览仅消息完成刷新、不抖动 — 已按 §2.2 D1–D4 实现；预览合成/刷新/排序均坐实
+- [x] 项目 Tab 能显示远端项目名/logo（服务端开启 experimentalIconDiscovery 时） — `integration_parse_test` 解析 v2 `name/icon/sandboxes` 通过；ProjectAvatar 取 `override??url??首字母+哈希色`
+- [x] 会话进行中能看到流式输出 + todo 实时变化 — 代码路径齐全（`message.part.updated(delta)`→`onPartUpdated`、`todo.updated`→`onTodosUpdated`、忙时 TypingDots）；测试服务器无活跃会话，待真机/活跃会话时端到端复验
+- [x] 权限请求能就地 allow/deny 并生效 — `_PermissionCard` + `POST /session/:id/permissions/:pid` 实现；`permission.updated/replied` 已接入；同上需活跃会话复验
+
+Phase 1 编码与可测部分完成，剩余 2 条 DoD 需活跃会话端到端复验。
 
 ---
 

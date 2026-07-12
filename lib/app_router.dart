@@ -1,6 +1,8 @@
 import 'package:go_router/go_router.dart';
 
 import 'core/connection/connection_store.dart';
+import 'features/conversation/conversation_screen.dart';
+import 'features/projects/project_detail_screen.dart';
 import 'features/servers/server_form_screen.dart';
 import 'features/servers/servers_screen.dart';
 import 'features/servers/welcome_screen.dart';
@@ -38,6 +40,16 @@ GoRouter buildRouter(ConnectionStore store) {
       GoRoute(
         path: '/servers/:id/edit',
         builder: (_, s) => ServerFormScreen(id: s.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/session/:id',
+        builder: (_, s) =>
+            ConversationScreen(sessionId: s.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/project/:id',
+        builder: (_, s) =>
+            ProjectDetailScreen(projectId: s.pathParameters['id']!),
       ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => MainShell(shell: shell),

@@ -7,6 +7,7 @@ import 'ui/theme.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await connectionStore.load();
+  wireServerStore();
   runApp(const OpencodeMobileApp());
 }
 
