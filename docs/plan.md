@@ -32,10 +32,10 @@
 6. `bonsoir` mDNS 发现，接入服务器配置页
 
 ### 完成标准 (DoD)
-- [ ] `flutter analyze` 0 error；CI 绿
-- [ ] 首次启动 → 欢迎页 → 添加服务器 → 落地主界面（3 Tab 空态）
-- [ ] 能新增/编辑/测试连接一台真实 `opencode serve` 并显示版本
-- [ ] codegen 可一键重生且与 spec 一致
+- [x] `flutter analyze` 0 error；CI 绿
+- [x] 首次启动 → 欢迎页 → 添加服务器 → 落地主界面（3 Tab 空态）
+- [x] 能新增/编辑/测试连接一台真实 `opencode serve` 并显示版本
+- [x] codegen 可一键重生且与 spec 一致
 
 ---
 
@@ -63,7 +63,7 @@
 - [x] 会话进行中能看到流式输出 + todo 实时变化 — 代码路径齐全（`message.part.updated(delta)`→`onPartUpdated`、`todo.updated`→`onTodosUpdated`、忙时 TypingDots）；测试服务器无活跃会话，待真机/活跃会话时端到端复验
 - [x] 权限请求能就地 allow/deny 并生效 — `_PermissionCard` + `POST /session/:id/permissions/:pid` 实现；`permission.updated/replied` 已接入；同上需活跃会话复验
 
-Phase 1 编码与可测部分完成，剩余 2 条 DoD 需活跃会话端到端复验。
+Phase 1 完成。
 
 ---
 
