@@ -27,6 +27,23 @@ class ServerStore extends ChangeNotifier {
   String? error;
 
   List<ProjectModel> get projects => List.unmodifiable(_projects);
+
+  /// Projects sorted by their newest containing session's `updated` time,
+  /// newest first (mirrors the session list ordering). Projects without any
+  /// session sort last.
+  List<ProjectModel> sortedProjects() {
+    int latestOf(String id) {
+      var t = 0;
+      for (final s in _sessions) {
+        if (s.projectID == id && s.updated > t) t = s.updated;
+      }
+      return t;
+    }
+
+    final list = [..._projects]
+      ..sort((a, b) => latestOf(b.id).compareTo(latestOf(a.id)));
+    return list;
+  }
   List<SessionModel> get sessions => List.unmodifiable(_sessions);
 
   Iterable<SessionModel> sortedSessions() {

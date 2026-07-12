@@ -18,8 +18,7 @@ class ProjectsTab extends StatelessWidget {
           if (!serverStore.connected && serverStore.projects.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
-          final projects = [...serverStore.projects]..sort((a, b) =>
-              a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+          final projects = serverStore.sortedProjects();
           if (projects.isEmpty) {
             return const Center(
               child: Text('服务器上暂无项目',
