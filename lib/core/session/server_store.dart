@@ -144,13 +144,15 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// Aggregate sessions across all projects via `/api/session` (paginated).
+  /// Archived sessions (`time.archived` set) are skipped so the UI only shows
+  /// active conversations; the safety cap counts active sessions only.
   Future<List<SessionModel>> _fetchAllSessions() async {
     final all = <String, SessionModel>{};
     String? cursor;
     do {
       final page = await client!.sessionsAll(cursor: cursor);
       for (final s in page.sessions) {
-        all[s.id] = s;
+        if (s.archived == null) all[s.id] = s;
       }
       cursor = page.nextCursor;
     } while (cursor != null && all.length < 200); // safety cap
@@ -297,6 +299,11 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _upsertSession(SessionModel s) {
+    // Drop archived sessions from the active list when they get archived live.
+    if (s.archived != null) {
+      _sessions.removeWhere((x) => x.id == s.id);
+      return;
+    }
     final idx = _sessions.indexWhere((x) => x.id == s.id);
     if (idx == -1) {
       _sessions.add(s);
