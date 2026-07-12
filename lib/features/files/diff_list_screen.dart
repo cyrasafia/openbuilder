@@ -101,7 +101,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
     }
     return ListView.separated(
       itemCount: _diffs.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
+      separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (_, i) {
         final d = _diffs[i];
         return ListTile(

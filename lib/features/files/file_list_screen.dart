@@ -188,7 +188,7 @@ class _FileListScreenState extends State<FileListScreen> {
     }
     return ListView.separated(
       itemCount: _nodes.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
+      separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (_, i) {
         final n = _nodes[i];
         return ListTile(

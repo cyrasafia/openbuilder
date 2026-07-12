@@ -362,7 +362,7 @@ class _MdnsDiscoveryDialogState extends State<_MdnsDiscoveryDialog> {
               )
             : ListView.separated(
                 itemCount: _servers.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
+                separatorBuilder: (_, _) => const Divider(height: 1),
                 itemBuilder: (_, i) {
                   final s = _servers[i];
                   return ListTile(
