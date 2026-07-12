@@ -41,12 +41,7 @@ class ProjectDetailScreen extends StatelessWidget {
               else if (project.id == 'global')
                 ..._groupedGlobal(context, sessions)
               else
-                ...sessions.map((s) => _SessionRow(
-                      session: s,
-                      status: serverStore.statusOf(s.id).type,
-                      preview: serverStore.lastMessageOf(s.id),
-                      onTap: () => context.push('/session/${s.id}'),
-                    )),
+                ..._groupedByWorktree(context, sessions),
               const SizedBox(height: 16),
             ],
           ),
@@ -63,6 +58,40 @@ class ProjectDetailScreen extends StatelessWidget {
     final out = <Widget>[];
     for (final entry in byDir.entries) {
       out.add(_SectionHeader(name: entry.key, count: entry.value.length));
+      out.addAll(entry.value.map((s) => _SessionRow(
+            session: s,
+            status: serverStore.statusOf(s.id).type,
+            preview: serverStore.lastMessageOf(s.id),
+            onTap: () => context.push('/session/${s.id}'),
+          )));
+    }
+    return out;
+  }
+
+  /// Section sessions by worktree (directory). Section headers are shown only
+  /// when the project spans more than one worktree, so single-worktree
+  /// projects keep a flat list. Groups are ordered by their most recent
+  /// activity (busiest worktree first); within a group, sessions keep the
+  /// global recency order.
+  List<Widget> _groupedByWorktree(
+      BuildContext context, List<SessionModel> all) {
+    final byDir = <String, List<SessionModel>>{};
+    for (final s in all) {
+      byDir.putIfAbsent(s.directory, () => []).add(s);
+    }
+    final groups = byDir.entries.toList()
+      ..sort((a, b) {
+        final at = a.value.map((s) => s.updated).reduce((x, y) => x > y ? x : y);
+        final bt = b.value.map((s) => s.updated).reduce((x, y) => x > y ? x : y);
+        return bt.compareTo(at);
+      });
+    final out = <Widget>[];
+    for (final entry in groups) {
+      if (byDir.length > 1) {
+        final name =
+            entry.key.isEmpty ? 'global' : entry.key.split('/').last;
+        out.add(_SectionHeader(name: name, count: entry.value.length));
+      }
       out.addAll(entry.value.map((s) => _SessionRow(
             session: s,
             status: serverStore.statusOf(s.id).type,
