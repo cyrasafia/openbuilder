@@ -57,6 +57,26 @@ class ProjectIcon {
   String? get image => override ?? url;
 }
 
+/// A slash command available in a session's directory, from `GET /api/command`.
+class CommandInfo {
+  final String name;
+  final String description;
+  final String? agent;
+  const CommandInfo({
+    required this.name,
+    this.description = '',
+    this.agent,
+  });
+
+  factory CommandInfo.fromJson(Map<String, dynamic> j) => CommandInfo(
+        name: (j['name'] ?? '').toString(),
+        description: (j['description'] ?? '').toString(),
+        agent: j['agent']?.toString(),
+      );
+
+  String get slash => name.startsWith('/') ? name : '/$name';
+}
+
 class Tokens {
   final int input;
   final int output;

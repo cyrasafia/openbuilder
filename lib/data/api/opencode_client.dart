@@ -75,6 +75,21 @@ class OpencodeClient {
     return const [];
   }
 
+  /// Available slash commands for a session's directory.
+  /// `GET /api/command?directory=<dir>` → `{ location, data: [CommandV2Info] }`.
+  /// Returns the project-scoped command list (empty if the server resolves
+  /// none for the directory). The v2 endpoint requires a directory to resolve
+  /// commands; without it `data` comes back empty.
+  Future<List<CommandInfo>> getCommands({String? directory}) async {
+    final params = <String, dynamic>{};
+    if (directory != null && directory.isNotEmpty) {
+      params['directory'] = directory;
+    }
+    final r = await dio.get<dynamic>('/api/command', queryParameters: params);
+    final data = _asMap(r.data)['data'];
+    return _getModelsFromData(data, CommandInfo.fromJson);
+  }
+
   /// `GET /session/status` → `{ sessionID: {type: idle|busy|retry} }`
   Future<Map<String, SessionStatusValue>> sessionStatus() async {
     final r = await dio.get<dynamic>('/session/status');

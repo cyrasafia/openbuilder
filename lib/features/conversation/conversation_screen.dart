@@ -20,16 +20,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _scrollController = ScrollController();
   final _ctl = TextEditingController();
   bool _cmdMode = false;
-  static const _commands = <String>[
-    '/help',
-    '/clear',
-    '/model',
-    '/init',
-    '/compact',
-    '/review',
-    '/commit',
-    '/status',
-  ];
+  // Slash commands fetched from `GET /api/command` for this session's
+  // directory (replaces the previous hard-coded list).
+  List<CommandInfo> _commands = const [];
+  bool _cmdLoaded = false;
+  bool _cmdLoading = false;
+  String? _cmdError;
 
   @override
   void dispose() {
@@ -140,11 +136,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   permissions: conv.permissions,
                   store: conv,
                 ),
-              if (_cmdMode) _CommandHints(query: _ctl.text, onPick: _pickCommand),
+              if (_cmdMode)
+                _CommandHints(
+                  query: _ctl.text,
+                  commands: _commands,
+                  loading: _cmdLoading,
+                  error: _cmdError,
+                  onPick: _pickCommand,
+                ),
               _ComposeBar(
                 ctl: _ctl,
-                onChanged: (t) =>
-                    setState(() => _cmdMode = t.startsWith('/') && !t.contains(' ')),
+                onChanged: (t) {
+                  final mode = t.startsWith('/') && !t.contains(' ');
+                  if (mode && !_cmdLoaded && !_cmdLoading) {
+                    _loadCommands();
+                  }
+                  setState(() => _cmdMode = mode);
+                },
                 onSend: _send,
               ),
             ],
@@ -159,6 +167,32 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _ctl.selection = TextSelection.fromPosition(
         TextPosition(offset: _ctl.text.length));
     setState(() => _cmdMode = false);
+  }
+
+  Future<void> _loadCommands() async {
+    if (_cmdLoaded || _cmdLoading) return;
+    final client = serverStore.client;
+    if (client == null) return;
+    final dir = serverStore.sessionById(widget.sessionId)?.directory;
+    setState(() => _cmdLoading = true);
+    try {
+      final cmds = await client.getCommands(directory: dir);
+      if (mounted) {
+        setState(() {
+          _commands = cmds;
+          _cmdLoaded = true;
+          _cmdLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _cmdError = e.toString();
+          _cmdLoaded = true;
+          _cmdLoading = false;
+        });
+      }
+    }
   }
 
   Future<void> _send() async {
@@ -759,36 +793,79 @@ class _ComposeBar extends StatelessWidget {
 
 class _CommandHints extends StatelessWidget {
   final String query;
+  final List<CommandInfo> commands;
+  final bool loading;
+  final String? error;
   final ValueChanged<String> onPick;
-  const _CommandHints({required this.query, required this.onPick});
+  const _CommandHints({
+    required this.query,
+    required this.commands,
+    required this.loading,
+    this.error,
+    required this.onPick,
+  });
 
   @override
   Widget build(BuildContext context) {
     final q = query.toLowerCase();
-    final matches = _ConversationScreenState._commands
-        .where((c) => c.toLowerCase().startsWith(q))
+    final matches = commands
+        .where((c) => c.slash.toLowerCase().startsWith(q))
         .toList();
-    if (matches.isEmpty) return const SizedBox.shrink();
-    return Container(
-      constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.3),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
-      ),
-      child: ListView(
+    if (matches.isEmpty) {
+      if (loading) {
+        return _shell(
+          context,
+          const ListTile(
+            dense: true,
+            leading: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            title: Text('加载可用命令…', style: TextStyle(fontSize: 13)),
+          ),
+        );
+      }
+      return const SizedBox.shrink();
+    }
+    return _shell(
+      context,
+      ListView(
         shrinkWrap: true,
         children: matches
             .map((c) => ListTile(
                   dense: true,
                   leading: const Icon(Icons.terminal, size: 18),
-                  title: Text(c, style: AppTheme.mono.copyWith(fontSize: 13)),
-                  onTap: () => onPick(c),
+                  title: Text(c.slash,
+                      style: AppTheme.mono.copyWith(fontSize: 13)),
+                  subtitle: c.description.isNotEmpty
+                      ? Text(
+                          c.description,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).colorScheme.outline,
+                          ),
+                        )
+                      : null,
+                  onTap: () => onPick(c.slash),
                 ))
             .toList(),
       ),
     );
   }
+
+  Widget _shell(BuildContext context, Widget child) => Container(
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.3),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          border:
+              Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+        ),
+        child: child,
+      );
 }
 
 class _MoreMenu extends StatelessWidget {
