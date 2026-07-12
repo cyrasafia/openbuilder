@@ -16,7 +16,6 @@ class ConversationScreen extends StatefulWidget {
 
 class _ConversationScreenState extends State<ConversationScreen> {
   final _scrollController = ScrollController();
-  bool _didInitialScroll = false;
 
   @override
   void dispose() {
@@ -68,22 +67,34 @@ class _ConversationScreenState extends State<ConversationScreen> {
           if (conv.error != null && conv.messages.isEmpty) {
             return Center(child: Text('加载失败：${conv.error}'));
           }
+          // Reversed ListView pins to the newest message (bottom) on open,
+          // so we enter directly at the latest part with no top→bottom flash.
+          // Todos/permissions live in a separate footer pinned to the page
+          // bottom (see _FooterPanel), out of the scrolling message stream.
           final list = ListView(
+            reverse: true,
             controller: _scrollController,
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             children: [
-              if (conv.todos.isNotEmpty) _TodoCard(todos: conv.todos),
-              ...conv.permissions.map((p) => _PermissionCard(
-                    permission: p,
-                    store: conv,
-                  )),
-              ...conv.messages.map(_message),
-              if (conv.busy) const _TypingDots(),
               const SizedBox(height: 8),
+              if (conv.busy) const _TypingDots(),
+              ...conv.messages.map(_message).toList().reversed,
             ],
           );
           _scheduleAutoScroll();
-          return list;
+          final showFooter =
+              conv.todos.isNotEmpty || conv.permissions.isNotEmpty;
+          return Column(
+            children: [
+              Expanded(child: list),
+              if (showFooter)
+                _FooterPanel(
+                  todos: conv.todos,
+                  permissions: conv.permissions,
+                  store: conv,
+                ),
+            ],
+          );
         },
       ),
     );
@@ -122,12 +133,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
       final pos = _scrollController.position;
-      final atBottom = pos.pixels >= pos.maxScrollExtent - 50;
-      if (!_didInitialScroll) {
-        _didInitialScroll = true;
-        _scrollController.jumpTo(pos.maxScrollExtent);
-      } else if (atBottom) {
-        _scrollController.jumpTo(pos.maxScrollExtent);
+      // Reversed list: the newest (bottom) is at offset 0.
+      final atBottom = pos.pixels <= 50;
+      if (atBottom) {
+        _scrollController.jumpTo(pos.minScrollExtent);
       }
     });
   }
@@ -200,14 +209,16 @@ class _StatusPill extends StatelessWidget {
 
 class _TodoCard extends StatelessWidget {
   final List<Todo> todos;
-  const _TodoCard({required this.todos});
+  final bool collapsed;
+  final VoidCallback? onToggle;
+  const _TodoCard(
+      {required this.todos, this.collapsed = false, this.onToggle});
 
   @override
   Widget build(BuildContext context) {
     final done = todos.where((t) => t.done).length;
     final pct = todos.isEmpty ? 0.0 : done / todos.length;
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -216,29 +227,40 @@ class _TodoCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            const Icon(Icons.checklist, size: 16),
-            const SizedBox(width: 6),
-            const Text('任务',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-            const Spacer(),
-            Text('$done/${todos.length}',
-                style: TextStyle(
-                    fontSize: 12, color: Theme.of(context).colorScheme.outline)),
-          ]),
-          const SizedBox(height: 10),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: pct,
-              minHeight: 5,
-              backgroundColor: const Color(0xFF23272E),
-              valueColor: AlwaysStoppedAnimation(
-                  Theme.of(context).colorScheme.primary),
-            ),
+          InkWell(
+            onTap: onToggle,
+            child: Row(children: [
+              const Icon(Icons.checklist, size: 16),
+              const SizedBox(width: 6),
+              const Text('任务',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              Text('$done/${todos.length}',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.outline)),
+              if (onToggle != null) ...[
+                const SizedBox(width: 6),
+                Icon(collapsed ? Icons.expand_more : Icons.expand_less,
+                    size: 18, color: Theme.of(context).colorScheme.outline),
+              ],
+            ]),
           ),
-          const SizedBox(height: 12),
-          ...todos.map(_todoRow),
+          if (!collapsed) ...[
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: pct,
+                minHeight: 5,
+                backgroundColor: const Color(0xFF23272E),
+                valueColor: AlwaysStoppedAnimation(
+                    Theme.of(context).colorScheme.primary),
+              ),
+            ),
+            const SizedBox(height: 12),
+            ...todos.map(_todoRow),
+          ],
         ],
       ),
     );
@@ -266,6 +288,54 @@ class _TodoCard extends StatelessWidget {
                     color: t.done ? const Color(0xFF8B949E) : null)),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _FooterPanel extends StatefulWidget {
+  final List<Todo> todos;
+  final List<Permission> permissions;
+  final ConversationStore store;
+  const _FooterPanel(
+      {required this.todos, required this.permissions, required this.store});
+
+  @override
+  State<_FooterPanel> createState() => _FooterPanelState();
+}
+
+class _FooterPanelState extends State<_FooterPanel> {
+  // Todos start collapsed; permission cards render expanded by default.
+  bool _todoExpanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final children = <Widget>[];
+    if (widget.todos.isNotEmpty) {
+      children.add(_TodoCard(
+        todos: widget.todos,
+        collapsed: !_todoExpanded,
+        onToggle: () => setState(() => _todoExpanded = !_todoExpanded),
+      ));
+    }
+    for (final p in widget.permissions) {
+      children.add(_PermissionCard(permission: p, store: widget.store));
+    }
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(
+          top: BorderSide(color: Theme.of(context).dividerColor),
+        ),
+      ),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.4,
+      ),
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(children: children),
+        ),
       ),
     );
   }
