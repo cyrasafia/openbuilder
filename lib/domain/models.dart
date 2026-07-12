@@ -103,6 +103,7 @@ class SessionModel {
   final String? parentID;
   final double cost;
   final Tokens tokens;
+  final String? agent;
 
   const SessionModel({
     required this.id,
@@ -115,6 +116,7 @@ class SessionModel {
     this.parentID,
     this.cost = 0,
     this.tokens = const Tokens(),
+    this.agent,
   });
 
   factory SessionModel.fromJson(Map<String, dynamic> j) {
@@ -132,6 +134,7 @@ class SessionModel {
       tokens: j['tokens'] is Map
           ? Tokens.fromJson(j['tokens'] as Map<String, dynamic>)
           : const Tokens(),
+      agent: j['agent']?.toString(),
     );
   }
 

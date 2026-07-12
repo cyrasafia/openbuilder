@@ -203,14 +203,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (conv == null || client == null) return;
     _ctl.clear();
     setState(() => _cmdMode = false);
-    final directory = serverStore.sessionById(widget.sessionId)?.directory;
+    final session = serverStore.sessionById(widget.sessionId);
+    final directory = session?.directory;
     try {
       if (text.startsWith('!')) {
         // Shell command: strip the leading `!` and run via POST /shell.
         final command = text.substring(1).trim();
         if (command.isEmpty) return;
         await client.shell(widget.sessionId,
-            directory: directory, command: command);
+            directory: directory, agent: session?.agent, command: command);
       } else {
         await client.prompt(
           widget.sessionId,
