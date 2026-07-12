@@ -44,5 +44,12 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Android Gradle build output (apk, intermediates, reports, cache)
+/android/build/
+/android/.gradle/
+/android/local.properties
+/android/**/*.keystore
+/android/**/*.jks
+
 # codegen reference output
 .gen_ref/
