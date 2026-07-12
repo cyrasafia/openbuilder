@@ -19,7 +19,7 @@
 选定 **Flutter**。核心理由：
 
 1. **流畅度兑现最稳**：核心场景（diff 查看、代码/文档渲染、流式任务进度）全是 Flutter 自绘的舒适区，60–120fps 一致，调优少。
-2. **协议契合成本可控**：opencode 官方 JS SDK 本质是 OpenAPI 生成的薄封装 + fetch；用同一份 spec 给 Flutter 生成 Dart 客户端，类型安全与同步能力等价，只多一步 codegen。
+2. **协议契合成本可控**：opencode 官方 JS SDK 本质是 OpenAPI 生成的薄封装 + fetch；用同一份 spec 给 Flutter **手写** Dart 客户端（与官方 SDK 同源契约），类型安全等价；生成器仅产 `.gen_ref/` 参考实现作一致性比对，不接入 app。
 3. **跨平台一致性**：少踩双端渲染差异的坑。
 
 备选 React Native + Expo（可复用官方 JS SDK、支持 OTA），但渲染流畅度兑现需更多调优。下方架构对两者通用，仅实现语言不同。
@@ -41,7 +41,7 @@ openbuilder/
 │  │  ├─ sse/                      # SseClient（长连接、解析、重连、事件总线）
 │  │  └─ result/                   # sealed Result/ApiError 包装
 │  ├─ data/
-│  │  ├─ api/                      # OpenAPI 生成的 Dart client（勿手改）
+│  │  ├─ api/                      # 手写 Dart client（对齐 v2 spec，勿手改）
 │  │  ├─ repositories/             # SessionRepo/ProjectRepo/FileRepo/EventRepo...
 │  │  └─ storage/                  # Isar(会话快照) + secure_storage(连接配置)
 │  ├─ domain/                      # 纯模型与映射（DTO→domain）
@@ -56,7 +56,7 @@ openbuilder/
 │  │  └─ permissions/              # 权限响应（卡片/通知）
 │  └─ ui/                          # 主题、代码块、markdown、diff 组件
 ├─ test/                           # 单元 + widget + golden
-├─ tool/gen_client.sh              # OpenAPI → Dart codegen
+├─ tool/gen_client.sh              # 刷新 pin 住 spec（--generate 仅产 .gen_ref/ 参考）
 └─ pubspec.yaml
 ```
 
@@ -80,20 +80,20 @@ openbuilder/
 
 ### 3.1 API 客户端 / SDK 策略
 
-- **不直接用 JS SDK**：`@opencode-ai/sdk` 是 TS 包，本工程是 Dart；改为**从 opencode OpenAPI 3.1 spec 生成 Dart 客户端**（与官方 SDK 同源契约）。
+- **不直接用 JS SDK**：`@opencode-ai/sdk` 是 TS 包，本工程是 Dart；改为**基于 opencode OpenAPI 3.1 spec 手写 Dart 客户端**（与官方 SDK 同源契约；生成器仅作参考，见 `tool/gen_client.sh`）。
 - **spec 来源（同一份，即 `@opencode-ai/sdk` v2 的生成源）**：
   - 仓库 pin：`packages/sdk/openapi.json`（按 git ref 锁版本，**CI 推荐**）
   - 服务器实时：`GET /doc`（运行中的 `opencode serve` 暴露）
   - 公网镜像：`https://opencode.ai/openapi.json`
   - 当前对齐 `@opencode-ai/sdk@1.17.18`（v2）。
-- **生成器**：`openapi-generator`（`dart-dio`）或 Dart 版 `heyapi` 适配（待定，见 plan §7）。SSE 端点 spec 表达有限，`SseClient` 手写（见 §5）。
+- **生成器**：当前为**手写 client**（`openapi-generator dart-dio` 产 ~8k warning 不实用）；`tool/gen_client.sh --generate` 仅产 `.gen_ref/` 参考实现用于一致性比对，不接入 app。SSE 端点 spec 表达有限，`SseClient` 手写（见 §5）。选型见 plan §7。
 - ⚠️ **勿信 v1 类型**：仓库内 `packages/sdk/js/src/gen/`（v1）是滞后旧产物（缺 `name/icon/sandboxes`、`time.archived`）；类型一律以 **v2**（`v2/gen/types.gen.ts`）或 live `/doc` 为准。
 
 ---
 
 ## 4. 领域模型与 API 映射
 
-DTO 来自生成的 client；`domain/` 放精简的不可变模型 + `fromDto`。
+DTO 来自手写的 client；`domain/` 放精简的不可变模型 + `fromDto`。
 
 ### 4.1 opencode 关键数据模型（来自 spec）
 
@@ -173,7 +173,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 ## 6. 状态管理（Riverpod）
 
 - `connectionProvider` — 当前激活的 `ConnectionProfile`（host/port/可选凭据/当前 directory）
-- `dioProvider(baseUrl, auth)` → `apiClientProvider` — 生成客户端单例
+- `dioProvider(baseUrl, auth)` → `apiClientProvider` — 手写客户端单例
 - `sseStreamProvider` — `StreamProvider<OpencodeEvent>`，依赖 connectionProvider，断线时 `AsyncError`
 - `projectsProvider`、`currentWorktreeProvider`、`sessionsProvider(dir)`、`sessionStatusProvider`
 - `conversationProvider(sessionId)` — 合并 `GET /message` 初值 + SSE 增量（`AsyncNotifier`，内部维护 parts 索引）

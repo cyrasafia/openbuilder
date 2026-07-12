@@ -65,7 +65,7 @@
   - `icon.url` = 服务端 glob 项目内 `**/favicon.{ico,png,svg,jpg,jpeg,webp}` 并 base64 内嵌的数据 URL，受 `OPENCODE_EXPERIMENTAL_ICON_DISCOVERY` 控制（**默认关**，需服务端开启才有值）。
   - `icon.color` = 可选背景色；未提供时客户端按名称哈希派生。
   - **客户端回退**：无 icon 时用「名称/工作区首字母 + 哈希色」圆角方 avatar（与 desktop 一致）。
-  - ⚠️ **SDK 注意**：Dart 客户端从 **v2 spec** 生成（`packages/sdk/openapi.json` / live `/doc`，见 specs §3.1）；勿信仓库内 v1 `gen/types.gen.ts`（滞后，`Project` 仅 `{id,worktree,vcsDir?,vcs?,time}`、缺 `name/icon`）。
+  - ⚠️ **SDK 注意**：Dart 客户端按 **v2 spec 手写**（`packages/sdk/openapi.json` / live `/doc`，见 specs §3.1；生成器仅产 `.gen_ref/` 参考）；勿信仓库内 v1 `gen/types.gen.ts`（滞后，`Project` 仅 `{id,worktree,vcsDir?,vcs?,time}`、缺 `name/icon`）。
 
 ### 2.3 与 opencode API 的映射
 
@@ -323,6 +323,6 @@
 
 1. **归档语义**：归档 ≠ 删除。归档=软隐藏（`time.archived` 时间戳，`PATCH /session/:id` 或 `setArchived`，列表默认排除，可恢复）；删除=`DELETE /session/:id`（硬，清数据）。
 2. **最新消息字段**：列表不返回消息体 → **依赖 SSE 维护本地缓存**（`message.part.updated`/`message.updated`）；首次用 `GET /session/:id/message` 末条 part 初始化。
-3. **项目图标**（已更正，2026-07）：服务端 `Project`（schema v2）**含** `name?` 与 `icon?{url,override,color}`，经 `GET /project` 下发——desktop 连远端即读远端 logo。`icon.url`=服务端自动发现项目 `favicon.*`（数据 URL，受 `OPENCODE_EXPERIMENTAL_ICON_DISCOVERY` 控制，默认关）；`icon.override`=用户自定义（最高优先）；`icon.color`=可选背景色。手机端取 `override ?? url`，无则回退「首字母+哈希色」。⚠️ 类型以 v2 spec 为准（Dart client 从 `packages/sdk/openapi.json` / live `/doc` 生成，specs §3.1）；勿用滞后的 v1 `gen`。（早先"服务端无 logo、仅客户端本地"的结论有误，经源码核实后更正。）
+3. **项目图标**（已更正，2026-07）：服务端 `Project`（schema v2）**含** `name?` 与 `icon?{url,override,color}`，经 `GET /project` 下发——desktop 连远端即读远端 logo。`icon.url`=服务端自动发现项目 `favicon.*`（数据 URL，受 `OPENCODE_EXPERIMENTAL_ICON_DISCOVERY` 控制，默认关）；`icon.override`=用户自定义（最高优先）；`icon.color`=可选背景色。手机端取 `override ?? url`，无则回退「首字母+哈希色」。⚠️ 类型以 v2 spec 为准（Dart client 按 `packages/sdk/openapi.json` / live `/doc` 的 v2 spec **手写**，specs §3.1；生成器仅产 `.gen_ref/` 参考）；勿用滞后的 v1 `gen`。（早先"服务端无 logo、仅客户端本地"的结论有误，经源码核实后更正。）
 4. **项目聚合键**：按 `Project.id` 聚合；`id==="global"` 时按 `worktree`(directory) 路径聚合。`ProjectID.global = "global"` 已确认存在。
 5. **SSE 增量更新**（已决策）：列表字段来自两条事件流——元数据（标题/时间/摘要/状态/归档）走 `session.updated`/`session.status`，干净增量；**最新消息预览服务端不给字符串**，由客户端从 part 事件合成。决策：(D1) 文本类 part 出预览、工具调用用「工具名·状态」占位；(D2) 仅 `message.updated` 刷新、不用 delta；(D3) `lastTime` 直接用 `time.updated`、abort 客户端补戳；(D4) 不主动拉取，等首条 `message.updated` 再显示。详见 §2.2。
