@@ -2,6 +2,10 @@ import 'package:go_router/go_router.dart';
 
 import 'core/connection/connection_store.dart';
 import 'features/conversation/conversation_screen.dart';
+import 'features/files/diff_detail_screen.dart';
+import 'features/files/diff_list_screen.dart';
+import 'features/files/file_list_screen.dart';
+import 'features/files/file_view_screen.dart';
 import 'features/projects/project_detail_screen.dart';
 import 'features/servers/server_form_screen.dart';
 import 'features/servers/servers_screen.dart';
@@ -45,6 +49,37 @@ GoRouter buildRouter(ConnectionStore store) {
         path: '/session/:id',
         builder: (_, s) =>
             ConversationScreen(sessionId: s.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/session/:id/diff',
+        builder: (_, s) => DiffListScreen(
+          sessionId: s.pathParameters['id']!,
+          directory: s.uri.queryParameters['directory'],
+        ),
+      ),
+      GoRoute(
+        path: '/session/:id/diff/file',
+        builder: (_, s) => DiffDetailScreen(
+          sessionId: s.pathParameters['id']!,
+          path: s.uri.queryParameters['path'] ?? '',
+          directory: s.uri.queryParameters['directory'],
+        ),
+      ),
+      GoRoute(
+        path: '/session/:id/files',
+        builder: (_, s) => FileListScreen(
+          sessionId: s.pathParameters['id']!,
+          directory: s.uri.queryParameters['directory'],
+          initialPath: s.uri.queryParameters['path'],
+        ),
+      ),
+      GoRoute(
+        path: '/session/:id/file',
+        builder: (_, s) => FileViewScreen(
+          sessionId: s.pathParameters['id']!,
+          path: s.uri.queryParameters['path'] ?? '',
+          directory: s.uri.queryParameters['directory'],
+        ),
       ),
       GoRoute(
         path: '/project/:id',

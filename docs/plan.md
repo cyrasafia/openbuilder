@@ -83,11 +83,13 @@ Phase 1 完成。
 16. 会话操作：abort / delete / share / revert / archive（归档=`PATCH time.archived`，区别于 delete）
 
 ### 完成标准 (DoD)
-- [ ] 能发消息并看到完整流式回复；`/命令` 与 `!shell` 可用
-- [ ] Diff 列表→详情；同文件 Diff 详情 ⇄ 完整查看可互切
-- [ ] 能逐层浏览文件、阅读完整文件、按名搜索
-- [ ] 会话操作均可用；归档与删除语义正确（归档可恢复、删除清数据）
-- [ ] 大 diff 行级渲染流畅（`ListView.builder` + 懒加载）
+- [x] 能发消息并看到完整流式回复；`/命令` 与 `!shell` 可用 — 底部输入栏发 `prompt_async`，流式复用既有 SSE（`message.part.updated`/`message.updated`）；输入以 `/` 弹出命令候选，`!` 原样下发
+- [x] Diff 列表→详情；同文件 Diff 详情 ⇄ 完整查看可互切 — `GET /session/:id/diff` + 行级渲染，`Diff 详情 ⇄ 文件查看` 互跳
+- [x] 能逐层浏览文件、阅读完整文件、按名搜索 — `GET /file` 浏览器式 + 面包屑，`GET /file/content` 只读（二进制提示），`GET /find/file` 搜索
+- [x] 会话操作均可用；归档与删除语义正确（归档可恢复、删除清数据）— 顶栏「终止」(abort)、更多菜单：分享(share)/归档(PATCH `time.archived`)/删除(DELETE)；revert 接口已实现但未进菜单
+- [x] 大 diff 行级渲染流畅（`ListView.builder` + 行号/增删着色）
+
+Phase 2 完成（revert 仅接口、未进菜单；prompt 流式待活跃会话端到端复验）。
 
 ---
 

@@ -121,6 +121,115 @@ class OpencodeClient {
     );
   }
 
+  /// `POST /session/:id/prompt_async` — send a message and return immediately.
+  /// [parts] is the message payload, e.g. `[{'type':'text','text':'...'}]`.
+  Future<void> prompt(
+    String sessionId, {
+    String? directory,
+    required List<Map<String, dynamic>> parts,
+  }) async {
+    await dio.post(
+      '/session/$sessionId/prompt_async',
+      queryParameters:
+          directory != null ? {'directory': directory} : null,
+      data: {'parts': parts},
+    );
+  }
+
+  /// `POST /session/:id/abort` — stop a running session.
+  Future<void> abort(String sessionId, {String? directory}) async {
+    await dio.post(
+      '/session/$sessionId/abort',
+      queryParameters: directory != null ? {'directory': directory} : null,
+    );
+  }
+
+  /// `DELETE /session/:id` — permanently delete a session (hard delete).
+  Future<void> deleteSession(String sessionId, {String? directory}) async {
+    await dio.delete(
+      '/session/$sessionId',
+      queryParameters: directory != null ? {'directory': directory} : null,
+    );
+  }
+
+  /// `PATCH /session/:id` — archive (set `time.archived`) or un-archive.
+  Future<void> archive(String sessionId, {String? directory, int? archived}) async {
+    await dio.patch(
+      '/session/$sessionId',
+      queryParameters: directory != null ? {'directory': directory} : null,
+      data: {
+        'time': {'archived': archived},
+      },
+    );
+  }
+
+  /// `POST /session/:id/share` — generate a share link. Returns the updated session.
+  Future<SessionModel> share(String sessionId, {String? directory}) async {
+    final r = await dio.post(
+      '/session/$sessionId/share',
+      queryParameters: directory != null ? {'directory': directory} : null,
+    );
+    return SessionModel.fromJson(_asMap(r.data));
+  }
+
+  /// `POST /session/:id/revert` — revert the session back to [messageID].
+  Future<void> revert(
+    String sessionId, {
+    String? directory,
+    required String messageID,
+  }) async {
+    await dio.post(
+      '/session/$sessionId/revert',
+      queryParameters: directory != null ? {'directory': directory} : null,
+      data: {'messageID': messageID},
+    );
+  }
+
+  /// `GET /session/:id/diff` → list of changed files.
+  Future<List<FileDiff>> diff(String sessionId, {String? directory}) async {
+    final r = await dio.get<dynamic>(
+      '/session/$sessionId/diff',
+      queryParameters: directory != null ? {'directory': directory} : null,
+    );
+    return _getModelsFromData(r.data, FileDiff.fromJson);
+  }
+
+  /// `GET /file` — list files/dirs under [path] within [directory].
+  Future<List<FileNode>> listFiles({
+    required String directory,
+    required String path,
+  }) async {
+    final r = await dio.get<dynamic>('/file', queryParameters: {
+      'directory': directory,
+      'path': path,
+    });
+    return _getModelsFromData(r.data, FileNode.fromJson);
+  }
+
+  /// `GET /file/content` — read a file's full content.
+  Future<FileContent> readFile({
+    required String directory,
+    required String path,
+  }) async {
+    final r = await dio.get<dynamic>('/file/content', queryParameters: {
+      'directory': directory,
+      'path': path,
+    });
+    return FileContent.fromJson(_asMap(r.data));
+  }
+
+  /// `GET /find/file?query=` — search files within [directory].
+  Future<List<FileNode>> findFiles({
+    required String directory,
+    required String query,
+  }) async {
+    final r = await dio.get<dynamic>('/find/file', queryParameters: {
+      'directory': directory,
+      'query': query,
+    });
+    return _getModelsFromData(r.data, FileNode.fromJson);
+  }
+
   // ---- helpers ----
 
   Future<List<T>> _getModels<T>(

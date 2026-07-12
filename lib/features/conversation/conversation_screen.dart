@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/session/conversation_store.dart';
@@ -17,10 +18,23 @@ class ConversationScreen extends StatefulWidget {
 
 class _ConversationScreenState extends State<ConversationScreen> {
   final _scrollController = ScrollController();
+  final _ctl = TextEditingController();
+  bool _cmdMode = false;
+  static const _commands = <String>[
+    '/help',
+    '/clear',
+    '/model',
+    '/init',
+    '/compact',
+    '/review',
+    '/commit',
+    '/status',
+  ];
 
   @override
   void dispose() {
     _scrollController.dispose();
+    _ctl.dispose();
     super.dispose();
   }
 
@@ -34,6 +48,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         body: const Center(child: Text('会话不可用（未连接服务器）')),
       );
     }
+    final directory = session?.directory ?? '';
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -56,7 +71,38 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
         actions: [
           _StatusPill(listenable: conv),
-          const SizedBox(width: 12),
+          IconButton(
+            icon: const Icon(Icons.folder_outlined),
+            tooltip: '文件',
+            onPressed: () => context.push(
+              '/session/${widget.sessionId}/files'
+              '?directory=${Uri.encodeQueryComponent(directory)}',
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.compare),
+            tooltip: 'Diff',
+            onPressed: () => context.push(
+              '/session/${widget.sessionId}/diff'
+              '?directory=${Uri.encodeQueryComponent(directory)}',
+            ),
+          ),
+          ListenableBuilder(
+            listenable: conv,
+            builder: (context, _) => conv.busy
+                ? IconButton(
+                    icon: const Icon(Icons.stop_circle_outlined),
+                    tooltip: '终止',
+                    onPressed: () => _abort(directory),
+                  )
+                : const SizedBox.shrink(),
+          ),
+          _MoreMenu(
+            sessionId: widget.sessionId,
+            directory: directory,
+            session: session,
+          ),
+          const SizedBox(width: 4),
         ],
       ),
       body: ListenableBuilder(
@@ -94,11 +140,64 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   permissions: conv.permissions,
                   store: conv,
                 ),
+              if (_cmdMode) _CommandHints(query: _ctl.text, onPick: _pickCommand),
+              _ComposeBar(
+                ctl: _ctl,
+                onChanged: (t) =>
+                    setState(() => _cmdMode = t.startsWith('/') && !t.contains(' ')),
+                onSend: _send,
+              ),
             ],
           );
         },
       ),
     );
+  }
+
+  void _pickCommand(String cmd) {
+    _ctl.text = '$cmd ';
+    _ctl.selection = TextSelection.fromPosition(
+        TextPosition(offset: _ctl.text.length));
+    setState(() => _cmdMode = false);
+  }
+
+  Future<void> _send() async {
+    final text = _ctl.text.trim();
+    if (text.isEmpty) return;
+    final conv = serverStore.conversationFor(widget.sessionId);
+    final client = serverStore.client;
+    if (conv == null || client == null) return;
+    _ctl.clear();
+    setState(() => _cmdMode = false);
+    try {
+      await client.prompt(
+        widget.sessionId,
+        directory: serverStore.sessionById(widget.sessionId)?.directory,
+        parts: [
+          {'type': 'text', 'text': text}
+        ],
+      );
+      conv.setStatus('busy'); // optimistic; SSE will confirm/stream
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('发送失败：$e')));
+      }
+    }
+    _scheduleAutoScroll();
+  }
+
+  Future<void> _abort(String directory) async {
+    final client = serverStore.client;
+    if (client == null) return;
+    try {
+      await client.abort(widget.sessionId, directory: directory);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('终止失败：$e')));
+      }
+    }
   }
 
   Widget _message(DisplayMessage m) {
@@ -596,5 +695,203 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
         );
       },
     );
+  }
+}
+
+class _ComposeBar extends StatelessWidget {
+  final TextEditingController ctl;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onSend;
+  const _ComposeBar({
+    required this.ctl,
+    required this.onChanged,
+    required this.onSend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+      ),
+      padding: EdgeInsets.only(
+        left: 12,
+        right: 8,
+        top: 8,
+        bottom: 8 + MediaQuery.of(context).padding.bottom,
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: ctl,
+              onChanged: onChanged,
+              onSubmitted: (_) => onSend(),
+              minLines: 1,
+              maxLines: 4,
+              decoration: InputDecoration(
+                hintText: '/ 命令　! shell　发指令…',
+                isDense: true,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: BorderSide.none,
+                ),
+                fillColor:
+                    Theme.of(context).colorScheme.surfaceContainerHighest,
+                filled: true,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          IconButton.filled(
+            onPressed: onSend,
+            icon: const Icon(Icons.send),
+            tooltip: '发送',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CommandHints extends StatelessWidget {
+  final String query;
+  final ValueChanged<String> onPick;
+  const _CommandHints({required this.query, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    final q = query.toLowerCase();
+    final matches = _ConversationScreenState._commands
+        .where((c) => c.toLowerCase().startsWith(q))
+        .toList();
+    if (matches.isEmpty) return const SizedBox.shrink();
+    return Container(
+      constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.3),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+      ),
+      child: ListView(
+        shrinkWrap: true,
+        children: matches
+            .map((c) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.terminal, size: 18),
+                  title: Text(c, style: AppTheme.mono.copyWith(fontSize: 13)),
+                  onTap: () => onPick(c),
+                ))
+            .toList(),
+      ),
+    );
+  }
+}
+
+class _MoreMenu extends StatelessWidget {
+  final String sessionId;
+  final String directory;
+  final SessionModel? session;
+  const _MoreMenu({
+    required this.sessionId,
+    required this.directory,
+    this.session,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      icon: const Icon(Icons.more_vert),
+      tooltip: '更多',
+      onSelected: (v) => _onSelected(context, v),
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: 'share', child: Text('分享')),
+        PopupMenuItem(value: 'archive', child: Text('归档')),
+        PopupMenuItem(
+            value: 'delete', child: Text('删除', style: TextStyle(color: Colors.red))),
+      ],
+    );
+  }
+
+  Future<void> _onSelected(BuildContext context, String value) async {
+    final client = serverStore.client;
+    if (client == null) return;
+    switch (value) {
+      case 'share':
+        try {
+          await client.share(sessionId, directory: directory);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(const SnackBar(content: Text('已生成分享链接')));
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text('分享失败：$e')));
+          }
+        }
+      case 'archive':
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('归档会话'),
+            content: const Text('归档后会话从列表隐藏，可稍后恢复。'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('归档')),
+            ],
+          ),
+        );
+        if (ok == true) {
+          try {
+            await client.archive(sessionId,
+                directory: directory, archived: DateTime.now().millisecondsSinceEpoch);
+            if (context.mounted) context.pop();
+          } catch (e) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text('归档失败：$e')));
+            }
+          }
+        }
+      case 'delete':
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('删除会话'),
+            content: const Text('删除为硬删除，会清除全部数据且不可恢复。'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消')),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    backgroundColor: Colors.red.withAlpha(25)),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        );
+        if (ok == true) {
+          try {
+            await client.deleteSession(sessionId, directory: directory);
+            if (context.mounted) context.pop();
+          } catch (e) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text('删除失败：$e')));
+            }
+          }
+        }
+    }
   }
 }

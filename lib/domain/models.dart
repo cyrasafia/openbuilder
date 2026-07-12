@@ -266,3 +266,120 @@ double _d(dynamic v) {
   if (v is String) return double.tryParse(v) ?? 0;
   return 0;
 }
+
+class FileNode {
+  final String name;
+  final String path;
+  final String absolute;
+  final String type; // file | directory
+  final bool ignored;
+  const FileNode({
+    required this.name,
+    required this.path,
+    required this.absolute,
+    required this.type,
+    required this.ignored,
+  });
+
+  factory FileNode.fromJson(Map<String, dynamic> j) => FileNode(
+        name: (j['name'] ?? '').toString(),
+        path: (j['path'] ?? '').toString(),
+        absolute: (j['absolute'] ?? '').toString(),
+        type: (j['type'] ?? 'file').toString(),
+        ignored: j['ignored'] == true,
+      );
+
+  bool get isDir => type == 'directory';
+}
+
+class FileContent {
+  final String type; // text | binary
+  final String content;
+  final String? mimeType;
+  const FileContent({
+    required this.type,
+    required this.content,
+    this.mimeType,
+  });
+
+  factory FileContent.fromJson(Map<String, dynamic> j) => FileContent(
+        type: (j['type'] ?? 'text').toString(),
+        content: (j['content'] ?? '').toString(),
+        mimeType: j['mimeType']?.toString(),
+      );
+}
+
+class FileDiff {
+  final String file;
+  final String patch; // unified diff text
+  final int additions;
+  final int deletions;
+  final String status; // added | deleted | modified
+  const FileDiff({
+    required this.file,
+    required this.patch,
+    required this.additions,
+    required this.deletions,
+    required this.status,
+  });
+
+  factory FileDiff.fromJson(Map<String, dynamic> j) => FileDiff(
+        file: (j['file'] ?? '').toString(),
+        patch: (j['patch'] ?? '').toString(),
+        additions: _i(j['additions']),
+        deletions: _i(j['deletions']),
+        status: (j['status'] ?? 'modified').toString(),
+      );
+
+  String get fileName => file.split('/').last;
+}
+
+/// A single rendered line of a unified diff.
+class DiffLine {
+  /// '+' added | '-' removed | ' ' context | '@' hunk header
+  final String kind;
+  final String text;
+  final int? oldNo;
+  final int? newNo;
+  const DiffLine(this.kind, this.text, this.oldNo, this.newNo);
+}
+
+/// Parse a unified diff (`git diff` style) into renderable [DiffLine]s with
+/// old/new line numbers, so the UI can show dual gutters.
+List<DiffLine> parseUnifiedDiff(String patch) {
+  final lines = patch.split('\n');
+  final out = <DiffLine>[];
+  int oldNo = 0;
+  int newNo = 0;
+  for (final raw in lines) {
+    if (raw.startsWith('@@')) {
+      // @@ -l,s +l,s @@
+      final m = RegExp(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@')
+          .firstMatch(raw);
+      if (m != null) {
+        oldNo = int.tryParse(m.group(1)!) ?? 0;
+        newNo = int.tryParse(m.group(2)!) ?? 0;
+      }
+      out.add(DiffLine('@', raw, null, null));
+      continue;
+    }
+    if (raw.startsWith('+')) {
+      out.add(DiffLine('+', raw.substring(1), null, newNo));
+      newNo++;
+    } else if (raw.startsWith('-')) {
+      out.add(DiffLine('-', raw.substring(1), oldNo, null));
+      oldNo++;
+    } else if (raw.startsWith(' ')) {
+      out.add(DiffLine(' ', raw.substring(1), oldNo, newNo));
+      oldNo++;
+      newNo++;
+    } else if (raw.isEmpty) {
+      // Trailing newline artifact; skip.
+      continue;
+    } else {
+      // Unprefixed line (e.g. diff header like "diff --git ..." / "+++ ...").
+      out.add(DiffLine('h', raw, null, null));
+    }
+  }
+  return out;
+}
