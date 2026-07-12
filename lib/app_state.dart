@@ -5,7 +5,7 @@ import 'core/session/server_store.dart';
 
 final ConnectionStore connectionStore = ConnectionStore();
 final ServerStore serverStore = ServerStore();
-final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.dark);
+final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 
 /// Bind the active server in [connectionStore] to [serverStore] (connect on
 /// change / disconnect when none). Idempotent; call once after [connectionStore]

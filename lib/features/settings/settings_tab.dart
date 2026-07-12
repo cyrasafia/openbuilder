@@ -121,12 +121,30 @@ class _SettingsTabState extends State<SettingsTab> {
               ]),
               _section('客户端', [
                 ListTile(
-                  leading: const Icon(Icons.dark_mode_outlined),
-                  title: const Text('深色模式'),
-                  trailing: Switch(
-                    value: themeMode.value == ThemeMode.dark,
-                    onChanged: (v) => setState(
-                        () => themeMode.value = v ? ThemeMode.dark : ThemeMode.light),
+                  leading: const Icon(Icons.palette_outlined),
+                  title: const Text('主题'),
+                  trailing: SegmentedButton<ThemeMode>(
+                    showSelectedIcon: false,
+                    selected: {themeMode.value},
+                    onSelectionChanged: (s) =>
+                        setState(() => themeMode.value = s.first),
+                    segments: const [
+                      ButtonSegment(
+                        value: ThemeMode.system,
+                        icon: Icon(Icons.brightness_auto, size: 18),
+                        label: Text('系统'),
+                      ),
+                      ButtonSegment(
+                        value: ThemeMode.light,
+                        icon: Icon(Icons.light_mode, size: 18),
+                        label: Text('浅色'),
+                      ),
+                      ButtonSegment(
+                        value: ThemeMode.dark,
+                        icon: Icon(Icons.dark_mode, size: 18),
+                        label: Text('深色'),
+                      ),
+                    ],
                   ),
                 ),
                 ListTile(
