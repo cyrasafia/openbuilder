@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/connection_profile.dart';
 import '../../core/net/dio_factory.dart';
+import '../../ui/theme.dart';
+import '../../core/net/mdns_discovery.dart';
 import '../../data/api/opencode_client.dart';
 
 /// Add (id == null) or edit (id != null) a server. Includes test connection.
@@ -203,12 +205,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                          content: Text('mDNS 发现在 Phase 1 接入（移动端）')),
-                    );
-                  },
+                  onPressed: _discover,
                   icon: const Icon(Icons.wifi_find),
                   label: const Text('发现 (mDNS)'),
                 ),
@@ -232,6 +229,18 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     );
   }
 
+  Future<void> _discover() async {
+    final server = await showDialog<DiscoveredServer>(
+      context: context,
+      builder: (_) => const _MdnsDiscoveryDialog(),
+    );
+    if (server != null && mounted) {
+      _address.text = server.address;
+      if (_name.text.trim().isEmpty) _name.text = server.name;
+      if (_username.text.trim().isEmpty) _username.text = 'opencode';
+    }
+  }
+
   Widget _field({
     required TextEditingController controller,
     required String label,
@@ -250,6 +259,87 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
         prefixIcon: Icon(icon),
         border: const OutlineInputBorder(),
       ),
+    );
+  }
+}
+
+class _MdnsDiscoveryDialog extends StatefulWidget {
+  const _MdnsDiscoveryDialog();
+
+  @override
+  State<_MdnsDiscoveryDialog> createState() => _MdnsDiscoveryDialogState();
+}
+
+class _MdnsDiscoveryDialogState extends State<_MdnsDiscoveryDialog> {
+  final _mdns = MdnsDiscovery();
+  List<DiscoveredServer> _servers = [];
+  bool _error = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  Future<void> _start() async {
+    try {
+      await _mdns.start();
+      _mdns.stream.listen((list) {
+        if (mounted) setState(() => _servers = list);
+      });
+    } catch (_) {
+      if (mounted) setState(() => _error = true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _mdns.stop();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('发现 opencode 服务器'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 320,
+        child: _servers.isEmpty
+            ? Center(
+                child: _error
+                    ? const Text('mDNS 不可用（此平台可能不支持）',
+                        textAlign: TextAlign.center)
+                    : const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 12),
+                          Text('正在扫描局域网…', style: TextStyle(fontSize: 13)),
+                        ],
+                      ),
+              )
+            : ListView.separated(
+                itemCount: _servers.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final s = _servers[i];
+                  return ListTile(
+                    leading: const Icon(Icons.dns_outlined),
+                    title: Text(s.name),
+                    subtitle: Text(s.address,
+                        style: AppTheme.mono.copyWith(fontSize: 12)),
+                    onTap: () => Navigator.pop(context, s),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+      ],
     );
   }
 }

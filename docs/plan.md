@@ -29,7 +29,7 @@
 3. `ConnectionProfile` + `flutter_secure_storage`，dio 工厂 + basic auth 拦截器
 4. 欢迎页（`connectionStore` 为空时重定向）+ 服务器配置页（表单 + 测试连接）
 5. 主壳 + 设置 Tab 服务器状态卡（显示 opencode 版本）
-6. `bonsoir` mDNS 发现，接入服务器配置页
+6. [x] `bonsoir` mDNS 发现，接入服务器配置页
 
 ### 完成标准 (DoD)
 - [x] `flutter analyze` 0 error；CI 绿
