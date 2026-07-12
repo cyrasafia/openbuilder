@@ -25,7 +25,7 @@
 
 ### 工作项
 1. `flutter create`，配 lint/CI，建目录骨架（specs §2）
-2. OpenAPI / v2 SDK → Dart client codegen，验证 `GET /global/health`
+2. 从 `packages/sdk/openapi.json`（v2，pin 版本）生成 Dart client（specs §3.1），验证 `GET /global/health`
 3. `ConnectionProfile` + `flutter_secure_storage`，dio 工厂 + basic auth 拦截器
 4. 欢迎页（`connectionStore` 为空时重定向）+ 服务器配置页（表单 + 测试连接）
 5. 主壳 + 设置 Tab 服务器状态卡（显示 opencode 版本）
@@ -121,7 +121,7 @@
 | 风险 | 对策 |
 |---|---|
 | OpenAPI spec 变更打破生成 client | CI pin spec 版本 + 兼容性测试；按 opencode 版本号对齐 |
-| **v1 SDK 类型滞后**（缺 `name/icon/sandboxes`、`time.archived`） | 用 `@opencode-ai/sdk/v2/client` 或手动补类型；勿只信 `types.gen.ts` |
+| **v1 SDK 类型滞后**（缺 `name/icon/sandboxes`、`time.archived`） | Dart client 从 **v2 spec** 生成（`packages/sdk/openapi.json` / live `/doc`，specs §3.1）；勿信仓库内 v1 `packages/sdk/js/src/gen/` |
 | SSE 后台断连丢事件 | 回前台对账（重拉 status/todo/messages），非纯依赖增量 |
 | 生成 client 对 `?directory=` 透传不全 | Repository 显式带 `directory`，必要时手写少量端点 |
 | iOS 后台网络限制 | 前台为主；后台仅本地通知，不做长连接保活 |
@@ -135,3 +135,20 @@
 - 是否接 FCM 做真后台推送（需网关，超出「基本 HTTP」范围，默认不做）
 - 代码生成器选型最终敲定（`openapi-generator dart-dio` vs Dart 版 `heyapi` 适配，优选与官方同源者）
 - 远端项目 logo 在 `experimentalIconDiscovery` 默认关时的兜底策略（首字母+哈希已作为回退）
+
+---
+
+## 8. 测试环境
+
+开发与集成测试用的固定后端（独立于 CI 的 docker 实例）：
+
+- **测试服务器**：`http://localhost:15120`
+  - basic auth：用户名 `opencode`，密码为空
+  - 版本：`1.17.18`（= v2 spec 对齐版本，见 specs §3.1）
+  - 已验证 `/global/health`、`/project`（含 `global` 项与 `icon{color,override}`、`sandboxes`）
+  - 用途：Phase 0 起的手动预览、端到端冒烟、codegen spec 一致性校验
+- **测试项目**：当前仓库 **`openbuilder`**（`/home/cyrasafia/协作工作区/我的工具/openbuilder`）
+  - 作为 worktree/会话/diff/文件等流程的默认验证项目
+  - 注：需先在该目录跑过 opencode，才会在 `GET /project` 出现对应条目
+
+> CI（见 §5）仍用 `ghcr.io/anomalyco/opencode` 容器跑冒烟；本地开发/手动联调用上面这台服务器。
