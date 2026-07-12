@@ -53,14 +53,20 @@ class ServerStore extends ChangeNotifier {
     return null;
   }
 
-  String projectDisplayOf(SessionModel s) =>
-      projectOf(s.projectID)?.displayName ?? s.dirName;
+  String projectDisplayOf(SessionModel s) {
+    if (s.projectID == 'global') return 'global';
+    return projectOf(s.projectID)?.displayName ??
+        (s.dirName.isNotEmpty
+            ? s.dirName
+            : 'project-${s.projectID.substring(0, 8)}');
+  }
 
   /// Worktree/directory name to show for a session.
   String worktreeDisplayOf(SessionModel s) {
     final p = projectOf(s.projectID);
     if (p != null && p.id != 'global') return p.worktreeName;
-    return s.dirName;
+    if (s.directory.isNotEmpty) return s.dirName;
+    return 'global';
   }
 
   ConversationStore? conversationFor(String sessionId) {
@@ -106,34 +112,46 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> _bootstrap() async {
     try {
-      final results = await Future.wait([
-        client!.projects(),
-        client!.sessions(),
-        client!.sessionStatus(),
-      ]);
-      _projects = results[0] as List<ProjectModel>;
-      _sessions = results[1] as List<SessionModel>;
+      final projects = await client!.projects();
+      final sessions = await _fetchAllSessions();
+      final status = await client!.sessionStatus();
+      _projects = projects;
+      _sessions = sessions;
       _statusMap
         ..clear()
-        ..addAll(results[2] as Map<String, SessionStatusValue>);
+        ..addAll(status);
       error = null;
     } catch (e) {
       error = '$e';
     }
   }
 
+  /// Aggregate sessions across all projects via `/api/session` (paginated).
+  Future<List<SessionModel>> _fetchAllSessions() async {
+    final all = <String, SessionModel>{};
+    String? cursor;
+    do {
+      final page = await client!.sessionsAll(cursor: cursor);
+      for (final s in page.sessions) {
+        all[s.id] = s;
+      }
+      cursor = page.nextCursor;
+    } while (cursor != null && all.length < 200); // safety cap
+    return all.values.toList();
+  }
+
   Future<void> _reconcile() async {
     // server.connected: refresh authoritative state.
     if (client == null) return;
     try {
-      final s = await client!.sessions();
-      final st = await client!.sessionStatus();
-      _sessions = s;
+      final sessions = await _fetchAllSessions();
+      final status = await client!.sessionStatus();
+      _sessions = sessions;
       _statusMap
         ..clear()
-        ..addAll(st);
+        ..addAll(status);
       for (final conv in _conversations.values) {
-        conv.setStatus(st[conv.sessionId]?.type ?? 'idle');
+        conv.setStatus(status[conv.sessionId]?.type ?? 'idle');
       }
       error = null;
     } catch (e) {

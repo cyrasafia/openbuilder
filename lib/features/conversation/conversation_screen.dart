@@ -6,14 +6,28 @@ import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 
-class ConversationScreen extends StatelessWidget {
+class ConversationScreen extends StatefulWidget {
   final String sessionId;
   const ConversationScreen({super.key, required this.sessionId});
 
   @override
+  State<ConversationScreen> createState() => _ConversationScreenState();
+}
+
+class _ConversationScreenState extends State<ConversationScreen> {
+  final _scrollController = ScrollController();
+  bool _didInitialScroll = false;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final session = serverStore.sessionById(sessionId);
-    final conv = serverStore.conversationFor(sessionId);
+    final session = serverStore.sessionById(widget.sessionId);
+    final conv = serverStore.conversationFor(widget.sessionId);
     if (conv == null) {
       return Scaffold(
         appBar: AppBar(),
@@ -54,7 +68,8 @@ class ConversationScreen extends StatelessWidget {
           if (conv.error != null && conv.messages.isEmpty) {
             return Center(child: Text('加载失败：${conv.error}'));
           }
-          return ListView(
+          final list = ListView(
+            controller: _scrollController,
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
             children: [
               if (conv.todos.isNotEmpty) _TodoCard(todos: conv.todos),
@@ -67,6 +82,8 @@ class ConversationScreen extends StatelessWidget {
               const SizedBox(height: 8),
             ],
           );
+          _scheduleAutoScroll();
+          return list;
         },
       ),
     );
@@ -87,9 +104,9 @@ class ConversationScreen extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 320),
             child: _parts(m.parts, user: true),
           ),
-        ),
-      );
-    }
+      ),
+    );
+  }
     return Padding(
       padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
       child: Column(
@@ -99,6 +116,20 @@ class ConversationScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  void _scheduleAutoScroll() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      final pos = _scrollController.position;
+      final atBottom = pos.pixels >= pos.maxScrollExtent - 50;
+      if (!_didInitialScroll) {
+        _didInitialScroll = true;
+        _scrollController.jumpTo(pos.maxScrollExtent);
+      } else if (atBottom) {
+        _scrollController.jumpTo(pos.maxScrollExtent);
+      }
+    });
   }
 
   Color _userBubbleColor() => const Color(0xFF1F3D2A);
