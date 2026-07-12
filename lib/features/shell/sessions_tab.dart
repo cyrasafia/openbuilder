@@ -102,7 +102,7 @@ class _SessionTile extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          Text(relTime(serverStore.lastMessageTimeOf(session.id) ?? session.updated),
+          Text(relTime(session.updated),
               style: TextStyle(fontSize: 11.5, color: muted)),
         ],
       ),

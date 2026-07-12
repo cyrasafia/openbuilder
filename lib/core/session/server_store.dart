@@ -23,7 +23,6 @@ class ServerStore extends ChangeNotifier {
   final Map<String, SessionStatusValue> _statusMap = {};
   final Map<String, String> _lastMessage = {};
   final Map<String, ConversationStore> _conversations = {};
-  final Map<String, int> _lastMessageTime = {};
   bool connected = false;
   String? error;
 
@@ -48,17 +47,9 @@ class ServerStore extends ChangeNotifier {
   List<SessionModel> get sessions => List.unmodifiable(_sessions);
 
   Iterable<SessionModel> sortedSessions() {
-    final list = [..._sessions]
-      ..sort((a, b) =>
-          (lastMessageTimeOf(b.id) ?? b.updated)
-              .compareTo(lastMessageTimeOf(a.id) ?? a.updated));
+    final list = [..._sessions]..sort((a, b) => b.updated.compareTo(a.updated));
     return list;
   }
-
-  /// Timestamp (ms) of the last actual message, when known (captured during
-  /// preview backfill). `null` when not yet known, so callers fall back to the
-  /// session's `updated`.
-  int? lastMessageTimeOf(String id) => _lastMessageTime[id];
 
   SessionStatusValue statusOf(String id) =>
       _statusMap[id] ?? const SessionStatusValue('idle');
@@ -311,14 +302,9 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> _backfillPreview(String sid, ConversationStore conv) async {
     // After the conversation loads, surface its last message as the list preview
-    // (avoids bulk-proactive fetch but keeps viewed sessions informative), and
-    // record the last message's timestamp so the list sorts/renders by real
-    // message activity rather than the session's `updated` (which can be bumped
-    // by non-message events).
+    // (avoids bulk-proactive fetch but keeps viewed sessions informative).
     if (conv.messages.isEmpty) return;
     final last = conv.messages.last;
-    final t = last.info.created ?? 0;
-    if (t > 0) _lastMessageTime[sid] = t;
     var preview = '';
     for (var i = last.parts.length - 1; i >= 0; i--) {
       final dp = last.parts[i];
@@ -333,8 +319,8 @@ class ServerStore extends ChangeNotifier {
     if (preview.isNotEmpty) {
       _lastMessage[sid] =
           (last.info.role == 'user' ? '你: ' : '') + preview;
+      notifyListeners();
     }
-    notifyListeners();
   }
 
   void _upsertSession(SessionModel s) {
