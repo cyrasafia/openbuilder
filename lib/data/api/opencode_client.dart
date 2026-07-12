@@ -151,6 +151,24 @@ class OpencodeClient {
     );
   }
 
+  /// `POST /session/:id/shell` — run a shell command and return immediately.
+  /// Mirrors `prompt_async`: the command is executed by an agent and its
+  /// output streams back through SSE. [command] is the raw command without
+  /// the leading `!`; [agent] defaults to the primary `build` agent.
+  Future<void> shell(
+    String sessionId, {
+    String? directory,
+    String? agent,
+    required String command,
+  }) async {
+    await dio.post(
+      '/session/$sessionId/shell',
+      queryParameters:
+          directory != null ? {'directory': directory} : null,
+      data: {'agent': agent ?? 'build', 'command': command},
+    );
+  }
+
   /// `POST /session/:id/abort` — stop a running session.
   Future<void> abort(String sessionId, {String? directory}) async {
     await dio.post(

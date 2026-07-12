@@ -203,14 +203,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (conv == null || client == null) return;
     _ctl.clear();
     setState(() => _cmdMode = false);
+    final directory = serverStore.sessionById(widget.sessionId)?.directory;
     try {
-      await client.prompt(
-        widget.sessionId,
-        directory: serverStore.sessionById(widget.sessionId)?.directory,
-        parts: [
-          {'type': 'text', 'text': text}
-        ],
-      );
+      if (text.startsWith('!')) {
+        // Shell command: strip the leading `!` and run via POST /shell.
+        final command = text.substring(1).trim();
+        if (command.isEmpty) return;
+        await client.shell(widget.sessionId,
+            directory: directory, command: command);
+      } else {
+        await client.prompt(
+          widget.sessionId,
+          directory: directory,
+          parts: [
+            {'type': 'text', 'text': text}
+          ],
+        );
+      }
       conv.setStatus('busy'); // optimistic; SSE will confirm/stream
     } catch (e) {
       if (mounted) {
