@@ -8,7 +8,9 @@ import '../../ui/widgets.dart';
 
 class ProjectDetailScreen extends StatelessWidget {
   final String projectId;
-  const ProjectDetailScreen({super.key, required this.projectId});
+  final String? directory;
+  const ProjectDetailScreen(
+      {super.key, required this.projectId, this.directory});
 
   @override
   Widget build(BuildContext context) {
@@ -16,29 +18,42 @@ class ProjectDetailScreen extends StatelessWidget {
       listenable: serverStore,
       builder: (context, _) {
         final project = serverStore.projectOf(projectId);
-        if (project == null) {
+        if (project == null && directory == null) {
           return Scaffold(
             appBar: AppBar(),
             body: const Center(child: Text('项目不存在')),
           );
         }
         final sessions = serverStore.sessions
-            .where((s) => s.projectID == projectId)
+            .where((s) =>
+                s.projectID == projectId &&
+                (directory == null || s.directory == directory))
             .toList()
           ..sort((a, b) => b.updated.compareTo(a.updated));
 
+        // A `global` project scoped to a single directory behaves like an
+        // ordinary single-worktree project (flat list, no section header).
+        final scopedTitle = directory == null
+            ? (project?.displayName ?? 'global')
+            : (directory!.isEmpty ? 'global' : directory!.split('/').last);
+        final scopedWorktree =
+            directory ?? (project?.worktree ?? '');
+
         return Scaffold(
-          appBar: AppBar(title: Text(project.displayName)),
+          appBar: AppBar(title: Text(scopedTitle)),
           body: ListView(
             children: [
-              _Header(project: project, sessionCount: sessions.length),
+              _Header(
+                  name: scopedTitle,
+                  worktree: scopedWorktree,
+                  sessionCount: sessions.length),
               const Divider(height: 1),
               if (sessions.isEmpty)
                 const Padding(
                   padding: EdgeInsets.all(32),
                   child: Center(child: Text('无活跃会话')),
                 )
-              else if (project.id == 'global')
+              else if (project?.id == 'global' && directory == null)
                 ..._groupedGlobal(context, sessions)
               else
                 ..._groupedByWorktree(context, sessions),
@@ -104,9 +119,13 @@ class ProjectDetailScreen extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  final ProjectModel project;
+  final String name;
+  final String worktree;
   final int sessionCount;
-  const _Header({required this.project, required this.sessionCount});
+  const _Header(
+      {required this.name,
+      required this.worktree,
+      required this.sessionCount});
 
   @override
   Widget build(BuildContext context) {
@@ -115,17 +134,17 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       child: Row(
         children: [
-          ProjectAvatar(name: project.displayName, icon: project.icon, size: 52),
+          ProjectAvatar(name: name, size: 52),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(project.displayName,
+                Text(name,
                     style: const TextStyle(
                         fontSize: 17, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
-                Text(project.worktree,
+                Text(worktree,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppTheme.mono.copyWith(fontSize: 12, color: muted)),

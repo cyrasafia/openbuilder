@@ -48,8 +48,10 @@ GoRouter buildRouter(ConnectionStore store) {
       ),
       GoRoute(
         path: '/project/:id',
-        builder: (_, s) =>
-            ProjectDetailScreen(projectId: s.pathParameters['id']!),
+        builder: (_, s) => ProjectDetailScreen(
+          projectId: s.pathParameters['id']!,
+          directory: s.uri.queryParameters['directory'],
+        ),
       ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => MainShell(shell: shell),
