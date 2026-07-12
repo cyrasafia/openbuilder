@@ -22,7 +22,16 @@
 2. **协议契合成本可控**：opencode 官方 JS SDK 本质是 OpenAPI 生成的薄封装 + fetch；用同一份 spec 给 Flutter **手写** Dart 客户端（与官方 SDK 同源契约），类型安全等价；生成器仅产 `.gen_ref/` 参考实现作一致性比对，不接入 app。
 3. **跨平台一致性**：少踩双端渲染差异的坑。
 
-备选 React Native + Expo（可复用官方 JS SDK、支持 OTA），但渲染流畅度兑现需更多调优。下方架构对两者通用，仅实现语言不同。
+  备选 React Native + Expo（可复用官方 JS SDK、支持 OTA），但渲染流畅度兑现需更多调优。下方架构对两者通用，仅实现语言不同。
+
+> **⚠️ 实现决策纪要（与原 spec / 早期设计偏差）**
+> 早期设计假设 `flutter_riverpod` + 生成 client + `isar` + `freezed`/`json_serializable` + `flutter_highlight`。实现时改为更轻的方案，**已落地且合理**，但 specs 长期未同步；本纪要做偏差索引，避免新人按旧文档走偏：
+> - **状态管理**：不用 Riverpod，改用 Flutter 原生 `ChangeNotifier` / `Listenable` / `ListenableBuilder`（`ConnectionStore` / `ServerStore` / `ConversationStore`）。理由：状态图简单、零额外依赖、构建更快。详见 §6。
+> - **API client**：不生成，手写 `OpencodeClient`（见 §3.1）；生成器仅产 `.gen_ref/` 参考。
+> - **本地存储**：无 `isar` / SQLite；纯在线瘦客户端，连接配置仅存 `flutter_secure_storage`。离线回看未实现（见 plan §3）。
+> - **模型**：不引入 `freezed` / `json_serializable`，手写 `fromJson`（`lib/domain/models.dart`）。
+> - **语法高亮**：不引入 `flutter_highlight` / `highlight.js`；diff / 代码块用 `flutter_markdown` 默认样式。
+> - **Repository 层**：未抽独立 `repositories/` 包；`OpencodeClient` 提供原始方法，`*Store` 直接调用并聚合状态（§4.2 的 `Repo.*` 仅为规划命名）。
 
 ---
 
@@ -33,27 +42,23 @@ openbuilder/
 ├─ docs/specs.md                  # 本文档
 ├─ opencode_openapi.json           # opencode OpenAPI spec（v2，pin 版本；来源见 §3.1）
 ├─ lib/
-│  ├─ main.dart
-│  ├─ app.dart                     # MaterialApp / 主题 / 路由
+│  ├─ main.dart                    # 入口
+│  ├─ app_state.dart               # 全局单例（connectionStore/serverStore/themeMode）+ wireServerStore()
+│  ├─ app_router.dart              # go_router 路由表
 │  ├─ core/
-│  │  ├─ connection/               # ConnectionProfile 模型 + ConnectionStore
+│  │  ├─ connection/               # ConnectionProfile 模型 + ConnectionStore（ChangeNotifier）
 │  │  ├─ net/                      # dio 工厂、basic auth 拦截器、baseUrl
-│  │  ├─ sse/                      # SseClient（长连接、解析、重连、事件总线）
-│  │  └─ result/                   # sealed Result/ApiError 包装
+│  │  ├─ sse/                      # SseClient（长连接、解析、重连、事件分发）
+│  │  └─ session/                  # ServerStore + ConversationStore（均 ChangeNotifier）
 │  ├─ data/
-│  │  ├─ api/                      # 手写 Dart client（对齐 v2 spec，勿手改）
-│  │  ├─ repositories/             # SessionRepo/ProjectRepo/FileRepo/EventRepo...
-│  │  └─ storage/                  # Isar(会话快照) + secure_storage(连接配置)
-│  ├─ domain/                      # 纯模型与映射（DTO→domain）
+│  │  └─ api/                      # 手写 Dart client（对齐 v2 spec，勿手改）
+│  ├─ domain/                      # 纯模型与 fromJson 映射（手写，无代码生成）
 │  ├─ features/
-│  │  ├─ servers/                  # 添加/编辑/发现/连接服务器
-│  │  ├─ worktrees/                # 项目(worktree) 列表 + 分支 + 切换
-│  │  ├─ sessions/                 # 会话列表 + 状态
-│  │  ├─ conversation/             # 流式对话 + todo 进度 + 权限
-│  │  ├─ compose/                  # 发消息 / 命令 / shell
-│  │  ├─ diff/                     # 只读 diff 查看器
-│  │  ├─ files/                    # 文件树 + 内容阅读 + 搜索
-│  │  └─ permissions/              # 权限响应（卡片/通知）
+│  │  ├─ servers/                  # 欢迎 / 添加 / 编辑 / 发现 / 连接服务器
+│  │  ├─ shell/                    # MainShell + 会话 Tab + 项目 Tab + 设置 Tab
+│  │  ├─ projects/                 # 项目详情（按工作区分段会话）
+│  │  ├─ conversation/             # 流式对话 + todo 进度 + 权限 + compose + 命令 + shell
+│  │  └─ files/                    # Diff 列表/详情 + 文件树/内容/搜索
 │  └─ ui/                          # 主题、代码块、markdown、diff 组件
 ├─ test/                           # 单元 + widget + golden
 ├─ tool/gen_client.sh              # 刷新 pin 住 spec（--generate 仅产 .gen_ref/ 参考）
@@ -68,15 +73,14 @@ openbuilder/
 |---|---|
 | HTTP | `dio` |
 | 路由 | `go_router` |
-| 状态管理 | `flutter_riverpod`（`riverpod_annotation` 代码生成） |
-| 本地数据库 | `isar`（会话快照/离线） |
+| 状态管理 | Flutter 原生 `ChangeNotifier` / `ListenableBuilder`（无第三方状态库） |
 | 安全存储 | `flutter_secure_storage`（连接配置/口令） |
 | mDNS 发现 | `bonsoir`（iOS Bonjour + Android NSD） |
-| 语法高亮 | `flutter_highlight`（highlight.js 主题） |
-| Markdown | `flutter_markdown` + 自定义 code builder |
+| Markdown | `flutter_markdown`（默认 code builder，无独立高亮库） |
 | Diff | 自实现 unified diff 解析（基于 `FileContent.patch.hunks` 或 `FileDiff`） |
-| 通知 | `flutter_local_notifications` |
-| 模型代码生成 | `freezed` / `json_serializable` |
+| 通知 | `flutter_local_notifications`（Phase 3 待引入，尚未依赖） |
+| 模型 | 手写 `fromJson`（无 `freezed` / `json_serializable`） |
+| 本地数据库 | 无（纯在线瘦客户端；离线回看未实现，见 plan §3） |
 
 ### 3.1 API 客户端 / SDK 策略
 
@@ -112,7 +116,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 
 ### 4.2 端点映射表
 
-| 用途 | HTTP | Repository 方法 | 说明 / worktree 作用域 |
+| 用途 | HTTP | 实现（client / store） | 说明 / worktree 作用域 |
 |---|---|---|---|
 | 健康检查 | `GET /global/health` | `ServerRepo.health()` | 连接测试，返回版本 |
 | 列 worktree | `GET /project?directory=` | `ProjectRepo.list(dir)` | `Project.worktree` |
@@ -138,6 +142,8 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 | 实时事件 | `GET /event`（SSE） | `EventRepo.stream(dir)` | 首事件 `server.connected` |
 | 全局事件 | `GET /global/event`（SSE） | `EventRepo.globalStream()` | 跨实例，可选 |
 
+> 表中 `Repo.*` 为规划命名，实际未抽独立 `repositories/` 包：原始方法由手写 `OpencodeClient` 提供，`ServerStore` / `ConversationStore`（ChangeNotifier）直接调用并聚合状态。
+
 ---
 
 ## 5. SSE 与实时进度（核心）
@@ -147,7 +153,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 - 鉴权头与 baseUrl 复用 `core/net` 的 dio 实例（带可选 basic auth）
 - 自动重连：指数退避（1→30s 上限），重连后重发 `Last-Event-ID`
 - 生命周期：app 进前台→连；进后台→保持 30s 后断（省电），回前台→重连 + 全量对账
-- 事件经 Riverpod `StreamProvider<OpencodeEvent>` 分发到各 feature
+- 事件由 `ServerStore` / `ConversationStore`（ChangeNotifier）直接处理并 `notifyListeners()`，各 feature 用 `ListenableBuilder` 订阅更新
 
 ### 5.1 事件 → UI 更新映射
 
@@ -170,16 +176,18 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 
 ---
 
-## 6. 状态管理（Riverpod）
+## 6. 状态管理（ChangeNotifier，无第三方状态库）
 
-- `connectionProvider` — 当前激活的 `ConnectionProfile`（host/port/可选凭据/当前 directory）
-- `dioProvider(baseUrl, auth)` → `apiClientProvider` — 手写客户端单例
-- `sseStreamProvider` — `StreamProvider<OpencodeEvent>`，依赖 connectionProvider，断线时 `AsyncError`
-- `projectsProvider`、`currentWorktreeProvider`、`sessionsProvider(dir)`、`sessionStatusProvider`
-- `conversationProvider(sessionId)` — 合并 `GET /message` 初值 + SSE 增量（`AsyncNotifier`，内部维护 parts 索引）
-- `todosProvider(sessionId)`、`sessionDiffProvider(sessionId, message?)`、`permissionQueueProvider`
+不用 Riverpod。全局状态放在少量 `ChangeNotifier` 单例里，feature 用 `ListenableBuilder` 订阅：
 
-**切换服务器 / worktree**：改 `connectionProvider` 的 `directory` → `ref.invalidate` 下游 provider → 自动重取。
+- `connectionStore`（`core/connection/`）— 当前激活的 `ConnectionProfile` 列表 / 激活项
+- `serverStore`（`core/session/`）— 连接后持有 `OpencodeClient` + `SseClient`；聚合 `projects` / `sessions` / `statusMap` / `lastMessage`，并 `notifyListeners()` 下发事件
+- `conversationStore`（per-session，`core/session/`）— 单个会话的消息流 / todo / 权限 / 草稿状态，由 `ServerStore.conversationFor(id)` 懒创建并缓存
+- `themeMode`（`ValueNotifier<ThemeMode>`）— 主题跟随系统
+
+`lib/app_state.dart` 持有这些单例，并用 `wireServerStore()` 把 `connectionStore.active` 绑定到 `serverStore.connect`。
+
+**切换服务器 / worktree**：改 `connectionStore.active` → `serverStore` 重连并按 `directory` 重新拉取（触发 `notifyListeners`）；各 `ListenableBuilder` 自动重建。
 
 ---
 
@@ -212,7 +220,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 ## 9. Diff 查看器（只读）
 
 - 数据源：`FileDiff{file, before, after, additions, deletions}` 或 `FileContent.patch.hunks[]`
-- 渲染：`ListView.builder` 行级 diff（增绿/删红/行号），`flutter_highlight` 按扩展名选语法
+- 渲染：`ListView.builder` 行级 diff（增绿/删红/行号），代码块用 `flutter_markdown` 默认等宽样式（无独立高亮库）
 - 布局：默认「堆叠」（手机），横屏/大屏自动「分栏」；顶部统计 `+N / -M`、文件切换 chip
 - 性能：仅渲染可视区，大 diff 按文件懒加载；不做语法树分析（够用即止）
 
@@ -232,14 +240,14 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 
 - 统一 `ApiResult<T>`（sealed：`Ok / NetError / HttpError / Unauthorized / Parse`）
 - SSE 断线：状态条提示「重连中 (n)…」，重连后**对账**（重拉 `session/status`、`todos`、当前会话 `message`）
-- 离线：Isar 缓存最近 N 条会话快照，无网时只读回看（顶部「离线」横幅）
+- 离线：当前未实现本地缓存（纯在线瘦客户端）；Phase 3 计划做弱网对账 + 离线只读回看（见 plan §3）
 
 ---
 
 ## 12. 主题
 
 - Material 3，跟随系统深浅色；暗色为主（代码阅读友好）
-- 代码主题复用 highlight.js（如 `github-dark`），与 opencode TUI 配色呼应（非必需）
+- 代码块沿用 `flutter_markdown` 默认等宽样式（无 `highlight.js` 依赖）
 
 ---
 
