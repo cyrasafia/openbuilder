@@ -135,17 +135,19 @@ class _SessionTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 11.5, color: muted)),
               ),
-              const SizedBox(width: 8),
-              Icon(Icons.call_split, size: 12, color: muted),
-              const SizedBox(width: 3),
-              Expanded(
-                child: Text(
-                  worktreeLabel,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTheme.mono.copyWith(fontSize: 11.5, color: muted),
+              if (worktreeLabel.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Icon(Icons.call_split, size: 12, color: muted),
+                const SizedBox(width: 3),
+                Expanded(
+                  child: Text(
+                    worktreeLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTheme.mono.copyWith(fontSize: 11.5, color: muted),
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ],

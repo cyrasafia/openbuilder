@@ -54,19 +54,33 @@ class ServerStore extends ChangeNotifier {
   }
 
   String projectDisplayOf(SessionModel s) {
-    if (s.projectID == 'global') return 'global';
+    if (s.projectID == 'global') {
+      return s.dirName.isEmpty ? 'global' : s.dirName;
+    }
     return projectOf(s.projectID)?.displayName ??
         (s.dirName.isNotEmpty
             ? s.dirName
             : 'project-${s.projectID.substring(0, 8)}');
   }
 
-  /// Worktree/directory name to show for a session.
+  /// Worktree/directory name to show for a session, or '' when it should be
+  /// hidden: single-worktree projects (no ambiguity) and the `global` project
+  /// where the folder name is already shown as the project name.
   String worktreeDisplayOf(SessionModel s) {
-    final p = projectOf(s.projectID);
-    if (p != null && p.id != 'global') return p.worktreeName;
-    if (s.directory.isNotEmpty) return s.dirName;
-    return 'global';
+    if (s.projectID == 'global') return '';
+    if (_hasMultipleWorktrees(s.projectID)) return s.dirName;
+    return '';
+  }
+
+  bool _hasMultipleWorktrees(String projectID) {
+    final dirs = <String>{};
+    for (final s in _sessions) {
+      if (s.projectID == projectID && s.directory.isNotEmpty) {
+        dirs.add(s.directory);
+        if (dirs.length > 1) return true;
+      }
+    }
+    return false;
   }
 
   ConversationStore? conversationFor(String sessionId) {
