@@ -5,6 +5,7 @@ import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 class ConversationScreen extends StatefulWidget {
   final String sessionId;
@@ -157,14 +158,37 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _part(DisplayPart p, {required bool user}) {
     switch (p.type) {
       case 'text':
+        final baseColor =
+            user ? const Color(0xFFD8F3E0) : Theme.of(context).colorScheme.onSurface;
         return Padding(
           padding: const EdgeInsets.only(top: 4),
-          child: SelectableText(
-            p.text,
-            style: TextStyle(
-              fontSize: 14,
-              height: 1.45,
-              color: user ? const Color(0xFFD8F3E0) : null,
+          child: MarkdownBody(
+            data: p.text,
+            selectable: true,
+            styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+              p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
+              pPadding: const EdgeInsets.only(bottom: 6),
+              code: TextStyle(
+                fontSize: 13,
+                fontFamily: 'monospace',
+                color: baseColor,
+                backgroundColor: const Color(0xFF23272E),
+              ),
+              codeblockDecoration: BoxDecoration(
+                color: const Color(0xFF161B22),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF30363D)),
+              ),
+              codeblockPadding: const EdgeInsets.all(12),
+              listBullet: TextStyle(color: baseColor),
+              blockquote: TextStyle(color: baseColor, fontStyle: FontStyle.italic),
+              blockquoteDecoration: BoxDecoration(
+                border: Border(
+                  left: BorderSide(
+                    color: Theme.of(context).colorScheme.outline, width: 3),
+                ),
+              ),
+              blockquotePadding: const EdgeInsets.only(left: 12),
             ),
           ),
         );
