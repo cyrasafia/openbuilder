@@ -1,15 +1,15 @@
-# opencode Mobile — 分阶段执行计划 (v0.1)
+# opencode Mobile — 分阶段执行计划 (v0.2)
 
-> 配套 [specs.md](./specs.md) 的整体设计，本文聚焦「怎么按阶段做出来」。设计与本计划保持同步：设计变更先改 `specs.md`，阶段与里程碑改本文。
+> 配套 [specs.md](./specs.md)（整体设计）与 [frontend.md](./frontend.md)（前端/页面）。设计变更先改 specs/frontend，阶段与里程碑改本文。
 
 ## 0. 阶段总览
 
-| 阶段 | 目标 | 一句话产出 |
-|---|---|---|
-| **Phase 0** 脚手架 | 地基：工程、codegen、连接 | 能连一台服务器、调通 `/global/health` |
-| **Phase 1** 只读核心 | 「看进度」 | worktree 切换 + 实时会话/任务进度 |
-| **Phase 2** 交互 | 「下指令 + 看 diff/文档」 | 发消息/命令 + 只读 diff/文件 |
-| **Phase 3** 打磨 | 可日常使用 | worktree 向导、通知、发布 |
+| 阶段 | 目标 | 关键页面（见 frontend §3） | 一句话产出 |
+|---|---|---|---|
+| **Phase 0** 脚手架 | 地基：工程、codegen、连接 | 欢迎页 §3.10、服务器配置页 §3.11、主壳、设置(服务器状态/管理) §3.3 | 能连一台服务器、调通 `/global/health` |
+| **Phase 1** 只读核心 | 「看进度」 | 会话 Tab §3.1、项目 Tab §3.2、项目详情 §3.5、会话详情(只读) §3.4、设置 §3.3 | 实时会话/任务进度 + 项目/logo |
+| **Phase 2** 交互 | 「下指令 + 看 diff/文档」 | 会话详情(compose+操作) §3.4、Diff 列表 §3.6、Diff 详情 §3.7、文件列表 §3.8、文件查看 §3.9 | 发指令 + 只读 diff/文件 |
+| **Phase 3** 打磨 | 可日常使用 | （无新页）worktree 新建向导 | 通知、离线、发布 |
 
 每个阶段都设「完成标准（DoD）」——满足才进下一阶段。
 
@@ -17,34 +17,49 @@
 
 ## 1. Phase 0 — 脚手架（地基）
 
+### 本阶段页面
+- **§3.10 欢迎页**：无服务器时启动重定向，CTA「添加服务器」
+- **§3.11 服务器配置页**：新增/编辑（名称/地址/用户名/密码）+ 测试连接
+- **主壳 MainShell**：底部 3 Tab 框架，各 Tab 占位空态
+- **§3.3 设置 Tab（最小）**：服务器状态卡（版本）+ 服务器管理入口 + 服务器列表页
+
 ### 工作项
-1. `flutter create`，配 lint/CI，建目录骨架（见 specs §2）
-2. 拉取 OpenAPI → `tool/gen_client.sh` 生成 Dart client，验证 `GET /global/health`
+1. `flutter create`，配 lint/CI，建目录骨架（specs §2）
+2. OpenAPI / v2 SDK → Dart client codegen，验证 `GET /global/health`
 3. `ConnectionProfile` + `flutter_secure_storage`，dio 工厂 + basic auth 拦截器
-4. `bonsoir` mDNS 发现页 + 手填连接页
-5. 健康检查 + 版本展示
+4. 欢迎页（`connectionStore` 为空时重定向）+ 服务器配置页（表单 + 测试连接）
+5. 主壳 + 设置 Tab 服务器状态卡（显示 opencode 版本）
+6. `bonsoir` mDNS 发现，接入服务器配置页
 
 ### 完成标准 (DoD)
 - [ ] `flutter analyze` 0 error；CI 绿
-- [ ] 手填地址 / mDNS 两种方式都能连上一台真实 `opencode serve`
-- [ ] 健康页显示服务器版本（来自 `/global/health`）
+- [ ] 首次启动 → 欢迎页 → 添加服务器 → 落地主界面（3 Tab 空态）
+- [ ] 能新增/编辑/测试连接一台真实 `opencode serve` 并显示版本
 - [ ] codegen 可一键重生且与 spec 一致
 
 ---
 
 ## 2. Phase 1 — 只读核心（「看进度」）
 
+### 本阶段页面
+- **§3.1 会话 Tab**：列表（标题/状态/预览/时间/项目›工作区），只读
+- **§3.2 项目 Tab**：项目列表（名称/路径/工作区数/会话数 + logo）
+- **§3.5 项目详情**：未存档会话，按工作区分段
+- **§3.4 会话详情（只读）**：todo 进度 + 消息流 + 流式；**暂不含** compose/Diff/文件入口
+- **§3.3 设置 Tab 完整化**：服务端设置只读展示 + 客户端设置（语言/主题）
+
 ### 工作项
-6. `SseClient`（解析/重连/`Last-Event-ID`）+ 事件总线（specs §5）
-7. Project/Worktree 列表 + 分支 + 切换（`directory` 驱动，specs §7）
-8. 会话列表 + 状态徽标（SSE `session.status` 实时）
-9. 会话详情：`GET /message` 初值 + SSE `message.part.updated(delta)` 流式
-10. Todo 进度（`todo.updated`）+ 消息元数据 + token/成本
-11. 权限响应卡（`permission.updated` + `POST` 回复）— *轻量，提前到 P1*
+7. `SseClient`（解析/重连/`Last-Event-ID`）+ 事件总线（specs §5）
+8. 会话 Tab：`GET /session` 列表 + `session.updated`/`session.status` 增量；`lastTime` 用 `time.updated`（abort 补戳）；`lastMessage` 合成（frontend §2.2 D1–D4：文本类 part 出预览、工具占位、仅 `message.updated` 刷新、不主动拉）
+9. 项目 Tab：`GET /project`（**v2 类型** `name`/`icon`）聚合（`id`；`global`→按 directory）；`ProjectAvatar` 取 `override ?? url ?? 首字母+哈希色`
+10. 项目详情：按工作区分段
+11. 会话详情（只读）：`GET /message` 初值 + `message.part.updated(delta)` 流式 + `todo.updated` 进度 + token/成本
+12. 权限响应卡（`permission.updated` + `POST` 回复）— *提前到 P1*
 
 ### 完成标准 (DoD)
-- [ ] SSE 前台稳定收事件，断网后回前台自动重连并对账
-- [ ] 可在 ≥2 个 worktree 间切换，会话列表随之过滤
+- [ ] SSE 前台稳定收事件，断网回前台自动重连并对账
+- [ ] 会话列表实时更新（状态/预览/排序），预览仅消息完成刷新、不抖动
+- [ ] 项目 Tab 能显示远端项目名/logo（服务端开启 `experimentalIconDiscovery` 时）
 - [ ] 会话进行中能看到流式输出 + todo 实时变化
 - [ ] 权限请求能就地 allow/deny 并生效
 
@@ -52,27 +67,38 @@
 
 ## 3. Phase 2 — 交互（「下指令 + 看 diff/文档」）
 
+### 本阶段页面
+- **§3.4 会话详情（补全）**：底部 compose 栏 + 顶栏操作（文件/Diff/终止/更多）
+- **§3.6 Diff 列表**：文件 + `+N -M`
+- **§3.7 Diff 详情**：单文件行级 diff ⇄ 文件查看（互跳）
+- **§3.8 文件列表**：浏览器式逐层 + 面包屑 + 搜索
+- **§3.9 文件查看**：完整内容只读
+
 ### 工作项
-12. Compose：发消息（`prompt_async` + SSE）、`/command` 选择器、`!shell`
-13. Diff 查看器（只读，堆叠/分栏，specs §9）
-14. 文件浏览/阅读/搜索（`/file`、`/file/content`、`/find*`）
-15. abort/delete/share/revert 等会话操作
+13. compose：发消息（`prompt_async` + SSE）、`/command` 选择器、`!shell`
+14. Diff 列表（`GET /session/:id/diff`）+ Diff 详情（行级，堆叠/分栏）
+15. 文件列表（`GET /file` 逐层 + `/find/file`）+ 文件查看（`GET /file/content`）；Diff 详情 ⇄ 文件查看互切
+16. 会话操作：abort / delete / share / revert / archive（归档=`PATCH time.archived`，区别于 delete）
 
 ### 完成标准 (DoD)
 - [ ] 能发消息并看到完整流式回复；`/命令` 与 `!shell` 可用
-- [ ] diff 视图行级渲染流畅（大 diff 不卡，specs §15 对策到位）
-- [ ] 能浏览文件树、阅读文件、按名/内容搜索
-- [ ] 会话级操作（中止/删除/分享/回滚）均可用
+- [ ] Diff 列表→详情；同文件 Diff 详情 ⇄ 完整查看可互切
+- [ ] 能逐层浏览文件、阅读完整文件、按名搜索
+- [ ] 会话操作均可用；归档与删除语义正确（归档可恢复、删除清数据）
+- [ ] 大 diff 行级渲染流畅（`ListView.builder` + 懒加载）
 
 ---
 
 ## 4. Phase 3 — 打磨
 
+### 本阶段页面
+- （无新页面）worktree 新建向导（弹窗/流程）
+
 ### 工作项
-16. worktree 新建向导（经 `/shell` 跑 `git worktree add`）
-17. 前台本地通知（`flutter_local_notifications`）
-18. 弱网对账优化 + Isar 离线只读回看
-19. 双端打包发布（签名、TestFlight/Play 或自建渠道）
+17. worktree 新建向导（经 `/shell` 跑 `git worktree add`）
+18. 前台本地通知（`flutter_local_notifications`）
+19. 弱网对账优化 + Isar 离线只读回看
+20. 双端打包发布（签名、TestFlight/Play 或自建渠道）
 
 ### 完成标准 (DoD)
 - [ ] worktree 可在端内创建并立即可用
@@ -83,7 +109,7 @@
 
 ## 5. 测试 / CI
 
-- **单元**：repositories（`http_mock_adapter` 模拟 dio）、SSE 解析器（喂样本字节流）、diff 解析器
+- **单元**：repositories（`http_mock_adapter` 模拟 dio）、SSE 解析器（喂样本字节流）、diff 解析器、`lastMessage` 合成器
 - **Widget**：会话列表、对话流、diff 视图 golden test
 - **集成**：`integration_test` 连本地 `opencode serve` 跑冒烟（CI 起 `ghcr.io/anomalyco/opencode`）
 - **CI 门禁**：`flutter analyze` + `flutter test` + codegen 一致性校验
@@ -95,6 +121,7 @@
 | 风险 | 对策 |
 |---|---|
 | OpenAPI spec 变更打破生成 client | CI pin spec 版本 + 兼容性测试；按 opencode 版本号对齐 |
+| **v1 SDK 类型滞后**（缺 `name/icon/sandboxes`、`time.archived`） | 用 `@opencode-ai/sdk/v2/client` 或手动补类型；勿只信 `types.gen.ts` |
 | SSE 后台断连丢事件 | 回前台对账（重拉 status/todo/messages），非纯依赖增量 |
 | 生成 client 对 `?directory=` 透传不全 | Repository 显式带 `directory`，必要时手写少量端点 |
 | iOS 后台网络限制 | 前台为主；后台仅本地通知，不做长连接保活 |
@@ -107,3 +134,4 @@
 - OTA / 分发渠道（TestFlight / Play / 自建）
 - 是否接 FCM 做真后台推送（需网关，超出「基本 HTTP」范围，默认不做）
 - 代码生成器选型最终敲定（`openapi-generator dart-dio` vs Dart 版 `heyapi` 适配，优选与官方同源者）
+- 远端项目 logo 在 `experimentalIconDiscovery` 默认关时的兜底策略（首字母+哈希已作为回退）

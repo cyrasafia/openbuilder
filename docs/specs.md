@@ -183,17 +183,18 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 
 ## 8. 屏幕 / 导航
 
+类 IM 形态：底部 3 Tab —— **会话 / 项目 / 设置**，详情页 push 覆盖。
+
 ```
-Servers(首页)
- └─ Server
-     ├─ Worktrees(默认) ── Sessions ── Conversation
-     │                                 ├─ Todo 进度
-     │                                 ├─ Diff（只读）
-     │                                 └─ Files（浏览/阅读）
-     ├─ (FAB) Compose：发消息 / /命令 / !shell
-     └─ 权限卡（覆盖层 + 通知）
-底部 Tab: 会话 / 文件 / (设置)
+底部 Tab
+ ├─ 会话 (Sessions)   —— 全局会话列表（跨项目/工作区，按时间倒排）
+ │    └─ 会话详情 (Conversation): 任务进度 / 消息流 / diff / 指令输入
+ ├─ 项目 (Projects)   —— 所有项目（仓库）列表
+ │    └─ 项目详情 (Project): 未存档会话，开启工作区时按工作区分段
+ └─ 设置 (Settings): 服务器状态 / 服务器管理 / 服务端设置 / 客户端设置 / 关于
 ```
+
+> 页面布局、列表项、组件、交互与状态等细节见 [frontend.md — 前端设计规格](./frontend.md)。
 
 ---
 
