@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -91,6 +92,14 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
 
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    // Known platform limit: on web, EventSource can't send auth headers, so a
+    // non-empty basic-auth password makes the SSE stream 401 and live updates
+    // break (mobile uses the IO transport + dio header, unaffected). The app
+    // targets mobile; this is just a fallback heads-up when used on web.
+    if (kIsWeb && _password.text.isNotEmpty) {
+      final proceed = await _warnWebBasicAuth();
+      if (!proceed) return;
+    }
     setState(() => _saving = true);
     try {
       final p = _profileFromFields(id: widget.id);
@@ -105,6 +114,38 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  Future<bool> _warnWebBasicAuth() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('Web 端 basic auth 限制'),
+          ],
+        ),
+        content: const Text(
+          '当前在 Web 端运行，且服务器密码非空。浏览器的 EventSource 无法携带鉴权头，'
+          '实时事件流（SSE）会因 401 而失效，会话 / 任务进度不会自动刷新。\n\n'
+          '移动端不受影响（走 IO 传输 + dio 鉴权头）。若仅用于本地空密码测试可忽略；'
+          '否则建议在移动端使用本应用。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('仍要保存'),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
   }
 
   Future<void> _delete() async {
