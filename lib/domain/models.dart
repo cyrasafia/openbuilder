@@ -80,6 +80,7 @@ class SessionModel {
   final int created;
   final int updated;
   final int? archived;
+  final String? parentID;
   final double cost;
   final Tokens tokens;
 
@@ -91,6 +92,7 @@ class SessionModel {
     required this.created,
     required this.updated,
     this.archived,
+    this.parentID,
     this.cost = 0,
     this.tokens = const Tokens(),
   });
@@ -105,6 +107,7 @@ class SessionModel {
       created: _i(time['created']),
       updated: _i(time['updated']),
       archived: time['archived'] == null ? null : _i(time['archived']),
+      parentID: j['parentID']?.toString(),
       cost: _d(j['cost']),
       tokens: j['tokens'] is Map
           ? Tokens.fromJson(j['tokens'] as Map<String, dynamic>)

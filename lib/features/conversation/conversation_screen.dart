@@ -335,15 +335,17 @@ class _FooterPanelState extends State<_FooterPanel> {
   @override
   Widget build(BuildContext context) {
     final children = <Widget>[];
+    // Permission cards take priority (actionable) and render above the todo
+    // card when both are present.
+    for (final p in widget.permissions) {
+      children.add(_PermissionCard(permission: p, store: widget.store));
+    }
     if (widget.todos.isNotEmpty) {
       children.add(_TodoCard(
         todos: widget.todos,
         collapsed: !_todoExpanded,
         onToggle: () => setState(() => _todoExpanded = !_todoExpanded),
       ));
-    }
-    for (final p in widget.permissions) {
-      children.add(_PermissionCard(permission: p, store: widget.store));
     }
     return Container(
       decoration: BoxDecoration(

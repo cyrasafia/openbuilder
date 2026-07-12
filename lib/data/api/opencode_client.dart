@@ -17,13 +17,6 @@ class HealthInfo {
       );
 }
 
-/// Paginated response from `GET /api/session`.
-class ApiSessionList {
-  final List<SessionModel> sessions;
-  final String? nextCursor;
-  const ApiSessionList({required this.sessions, this.nextCursor});
-}
-
 /// Thin, hand-written typed client for the opencode HTTP API.
 ///
 /// Spec pinned at `opencode_openapi.json` (see `tool/gen_client.sh`); endpoints
@@ -53,23 +46,15 @@ class OpencodeClient {
       _getModels('/session', SessionModel.fromJson);
 
   /// `GET /session?directory=<path>` — sessions scoped to one project directory.
-  Future<List<SessionModel>> sessionsForDirectory(String directory) async {
-    final r = await dio.get<dynamic>('/session',
-        queryParameters: {'directory': directory});
+  /// Returns unarchived sessions by default (opencode's authoritative archive
+  /// filtering), unlike `/api/session` which under-reports `time.archived`.
+  Future<List<SessionModel>> sessionsForDirectory(String directory,
+      {int limit = 1000}) async {
+    final r = await dio.get<dynamic>('/session', queryParameters: {
+      'directory': directory,
+      'limit': limit,
+    });
     return _getModelsFromData(r.data, SessionModel.fromJson);
-  }
-
-  /// `GET /api/session` — paginated global session list (all projects).
-  Future<ApiSessionList> sessionsAll({String? cursor}) async {
-    final q = cursor != null ? {'cursor': cursor} : null;
-    final r = await dio.get<dynamic>('/api/session', queryParameters: q);
-    final m = _asMap(r.data);
-    final data = _getModelsFromData(m['data'], SessionModel.fromJson);
-    final cur = m['cursor'];
-    return ApiSessionList(
-      sessions: data,
-      nextCursor: cur is Map ? cur['next']?.toString() : null,
-    );
   }
 
   /// Metadata for a single session.

@@ -143,19 +143,26 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Aggregate sessions across all projects via `/api/session` (paginated).
-  /// Archived sessions (`time.archived` set) are skipped so the UI only shows
-  /// active conversations; the safety cap counts active sessions only.
+  /// Aggregate sessions across all projects. Uses `GET /session?directory=<dir>`
+  /// per project (which returns only unarchived sessions per opencode's own
+  /// archive semantics — `/api/session` under-reports `time.archived`) plus the
+  /// global project's sessions. Subtask/child sessions (`parentID` set) and
+  /// archived sessions are skipped, matching the opencode web UI.
   Future<List<SessionModel>> _fetchAllSessions() async {
     final all = <String, SessionModel>{};
-    String? cursor;
-    do {
-      final page = await client!.sessionsAll(cursor: cursor);
-      for (final s in page.sessions) {
-        if (s.archived == null) all[s.id] = s;
+    for (final p in _projects) {
+      List<SessionModel> list;
+      if (p.id == 'global') {
+        list = await client!.sessions();
+      } else {
+        list = await client!.sessionsForDirectory(p.worktree);
       }
-      cursor = page.nextCursor;
-    } while (cursor != null && all.length < 200); // safety cap
+      for (final s in list) {
+        if (s.archived != null) continue; // archived
+        if (s.parentID != null) continue; // subtask / child session
+        all[s.id] = s;
+      }
+    }
     return all.values.toList();
   }
 
@@ -299,8 +306,8 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _upsertSession(SessionModel s) {
-    // Drop archived sessions from the active list when they get archived live.
-    if (s.archived != null) {
+    // Drop archived sessions and subtask/child sessions from the active list.
+    if (s.archived != null || s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
       return;
     }
