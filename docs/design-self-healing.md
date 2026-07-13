@@ -193,7 +193,7 @@ ConversationStore? conversationFor(String sessionId, {bool force = false}) {
 
 ## 复审注释（Issue D — force reload 落点）
 
-> 评审结论：**采纳项**——实现时须把强制 reload 从「每次 build」收敛为「每次打开一次」。正文 Option B 语义正确，仅落点需调整。正文未改动。
+> 评审结论：**采纳**——按 Issue D 实现。正文已整合（五层 #5、生命周期、关键设计决策「为什么 force reload 要用一次性 guard？」）。以下保留评审原始时间线与代码供参考。
 
 ### 问题：`force: true` 放在 `build()` 会随按键重复触发
 
