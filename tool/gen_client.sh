@@ -6,7 +6,7 @@
 # unions, SSE). Off-the-shelf `openapi-generator -g dart-dio` produces ~8k
 # analyzer warnings (built_value boilerplate). The app therefore uses a
 # hand-written typed client in lib/data/api/, added per v2 types. Final
-# generator choice is deferred (plan.md §7). This script keeps the spec pinned
+# generator choice is deferred (plan-overview.md §7). This script keeps the spec pinned
 # and the regeneration capability available.
 #
 # Usage:

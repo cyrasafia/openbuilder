@@ -39,7 +39,7 @@
 
 ```
 openbuilder/
-├─ docs/specs.md                  # 本文档
+├─ docs/spec-overview.md          # 本文档
 ├─ opencode_openapi.json           # opencode OpenAPI spec（v2，pin 版本；来源见 §3.1）
 ├─ lib/
 │  ├─ main.dart                    # 入口
@@ -217,7 +217,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
  └─ 设置 (Settings): 服务器状态 / 服务器管理 / 服务端设置 / 客户端设置 / 关于
 ```
 
-> 页面布局、列表项、组件、交互与状态等细节见 [frontend.md — 前端设计规格](./frontend.md)。
+> 页面布局、列表项、组件、交互与状态等细节见 [design-frontend.md — 前端设计规格](./design-frontend.md)。
 
 ---
 
@@ -255,4 +255,4 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 
 ---
 
-> 阶段划分、工作项、测试/CI、风险与待定决策见 [plan.md — 分阶段执行计划](./plan.md)。
+> 阶段划分、工作项、测试/CI、风险与待定决策见 [plan-overview.md — 分阶段执行计划](./plan-overview.md)。

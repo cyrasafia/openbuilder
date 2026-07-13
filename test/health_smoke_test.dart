@@ -3,7 +3,7 @@ import 'package:opencode_mobile/core/connection/connection_profile.dart';
 import 'package:opencode_mobile/core/net/dio_factory.dart';
 import 'package:opencode_mobile/data/api/opencode_client.dart';
 
-/// Hits the real local opencode server (plan.md §8). Skips if unreachable.
+/// Hits the real local opencode server (plan-overview.md §8). Skips if unreachable.
 void main() {
   test('health() reaches localhost:15120 (opencode / empty password)', () async {
     final profile = ConnectionProfile(

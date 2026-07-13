@@ -3,7 +3,7 @@ import 'package:opencode_mobile/core/connection/connection_profile.dart';
 import 'package:opencode_mobile/core/net/dio_factory.dart';
 import 'package:opencode_mobile/data/api/opencode_client.dart';
 
-/// Parses real opencode data shapes against the local server (plan.md §8).
+/// Parses real opencode data shapes against the local server (plan-overview.md §8).
 /// Skips silently if the server is unreachable.
 OpencodeClient? _client;
 

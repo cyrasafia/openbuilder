@@ -1,6 +1,6 @@
 # opencode Mobile — 前端设计规格 (Frontend Spec) v0.2
 
-> 配套 [specs.md](./specs.md)（整体设计）与 [plan.md](./plan.md)（阶段计划）。本文聚焦**前端信息架构、页面、组件与交互**。前后端不一致时，前端以本文为准，数据/协议以 specs.md 为准。
+> 配套 [spec-overview.md](./spec-overview.md)（整体设计）与 [plan-overview.md](./plan-overview.md)（阶段计划）。本文聚焦**前端信息架构、页面、组件与交互**。前后端不一致时，前端以本文为准，数据/协议以 spec-overview.md 为准。
 >
 > **v0.2 变更**：新增欢迎页/服务器配置页/文件列表/文件查看/Diff 拆分（列表+详情）；§9 待定项全部核实收敛（见 §9）。
 > **v0.2 更正**：项目图标/名称由服务端 `Project.icon{name,icon}` 经 `GET /project` 下发（desktop 据此显示远端 logo），更正早先"仅客户端本地"的结论（见 §2.2 / §9-3）。

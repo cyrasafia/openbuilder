@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Android release APK with an auto-incrementing build number.
 #
-# Versioning scheme (see docs/plan.md):
+# Versioning scheme (see docs/plan-overview.md):
 #   pubspec.yaml: version: A.B.C+N
 #     - A.B  = business version (only bumped on explicit request)
 #     - C    = build number (patch part of versionName), starts at 0, +1/build

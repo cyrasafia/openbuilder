@@ -1,6 +1,6 @@
 # opencode Mobile — 分阶段执行计划 (v0.2)
 
-> 配套 [specs.md](./specs.md)（整体设计）与 [frontend.md](./frontend.md)（前端/页面）。设计变更先改 specs/frontend，阶段与里程碑改本文。
+> 配套 [spec-overview.md](./spec-overview.md)（整体设计）与 [design-frontend.md](./design-frontend.md)（前端/页面）。设计变更先改 specs/frontend，阶段与里程碑改本文。
 
 ## 0. 阶段总览
 
