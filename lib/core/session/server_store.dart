@@ -385,12 +385,15 @@ class ServerStore extends ChangeNotifier {
 
   /// Fetch pending permissions via REST and route to cached conversations.
   /// SSE only pushes permission.asked at creation time — if the app wasn't
-  /// listening, the event is missed. This backfills on connect/reconnect.
+  /// listening, the event is missed. This backfills on connect/reconcile/resume.
   Future<void> _backfillPermissions() async {
     final c = client;
     if (c == null) return;
     final prev = Map.of(_pendingPermissions);
     _pendingPermissions.clear();
+    // Track which projects' REST succeeded so we only restore prev for
+    // failed ones (R-Perm-2: avoid resurrecting already-replied permissions).
+    final failedDirs = <String>{};
     for (final p in _projects) {
       if (p.worktree.isEmpty) continue;
       try {
@@ -399,11 +402,24 @@ class ServerStore extends ChangeNotifier {
           _pendingPermissions[perm.sessionID] = perm;
           _conversations[perm.sessionID]?.onPermission(perm);
         }
-      } catch (_) {}
+      } catch (_) {
+        failedDirs.add(p.worktree);
+      }
     }
-    // Preserve SSE-delivered permissions for sessions whose REST failed.
+    // Only restore SSE-delivered permissions whose session belongs to a
+    // project whose REST fetch failed — successful fetches are authoritative.
     for (final entry in prev.entries) {
-      _pendingPermissions.putIfAbsent(entry.key, () => entry.value);
+      final session = sessionById(entry.key);
+      final dir = session?.directory ?? '';
+      if (failedDirs.contains(dir) || dir.isEmpty) {
+        _pendingPermissions.putIfAbsent(entry.key, () => entry.value);
+      }
+    }
+    // R-Perm-1: notify if the permission map changed so list shield updates.
+    final changed = prev.length != _pendingPermissions.length ||
+        !prev.keys.toSet().containsAll(_pendingPermissions.keys);
+    if (changed) {
+      notifyListeners();
     }
   }
 
@@ -491,6 +507,7 @@ class ServerStore extends ChangeNotifier {
         break;
       case 'permission.asked':
       case 'permission.v2.asked':
+      case 'permission.updated': // compat fallback for older opencode versions
         final p = Permission.fromJson(ev.properties);
         _pendingPermissions[p.sessionID] = p;
         _conversations[p.sessionID]?.onPermission(p);
