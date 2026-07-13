@@ -46,8 +46,9 @@ echo "Building version ${new_ver}"
 
 # Env.
 export PATH="$HOME/development/flutter/bin:$PATH"
-export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/tmp/opencode/android-toolchain/sdk}"
-export JAVA_HOME="${JAVA_HOME:-/tmp/opencode/jdk21}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/development/android-sdk}"
+export ANDROID_HOME="$ANDROID_SDK_ROOT"
+export JAVA_HOME="${JAVA_HOME:-$HOME/development/jdk21}"
 export PATH="$JAVA_HOME/bin:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
 
 flutter build apk --release
