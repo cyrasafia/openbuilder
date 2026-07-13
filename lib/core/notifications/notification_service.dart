@@ -13,6 +13,14 @@ class NotificationService {
     await _plugin.initialize(
       const InitializationSettings(android: androidInit, iOS: iosInit),
     );
+    // iOS 14.2+ requires an explicit permissions request to trigger the
+    // system authorization prompt; the Info.plist key alone is not enough.
+    final ios = _plugin
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>();
+    if (ios != null) {
+      await ios.requestPermissions(alert: true, badge: true, sound: true);
+    }
     _initialized = true;
   }
 

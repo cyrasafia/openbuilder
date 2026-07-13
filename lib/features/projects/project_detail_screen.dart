@@ -66,7 +66,7 @@ class ProjectDetailScreen extends StatelessWidget {
               else if (project?.id == 'global' && directory == null)
                 ..._groupedGlobal(context, sessions)
               else
-                ..._groupedByWorktree(context, sessions),
+                ..._groupedByWorktree(context, sessions, scopedWorktree),
               const SizedBox(height: 16),
             ],
           ),
@@ -161,6 +161,51 @@ class ProjectDetailScreen extends StatelessWidget {
     );
   }
 
+  void _confirmRemoveWorktree(
+      BuildContext context, String projectWorktree, String worktreeDir) {
+    final wtName = worktreeDir.split('/').last;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除工作区'),
+        content: Text('确定删除工作区「$wtName」？\n该工作区下的会话将一并移除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(ctx).colorScheme.error),
+            onPressed: () async {
+              final client = serverStore.client;
+              if (client == null) {
+                if (ctx.mounted) Navigator.pop(ctx);
+                return;
+              }
+              try {
+                await client.removeWorktree(projectWorktree,
+                    worktreeDir: worktreeDir);
+                if (ctx.mounted) Navigator.pop(ctx);
+                unawaited(serverStore.refresh());
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('已删除工作区「$wtName」')));
+                }
+              } catch (e) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(SnackBar(content: Text('删除失败：$e')));
+                }
+              }
+            },
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _groupedGlobal(BuildContext context, List<SessionModel> all) {
     final byDir = <String, List<SessionModel>>{};
     for (final s in all) {
@@ -185,7 +230,7 @@ class ProjectDetailScreen extends StatelessWidget {
   /// activity (busiest worktree first); within a group, sessions keep the
   /// global recency order.
   List<Widget> _groupedByWorktree(
-      BuildContext context, List<SessionModel> all) {
+      BuildContext context, List<SessionModel> all, String projectWorktree) {
     final byDir = <String, List<SessionModel>>{};
     for (final s in all) {
       byDir.putIfAbsent(s.directory, () => []).add(s);
@@ -201,7 +246,16 @@ class ProjectDetailScreen extends StatelessWidget {
       if (byDir.length > 1) {
         final name =
             entry.key.isEmpty ? 'global' : entry.key.split('/').last;
-        out.add(_SectionHeader(name: name, count: entry.value.length));
+        // Only non-main worktrees (sandboxes) can be removed.
+        final canDelete = entry.key.isNotEmpty && entry.key != projectWorktree;
+        out.add(_SectionHeader(
+          name: name,
+          count: entry.value.length,
+          onDelete: canDelete
+              ? () => _confirmRemoveWorktree(
+                  context, projectWorktree, entry.key)
+              : null,
+        ));
       }
       out.addAll(entry.value.map((s) => _SessionRow(
             session: s,
@@ -259,7 +313,8 @@ class _Header extends StatelessWidget {
 class _SectionHeader extends StatelessWidget {
   final String name;
   final int count;
-  const _SectionHeader({required this.name, required this.count});
+  final VoidCallback? onDelete;
+  const _SectionHeader({required this.name, required this.count, this.onDelete});
 
   @override
   Widget build(BuildContext context) {
@@ -282,6 +337,18 @@ class _SectionHeader extends StatelessWidget {
         Text('$count',
             style: TextStyle(
                 fontSize: 11, color: Theme.of(context).colorScheme.outline)),
+        if (onDelete != null) ...[
+          const SizedBox(width: 8),
+          InkWell(
+            onTap: onDelete,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(Icons.delete_outline,
+                  size: 16, color: Theme.of(context).colorScheme.error),
+            ),
+          ),
+        ],
       ]),
     );
   }
