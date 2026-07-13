@@ -148,24 +148,39 @@ if (wasBusy) {
 }
 ```
 
-## 步骤 6：ServerStore — `conversationFor()` 感知 stale
+## 步骤 6：ServerStore — `conversationFor(id, {force})` 感知 stale
 
 **文件**：`lib/core/session/server_store.dart` — `conversationFor`
 
-在 LRU promote 之后追加（P1+P2: 用公开 reloadIfStale）：
+加 `force` 参数（Option B），被动路径（列表项）走退避，主动路径（详情页）走强制：
+
 ```dart
-if (existing.isStale) {
-  unawaited(existing.reloadIfStale());  // P2: 退避窗口内不重试
+ConversationStore? conversationFor(String sessionId, {bool force = false}) {
+  final existing = _conversations[sessionId];
+  if (existing != null) {
+    // LRU promote...
+    if (existing.isStale) {
+      // 被动访问(force=false)走退避防轮询；主动访问(force=true)走强制 reload
+      unawaited(force ? existing.reload() : existing.reloadIfStale());
+    }
+    return existing;
+  }
+  // ... 新建 + load() ...
 }
 ```
 
-## 步骤 7：conversation_screen — build() re-assert active
+- 列表项调用：`conversationFor(s.id)`（默认 `force=false`）→ `reloadIfStale()`
+- 详情页 `build()` 调用：`conversationFor(widget.sessionId, force: true)` → `reload()`
+
+## 步骤 7：conversation_screen — build() re-assert active + force reload
 
 **文件**：`lib/features/conversation/conversation_screen.dart` — `_ConversationScreenState`
 
-在 `build()` 开头加一行：
+在 `build()` 开头加两行：
 ```dart
 serverStore.setActiveConversation(widget.sessionId);
+// Option B: 主动访问 → force=true → 强制 reload（无视退避，贴合用户意图）
+final conv = serverStore.conversationFor(widget.sessionId, force: true);
 ```
 
 `dispose` 不调 `setActiveConversation(null)`（C6: 避免叠层 pop 时 active 被误清）。
@@ -173,6 +188,7 @@ serverStore.setActiveConversation(widget.sessionId);
 **验收**：
 - 打开会话 A → push 会话 B → pop B → A rebuild → active 自动恢复为 A
 - 退出所有详情页后 active 仍指向最后会话（无害——reconcile 仅 reload 该会话，不影响正确性）
+- stale 会话被主动打开时立即触发 reload（不被退避挡）
 
 ## 评审对齐清单
 
@@ -187,3 +203,4 @@ serverStore.setActiveConversation(widget.sessionId);
 | C7 stale sweep 限频 | 步骤 3+4 | `_needsStaleMarking` flag |
 | **P1 `_stale` 跨库私有** | **步骤 1-6** | **暴露 `markStale()`/`isStale`/`reloadIfStale()` 公开 API，ServerStore 不直接访问私有字段** |
 | **P2 被动轮询根除** | **步骤 1+6** | **`reloadIfStale()` 内置 `_lastReloadAt` + 10s 退避，串行重试被挡** |
+| **Option B force 参数** | **步骤 6+7** | **主动访问(force=true)强制 reload 无视退避；被动访问(force=false)走 reloadIfStale 保留退避** |
