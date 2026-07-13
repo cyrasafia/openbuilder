@@ -75,6 +75,28 @@ class OpencodeClient {
     return const [];
   }
 
+  /// `POST /experimental/worktree?directory=<dir>` — create a worktree.
+  /// Body: `{name, startCommand?}` → returns `{name, branch?, directory}`.
+  Future<WorktreeResult> createWorktree(String directory,
+      {required String name, String? startCommand}) async {
+    final body = <String, dynamic>{'name': name};
+    if (startCommand != null && startCommand.isNotEmpty) {
+      body['startCommand'] = startCommand;
+    }
+    final r = await dio.post<dynamic>('/experimental/worktree',
+        queryParameters: {'directory': directory}, data: body);
+    final d = r.data as Map<String, dynamic>;
+    return WorktreeResult.fromJson(d.cast());
+  }
+
+  /// `DELETE /experimental/worktree?directory=<dir>` — remove a worktree.
+  Future<void> removeWorktree(String directory,
+      {required String worktreeDir}) async {
+    await dio.delete<dynamic>('/experimental/worktree',
+        queryParameters: {'directory': directory},
+        data: {'directory': worktreeDir});
+  }
+
   /// Available slash commands for a session's directory.
   /// `GET /api/command?directory=<dir>` → `{ location, data: [CommandV2Info] }`.
   /// Returns the project-scoped command list (empty if the server resolves

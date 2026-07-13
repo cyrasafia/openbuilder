@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -41,6 +43,14 @@ class ProjectDetailScreen extends StatelessWidget {
 
         return Scaffold(
           appBar: AppBar(title: Text(scopedTitle)),
+          floatingActionButton: (project != null && project.id != 'global')
+              ? FloatingActionButton.extended(
+                  icon: const Icon(Icons.create_new_folder_outlined),
+                  label: const Text('新建工作区'),
+                  onPressed: () => _showCreateWorktreeDialog(
+                      context, project.worktree),
+                )
+              : null,
           body: ListView(
             children: [
               _Header(
@@ -61,6 +71,92 @@ class ProjectDetailScreen extends StatelessWidget {
             ],
           ),
         );
+      },
+    );
+  }
+
+  void _showCreateWorktreeDialog(BuildContext context, String projectDir) {
+    final nameCtl = TextEditingController();
+    final cmdCtl = TextEditingController();
+    bool creating = false;
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx, setSt) {
+          return AlertDialog(
+            title: const Text('新建工作区'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtl,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: '工作区名称',
+                    hintText: '如 feature-x',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: cmdCtl,
+                  decoration: const InputDecoration(
+                    labelText: '启动命令（可选）',
+                    hintText: '工作区创建后运行的脚本',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: creating ? null : () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: creating
+                    ? null
+                    : () async {
+                        final name = nameCtl.text.trim();
+                        if (name.isEmpty) return;
+                        setSt(() => creating = true);
+                        final client = serverStore.client;
+                        if (client == null) {
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          return;
+                        }
+                        try {
+                          final result = await client.createWorktree(projectDir,
+                              name: name,
+                              startCommand: cmdCtl.text.trim().isEmpty
+                                  ? null
+                                  : cmdCtl.text.trim());
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          // Refresh to pick up the new worktree + its sessions.
+                          unawaited(serverStore.refresh());
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                content: Text(
+                                    '已创建：${result.name} (${result.branch ?? "?"})')));
+                          }
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            setSt(() => creating = false);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('创建失败：$e')));
+                          }
+                        }
+                      },
+                child: creating
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('创建'),
+              ),
+            ],
+          );
+        });
       },
     );
   }

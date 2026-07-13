@@ -258,6 +258,21 @@ class Todo {
   bool get cancelled => status == 'cancelled';
 }
 
+/// Result of `POST /experimental/worktree` — a newly created worktree.
+class WorktreeResult {
+  final String name;
+  final String? branch;
+  final String directory;
+  const WorktreeResult(
+      {required this.name, this.branch, required this.directory});
+
+  factory WorktreeResult.fromJson(Map<String, dynamic> j) => WorktreeResult(
+        name: (j['name'] ?? '').toString(),
+        branch: j['branch']?.toString(),
+        directory: (j['directory'] ?? '').toString(),
+      );
+}
+
 class Permission {
   final String id;
   final String type;
