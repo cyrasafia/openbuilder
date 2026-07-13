@@ -6,26 +6,45 @@
 
 | 文件 | 改动 |
 |------|------|
-| `lib/core/session/conversation_store.dart` | 新增 `reload()`、`_stale`、`_reloading` 字段 |
-| `lib/core/session/server_store.dart` | 新增 `_activeSessionId`、`setActiveConversation()`、`_needsStaleMarking`；`_onSseState` 置 flag；`_reconcile()` 补活跃会话 reload + busy 推迟 + 条件 stale sweep；`session.idle` 补 deferred reload；`conversationFor()` 感知 stale |
+| `lib/core/session/conversation_store.dart` | 新增 `reload()`、`reloadIfStale()`、`markStale()`、`isStale`；私有 `_stale`/`_reloading`/`_lastReloadAt`/退避常量 |
+| `lib/core/session/server_store.dart` | 新增 `_activeSessionId`、`setActiveConversation()`、`_needsStaleMarking`；`_onSseState` 置 flag；`_reconcile()` 补活跃会话 reload + busy 推迟 + 条件 stale sweep；`session.idle` 补 deferred reload；`conversationFor()` 调 `reloadIfStale()` |
 | `lib/features/conversation/conversation_screen.dart` | `build()` 中调 `setActiveConversation`；`dispose` 不清 null |
 
-## 步骤 1：ConversationStore — 新增 reload() + stale/reloading 字段
+## 步骤 1：ConversationStore — 新增 reload/reloadIfStale/markStale + 退避
 
 **文件**：`lib/core/session/conversation_store.dart`
 
 新增字段：
 ```dart
 bool _stale = false;
-bool _reloading = false;  // C2: 独立并发守卫，不复用 load 的 loaded/loading
+bool _reloading = false;              // C2: 并发守卫
+DateTime? _lastReloadAt;              // P2: 退避时间戳
+static const _reloadBackoff = Duration(seconds: 10); // P2: 退避窗口
 ```
 
-新增方法：
+新增公开 API：
 ```dart
-/// C1-C3: 强制刷新（可反复调用），带并发守卫 + 离线兜底。
+bool get isStale => _stale;
+void markStale() => _stale = true;
+
+/// P2: 综合门控——stale + 非 reloading + 超过退避窗口才 reload。
+Future<void> reloadIfStale() async {
+  if (!_stale || _reloading) return;
+  if (_lastReloadAt != null &&
+      DateTime.now().difference(_lastReloadAt!) < _reloadBackoff) {
+    return;
+  }
+  await reload();
+}
+```
+
+新增 `reload()`：
+```dart
+/// C1-C3: 强制刷新（可反复调用），带并发守卫 + 退避 + 离线兜底。
 Future<void> reload() async {
   if (_reloading) return;            // C2: 互斥
   _reloading = true;
+  _lastReloadAt = DateTime.now();    // P2: 记录退避起点
   try {
     final entries = await client.messages(sessionId);
     _messages
@@ -38,8 +57,9 @@ Future<void> reload() async {
     _stale = false;
     unawaited(_saveCache());
   } catch (_) {
-    _stale = true;                    // C3: 失败标 stale，但 _reloading 防反复重试
+    _stale = true;                    // C3: 失败保持 stale
     await _loadCache();               // C1: 继承离线回看
+    // 不设 error（设计决策：后台刷新静默，详见 design doc）
   } finally {
     _reloading = false;
   }
@@ -49,8 +69,9 @@ Future<void> reload() async {
 
 **验收**：
 - `reload()` 成功后 `_stale=false`、消息更新、notifyListeners
-- `reload()` 失败后 `_stale=true`、从缓存恢复旧数据、notifyListeners
+- `reload()` 失败后 `_stale=true`、从缓存恢复旧数据、`error` 不变
 - 并发调用 `reload()` 只执行一次（第二次直接 return）
+- `reloadIfStale()` 在退避窗口内不触发 reload
 - todos 请求失败不影响 messages 已替换
 
 ## 步骤 2：ServerStore — 活跃会话追踪 + stale flag
@@ -94,17 +115,17 @@ final activeConv = activeId != null ? _conversations[activeId] : null;
 if (activeConv != null) {
   if (activeConv.busy) {
     // C4: busy 时跳过 reload，推迟到 idle
-    activeConv._stale = true;
+    activeConv.markStale();
   } else {
     unawaited(activeConv.reload());
   }
 }
 
-// C7: 仅真实断线后才标非活跃 stale
+// C7: 仅真实断线后才标非活跃 stale（P1: 用公开 markStale()）
 if (_needsStaleMarking) {
   for (final entry in _conversations.entries) {
     if (entry.key != activeId) {
-      entry.value._stale = true;
+      entry.value.markStale();
     }
   }
   _needsStaleMarking = false;
@@ -119,9 +140,9 @@ if (_needsStaleMarking) {
 ```dart
 if (wasBusy) {
   // ... 现有通知逻辑 ...
-  // C4: 补齐 busy 期间推迟的 reload
+  // C4: 补齐 busy 期间推迟的 reload（P1: 用公开 isStale 判断）
   final conv = _conversations[sid];
-  if (conv != null && conv._stale) {
+  if (conv != null && conv.isStale) {
     unawaited(conv.reload());
   }
 }
@@ -131,10 +152,10 @@ if (wasBusy) {
 
 **文件**：`lib/core/session/server_store.dart` — `conversationFor`
 
-在 LRU promote 之后追加：
+在 LRU promote 之后追加（P1+P2: 用公开 reloadIfStale）：
 ```dart
-if (existing._stale) {
-  unawaited(existing.reload());  // C2+C3: _reloading 守卫防并发 + 防被动轮询
+if (existing.isStale) {
+  unawaited(existing.reloadIfStale());  // P2: 退避窗口内不重试
 }
 ```
 
@@ -159,8 +180,10 @@ serverStore.setActiveConversation(widget.sessionId);
 |--------|----------|------|
 | C1 reload 继承 load 行为 | 步骤 1 | 离线回看 `_loadCache()` + todos try/catch |
 | C2 reload 并发互斥 | 步骤 1 | `_reloading` 独立守卫 |
-| C3 stale 不退化成轮询 | 步骤 1+6 | `_reloading` 进行中时跳过 |
+| C3 stale 不退化成轮询 | 步骤 1+6 | `_reloading` 防并发 + `reloadIfStale()` 退避防串行（P2 加固） |
 | C4 busy 推迟 reload | 步骤 4+5 | reconcile 标 stale，idle 时补 reload |
 | C5 标题一致性 | — | 设计文档已改"五层" |
 | C6 叠层导航盲区 | 步骤 7 | build() re-assert |
 | C7 stale sweep 限频 | 步骤 3+4 | `_needsStaleMarking` flag |
+| **P1 `_stale` 跨库私有** | **步骤 1-6** | **暴露 `markStale()`/`isStale`/`reloadIfStale()` 公开 API，ServerStore 不直接访问私有字段** |
+| **P2 被动轮询根除** | **步骤 1+6** | **`reloadIfStale()` 内置 `_lastReloadAt` + 10s 退避，串行重试被挡** |

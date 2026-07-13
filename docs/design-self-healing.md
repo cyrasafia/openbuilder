@@ -16,12 +16,42 @@
 | `ServerStore` | 全局状态：sessions 列表、SSE 连接管理。追踪活跃会话、触发 reconcile |
 | `conversation_screen` | 详情页 UI。在 `build()` 中声明自己是活跃会话 |
 
+### ConversationStore 公开 API（P1 修正）
+
+`stale` 不再是库级私有 `_stale`（跨文件不可见），改为封装为公开方法：
+
+```dart
+bool _stale = false;
+bool _reloading = false;
+DateTime? _lastReloadAt;                       // P2: 退避时间戳
+static const _reloadBackoff = Duration(seconds: 10); // P2: 退避窗口
+
+// ── 公开接口（供 ServerStore 调用）──
+
+bool get isStale => _stale;
+void markStale() => _stale = true;
+
+/// P2: 综合判断 stale + 非 reloading + 超过退避窗口才触发 reload。
+/// 由 conversationFor() 调用，门控逻辑收敛在 store 内部。
+Future<void> reloadIfStale() async {
+  if (!_stale || _reloading) return;
+  final now = DateTime.now();
+  if (_lastReloadAt != null && now.difference(_lastReloadAt!) < _reloadBackoff) {
+    return; // P2: 退避窗口内不重试
+  }
+  await reload();
+}
+```
+
+`reload()` 内部在开始时记 `_lastReloadAt = DateTime.now()`，失败时保持 `_stale = true`。
+退避确保持续断网时 `conversationFor()` 不会每次重建都触发 REST（P2：根除被动轮询）。
+
 ### 五层机制
 
-1. **reload()**：ConversationStore 新增可反复调用的强制刷新方法，带并发守卫和离线回看兜底
+1. **reload() + reloadIfStale()**：强制刷新 + 带 `_reloading` 并发守卫 + 失败退避 + 离线兜底
 2. **活跃会话追踪**：ServerStore 记录当前详情页的 sessionId，用于定向补齐
-3. **reconcile 补齐**：SSE 重连后对活跃会话执行 reload（busy 时推迟到 idle），非活跃会话标记 stale
-4. **stale 懒重载**：`conversationFor()` 访问 stale 会话时后台触发 reload
+3. **reconcile 补齐**：SSE 重连后对活跃会话执行 reload（busy 时推迟到 idle），非活跃会话调 `markStale()`
+4. **stale 懒重载**：`conversationFor()` 访问 stale 会话时调 `reloadIfStale()`（退避窗口内不重试）
 5. **build re-assert**：详情页在 `build()` 中声明活跃会话，解决叠层导航盲区
 
 ### 生命周期
@@ -42,11 +72,13 @@ SSE 重连后（自愈）：
     → _reconcile():
       ├─ 列表层：sessions/status 全量刷新
       ├─ 活跃会话 idle：conv.reload() → REST 拉完整消息 → 原子替换
-      ├─ 活跃会话 busy：标 stale，推迟到 session.idle 事件时 reload
-      └─ 非活跃会话：仅真实断线后才标 stale，下次进入懒 reload
+      ├─ 活跃会话 busy：conv.markStale()，推迟到 session.idle 事件时 reload
+      └─ 非活跃会话：仅真实断线后 markStale()，下次进入 reloadIfStale()
 
 用户进入一个 stale 会话：
-  conversationFor() → _stale → reload()（_reloading 守卫防重复）
+  conversationFor() → conv.reloadIfStale()
+    → stale && !_reloading && 超过退避 → reload()
+    → 退避窗口内 → skip（不触发 REST）
   UI 先展示旧数据（无白屏），reload 完成后 notifyListeners → 更新
 ```
 
@@ -56,16 +88,17 @@ SSE 重连后（自愈）：
 |------|--------|--------|
 | 详情页打开，SSE 断→重连 | ❌ 漏消息永久丢失 | ✅ idle 时 `_reconcile` → `reload()` 补齐 |
 | 详情页 busy，SSE 断→重连 | ❌ 漏消息 | ✅ 推迟到 idle 时 reload |
-| 详情页打开，切到列表，再回来 | ❌ 命中缓存，不刷新 | ✅ 会话被标 stale → `reload()` |
-| 看过会话A，切到会话B，SSE 断 | ❌ A 数据残留 | ✅ A 标 stale，下次进 A 时 reload |
+| 详情页打开，切到列表，再回来 | ❌ 命中缓存，不刷新 | ✅ 会话被标 stale → `reloadIfStale()` |
+| 看过会话A，切到会话B，SSE 断 | ❌ A 数据残留 | ✅ A markStale，下次进 A 时 reloadIfStale |
 | 发消息时 SSE 断开 | ❌ 永远看不到回复 | ✅ SSE 重连后 idle → `reload()` 拿到完整回复 |
 | 首次打开会话，SSE 全断 | ✅ REST `load()` | ✅ 不变 |
 | 多目录同时重连 | 每次标 stale → 流量放大 | ✅ `_needsStaleMarking` 一次性标记 |
 | 叠层详情页 A→push B→pop B | ❌ active=null | ✅ A rebuild re-assert active |
+| **持续断网 + 频繁 notify** | ❌ 每次重建触发 REST = 被动轮询 | ✅ `reloadIfStale()` 退避 10s 内不重试 |
 
 ## 不做的事（避免过度设计）
 
-- **不做轮询**：SSE 重连后一次性 `reload()` 拿到完整数据即可。`_reloading` 守卫防止退化成被动轮询。
+- **不做轮询**：`_reloading` 守卫防并发重叠 + 失败退避（10s 窗口）防串行重试，双重门控根除被动轮询。
 - **不做增量同步**：不做"从 Last-Event-ID 对齐差量"，REST 全量拉取更简单可靠。
 - **不做消息 diff**：`reload()` 直接替换整个 `_messages`，不做逐条 diff（用户看到的最后一跳是原子替换，可接受）。
 
@@ -73,7 +106,7 @@ SSE 重连后（自愈）：
 
 ### 为什么 reload 跳过 busy 会话？
 
-Agent 正在流式输出时，本地已累积了部分 `text`（SSE delta 增量拼接）。此刻 REST `/message` 拿到的是服务端当前快照，可能不完整或与本地累积不一致。如果直接替换，随后 SSE delta 再 `+=` 会导致文本重复/截断。因此 busy 时仅标 stale，推迟到 `session.idle`（agent 完成）时再 reload。
+Agent 正在流式输出时，本地已累积了部分 `text`（SSE delta 增量拼接）。此刻 REST `/message` 拿到的是服务端当前快照，可能不完整或与本地累积不一致。如果直接替换，随后 SSE delta 再 `+=` 会导致文本重复/截断。因此 busy 时仅 `markStale()`，推迟到 `session.idle`（agent 完成）时再 reload。
 
 ### 为什么 stale 标记需要 `_needsStaleMarking` flag？
 
@@ -82,3 +115,19 @@ Agent 正在流式输出时，本地已累积了部分 `text`（SSE delta 增量
 ### 为什么用 build() re-assert 而非 initState/dispose？
 
 go_router push 可堆叠两个详情页（A → push B）。用 initState 设 active=A、dispose 清 null：pop B 时 B 的 dispose 把 active 设为 null，但 A 仍在屏上且不会重跑 initState，于是 active 永久为 null。改为在 `build()` 中 re-assert：pop B 后 A rebuild → `setActiveConversation(A)` 自动恢复。
+
+### 为什么 stale 用公开 API 而非私有字段？（P1）
+
+Dart 的 `_` 前缀是**库级私有**，`_stale` 在 `server_store.dart`（独立 library）中不可见 → 编译失败。因此暴露 `markStale()` / `isStale` / `reloadIfStale()` 公开接口，跨文件访问走公开 API。`_reloading` / `_lastReloadAt` 仅在 ConversationStore 内部使用，保持私有。
+
+### 为什么需要退避而非仅靠 `_reloading`？（P2）
+
+`_reloading` 只挡**重叠** reload（进行中时跳过），挡不住**串行**重试：reload 失败 → `_reloading=false` → 下次 `conversationFor()` 再试。持续断网时每次 `notifyListeners` 触发列表重建都会调 `conversationFor()` → 每次发一次 REST = 被动轮询。退避（`_lastReloadAt` + 10s 窗口）确保失败后至少等 10s 才重试。
+
+### reload() 失败时不设 error（已知取舍）
+
+`reload()` 是后台刷新（非用户发起），失败时静默（不设 `error`、不显示错误页），从本地缓存恢复旧数据。这与 `load()`（用户发起，失败设 `error` 显示错误页）有意不同。理由：reload 在弱网/断网期间会频繁触发，显示错误会闪烁；用户看到的是"旧数据 + 重连中 banner"而非错误页，体验更好。
+
+### `_activeSessionId` 幽灵问题（已知，无害）
+
+退出所有详情页后 `_activeSessionId` 不清理（仍指向最后会话）。SSE 恢复时 reconcile 会多 reload 一次该会话——单次浪费，不影响正确性。不做清理是为了避免叠层 pop 时误清（见 build re-assert 决策）。
