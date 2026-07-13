@@ -226,7 +226,7 @@ class ServerStore extends ChangeNotifier {
     try {
       final projects = await client!.projects();
       final sessions = await _fetchAllSessions();
-      final status = await client!.sessionStatus();
+      final status = await _fetchAllStatuses(projects);
       _projects = projects;
       _sessions = sessions;
       _statusMap
@@ -238,6 +238,28 @@ class ServerStore extends ChangeNotifier {
       error = '$e';
       return false;
     }
+  }
+
+  /// Aggregate session status across all project directories. Without a
+  /// directory, GET /session/status returns `{}`, so we must query per-dir.
+  Future<Map<String, SessionStatusValue>> _fetchAllStatuses(
+      List<ProjectModel> projects) async {
+    final dirs = <String>{};
+    for (final p in projects) {
+      if (p.worktree.isNotEmpty) dirs.add(p.worktree);
+    }
+    final results = await Future.wait(dirs.map((dir) async {
+      try {
+        return await client!.sessionStatus(directory: dir);
+      } catch (_) {
+        return const <String, SessionStatusValue>{};
+      }
+    }));
+    final out = <String, SessionStatusValue>{};
+    for (final r in results) {
+      out.addAll(r);
+    }
+    return out;
   }
 
   /// Aggregate sessions across all projects. For each project, fetches
@@ -316,7 +338,7 @@ class ServerStore extends ChangeNotifier {
     if (client == null) return;
     try {
       final sessions = await _fetchAllSessions();
-      final status = await client!.sessionStatus();
+      final status = await _fetchAllStatuses(_projects);
       _sessions = sessions;
       _statusMap
         ..clear()

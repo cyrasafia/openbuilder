@@ -112,9 +112,12 @@ class OpencodeClient {
     return _getModelsFromData(data, CommandInfo.fromJson);
   }
 
-  /// `GET /session/status` → `{ sessionID: {type: idle|busy|retry} }`
-  Future<Map<String, SessionStatusValue>> sessionStatus() async {
-    final r = await dio.get<dynamic>('/session/status');
+  /// `GET /session/status?directory=<dir>` → `{ sessionID: {type: idle|busy|retry} }`.
+  /// Without a directory the endpoint returns `{}`.
+  Future<Map<String, SessionStatusValue>> sessionStatus({String? directory}) async {
+    final r = await dio.get<dynamic>('/session/status',
+        queryParameters:
+            directory != null && directory.isNotEmpty ? {'directory': directory} : null);
     final m = _asMap(r.data);
     return m.map((k, v) => MapEntry(
         k, SessionStatusValue.fromJson(v is Map ? v.cast() : const {})));
