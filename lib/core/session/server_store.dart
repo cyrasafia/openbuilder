@@ -30,6 +30,7 @@ class ServerStore extends ChangeNotifier {
   // ── Self-healing state ──
   String? _activeSessionId;
   bool _needsStaleMarking = false;
+  String? _resumeReloadedSessionId;
 
   /// True while the SSE connection is in backoff reconnect (specs §11 banner).
   bool reconnecting = false;
@@ -323,7 +324,12 @@ class ServerStore extends ChangeNotifier {
       final activeConv =
           activeId != null ? _conversations[activeId] : null;
       if (activeConv != null) {
-        if (activeConv.busy) {
+        if (activeId == _resumeReloadedSessionId) {
+          // resume() already reloaded this conversation — skip redundant
+          // reload (avoids double-fetch when server.connected fires ~800ms
+          // after resume).
+          _resumeReloadedSessionId = null;
+        } else if (activeConv.busy) {
           activeConv.markStale();
         } else {
           unawaited(activeConv.reload());
@@ -614,6 +620,7 @@ class ServerStore extends ChangeNotifier {
         activeConv.markStale();
       } else {
         unawaited(activeConv.reload());
+        _resumeReloadedSessionId = activeId;
       }
     }
     _startSse(_kGlobalWatchdog);
