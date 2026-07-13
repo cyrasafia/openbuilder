@@ -186,6 +186,20 @@ class MessageInfo {
         finish: j['finish']?.toString(),
         error: j['error'] is Map ? (j['error'] as Map).cast<String, dynamic>() : null,
       );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'role': role,
+        'sessionID': sessionID,
+        'time': {
+          if (created != null) 'created': created,
+          if (completed != null) 'completed': completed,
+        },
+        'cost': cost,
+        'modelID': modelID,
+        'finish': finish,
+        'error': error,
+      };
 }
 
 /// Loose part wrapper over raw JSON. Types: text, reasoning, tool,
@@ -256,6 +270,9 @@ class Todo {
   bool get done => status == 'completed' || status == 'cancelled';
   bool get active => status == 'in_progress';
   bool get cancelled => status == 'cancelled';
+
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'content': content, 'status': status, 'priority': priority};
 }
 
 /// Result of `POST /experimental/worktree` — a newly created worktree.

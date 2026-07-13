@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../data/api/opencode_client.dart';
 import '../../../domain/models.dart';
@@ -83,12 +87,79 @@ class ConversationStore extends ChangeNotifier {
       } catch (_) {}
       loaded = true;
       error = null;
+      unawaited(_saveCache());
     } catch (e) {
       error = '$e';
+      // Offline fallback: restore last-known messages from local cache so the
+      // user can still review the conversation (specs §5, plan item 19).
+      await _loadCache();
     } finally {
       loading = false;
       notifyListeners();
     }
+  }
+
+  // ── Local cache for offline read-back ──
+
+  String get _cacheKey => 'conv_$sessionId';
+
+  Future<void> _saveCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final j = {
+        'messages': _messages
+            .map((m) => {
+                  'info': m.info.toJson(),
+                  'parts': m.parts
+                      .map((p) => {
+                            'id': p.id,
+                            'type': p.type,
+                            'tool': p.tool,
+                            'text': p.text,
+                            'toolStatus': p.toolStatus,
+                            'toolOutput': p.toolOutput,
+                          })
+                      .toList(),
+                })
+            .toList(),
+        'todos': _todos.map((t) => t.toJson()).toList(),
+      };
+      await prefs.setString(_cacheKey, jsonEncode(j));
+    } catch (_) {}
+  }
+
+  Future<void> _loadCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKey);
+      if (raw == null || raw.isEmpty) return;
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      final msgs = j['messages'] as List? ?? [];
+      _messages.clear();
+      for (final m in msgs) {
+        final m2 = m as Map<String, dynamic>;
+        final info = MessageInfo.fromJson(
+            (m2['info'] as Map).cast<String, dynamic>());
+        final dm = DisplayMessage(info);
+        for (final p in (m2['parts'] as List? ?? [])) {
+          final p2 = p as Map<String, dynamic>;
+          dm.parts.add(DisplayPart(
+            id: p2['id']?.toString() ?? '',
+            type: p2['type']?.toString() ?? 'text',
+            tool: p2['tool']?.toString(),
+            text: p2['text']?.toString() ?? '',
+            toolStatus: p2['toolStatus']?.toString(),
+            toolOutput: p2['toolOutput']?.toString(),
+          ));
+        }
+        _messages.add(dm);
+      }
+      final todos = j['todos'] as List? ?? [];
+      _todos = todos
+          .map((t) => Todo.fromJson((t as Map).cast<String, dynamic>()))
+          .toList();
+      if (_messages.isNotEmpty) loaded = true;
+    } catch (_) {}
   }
 
   DisplayMessage _toDisplay(MessageEntry e) {
