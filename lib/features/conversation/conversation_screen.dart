@@ -407,11 +407,13 @@ class _TodoCard extends StatelessWidget {
   }
 
   Widget _todoRow(Todo t) {
-    final icon = t.done
-        ? Icons.check_box
-        : t.active
-            ? Icons.indeterminate_check_box
-            : Icons.check_box_outline_blank;
+    final icon = t.cancelled
+        ? Icons.cancel
+        : t.done
+            ? Icons.check_box
+            : t.active
+                ? Icons.indeterminate_check_box
+                : Icons.check_box_outline_blank;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(

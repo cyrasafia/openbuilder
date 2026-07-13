@@ -253,8 +253,9 @@ class Todo {
         priority: (j['priority'] ?? 'medium').toString(),
       );
 
-  bool get done => status == 'completed';
+  bool get done => status == 'completed' || status == 'cancelled';
   bool get active => status == 'in_progress';
+  bool get cancelled => status == 'cancelled';
 }
 
 class Permission {
