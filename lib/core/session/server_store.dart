@@ -14,9 +14,15 @@ import 'conversation_store.dart';
 /// subscription to `/event` (specs §5, frontend §2.2).
 class ServerStore extends ChangeNotifier {
   OpencodeClient? client;
-  SseClient? _sse;
-  StreamSubscription<OpencodeEvent>? _sseSub;
-  StreamSubscription<SseState>? _sseStateSub;
+  /// One SSE subscription per project directory. opencode's `/event` stream is
+  /// scoped to a `directory` (no directory ⇒ only `server.connected`), so we
+  /// open one connection per directory to receive that project's live events.
+  final Map<String, SseClient> _sseByDir = {};
+  final Map<String, StreamSubscription<OpencodeEvent>> _sseSubs = {};
+  final Map<String, StreamSubscription<SseState>> _sseStateSubs = {};
+  final Map<String, SseState> _stateByDir = {};
+  Map<String, String> _sseHeaders = {};
+  Timer? _reconcileTimer;
   ConnectionProfile? _profile;
 
   /// True while the SSE connection is in backoff reconnect (specs §11 banner).
@@ -115,17 +121,42 @@ class ServerStore extends ChangeNotifier {
     await _teardown();
     final dio = dioFor(profile);
     client = OpencodeClient(dio);
-    _sse = SseClient(
-      uri: Uri.parse('${profile.baseUrl}/event'),
-      headers: Map.from(dio.options.headers.map(
-          (k, v) => MapEntry(k, v is String ? v : v.toString()))),
-    );
+    _sseHeaders = Map.from(dio.options.headers.map(
+        (k, v) => MapEntry(k, v is String ? v : v.toString())));
     await _bootstrap();
-    _sseSub = _sse!.events.listen(_onEvent, onError: (Object e) => error = '$e');
-    _sseStateSub = _sse!.state.listen(_onSseState);
-    _sse!.start();
+    // Subscribe to `/event` once per project directory (specs §5: the stream
+    // is directory-scoped — a bare `/event` only yields `server.connected`).
+    for (final dir in _eventDirectories()) {
+      _startSse(dir);
+    }
     connected = true;
     notifyListeners();
+  }
+
+  /// Distinct directories to stream: every project's worktree plus every known
+  /// session directory (covers sandbox worktrees too).
+  Set<String> _eventDirectories() {
+    final dirs = <String>{};
+    for (final p in _projects) {
+      if (p.worktree.isNotEmpty) dirs.add(p.worktree);
+    }
+    for (final s in _sessions) {
+      if (s.directory.isNotEmpty) dirs.add(s.directory);
+    }
+    return dirs;
+  }
+
+  void _startSse(String directory) {
+    if (_sseByDir.containsKey(directory)) return;
+    final uri = Uri.parse('${_profile!.baseUrl}/event')
+        .replace(queryParameters: {'directory': directory});
+    final c = SseClient(uri: uri, headers: _sseHeaders);
+    _sseByDir[directory] = c;
+    _sseSubs[directory] =
+        c.events.listen(_onEvent, onError: (Object e) => error = '$e');
+    _sseStateSubs[directory] =
+        c.state.listen((s) => _onSseState(directory, s));
+    c.start();
   }
 
   String _signature(ConnectionProfile p) =>
@@ -209,6 +240,15 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
+  /// Coalesce the many `server.connected` events (one per directory
+  /// connection) into a single reconcile shortly after connect.
+  void _scheduleReconcile() {
+    _reconcileTimer?.cancel();
+    _reconcileTimer = Timer(const Duration(milliseconds: 800), () {
+      unawaited(_reconcile());
+    });
+  }
+
   Future<void> _reconcile() async {
     // server.connected: refresh authoritative state.
     if (client == null) return;
@@ -229,10 +269,15 @@ class ServerStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _onSseState(SseState s) {
-    if (s.reconnecting != reconnecting || s.attempt != reconnectAttempt) {
-      reconnecting = s.reconnecting;
-      reconnectAttempt = s.attempt;
+  void _onSseState(String dir, SseState s) {
+    _stateByDir[dir] = s;
+    final anyReconnecting = _stateByDir.values.any((e) => e.reconnecting);
+    final maxAttempt = _stateByDir.values
+        .map((e) => e.attempt)
+        .fold(0, (a, b) => a > b ? a : b);
+    if (anyReconnecting != reconnecting || maxAttempt != reconnectAttempt) {
+      reconnecting = anyReconnecting;
+      reconnectAttempt = maxAttempt;
       notifyListeners();
     }
   }
@@ -240,7 +285,7 @@ class ServerStore extends ChangeNotifier {
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
       case 'server.connected':
-        unawaited(_reconcile());
+        _scheduleReconcile();
         return; // _reconcile notifies
       case 'session.status':
         final sid = ev.properties['sessionID']?.toString();
@@ -368,6 +413,11 @@ class ServerStore extends ChangeNotifier {
     } else {
       _sessions[idx] = s;
     }
+    // A session for a directory we aren't streaming yet (e.g. a brand-new
+    // project) — start a scoped SSE so it receives live events too.
+    if (s.directory.isNotEmpty && !_sseByDir.containsKey(s.directory)) {
+      _startSse(s.directory);
+    }
   }
 
   void _removeSession(String id) {
@@ -376,12 +426,21 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> _teardown() async {
-    await _sseSub?.cancel();
-    _sseSub = null;
-    await _sseStateSub?.cancel();
-    _sseStateSub = null;
-    await _sse?.stop();
-    _sse = null;
+    _reconcileTimer?.cancel();
+    _reconcileTimer = null;
+    for (final sub in _sseSubs.values) {
+      await sub.cancel();
+    }
+    _sseSubs.clear();
+    for (final sub in _sseStateSubs.values) {
+      await sub.cancel();
+    }
+    _sseStateSubs.clear();
+    for (final c in _sseByDir.values) {
+      await c.stop();
+    }
+    _sseByDir.clear();
+    _stateByDir.clear();
     _conversations.clear();
   }
 
