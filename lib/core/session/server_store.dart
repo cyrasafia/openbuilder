@@ -123,7 +123,14 @@ class ServerStore extends ChangeNotifier {
     client = OpencodeClient(dio);
     _sseHeaders = Map.from(dio.options.headers.map(
         (k, v) => MapEntry(k, v is String ? v : v.toString())));
-    await _bootstrap();
+    final ok = await _bootstrap();
+    if (!ok) {
+      // Bootstrap failed: stay disconnected with a clear error. Don't start
+      // SSE — there's no point streaming from a server we can't talk to.
+      connected = false;
+      notifyListeners();
+      return;
+    }
     // Always open a bare `/event` as a global watchdog so we still receive
     // `server.connected` (and any future un-scoped events) even when the
     // server has zero projects/sessions — without it an empty server would
@@ -173,7 +180,7 @@ class ServerStore extends ChangeNotifier {
   String _signature(ConnectionProfile p) =>
       '${p.baseUrl}|${p.username}|${p.password}';
 
-  Future<void> _bootstrap() async {
+  Future<bool> _bootstrap() async {
     try {
       final projects = await client!.projects();
       final sessions = await _fetchAllSessions();
@@ -184,8 +191,10 @@ class ServerStore extends ChangeNotifier {
         ..clear()
         ..addAll(status);
       error = null;
+      return true;
     } catch (e) {
       error = '$e';
+      return false;
     }
   }
 
@@ -499,7 +508,15 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> refresh() async {
     if (client == null) return;
-    await _bootstrap();
+    final ok = await _bootstrap();
+    if (ok && !connected) {
+      // A refresh recovered a previously-failed connection: start SSE now.
+      _startSse(_kGlobalWatchdog);
+      for (final dir in _eventDirectories()) {
+        _startSse(dir);
+      }
+      connected = true;
+    }
     notifyListeners();
   }
 }
