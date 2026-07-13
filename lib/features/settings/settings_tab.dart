@@ -33,7 +33,7 @@ class _SettingsTabState extends State<SettingsTab> {
     final info = await PackageInfo.fromPlatform();
     if (mounted) {
       setState(() {
-        _appVersion = '${info.version} (${info.buildNumber})';
+        _appVersion = info.version;
       });
     }
   }
