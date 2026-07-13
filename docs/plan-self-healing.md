@@ -172,23 +172,35 @@ ConversationStore? conversationFor(String sessionId, {bool force = false}) {
 - 列表项调用：`conversationFor(s.id)`（默认 `force=false`）→ `reloadIfStale()`
 - 详情页 `build()` 调用：`conversationFor(widget.sessionId, force: true)` → `reload()`
 
-## 步骤 7：conversation_screen — build() re-assert active + force reload
+## 步骤 7：conversation_screen — build() re-assert active + force reload（一次性 guard）
 
 **文件**：`lib/features/conversation/conversation_screen.dart` — `_ConversationScreenState`
 
-在 `build()` 开头加两行：
+State 新增一次性 guard（Issue D：避免打字 setState 重复触发强制探测）：
+```dart
+bool _didForceReload = false;
+```
+
+在 `build()` 中：
 ```dart
 serverStore.setActiveConversation(widget.sessionId);
-// Option B: 主动访问 → force=true → 强制 reload（无视退避，贴合用户意图）
-final conv = serverStore.conversationFor(widget.sessionId, force: true);
+// Option B + Issue D: 主动打开 → 仅首次 build force 一次（无视退避）；
+// 后续 rebuild（打字 setState）走默认 force=false，不再重复探测。
+if (!_didForceReload) {
+  _didForceReload = true;
+  serverStore.conversationFor(widget.sessionId, force: true);
+}
+final conv = serverStore.conversationFor(widget.sessionId); // 取引用，默认 force=false
 ```
 
 `dispose` 不调 `setActiveConversation(null)`（C6: 避免叠层 pop 时 active 被误清）。
+`_send()` 中的 `conversationFor` 保持默认 `force=false`（仅取引用做 setStatus）。
 
 **验收**：
 - 打开会话 A → push 会话 B → pop B → A rebuild → active 自动恢复为 A
-- 退出所有详情页后 active 仍指向最后会话（无害——reconcile 仅 reload 该会话，不影响正确性）
 - stale 会话被主动打开时立即触发 reload（不被退避挡）
+- 在 stale 会话里打字不会反复触发 reload（`_didForceReload` guard）
+- 退出所有详情页后 active 仍指向最后会话（无害）
 
 ## 评审对齐清单
 
@@ -204,3 +216,4 @@ final conv = serverStore.conversationFor(widget.sessionId, force: true);
 | **P1 `_stale` 跨库私有** | **步骤 1-6** | **暴露 `markStale()`/`isStale`/`reloadIfStale()` 公开 API，ServerStore 不直接访问私有字段** |
 | **P2 被动轮询根除** | **步骤 1+6** | **`reloadIfStale()` 内置 `_lastReloadAt` + 10s 退避，串行重试被挡** |
 | **Option B force 参数** | **步骤 6+7** | **主动访问(force=true)强制 reload 无视退避；被动访问(force=false)走 reloadIfStale 保留退避** |
+| **Issue D force reload 落点** | **步骤 7** | **`_didForceReload` guard 保证每次打开只 force 一次，避免打字 setState 重复探测** |
