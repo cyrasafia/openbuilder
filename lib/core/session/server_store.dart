@@ -127,11 +127,14 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> connect(ConnectionProfile profile) async {
-    // Idempotent: no-op if same server + credentials already connected.
+    // Idempotent: no-op if already connected with same server + credentials.
+    // On bootstrap failure connected stays false, so a retry (calling
+    // connect again with the same profile) bypasses this guard and re-runs.
     if (_profile != null &&
         _profile!.id == profile.id &&
         _signature(_profile!) == _signature(profile) &&
-        client != null) {
+        client != null &&
+        connected) {
       return;
     }
     _profile = profile;
@@ -579,5 +582,9 @@ class ServerStore extends ChangeNotifier {
     }
     _sseByDir.clear();
     _stateByDir.clear();
+    // Reset public reconnect indicators so the banner doesn't linger after
+    // all connections are torn down (pause / teardown / disconnect).
+    reconnecting = false;
+    reconnectAttempt = 0;
   }
 }
