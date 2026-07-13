@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Required for network access in release builds (debug/profile add it too) -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Local notifications (agent complete / permission requests) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <application
         android:label="opencode_mobile"
         android:name="${applicationName}"

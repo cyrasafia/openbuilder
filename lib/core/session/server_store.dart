@@ -7,6 +7,7 @@ import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
 import '../connection/connection_profile.dart';
 import '../net/dio_factory.dart';
+import '../notifications/notification_service.dart';
 import '../sse/sse_client.dart';
 import 'conversation_store.dart';
 
@@ -339,7 +340,16 @@ class ServerStore extends ChangeNotifier {
         break;
       case 'session.idle':
         final sid = ev.properties['sessionID']?.toString();
-        if (sid != null) _statusMap[sid] = const SessionStatusValue('idle');
+        if (sid != null) {
+          // Only notify if the session was previously busy (not a spurious
+          // idle on an already-idle session).
+          final wasBusy = _statusMap[sid]?.type == 'busy';
+          _statusMap[sid] = const SessionStatusValue('idle');
+          if (wasBusy) {
+            final title = sessionById(sid)?.title ?? '会话';
+            NotificationService.notifyRunComplete(title);
+          }
+        }
         break;
       case 'session.created':
       case 'session.updated':
@@ -374,6 +384,8 @@ class ServerStore extends ChangeNotifier {
       case 'permission.updated':
         final p = Permission.fromJson(ev.properties);
         _conversations[p.sessionID]?.onPermission(p);
+        final title = sessionById(p.sessionID)?.title ?? '会话';
+        NotificationService.notifyPermission(title, p.title);
         break;
       case 'permission.replied':
         final sid = ev.properties['sessionID']?.toString();

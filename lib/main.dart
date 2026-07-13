@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 
 import 'app_router.dart';
 import 'app_state.dart';
+import 'core/notifications/notification_service.dart';
 import 'ui/theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await connectionStore.load();
   wireServerStore();
+  await NotificationService.init();
   runApp(const OpencodeMobileApp());
 }
 
