@@ -357,7 +357,8 @@ class ServerStore extends ChangeNotifier {
           _statusMap[sid] = const SessionStatusValue('idle');
           if (wasBusy) {
             final title = sessionById(sid)?.title ?? '会话';
-            NotificationService.notifyRunComplete(title);
+            unawaited(NotificationService.notifyRunComplete(title)
+                .catchError((_) {}));
           }
         }
         break;
@@ -395,7 +396,8 @@ class ServerStore extends ChangeNotifier {
         final p = Permission.fromJson(ev.properties);
         _conversations[p.sessionID]?.onPermission(p);
         final title = sessionById(p.sessionID)?.title ?? '会话';
-        NotificationService.notifyPermission(title, p.title);
+        unawaited(
+            NotificationService.notifyPermission(title, p.title).catchError((_) {}));
         break;
       case 'permission.replied':
         final sid = ev.properties['sessionID']?.toString();
