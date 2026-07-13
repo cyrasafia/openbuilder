@@ -5,7 +5,6 @@ import '../../app_state.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
-import '../../ui/widgets.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 class ConversationScreen extends StatefulWidget {
@@ -66,7 +65,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ],
         ),
         actions: [
-          _StatusPill(listenable: conv),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             tooltip: '文件',
@@ -346,33 +344,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       default:
         return const SizedBox.shrink();
     }
-  }
-}
-
-class _StatusPill extends StatelessWidget {
-  final ConversationStore listenable;
-  const _StatusPill({required this.listenable});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: listenable,
-      builder: (context, _) {
-        final s = listenable.status;
-        final label = s == 'busy' ? '运行中' : s == 'retry' ? '重试' : '空闲';
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            StatusDot(type: s),
-            const SizedBox(width: 6),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.outline)),
-          ],
-        );
-      },
-    );
   }
 }
 
