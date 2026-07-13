@@ -136,7 +136,14 @@ class ConversationStore extends ChangeNotifier {
       unawaited(_saveCache());
     } catch (_) {
       _stale = true;
-      await _loadCache();
+      // Only restore from cache if we have no data at all — if SSE has been
+      // delivering messages (_messages is non-empty), that data is always more
+      // current than the cache (saved during the last successful load/reload).
+      // Overwriting SSE-delivered messages with stale cache causes data loss
+      // when switching sessions on flaky networks.
+      if (_messages.isEmpty) {
+        await _loadCache();
+      }
     } finally {
       _reloading = false;
     }
