@@ -133,7 +133,11 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 | **发消息（流式）** | `POST /session/:id/prompt_async` | `MessageRepo.promptAsync(id, parts)` | 返回 204，结果走 SSE |
 | 同步发（兜底） | `POST /session/:id/message` | `MessageRepo.prompt(id, parts)` | 弱网/回退 |
 | 斜杠命令 | `GET /command` + `POST /session/:id/command` | `CommandRepo.list/run` | |
-| Shell | `POST /session/:id/shell` | `MessageRepo.shell(id, cmd)` | 用于 `git worktree add` |
+| Shell | `POST /session/:id/shell` | `MessageRepo.shell(id, cmd)` | 运行 shell 命令 |
+| Worktree 创建 | `POST /experimental/worktree?directory=` | `WorktreeRepo.create(dir, {name, startCommand?})` | 原生端点，返回 `{name, branch?, directory}`；SSE `worktree.ready`/`worktree.failed` |
+| Worktree 列表 | `GET /experimental/worktree?directory=` | `WorktreeRepo.list(dir)` | `string[]` |
+| Worktree 删除 | `DELETE /experimental/worktree?directory=` | `WorktreeRepo.remove(dir, {directory})` | |
+| Worktree 重置 | `POST /experimental/worktree/reset?directory=` | `WorktreeRepo.reset(dir, {directory})` | |
 | Todo 进度 | `GET /session/:id/todo` | `SessionRepo.todos(id)` | 初次拉取；后续靠 SSE |
 | **Diff** | `GET /session/:id/diff?messageID=` | `DiffRepo.sessionDiff(id, msg?)` | `FileDiff[]` |
 | 权限响应 | `POST /session/:id/permissions/:pid` | `PermissionRepo.respond(...)` | body `{response, remember?}` |
@@ -196,7 +200,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 - 顶栏：`[服务器名 ▾]  [worktree: ../feature-x  (branch: feature-x) ▾]`
 - 切 worktree = 改 `directory` → 整个会话列表按该 worktree 重过滤（`GET /session?directory=`）
 - worktree 抽屉：列出 `/project` 全部项，显示 `worktree` 路径 + `VcsInfo.branch` + 活跃会话数；长按可"在此新建会话"
-- 新建 worktree（Phase 3）：向导选基准分支 → 在任一现有 session 调 `/shell {command:"git worktree add <path> -b <branch>"}` → 刷新 `/project` → 选中新项
+- 新建 worktree（Phase 3）：向导选基准分支 → `POST /experimental/worktree?directory=<dir>` body `{name}` → 收到 `worktree.ready`/`worktree.failed` SSE → 刷新 `/project` → 选中新项
 
 ---
 
