@@ -391,27 +391,28 @@ class ServerStore extends ChangeNotifier {
     if (c == null) return;
     final prev = Map.of(_pendingPermissions);
     _pendingPermissions.clear();
-    // Track which projects' REST succeeded so we only restore prev for
-    // failed ones (R-Perm-2: avoid resurrecting already-replied permissions).
+    // R-Perm-3: fetch per all event directories (includes sandbox worktrees),
+    // not just main project worktrees, so sandbox session permissions are
+    // covered.
+    final dirs = _eventDirectories();
     final failedDirs = <String>{};
-    for (final p in _projects) {
-      if (p.worktree.isEmpty) continue;
+    for (final dir in dirs) {
       try {
-        final pending = await c.pendingPermissions(p.worktree);
+        final pending = await c.pendingPermissions(dir);
         for (final perm in pending) {
           _pendingPermissions[perm.sessionID] = perm;
           _conversations[perm.sessionID]?.onPermission(perm);
         }
       } catch (_) {
-        failedDirs.add(p.worktree);
+        failedDirs.add(dir);
       }
     }
-    // Only restore SSE-delivered permissions whose session belongs to a
-    // project whose REST fetch failed — successful fetches are authoritative.
+    // Only restore SSE-delivered permissions whose session's directory had a
+    // failed REST fetch — successful fetches are authoritative.
     for (final entry in prev.entries) {
       final session = sessionById(entry.key);
       final dir = session?.directory ?? '';
-      if (failedDirs.contains(dir) || dir.isEmpty) {
+      if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
         _pendingPermissions.putIfAbsent(entry.key, () => entry.value);
       }
     }
