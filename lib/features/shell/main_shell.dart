@@ -58,8 +58,8 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         listenable: serverStore,
         builder: (context, _) => Column(
           children: [
-            if (serverStore.reconnecting) const _ReconnectBanner(),
             Expanded(child: widget.shell),
+            if (serverStore.reconnecting) const _ReconnectBanner(),
           ],
         ),
       ),
