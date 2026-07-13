@@ -124,6 +124,12 @@ class ServerStore extends ChangeNotifier {
     _sseHeaders = Map.from(dio.options.headers.map(
         (k, v) => MapEntry(k, v is String ? v : v.toString())));
     await _bootstrap();
+    // Always open a bare `/event` as a global watchdog so we still receive
+    // `server.connected` (and any future un-scoped events) even when the
+    // server has zero projects/sessions — without it an empty server would
+    // open no SSE at all and miss newly-created sessions until a manual
+    // refresh.
+    _startSse(_kGlobalWatchdog);
     // Subscribe to `/event` once per project directory (specs §5: the stream
     // is directory-scoped — a bare `/event` only yields `server.connected`).
     for (final dir in _eventDirectories()) {
@@ -132,6 +138,10 @@ class ServerStore extends ChangeNotifier {
     connected = true;
     notifyListeners();
   }
+
+  /// Sentinel key for the always-on bare `/event` connection (no `directory`
+  /// query). Kept distinct from any real directory path.
+  static const _kGlobalWatchdog = '\u0000__global_watchdog__';
 
   /// Distinct directories to stream: every project's worktree plus every known
   /// session directory (covers sandbox worktrees too).
@@ -146,16 +156,17 @@ class ServerStore extends ChangeNotifier {
     return dirs;
   }
 
-  void _startSse(String directory) {
-    if (_sseByDir.containsKey(directory)) return;
-    final uri = Uri.parse('${_profile!.baseUrl}/event')
-        .replace(queryParameters: {'directory': directory});
+  void _startSse(String key) {
+    if (_sseByDir.containsKey(key)) return;
+    final base = Uri.parse('${_profile!.baseUrl}/event');
+    final uri = key == _kGlobalWatchdog
+        ? base // bare /event — global watchdog
+        : base.replace(queryParameters: {'directory': key});
     final c = SseClient(uri: uri, headers: _sseHeaders);
-    _sseByDir[directory] = c;
-    _sseSubs[directory] =
+    _sseByDir[key] = c;
+    _sseSubs[key] =
         c.events.listen(_onEvent, onError: (Object e) => error = '$e');
-    _sseStateSubs[directory] =
-        c.state.listen((s) => _onSseState(directory, s));
+    _sseStateSubs[key] = c.state.listen((s) => _onSseState(key, s));
     c.start();
   }
 
@@ -261,6 +272,12 @@ class ServerStore extends ChangeNotifier {
         ..addAll(status);
       for (final conv in _conversations.values) {
         conv.setStatus(status[conv.sessionId]?.type ?? 'idle');
+      }
+      // Drop SSE for directories that vanished (sessions deleted / projects
+      // removed) and add any newly-appeared directories.
+      _pruneSse();
+      for (final dir in _eventDirectories()) {
+        _startSse(dir);
       }
       error = null;
     } catch (e) {
@@ -423,6 +440,30 @@ class ServerStore extends ChangeNotifier {
   void _removeSession(String id) {
     _sessions.removeWhere((s) => s.id == id);
     _conversations.remove(id);
+    _pruneSse();
+  }
+
+  /// Stop SSE connections for directories that no longer have any session nor
+  /// match a project worktree (keeps the connection count bounded — review §2).
+  /// The global watchdog (`_kGlobalWatchdog`) is always retained.
+  void _pruneSse() {
+    final keep = <String>{_kGlobalWatchdog};
+    for (final p in _projects) {
+      if (p.worktree.isNotEmpty) keep.add(p.worktree);
+    }
+    for (final s in _sessions) {
+      if (s.directory.isNotEmpty) keep.add(s.directory);
+    }
+    final stale = _sseByDir.keys.where((k) => !keep.contains(k)).toList();
+    for (final k in stale) {
+      _sseSubs[k]?.cancel();
+      _sseSubs.remove(k);
+      _sseStateSubs[k]?.cancel();
+      _sseStateSubs.remove(k);
+      _stateByDir.remove(k);
+      _sseByDir[k]?.stop();
+      _sseByDir.remove(k);
+    }
   }
 
   Future<void> _teardown() async {
