@@ -27,6 +27,10 @@ class ServerStore extends ChangeNotifier {
   Timer? _reconcileTimer;
   ConnectionProfile? _profile;
 
+  // ── Self-healing state ──
+  String? _activeSessionId;
+  bool _needsStaleMarking = false;
+
   /// True while the SSE connection is in backoff reconnect (specs §11 banner).
   bool reconnecting = false;
   /// Current reconnect attempt (1-based); 0 when connected / idle.
@@ -102,12 +106,18 @@ class ServerStore extends ChangeNotifier {
     return false;
   }
 
-  ConversationStore? conversationFor(String sessionId) {
+  void setActiveConversation(String? sid) {
+    _activeSessionId = sid;
+  }
+
+  ConversationStore? conversationFor(String sessionId, {bool force = false}) {
     final existing = _conversations[sessionId];
     if (existing != null) {
-      // Promote to most-recently-used (remove + re-insert preserves order).
       _conversations.remove(sessionId);
       _conversations[sessionId] = existing;
+      if (existing.isStale) {
+        unawaited(force ? existing.reload() : existing.reloadIfStale());
+      }
       return existing;
     }
     final c = client;
@@ -308,6 +318,27 @@ class ServerStore extends ChangeNotifier {
       for (final dir in _eventDirectories()) {
         _startSse(dir);
       }
+      // Self-healing: reload the active conversation to fill any gaps.
+      final activeId = _activeSessionId;
+      final activeConv =
+          activeId != null ? _conversations[activeId] : null;
+      if (activeConv != null) {
+        if (activeConv.busy) {
+          activeConv.markStale();
+        } else {
+          unawaited(activeConv.reload());
+        }
+      }
+      // Mark non-active cached conversations stale so they reload on next
+      // access — but only after a genuine disconnect, not every reconcile.
+      if (_needsStaleMarking) {
+        for (final entry in _conversations.entries) {
+          if (entry.key != activeId) {
+            entry.value.markStale();
+          }
+        }
+        _needsStaleMarking = false;
+      }
       error = null;
     } catch (e) {
       error = '$e';
@@ -331,6 +362,7 @@ class ServerStore extends ChangeNotifier {
     // reconcile to catch up on anything missed during the disconnect (the
     // server may not always emit server.connected on every reconnect).
     if (wasReconnecting && !s.reconnecting) {
+      _needsStaleMarking = true;
       _scheduleReconcile();
     }
   }
@@ -359,6 +391,10 @@ class ServerStore extends ChangeNotifier {
             final title = sessionById(sid)?.title ?? '会话';
             unawaited(NotificationService.notifyRunComplete(title)
                 .catchError((_) {}));
+            final conv = _conversations[sid];
+            if (conv != null && conv.isStale) {
+              unawaited(conv.reload());
+            }
           }
         }
         break;

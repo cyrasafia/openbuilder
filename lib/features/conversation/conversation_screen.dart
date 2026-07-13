@@ -25,6 +25,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _cmdLoaded = false;
   bool _cmdLoading = false;
   String? _cmdError;
+  bool _didForceReload = false;
 
   @override
   void dispose() {
@@ -35,6 +36,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    serverStore.setActiveConversation(widget.sessionId);
+    if (!_didForceReload) {
+      _didForceReload = true;
+      serverStore.conversationFor(widget.sessionId, force: true);
+    }
     final session = serverStore.sessionById(widget.sessionId);
     final conv = serverStore.conversationFor(widget.sessionId);
     if (conv == null) {

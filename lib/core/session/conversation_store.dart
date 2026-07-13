@@ -60,10 +60,29 @@ class ConversationStore extends ChangeNotifier {
   String? error;
   String status = 'idle';
 
+  bool _stale = false;
+  bool _reloading = false;
+  DateTime? _lastReloadAt;
+  static const _reloadBackoff = Duration(seconds: 10);
+
   List<DisplayMessage> get messages => List.unmodifiable(_messages);
   List<Todo> get todos => List.unmodifiable(_todos);
   List<Permission> get permissions => List.unmodifiable(_permissions);
   bool get busy => status == 'busy' || status == 'retry';
+
+  // ── Self-healing public API ──
+
+  bool get isStale => _stale;
+  void markStale() => _stale = true;
+
+  Future<void> reloadIfStale() async {
+    if (!_stale || _reloading) return;
+    if (_lastReloadAt != null &&
+        DateTime.now().difference(_lastReloadAt!) < _reloadBackoff) {
+      return;
+    }
+    await reload();
+  }
 
   static const _hidden = {
     'step-start',
@@ -97,6 +116,31 @@ class ConversationStore extends ChangeNotifier {
       loading = false;
       notifyListeners();
     }
+  }
+
+  Future<void> reload() async {
+    if (_reloading) return;
+    _reloading = true;
+    _lastReloadAt = DateTime.now();
+    try {
+      final entries = await client.messages(sessionId);
+      _messages
+        ..clear()
+        ..addAll(entries.map(_toDisplay));
+      try {
+        _todos = await client.todos(sessionId);
+      } catch (_) {}
+      loaded = true;
+      error = null;
+      _stale = false;
+      unawaited(_saveCache());
+    } catch (_) {
+      _stale = true;
+      await _loadCache();
+    } finally {
+      _reloading = false;
+    }
+    notifyListeners();
   }
 
   // ── Local cache for offline read-back ──
