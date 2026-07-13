@@ -313,6 +313,7 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _onSseState(String dir, SseState s) {
+    final wasReconnecting = _stateByDir[dir]?.reconnecting ?? false;
     _stateByDir[dir] = s;
     final anyReconnecting = _stateByDir.values.any((e) => e.reconnecting);
     final maxAttempt = _stateByDir.values
@@ -322,6 +323,12 @@ class ServerStore extends ChangeNotifier {
       reconnecting = anyReconnecting;
       reconnectAttempt = maxAttempt;
       notifyListeners();
+    }
+    // When a connection transitions from reconnecting → connected, trigger a
+    // reconcile to catch up on anything missed during the disconnect (the
+    // server may not always emit server.connected on every reconnect).
+    if (wasReconnecting && !s.reconnecting) {
+      _scheduleReconcile();
     }
   }
 
