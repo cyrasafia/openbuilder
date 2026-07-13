@@ -83,16 +83,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
               '?directory=${Uri.encodeQueryComponent(directory)}',
             ),
           ),
-          ListenableBuilder(
-            listenable: conv,
-            builder: (context, _) => conv.busy
-                ? IconButton(
-                    icon: const Icon(Icons.stop_circle_outlined),
-                    tooltip: '终止',
-                    onPressed: () => _abort(directory),
-                  )
-                : const SizedBox.shrink(),
-          ),
           _MoreMenu(
             sessionId: widget.sessionId,
             directory: directory,
@@ -146,6 +136,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 ),
               _ComposeBar(
                 ctl: _ctl,
+                busy: conv.busy,
+                onAbort: () => _abort(directory),
                 onChanged: (t) {
                   final mode = t.startsWith('/') && !t.contains(' ');
                   if (mode && !_cmdLoaded && !_cmdLoading) {
@@ -746,14 +738,21 @@ class _ComposeBar extends StatelessWidget {
   final TextEditingController ctl;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
+  final bool busy;
+  final VoidCallback onAbort;
   const _ComposeBar({
     required this.ctl,
     required this.onChanged,
     required this.onSend,
+    required this.busy,
+    required this.onAbort,
   });
 
   @override
   Widget build(BuildContext context) {
+    // When the agent is running and the input is empty, the send button
+    // doubles as the stop/abort control (merging the old title-bar button).
+    final showStop = busy && ctl.text.trim().isEmpty;
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
@@ -790,11 +789,20 @@ class _ComposeBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          IconButton.filled(
-            onPressed: onSend,
-            icon: const Icon(Icons.send),
-            tooltip: '发送',
-          ),
+          showStop
+              ? IconButton.filled(
+                  onPressed: onAbort,
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  tooltip: '停止推理',
+                  style: IconButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                  ),
+                )
+              : IconButton.filled(
+                  onPressed: onSend,
+                  icon: const Icon(Icons.send),
+                  tooltip: '发送',
+                ),
         ],
       ),
     );
