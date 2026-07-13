@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
@@ -34,7 +35,12 @@ class ServerStore extends ChangeNotifier {
   List<SessionModel> _sessions = [];
   final Map<String, SessionStatusValue> _statusMap = {};
   final Map<String, String> _lastMessage = {};
-  final Map<String, ConversationStore> _conversations = {};
+  /// Per-session conversation caches, capped at [_kMaxConversations] with
+  /// LRU eviction (oldest accessed evicted on insert). Uses a LinkedHashMap
+  /// so iteration order reflects access recency.
+  final LinkedHashMap<String, ConversationStore> _conversations =
+      LinkedHashMap<String, ConversationStore>();
+  static const _kMaxConversations = 20;
   bool connected = false;
   String? error;
 
@@ -97,11 +103,21 @@ class ServerStore extends ChangeNotifier {
 
   ConversationStore? conversationFor(String sessionId) {
     final existing = _conversations[sessionId];
-    if (existing != null) return existing;
+    if (existing != null) {
+      // Promote to most-recently-used (remove + re-insert preserves order).
+      _conversations.remove(sessionId);
+      _conversations[sessionId] = existing;
+      return existing;
+    }
     final c = client;
     if (c == null) return null;
     final conv = ConversationStore(sessionId, c);
     _conversations[sessionId] = conv;
+    // LRU eviction: drop the oldest entries while over capacity.
+    while (_conversations.length > _kMaxConversations) {
+      final oldest = _conversations.keys.first;
+      _conversations.remove(oldest);
+    }
     conv.status = statusOf(sessionId).type;
     unawaited(conv.load());
     // After loading, backfill the list preview (frontend §2.2 D4 compromise).
