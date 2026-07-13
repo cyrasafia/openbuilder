@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../app_state.dart';
 import '../../core/net/dio_factory.dart';
@@ -19,11 +20,22 @@ class _SettingsTabState extends State<SettingsTab> {
   bool _checking = false;
   HealthInfo? _health;
   String? _error;
+  String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
     _checkHealth();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _appVersion = '${info.version} (${info.buildNumber})';
+      });
+    }
   }
 
   Future<void> _checkHealth() async {
@@ -157,7 +169,9 @@ class _SettingsTabState extends State<SettingsTab> {
                 ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('客户端版本'),
-                  trailing: const Text('0.1.0 (Phase 0)'),
+                  trailing: Text(_appVersion.isEmpty
+                      ? '…'
+                      : _appVersion),
                 ),
               ]),
               const SizedBox(height: 24),
