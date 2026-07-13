@@ -586,8 +586,12 @@ class ServerStore extends ChangeNotifier {
 
   /// Called when the app goes to background: stop SSE to save battery.
   /// Cached data (sessions, conversations) is retained for instant resume.
+  /// All conversations are marked stale since we lose live SSE updates.
   Future<void> pause() async {
     if (!connected || _profile == null) return;
+    for (final conv in _conversations.values) {
+      conv.markStale();
+    }
     await _stopSse();
   }
 
@@ -596,6 +600,19 @@ class ServerStore extends ChangeNotifier {
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
     await _bootstrap();
+    // Directly reload the active conversation — don't wait for the
+    // server.connected SSE event (which may be delayed or whose reconcile
+    // may fail before reaching the reload step on weak networks).
+    final activeId = _activeSessionId;
+    final activeConv =
+        activeId != null ? _conversations[activeId] : null;
+    if (activeConv != null) {
+      if (activeConv.busy) {
+        activeConv.markStale();
+      } else {
+        unawaited(activeConv.reload());
+      }
+    }
     _startSse(_kGlobalWatchdog);
     for (final dir in _eventDirectories()) {
       _startSse(dir);
