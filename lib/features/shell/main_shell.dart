@@ -1,11 +1,55 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 
-class MainShell extends StatelessWidget {
+class MainShell extends StatefulWidget {
   final StatefulNavigationShell shell;
   const MainShell({super.key, required this.shell});
+
+  @override
+  State<MainShell> createState() => _MainShellState();
+}
+
+class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
+  Timer? _pauseTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    _pauseTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+        // Defer SSE teardown by 30s — if the user returns quickly (e.g. quick
+        // app switch / notification peek) we avoid a full reconnect cycle.
+        _pauseTimer?.cancel();
+        _pauseTimer = Timer(const Duration(seconds: 30), () {
+          serverStore.pause();
+        });
+        break;
+      case AppLifecycleState.resumed:
+        _pauseTimer?.cancel();
+        _pauseTimer = null;
+        serverStore.resume();
+        break;
+      default:
+        break;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -15,14 +59,14 @@ class MainShell extends StatelessWidget {
         builder: (context, _) => Column(
           children: [
             if (serverStore.reconnecting) const _ReconnectBanner(),
-            Expanded(child: shell),
+            Expanded(child: widget.shell),
           ],
         ),
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: shell.currentIndex,
+        selectedIndex: widget.shell.currentIndex,
         onDestinationSelected: (i) =>
-            shell.goBranch(i, initialLocation: i == shell.currentIndex),
+            widget.shell.goBranch(i, initialLocation: i == widget.shell.currentIndex),
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.chat_bubble_outline),

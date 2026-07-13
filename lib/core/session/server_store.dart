@@ -492,21 +492,7 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> _teardown() async {
-    _reconcileTimer?.cancel();
-    _reconcileTimer = null;
-    for (final sub in _sseSubs.values) {
-      await sub.cancel();
-    }
-    _sseSubs.clear();
-    for (final sub in _sseStateSubs.values) {
-      await sub.cancel();
-    }
-    _sseStateSubs.clear();
-    for (final c in _sseByDir.values) {
-      await c.stop();
-    }
-    _sseByDir.clear();
-    _stateByDir.clear();
+    await _stopSse();
     _conversations.clear();
   }
 
@@ -534,5 +520,45 @@ class ServerStore extends ChangeNotifier {
       connected = true;
     }
     notifyListeners();
+  }
+
+  // ── App lifecycle (specs §5: background → pause, foreground → resume) ──
+
+  /// Called when the app goes to background: stop SSE to save battery.
+  /// Cached data (sessions, conversations) is retained for instant resume.
+  Future<void> pause() async {
+    if (!connected || _profile == null) return;
+    await _stopSse();
+  }
+
+  /// Called when the app returns to foreground: restart SSE and do a full
+  /// reconcile to catch up on anything missed while backgrounded.
+  Future<void> resume() async {
+    if (!connected || client == null || _profile == null) return;
+    await _bootstrap();
+    _startSse(_kGlobalWatchdog);
+    for (final dir in _eventDirectories()) {
+      _startSse(dir);
+    }
+    notifyListeners();
+  }
+
+  /// Stop all SSE connections without clearing cached data (used by pause).
+  Future<void> _stopSse() async {
+    _reconcileTimer?.cancel();
+    _reconcileTimer = null;
+    for (final sub in _sseSubs.values) {
+      await sub.cancel();
+    }
+    _sseSubs.clear();
+    for (final sub in _sseStateSubs.values) {
+      await sub.cancel();
+    }
+    _sseStateSubs.clear();
+    for (final c in _sseByDir.values) {
+      await c.stop();
+    }
+    _sseByDir.clear();
+    _stateByDir.clear();
   }
 }
