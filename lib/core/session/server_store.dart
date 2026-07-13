@@ -607,6 +607,9 @@ class ServerStore extends ChangeNotifier {
     final activeConv =
         activeId != null ? _conversations[activeId] : null;
     if (activeConv != null) {
+      // Sync conv status from _bootstrap's fresh _statusMap — pause may have
+      // missed a session.idle event, leaving conv.status stuck on 'busy'.
+      activeConv.setStatus(_statusMap[activeId]?.type ?? 'idle');
       if (activeConv.busy) {
         activeConv.markStale();
       } else {
