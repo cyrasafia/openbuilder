@@ -126,7 +126,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           );
           _scheduleAutoScroll();
           final showFooter =
-              conv.todos.isNotEmpty || conv.permissions.isNotEmpty;
+              conv.permissions.isNotEmpty || conv.todos.any((t) => !t.done);
           return Column(
             children: [
               Expanded(child: list),
