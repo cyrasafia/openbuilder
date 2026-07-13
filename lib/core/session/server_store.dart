@@ -32,6 +32,9 @@ class ServerStore extends ChangeNotifier {
   bool _needsStaleMarking = false;
   String? _resumeReloadedSessionId;
 
+  /// Pending permissions keyed by sessionId (fed by SSE + REST backfill).
+  final Map<String, Permission> _pendingPermissions = {};
+
   /// True while the SSE connection is in backoff reconnect (specs §11 banner).
   bool reconnecting = false;
   /// Current reconnect attempt (1-based); 0 when connected / idle.
@@ -62,6 +65,9 @@ class ServerStore extends ChangeNotifier {
       _statusMap[id] ?? const SessionStatusValue('idle');
 
   String? lastMessageOf(String id) => _lastMessage[id];
+
+  bool hasPendingPermission(String sessionId) =>
+      _pendingPermissions.containsKey(sessionId);
 
   ProjectModel? projectOf(String id) {
     for (final p in _projects) {
@@ -131,6 +137,11 @@ class ServerStore extends ChangeNotifier {
       _conversations.remove(oldest);
     }
     conv.status = statusOf(sessionId).type;
+    // Inject any pending permission known from SSE/REST backfill.
+    final pending = _pendingPermissions[sessionId];
+    if (pending != null) {
+      conv.onPermission(pending);
+    }
     unawaited(conv.load());
     // After loading, backfill the list preview (frontend §2.2 D4 compromise).
     unawaited(_backfillPreview(sessionId, conv));
@@ -346,7 +357,32 @@ class ServerStore extends ChangeNotifier {
       }
       _needsStaleMarking = false;
     }
+    unawaited(_backfillPermissions());
     notifyListeners();
+  }
+
+  /// Fetch pending permissions via REST and route to cached conversations.
+  /// SSE only pushes permission.asked at creation time — if the app wasn't
+  /// listening, the event is missed. This backfills on connect/reconnect.
+  Future<void> _backfillPermissions() async {
+    final c = client;
+    if (c == null) return;
+    final prev = Map.of(_pendingPermissions);
+    _pendingPermissions.clear();
+    for (final p in _projects) {
+      if (p.worktree.isEmpty) continue;
+      try {
+        final pending = await c.pendingPermissions(p.worktree);
+        for (final perm in pending) {
+          _pendingPermissions[perm.sessionID] = perm;
+          _conversations[perm.sessionID]?.onPermission(perm);
+        }
+      } catch (_) {}
+    }
+    // Preserve SSE-delivered permissions for sessions whose REST failed.
+    for (final entry in prev.entries) {
+      _pendingPermissions.putIfAbsent(entry.key, () => entry.value);
+    }
   }
 
   void _onSseState(String dir, SseState s) {
@@ -431,16 +467,22 @@ class ServerStore extends ChangeNotifier {
           _conversations[sid]?.onTodosUpdated(list);
         }
         break;
-      case 'permission.updated':
+      case 'permission.asked':
+      case 'permission.v2.asked':
         final p = Permission.fromJson(ev.properties);
+        _pendingPermissions[p.sessionID] = p;
         _conversations[p.sessionID]?.onPermission(p);
         final title = sessionById(p.sessionID)?.title ?? '会话';
         unawaited(
             NotificationService.notifyPermission(title, p.title).catchError((_) {}));
         break;
       case 'permission.replied':
+      case 'permission.v2.replied':
         final sid = ev.properties['sessionID']?.toString();
         final pid = ev.properties['permissionID']?.toString();
+        if (sid != null) {
+          _pendingPermissions.removeWhere((_, p) => p.id == pid);
+        }
         if (sid != null && pid != null) {
           _conversations[sid]?.onPermissionReplied(pid);
         }
@@ -566,6 +608,7 @@ class ServerStore extends ChangeNotifier {
     _sessions = [];
     _statusMap.clear();
     _lastMessage.clear();
+    _pendingPermissions.clear();
     client = null;
     _profile = null;
     notifyListeners();
@@ -624,6 +667,7 @@ class ServerStore extends ChangeNotifier {
     for (final dir in _eventDirectories()) {
       _startSse(dir);
     }
+    unawaited(_backfillPermissions());
     notifyListeners();
   }
 

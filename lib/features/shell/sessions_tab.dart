@@ -51,6 +51,8 @@ class SessionsTab extends StatelessWidget {
                   project: serverStore.projectOf(s.projectID),
                   status: serverStore.statusOf(s.id).type,
                   preview: serverStore.lastMessageOf(s.id),
+                  hasPermission:
+                      serverStore.hasPendingPermission(s.id),
                   onTap: () => context.push('/session/${s.id}'),
                 );
               },
@@ -70,6 +72,7 @@ class _SessionTile extends StatelessWidget {
   final ProjectModel? project;
   final String status;
   final String? preview;
+  final bool hasPermission;
   final VoidCallback onTap;
 
   const _SessionTile({
@@ -80,6 +83,7 @@ class _SessionTile extends StatelessWidget {
     required this.project,
     required this.status,
     required this.preview,
+    this.hasPermission = false,
     required this.onTap,
   });
 
@@ -101,6 +105,11 @@ class _SessionTile extends StatelessWidget {
                   fontWeight: FontWeight.w600, fontSize: 15),
             ),
           ),
+          if (hasPermission) ...[
+            Icon(Icons.shield_outlined,
+                size: 15, color: Theme.of(context).colorScheme.error),
+            const SizedBox(width: 4),
+          ],
           const SizedBox(width: 8),
           Text(relTime(session.updated),
               style: TextStyle(fontSize: 11.5, color: muted)),

@@ -141,6 +141,19 @@ class OpencodeClient {
     return _getModelsFromData(r.data, Todo.fromJson);
   }
 
+  /// `GET /permission?directory=<dir>` — pending permission requests.
+  Future<List<Permission>> pendingPermissions(String directory) async {
+    final r = await dio.get<dynamic>('/permission',
+        queryParameters: {'directory': directory});
+    if (r.data is List) {
+      return (r.data as List)
+          .map((e) => Permission.fromJson(
+              (e as Map).cast<String, dynamic>()))
+          .toList();
+    }
+    return const [];
+  }
+
   /// `POST /session/:id/permissions/:permissionID`
   Future<void> respondPermission(
     String sessionId,

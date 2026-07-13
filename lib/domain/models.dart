@@ -295,19 +295,46 @@ class Permission {
   final String type;
   final String title;
   final String sessionID;
+  final List<String> patterns;
+  final Map<String, dynamic>? metadata;
   const Permission({
     required this.id,
     required this.type,
     required this.title,
     required this.sessionID,
+    this.patterns = const [],
+    this.metadata,
   });
 
-  factory Permission.fromJson(Map<String, dynamic> j) => Permission(
-        id: (j['id'] ?? '').toString(),
-        type: (j['type'] ?? '').toString(),
-        title: (j['title'] ?? '').toString(),
-        sessionID: (j['sessionID'] ?? '').toString(),
-      );
+  factory Permission.fromJson(Map<String, dynamic> j) {
+    final perm = (j['permission'] ?? j['type'] ?? '').toString();
+    final meta = j['metadata'] is Map
+        ? (j['metadata'] as Map).cast<String, dynamic>()
+        : null;
+    return Permission(
+      id: (j['id'] ?? '').toString(),
+      type: perm,
+      title: _permissionTitle(perm, meta),
+      sessionID: (j['sessionID'] ?? '').toString(),
+      patterns: j['patterns'] is List
+          ? (j['patterns'] as List).map((e) => e.toString()).toList()
+          : const [],
+      metadata: meta,
+    );
+  }
+}
+
+/// Derive a human-readable title from permission type + metadata.
+String _permissionTitle(String type, Map<String, dynamic>? meta) {
+  switch (type) {
+    case 'external_directory':
+      final filepath = meta?['filepath']?.toString();
+      return filepath != null ? '访问目录 $filepath' : '外部目录访问';
+    case 'bash':
+      return '执行命令';
+    default:
+      return type.isEmpty ? '权限请求' : type;
+  }
 }
 
 int _i(dynamic v) {
