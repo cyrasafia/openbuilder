@@ -319,35 +319,32 @@ class ServerStore extends ChangeNotifier {
       for (final dir in _eventDirectories()) {
         _startSse(dir);
       }
-      // Self-healing: reload the active conversation to fill any gaps.
-      final activeId = _activeSessionId;
-      final activeConv =
-          activeId != null ? _conversations[activeId] : null;
-      if (activeConv != null) {
-        if (activeId == _resumeReloadedSessionId) {
-          // resume() already reloaded this conversation — skip redundant
-          // reload (avoids double-fetch when server.connected fires ~800ms
-          // after resume).
-          _resumeReloadedSessionId = null;
-        } else if (activeConv.busy) {
-          activeConv.markStale();
-        } else {
-          unawaited(activeConv.reload());
-        }
-      }
-      // Mark non-active cached conversations stale so they reload on next
-      // access — but only after a genuine disconnect, not every reconcile.
-      if (_needsStaleMarking) {
-        for (final entry in _conversations.entries) {
-          if (entry.key != activeId) {
-            entry.value.markStale();
-          }
-        }
-        _needsStaleMarking = false;
-      }
       error = null;
     } catch (e) {
       error = '$e';
+    }
+    // R1: Conversation-layer healing lives OUTSIDE the try so it only
+    // depends on conversation-level REST, not list/status fetching. A weak
+    // network may fail _fetchAllSessions while messages() still works.
+    final activeId = _activeSessionId;
+    final activeConv =
+        activeId != null ? _conversations[activeId] : null;
+    if (activeConv != null) {
+      if (activeId == _resumeReloadedSessionId) {
+        _resumeReloadedSessionId = null;
+      } else if (activeConv.busy) {
+        activeConv.markStale();
+      } else {
+        unawaited(activeConv.reload());
+      }
+    }
+    if (_needsStaleMarking) {
+      for (final entry in _conversations.entries) {
+        if (entry.key != activeId) {
+          entry.value.markStale();
+        }
+      }
+      _needsStaleMarking = false;
     }
     notifyListeners();
   }

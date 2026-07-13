@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -71,6 +73,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: '刷新',
+            onPressed: () {
+              final c =
+                  serverStore.conversationFor(widget.sessionId);
+              if (c != null) unawaited(c.reload());
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             tooltip: '文件',
