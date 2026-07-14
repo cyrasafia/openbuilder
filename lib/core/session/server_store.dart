@@ -61,6 +61,10 @@ class ServerStore extends ChangeNotifier {
   bool get sseConnected => _sseByDir.containsKey(_kGlobalWatchdog) &&
       _watchdogConnected;
 
+  /// Whether the watchdog SSE is in reconnecting state.
+  bool get sseReconnecting =>
+      _sseByDir.containsKey(_kGlobalWatchdog) && !_watchdogConnected;
+
   /// Whether the SSE stream for a session's directory is connected.
   bool isSessionSseConnected(String sessionId) {
     if (!_watchdogConnected) return false;
@@ -906,5 +910,6 @@ class ServerStore extends ChangeNotifier {
     }
     _sseByDir.clear();
     _sseRequired.clear();
+    _watchdogConnected = false;
   }
 }

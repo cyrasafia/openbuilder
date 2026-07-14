@@ -85,6 +85,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             listenable: serverStore,
             builder: (context, _) => SseStatusDot(
               connected: serverStore.sseConnected,
+              reconnecting: serverStore.sseReconnecting,
             ),
           ),
           IconButton(
@@ -623,6 +624,7 @@ class _ToolChip extends StatelessWidget {
       'error' => (Icons.error, const Color(0xFFF85149)),
       _ => (Icons.hourglass_top, const Color(0xFF8B949E)),
     };
+    final summary = part.toolSummary;
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -635,8 +637,15 @@ class _ToolChip extends StatelessWidget {
         children: [
           Icon(icon, size: 15, color: color),
           const SizedBox(width: 6),
-          Text(part.tool ?? 'tool',
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          Flexible(
+            child: Text(
+              summary,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTheme.mono.copyWith(
+                  fontSize: 12, fontWeight: FontWeight.w500),
+            ),
+          ),
         ],
       ),
     );

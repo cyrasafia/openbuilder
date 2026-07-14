@@ -44,7 +44,6 @@ class SseClient {
   String? _lastId;
   bool _stopped = true;
   int _backoff = 1;
-  bool _reconnecting = false;
   int _reconnectAttempt = 0;
   bool _reconnectPending = false;
   DateTime _lastEventAt = DateTime.now();
@@ -102,7 +101,6 @@ class SseClient {
   Future<void> _scheduleReconnect() async {
     _reconnectPending = true;
     _reconnectAttempt++;
-    _reconnecting = true;
     _emit(SseState(reconnecting: true, attempt: _reconnectAttempt));
     await Future.delayed(Duration(seconds: _backoff));
     _backoff = (_backoff * 2).clamp(1, 30);
@@ -122,8 +120,9 @@ class SseClient {
     } catch (_) {
       // ignore malformed frames
     }
-    if (_reconnecting) {
-      _reconnecting = false;
+    // Always emit connected on receiving data — covers first connect
+    // AND reconnect.
+    if (!_stateCtl.isClosed) {
       _reconnectAttempt = 0;
       _emit(const SseState(connected: true));
     }
