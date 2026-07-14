@@ -226,7 +226,8 @@ class ServerStore extends ChangeNotifier {
     try {
       final projects = await client!.projects();
       final sessions = await _fetchAllSessions();
-      final status = await _fetchAllStatuses(projects);
+      final status =
+          await _fetchAllStatuses(projects: projects, sessions: sessions);
       _projects = projects;
       _sessions = sessions;
       _statusMap
@@ -240,13 +241,20 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Aggregate session status across all project directories. Without a
-  /// directory, GET /session/status returns `{}`, so we must query per-dir.
-  Future<Map<String, SessionStatusValue>> _fetchAllStatuses(
-      List<ProjectModel> projects) async {
+  /// Aggregate session status across all project + session directories.
+  /// Without a directory, GET /session/status returns `{}`, so we must query
+  /// per-dir. Includes sandbox worktree directories (SS-1: must match the
+  /// directory coverage of _eventDirectories / _fetchAllSessions).
+  Future<Map<String, SessionStatusValue>> _fetchAllStatuses({
+    required List<ProjectModel> projects,
+    List<SessionModel> sessions = const [],
+  }) async {
     final dirs = <String>{};
     for (final p in projects) {
       if (p.worktree.isNotEmpty) dirs.add(p.worktree);
+    }
+    for (final s in sessions) {
+      if (s.directory.isNotEmpty) dirs.add(s.directory);
     }
     final results = await Future.wait(dirs.map((dir) async {
       try {
@@ -338,7 +346,8 @@ class ServerStore extends ChangeNotifier {
     if (client == null) return;
     try {
       final sessions = await _fetchAllSessions();
-      final status = await _fetchAllStatuses(_projects);
+      final status =
+          await _fetchAllStatuses(projects: _projects, sessions: sessions);
       _sessions = sessions;
       _statusMap
         ..clear()
