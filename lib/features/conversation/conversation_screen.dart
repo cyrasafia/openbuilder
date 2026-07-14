@@ -317,15 +317,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final baseColor =
             user ? const Color(0xFFD8F3E0) : Theme.of(context).colorScheme.onSurface;
         final isDark = Theme.of(context).brightness == Brightness.dark;
-        final codeBlockBg = isDark
-            ? const Color(0xFF161B22)
-            : const Color(0xFFF0F2F5);
-        final codeBlockBorder = isDark
-            ? const Color(0xFF30363D)
-            : const Color(0xFFDADDE3);
-        final inlineCodeBg = isDark
-            ? const Color(0xFF23272E)
-            : const Color(0xFFE9ECF1);
+        // User bubble is always dark green — code blocks inside it must use
+        // dark backgrounds regardless of theme, or light text on light bg
+        // becomes unreadable.
+        final codeBlockBg = user
+            ? const Color(0xFF142A1E)
+            : (isDark ? const Color(0xFF161B22) : const Color(0xFFF0F2F5));
+        final codeBlockBorder = user
+            ? const Color(0xFF2A4A38)
+            : (isDark ? const Color(0xFF30363D) : const Color(0xFFDADDE3));
+        final inlineCodeBg = user
+            ? const Color(0xFF1A3328)
+            : (isDark ? const Color(0xFF23272E) : const Color(0xFFE9ECF1));
         return Padding(
           padding: const EdgeInsets.only(top: 4),
           child: MarkdownBody(
