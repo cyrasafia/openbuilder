@@ -547,6 +547,9 @@ class ServerStore extends ChangeNotifier {
     final sid = m.sessionID;
     if (sid == null || sid.isEmpty) return;
     _conversations[sid]?.onMessageUpdated(m);
+    // MU-1: notify immediately so the list layer knows a message changed,
+    // before the preview fetch (which may be slow on weak networks).
+    notifyListeners();
     // Preview (frontend §2.2 D1/D2): refresh on message completion / user msg.
     if (m.role == 'user' || (m.finish != null && m.finish!.isNotEmpty)) {
       try {
@@ -555,10 +558,10 @@ class ServerStore extends ChangeNotifier {
         if (preview != null) {
           _lastMessage[sid] =
               (m.role == 'user' ? '你: ' : '') + preview;
+          notifyListeners();
         }
       } catch (_) {}
     }
-    notifyListeners();
   }
 
   String? _previewOf(MessageEntry entry) {
