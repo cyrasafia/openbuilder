@@ -695,8 +695,24 @@ class ServerStore extends ChangeNotifier {
 
   /// Called when the app returns to foreground: restart SSE and do a full
   /// reconcile to catch up on anything missed while backgrounded.
+  ///
+  /// Only runs the heavy bootstrap+reload path when SSE was actually torn
+  /// down by [pause] (backgrounded ≥30s). On a quick app switch the 30s
+  /// pause timer is cancelled before firing, so SSE stays connected and
+  /// buffered events drain naturally on resume — triggering a REST reload
+  /// here would clear those SSE-delivered deltas with a stale snapshot
+  /// (MU-2 race made deterministic), silently dropping a message segment.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
+    if (_sseByDir.isNotEmpty) {
+      // SSE never stopped — events buffered while backgrounded are still
+      // waiting in the socket and will be dispatched now that the event
+      // loop is running again. A reload would clobber them; just backfill
+      // permissions (idempotent) and let SSE continue.
+      unawaited(_backfillPermissions());
+      notifyListeners();
+      return;
+    }
     await _bootstrap();
     // Directly reload the active conversation — don't wait for the
     // server.connected SSE event (which may be delayed or whose reconcile
