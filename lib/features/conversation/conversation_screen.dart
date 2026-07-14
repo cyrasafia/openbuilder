@@ -74,15 +74,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: '刷新',
-            onPressed: () {
-              final c =
-                  serverStore.conversationFor(widget.sessionId);
-              if (c != null) unawaited(c.reload());
-            },
-          ),
-          IconButton(
             icon: const Icon(Icons.folder_outlined),
             tooltip: '文件',
             onPressed: () => context.push(
@@ -913,31 +904,21 @@ class _MoreMenu extends StatelessWidget {
       tooltip: '更多',
       onSelected: (v) => _onSelected(context, v),
       itemBuilder: (_) => const [
-        PopupMenuItem(value: 'share', child: Text('分享')),
+        PopupMenuItem(value: 'refresh', child: Text('刷新')),
+        PopupMenuItem(value: 'rename', child: Text('修改标题')),
         PopupMenuItem(value: 'archive', child: Text('归档')),
-        PopupMenuItem(
-            value: 'delete', child: Text('删除', style: TextStyle(color: Colors.red))),
       ],
     );
   }
 
   Future<void> _onSelected(BuildContext context, String value) async {
     final client = serverStore.client;
-    if (client == null) return;
     switch (value) {
-      case 'share':
-        try {
-          await client.share(sessionId, directory: directory);
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(const SnackBar(content: Text('已生成分享链接')));
-          }
-        } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text('分享失败：$e')));
-          }
-        }
+      case 'refresh':
+        final conv = serverStore.conversationFor(sessionId);
+        if (conv != null) unawaited(conv.reload());
+      case 'rename':
+        await _showRenameDialog(context);
       case 'archive':
         final ok = await showDialog<bool>(
           context: context,
@@ -954,10 +935,11 @@ class _MoreMenu extends StatelessWidget {
             ],
           ),
         );
-        if (ok == true) {
+        if (ok == true && client != null) {
           try {
             await client.archive(sessionId,
-                directory: directory, archived: DateTime.now().millisecondsSinceEpoch);
+                directory: directory,
+                archived: DateTime.now().millisecondsSinceEpoch);
             if (context.mounted) context.pop();
           } catch (e) {
             if (context.mounted) {
@@ -966,37 +948,52 @@ class _MoreMenu extends StatelessWidget {
             }
           }
         }
-      case 'delete':
-        final ok = await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('删除会话'),
-            content: const Text('删除为硬删除，会清除全部数据且不可恢复。'),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('取消')),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    backgroundColor: Colors.red.withAlpha(25)),
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('删除'),
-              ),
-            ],
+    }
+  }
+
+  Future<void> _showRenameDialog(BuildContext context) async {
+    final client = serverStore.client;
+    if (client == null) return;
+    final ctl =
+        TextEditingController(text: session?.title ?? '');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('修改标题'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '标题',
+            border: OutlineInputBorder(),
           ),
-        );
-        if (ok == true) {
-          try {
-            await client.deleteSession(sessionId, directory: directory);
-            if (context.mounted) context.pop();
-          } catch (e) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text('删除失败：$e')));
-            }
-          }
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      final title = ctl.text.trim();
+      if (title.isEmpty) return;
+      try {
+        await client.updateTitle(sessionId, title, directory: directory);
+        unawaited(serverStore.refresh());
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('标题已更新')));
         }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('修改失败：$e')));
+        }
+      }
     }
   }
 }

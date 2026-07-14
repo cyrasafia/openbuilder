@@ -234,6 +234,16 @@ class OpencodeClient {
     );
   }
 
+  /// `PATCH /session/:id` — update session title.
+  Future<void> updateTitle(String sessionId, String title,
+      {String? directory}) async {
+    await dio.patch(
+      '/session/$sessionId',
+      queryParameters: directory != null ? {'directory': directory} : null,
+      data: {'title': title},
+    );
+  }
+
   /// `POST /session/:id/share` — generate a share link. Returns the updated session.
   Future<SessionModel> share(String sessionId, {String? directory}) async {
     final r = await dio.post(
