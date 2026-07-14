@@ -102,15 +102,32 @@ class _ErrorBanner extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       color: scheme.errorContainer,
-      child: Text(
-        error,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 13,
-          color: scheme.onErrorContainer,
-          fontWeight: FontWeight.w500,
-        ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              error,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                color: scheme.onErrorContainer,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => serverStore.refresh(),
+            child: Text(
+              '重试',
+              style: TextStyle(
+                fontSize: 13,
+                color: scheme.onErrorContainer,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

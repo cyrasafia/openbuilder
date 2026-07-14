@@ -31,6 +31,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   @override
   void dispose() {
+    serverStore.setActiveConversation(null);
     _scrollController.dispose();
     _ctl.dispose();
     super.dispose();

@@ -32,7 +32,6 @@ class ServerStore extends ChangeNotifier {
   static const _kGlobalWatchdog = '\u0000__global_watchdog__';
   static const _kMaxIdleSseConnections = 5;
   static const kMaxRefreshInterval = Duration(seconds: 30);
-  static const _kMaxRefreshInterval = kMaxRefreshInterval;
   DateTime? _lastFullRefreshAt;
 
   // ── Self-healing state ──
@@ -205,8 +204,15 @@ class ServerStore extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    // Start watchdog + SSE for busy/retry sessions only.
-    await refreshListAndWorkingSse(force: true);
+    // _bootstrap already fetched projects + sessions + status.
+    // Just start watchdog + SSE for busy/retry sessions + active conversation.
+    _startSse(_kGlobalWatchdog);
+    _startRequiredSse();
+    _trimSse();
+    _lastFullRefreshAt = DateTime.now();
+    connected = true;
+    unawaited(_backfillPermissions());
+    notifyListeners();
   }
 
   /// Sentinel key for the always-on bare `/event` connection (no `directory`
@@ -393,12 +399,12 @@ class ServerStore extends ChangeNotifier {
       // Start SSE for busy/retry sessions + active conversation.
       _startRequiredSse();
       _trimSse();
+      _lastFullRefreshAt = DateTime.now();
       error = null;
       connected = true;
     } catch (e) {
       error = '$e';
     }
-    _lastFullRefreshAt = DateTime.now();
     // Conversation-layer healing.
     final activeId = _activeSessionId;
     final activeConv =
@@ -851,7 +857,7 @@ class ServerStore extends ChangeNotifier {
 
     // Has watchdog but data is stale.
     final stale = _lastFullRefreshAt == null ||
-        DateTime.now().difference(_lastFullRefreshAt!) > _kMaxRefreshInterval;
+        DateTime.now().difference(_lastFullRefreshAt!) > kMaxRefreshInterval;
     if (stale) {
       await refreshListAndWorkingSse(force: false);
       return;
