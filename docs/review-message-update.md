@@ -87,4 +87,57 @@
 | MU-4 | 乐观消息连发第二条短暂消失 | 🟢 低 | 🟢 已记录（O-2），自愈 |
 
 **整体设计合理。** MU-2 的 resume 确定性触发路径曾让「快速返回丢消息」必现，现已修复——其余为自愈边角或理论项。
+
+---
+
+## 修复评审：`dfae1bb fix: skip reload in resume() when SSE stayed connected (MU-2)`
+
+> 评审对象：MU-2 resume 确定性触发路径的修复 commit。
+> 命名对齐既有 `review-` 风格。本文记录对该修复实现的评审结论。
+
+### 评审基线
+
+- 修复 commit：`dfae1bb`
+- 改动文件：`lib/core/session/server_store.dart`（+16 行 guard），`docs/review-message-update.md`（新增本评审）
+- 现状：`dart analyze` 0 issue；`flutter test` 6/6 通过
+
+### ✅ 根因与修复方向正确
+
+修复把 MU-2 从「自愈」变「必现」的根因定位准确：快速 app 切换（<30s）取消 `pause()` 的 30s 定时器 → `pause()` 未跑 → `_stopSse()` 未调 → SSE 仍连着、增量缓冲在 socket；但 `resume()` **无条件**跑 `_bootstrap()` + `activeConv.reload()`，其 `await client.messages()` 窗口正落在回前台后缓冲事件 dispatch 期间 → `_messages.clear()` 清掉 delta 换成（可能更旧的）REST 快照 → 中间消息段永久丢失（SSE 不重投）。commit message 描述清晰。
+
+### ✅ guard 判据 `_sseByDir.isNotEmpty` 可靠
+
+`pause()` → `_stopSse()`（`:743`）末尾 `_sseByDir.clear()`（`:757`），故：
+
+- **真后台 ≥30s**：`pause()` 执行 → `_stopSse()` → `_sseByDir` 空 → 走原 bootstrap+reload 重路径 ✅
+- **快切 <30s**：定时器被取消、`pause()` 未跑 → `_sseByDir` 非空 → 跳过重路径、靠 SSE 自然排空 ✅
+- 判据在 `resume()` 入口**同步**读取，无并发 mutation 可竞争 ✅
+
+### ✅ 快路径副作用处理得当
+
+快路径仍调 `unawaited(_backfillPermissions())`（幂等、廉价）+ `notifyListeners()`——权限保持新鲜而不触碰消息，避免 clobber。原 MU-2 固有竞态（SSE 重连 reconcile 的 reload）明确排除在外，仍由 busy 推迟 + idle 自愈覆盖。
+
+### ✅ MU-2-R1 — iOS 系统挂起下 guard 可能误判 · 已修复（confirmed-connected 判据）
+
+`_onSseState`（`:436`）在 SSE 失败时**不**从 `_sseByDir` 移除条目——只有 `_stopSse()`/`_pruneSse()`（reconcile 内）会清。若**系统挂起** app（非干净后台事件触发 `pause()`），30s Dart 定时器可能因 isolate 冻结而不触发 → `pause()` 未跑 → `_sseByDir` 仍非空但 socket 已死。原 `dfae1bb` 的 guard 只查 `_sseByDir.isNotEmpty`，会把这种「socket 已死但条目仍在」判为存活 → 走快路径跳过 reload → 无 SSE 增量排空 → 列表/详情短暂陈旧，恢复完全依赖 `SseClient` 自动重连 → `_onSseState` reconnecting→connected → `_scheduleReconcile` 补齐（自愈，仅延迟）。
+
+> ✅ **已修复**：guard 收紧为 `_sseByDir.isNotEmpty && _stateByDir.values.any((s) => s.connected)`——要求至少一条连接处于 `SseState(connected: true)`（`SseClient._onData` 收到首帧后才置位，见 `lib/core/sse/sse_client.dart:120`），而非仅条目存在。
+> - 快切 <30s、SSE 真存活：state 保留 `connected: true` → 快路径 ✅（无回归）
+> - iOS 挂起、`SseClient` 已察觉掉线（state=reconnecting）：`any(connected)` 为假 → 落入全量 bootstrap+reload 路径——此时无增量在流，reload 不触发 MU-2；reconcile 仍会在重连后再跑一次 ✅
+> - iOS 挂起、state 仍为陈旧 `connected: true`（掉线尚未被察觉）：仍走快路径 → 短暂陈旧，靠后续重连 reconcile 自愈。此子情形判据无法即时分辨（state 本身是陈旧的），属固有局限，但有自愈兜底，非阻塞。
+> - 边角：刚 `connect()` 后首帧未到时 `_stateByDir` 无 `connected` 条目 → 落全量路径；此场景无 SSE 增量可 clobber，reload 无害。
+
+### ✅ MU-2-R2 — 本文末尾无换行 · 已修复
+
+`dfae1bb` 新增本文件时末尾 `\ No newline at end of file`。已补末尾换行。
+
+### 优先级结论
+
+| 编号 | 问题 | 优先级 | 状态 |
+|------|------|--------|------|
+| MU-2 | resume 确定性触发竞态 | 🟡 中 | ✅ 已修复（dfae1bb） |
+| MU-2-R1 | iOS 系统挂起下 guard 误判 → 短暂陈旧 | 🟡 中 | ✅ 已修复（confirmed-connected 判据） |
+| MU-2-R2 | 本文件末尾无换行 | 🟢 低 | ✅ 已修复 |
+
+修复正确对症，guard 判据经收紧后覆盖「SseClient 已察觉掉线」的 iOS 挂起子情形；剩余「state 陈旧 connected」子情形有自愈兜底，非阻塞。
 </content>

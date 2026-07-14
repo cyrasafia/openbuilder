@@ -697,18 +697,27 @@ class ServerStore extends ChangeNotifier {
   /// reconcile to catch up on anything missed while backgrounded.
   ///
   /// Only runs the heavy bootstrap+reload path when SSE was actually torn
-  /// down by [pause] (backgrounded ≥30s). On a quick app switch the 30s
-  /// pause timer is cancelled before firing, so SSE stays connected and
-  /// buffered events drain naturally on resume — triggering a REST reload
-  /// here would clear those SSE-delivered deltas with a stale snapshot
-  /// (MU-2 race made deterministic), silently dropping a message segment.
+  /// down by [pause] (backgrounded ≥30s), or when no live connection is
+  /// confirmed. On a quick app switch the 30s pause timer is cancelled
+  /// before firing, so SSE stays connected and buffered events drain
+  /// naturally on resume — triggering a REST reload here would clear those
+  /// SSE-delivered deltas with a stale snapshot (MU-2 race made
+  /// deterministic), silently dropping a message segment.
+  ///
+  /// The liveness check is on a *confirmed* `connected` state, not mere
+  /// presence in `_sseByDir`: on iOS the isolate may be suspended with the
+  /// socket already dead while `_sseByDir` still holds the entry (the 30s
+  /// pause timer never fired). If [SseClient] has already noticed the drop
+  /// (state = reconnecting) we fall through to the full reload now — nothing
+  /// is streaming to clobber, and reconcile runs again on reconnect (MU-2-R1).
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
-    if (_sseByDir.isNotEmpty) {
-      // SSE never stopped — events buffered while backgrounded are still
-      // waiting in the socket and will be dispatched now that the event
-      // loop is running again. A reload would clobber them; just backfill
-      // permissions (idempotent) and let SSE continue.
+    if (_sseByDir.isNotEmpty &&
+        _stateByDir.values.any((s) => s.connected)) {
+      // SSE is live and delivering — events buffered while backgrounded are
+      // still waiting in the socket and will be dispatched now that the
+      // event loop is running again. A reload would clobber them; just
+      // backfill permissions (idempotent) and let SSE continue.
       unawaited(_backfillPermissions());
       notifyListeners();
       return;
