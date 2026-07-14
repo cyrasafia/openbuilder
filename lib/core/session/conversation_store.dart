@@ -42,7 +42,8 @@ class DisplayPart {
 class DisplayMessage {
   final MessageInfo info;
   final List<DisplayPart> parts = [];
-  DisplayMessage(this.info);
+  bool optimistic; // true for locally-inserted user messages pending server confirm
+  DisplayMessage(this.info, {this.optimistic = false});
 }
 
 /// Per-session live state: messages (streaming), todos, permissions.
@@ -74,6 +75,39 @@ class ConversationStore extends ChangeNotifier {
 
   bool get isStale => _stale;
   void markStale() => _stale = true;
+
+  /// Insert an optimistic user message immediately after sending, so the UI
+  /// shows it without waiting for SSE/rest confirmation. Removed when the
+  /// authoritative message list arrives (reload) or when a matching user
+  /// message.updated event arrives.
+  void addOptimisticUserMessage(String text) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final msg = DisplayMessage(
+      MessageInfo(id: 'optimistic_$now', role: 'user', created: now),
+      optimistic: true,
+    );
+    msg.parts.add(DisplayPart(
+      id: 'optimistic_part_$now',
+      type: 'text',
+      text: text,
+    ));
+    _messages.add(msg);
+    _sort();
+    notifyListeners();
+  }
+
+  /// Remove optimistic messages — called when authoritative data replaces
+  /// the local guess (reload, onMessageUpdated with a real user message).
+  void _pruneOptimistic() {
+    _messages.removeWhere((m) => m.optimistic);
+  }
+
+  /// Public entry point for removing optimistic messages (e.g. send failure).
+  void removeOptimisticMessages() {
+    final had = _messages.any((m) => m.optimistic);
+    _pruneOptimistic();
+    if (had) notifyListeners();
+  }
 
   Future<void> reloadIfStale() async {
     if (!_stale || _reloading) return;
@@ -228,6 +262,11 @@ class ConversationStore extends ChangeNotifier {
   }
 
   void onMessageUpdated(MessageInfo info) {
+    // When a real user message arrives from SSE, prune optimistic user
+    // messages (the authoritative one replaces the local guess).
+    if (info.role == 'user') {
+      _pruneOptimistic();
+    }
     final existing = _findMessage(info.id);
     if (existing != null) {
       _messages.remove(existing);

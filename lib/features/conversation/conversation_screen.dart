@@ -212,6 +212,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     setState(() => _cmdMode = false);
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
+    // Show the user message immediately — don't wait for SSE/REST to confirm.
+    if (!text.startsWith('!')) {
+      conv.addOptimisticUserMessage(text);
+    }
     try {
       if (text.startsWith('!')) {
         // Shell command: strip the leading `!` and run via POST /shell.
@@ -230,6 +234,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       }
       conv.setStatus('busy'); // optimistic; SSE will confirm/stream
     } catch (e) {
+      // Remove the optimistic message if the send failed.
+      conv.removeOptimisticMessages();
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('发送失败：$e')));
