@@ -284,6 +284,37 @@ class _ConversationScreenState extends State<ConversationScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _parts(m.parts, user: false),
+          if (m.info.error != null) _errorBanner(m.info.error!),
+        ],
+      ),
+    );
+  }
+
+  Widget _errorBanner(Map<String, dynamic> error) {
+    final name = (error['name'] ?? 'Error').toString();
+    final data = error['data'];
+    final message = data is Map
+        ? (data['message'] ?? data.toString()).toString()
+        : data?.toString() ?? '';
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF85149).withAlpha(15),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFF85149).withAlpha(60)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline, size: 16, color: Color(0xFFF85149)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message.isNotEmpty ? '$name: $message' : name,
+              style: const TextStyle(fontSize: 13, color: Color(0xFFF85149)),
+            ),
+          ),
         ],
       ),
     );
