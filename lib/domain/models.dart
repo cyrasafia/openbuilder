@@ -104,6 +104,7 @@ class SessionModel {
   final double cost;
   final Tokens tokens;
   final String? agent;
+  final ModelRef? model;
 
   const SessionModel({
     required this.id,
@@ -117,6 +118,7 @@ class SessionModel {
     this.cost = 0,
     this.tokens = const Tokens(),
     this.agent,
+    this.model,
   });
 
   factory SessionModel.fromJson(Map<String, dynamic> j) {
@@ -135,6 +137,9 @@ class SessionModel {
           ? Tokens.fromJson(j['tokens'] as Map<String, dynamic>)
           : const Tokens(),
       agent: j['agent']?.toString(),
+      model: j['model'] is Map
+          ? ModelRef.fromJson((j['model'] as Map).cast<String, dynamic>())
+          : null,
     );
   }
 
@@ -465,4 +470,84 @@ List<DiffLine> parseUnifiedDiff(String patch) {
     }
   }
   return out;
+}
+
+// ── Agent / Model types ──
+
+class ModelRef {
+  final String id;
+  final String providerID;
+  final String? variant;
+  const ModelRef({required this.id, required this.providerID, this.variant});
+
+  factory ModelRef.fromJson(Map<String, dynamic> j) => ModelRef(
+        id: (j['id'] ?? '').toString(),
+        providerID: (j['providerID'] ?? '').toString(),
+        variant: j['variant']?.toString(),
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'providerID': providerID, if (variant != null) 'variant': variant};
+
+  @override
+  String toString() => '$providerID/$id';
+}
+
+class AgentInfo {
+  final String name;
+  final String? description;
+  final String mode;
+  final bool hidden;
+  const AgentInfo({
+    required this.name,
+    this.description,
+    required this.mode,
+    this.hidden = false,
+  });
+
+  factory AgentInfo.fromJson(Map<String, dynamic> j) => AgentInfo(
+        name: (j['name'] ?? j['id'] ?? '').toString(),
+        description: j['description']?.toString(),
+        mode: (j['mode'] ?? 'primary').toString(),
+        hidden: j['hidden'] == true,
+      );
+}
+
+class ModelVariant {
+  final String id;
+  const ModelVariant({required this.id});
+
+  factory ModelVariant.fromJson(Map<String, dynamic> j) =>
+      ModelVariant(id: (j['id'] ?? '').toString());
+}
+
+class ModelInfo {
+  final String id;
+  final String providerID;
+  final String name;
+  final bool enabled;
+  final String status;
+  final List<ModelVariant> variants;
+  const ModelInfo({
+    required this.id,
+    required this.providerID,
+    required this.name,
+    this.enabled = true,
+    this.status = 'active',
+    this.variants = const [],
+  });
+
+  factory ModelInfo.fromJson(Map<String, dynamic> j) => ModelInfo(
+        id: (j['id'] ?? '').toString(),
+        providerID: (j['providerID'] ?? '').toString(),
+        name: (j['name'] ?? j['id'] ?? '').toString(),
+        enabled: j['enabled'] != false,
+        status: (j['status'] ?? 'active').toString(),
+        variants: j['variants'] is List
+            ? (j['variants'] as List)
+                .map((e) => ModelVariant.fromJson(
+                    (e as Map).cast<String, dynamic>()))
+                .toList()
+            : const [],
+      );
 }

@@ -253,6 +253,58 @@ class OpencodeClient {
     return SessionModel.fromJson(_asMap(r.data));
   }
 
+  // ── Agent / Model switching (v2 API) ──
+
+  /// `GET /agent?directory=<dir>` — list available agents.
+  Future<List<AgentInfo>> listAgents({String? directory}) async {
+    final r = await dio.get<dynamic>('/agent',
+        queryParameters: directory != null && directory.isNotEmpty
+            ? {'directory': directory}
+            : null);
+    if (r.data is List) {
+      return (r.data as List)
+          .map((e) => AgentInfo.fromJson((e as Map).cast<String, dynamic>()))
+          .where((a) => !a.hidden)
+          .toList();
+    }
+    return const [];
+  }
+
+  /// `GET /api/model?location[directory]=<dir>` — list available models.
+  Future<List<ModelInfo>> listModels({String? directory}) async {
+    final params = <String, dynamic>{};
+    if (directory != null && directory.isNotEmpty) {
+      params['location[directory]'] = directory;
+    }
+    final r = await dio.get<dynamic>('/api/model', queryParameters: params);
+    final d = r.data is Map ? (r.data as Map) : {};
+    final data = d['data'];
+    if (data is List) {
+      return data
+          .map((e) => ModelInfo.fromJson((e as Map).cast<String, dynamic>()))
+          .where((m) => m.enabled && m.status == 'active')
+          .toList();
+    }
+    return const [];
+  }
+
+  /// `POST /api/session/:id/agent` — switch the session's agent.
+  Future<void> switchAgent(String sessionId, String agent) async {
+    await dio.post('/api/session/$sessionId/agent', data: {'agent': agent});
+  }
+
+  /// `POST /api/session/:id/model` — switch the session's model.
+  Future<void> switchModel(String sessionId, ModelRef model) async {
+    final m = <String, dynamic>{
+      'id': model.id,
+      'providerID': model.providerID,
+    };
+    if (model.variant != null) {
+      m['variant'] = model.variant;
+    }
+    await dio.post('/api/session/$sessionId/model', data: {'model': m});
+  }
+
   /// `POST /session/:id/revert` — revert the session back to [messageID].
   Future<void> revert(
     String sessionId, {

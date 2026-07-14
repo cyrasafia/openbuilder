@@ -10,9 +10,8 @@
 |------|------|------|------|
 | 列出 agents | `GET /agent?directory=<dir>` | v1 | 返回 `[{name, mode, hidden, ...}]`，过滤 `hidden=true` |
 | 列出 models | `GET /api/model?location[directory]=<dir>` | v2 | 返回 `{data: [{id, providerID, name, variants, ...}]}`，必须用 `location[directory]` 编码 |
-| 切换 agent | `POST /api/session/:id/agent` | v2 | body `{agent: "build"}`，返回更新后的 session |
-| 切换 model | `POST /api/session/:id/model` | v2 | body `{model: {id, providerID, variant}}` |
-| 切换 variant | 同 switch model | — | variant 字段在 ModelRef 中，切换 model 时一起传 |
+| 切换 agent | `POST /api/session/:id/agent` | v2 | body `{agent: "build"}`，204 No Content，需 `refresh()` 回拉 |
+| 切换 model | `POST /api/session/:id/model` | v2 | body `{model: {id, providerID, variant?}}`，204 No Content，需 `refresh()` 回拉 |
 
 ### Agent
 
@@ -118,13 +117,18 @@ class AgentInfo {
   final bool hidden;
 }
 
+class ModelVariant {
+  final String id;
+  // variant 的 headers/body 是 opaque 的，客户端只需 id 用于切换
+}
+
 class ModelInfo {
   final String id;
   final String providerID;
   final String name;
   final bool enabled;
   final String status;
-  // variants 需要额外存储 — 从 listModels 返回的 ModelInfo 需扩展
+  final List<ModelVariant> variants;  // AM-1: 已补，从 listModels 解析
 }
 ```
 
@@ -144,11 +148,11 @@ Thinking 按钮的显示条件：
 
 ## 涉及文件
 
-| 文件 | 改动 |
-|------|------|
-| `lib/data/api/opencode_client.dart` | `listAgents` / `listModels` / `switchAgent` / `switchModel`（已实现） |
-| `lib/domain/models.dart` | `ModelRef` / `AgentInfo` / `ModelInfo` / `SessionModel.model`（已实现） |
-| `lib/features/conversation/conversation_screen.dart` | 新增 `_AgentModelBar` 组件（agent/model/thinking 切换栏） |
+| 文件 | 改动 | 状态 |
+|------|------|------|
+| `lib/data/api/opencode_client.dart` | `listAgents` / `listModels` / `switchAgent` / `switchModel` | ✅ 已实现 |
+| `lib/domain/models.dart` | `ModelRef` / `AgentInfo` / `ModelInfo` / `ModelVariant` / `SessionModel.model` | ✅ 已实现 |
+| `lib/features/conversation/conversation_screen.dart` | 新增 `_AgentModelBar` 组件（agent/model/thinking 切换栏） | ⏳ 待实现 |
 
 ## 场景验证
 
@@ -161,3 +165,38 @@ Thinking 按钮的显示条件：
 | 当前 model 有 variants | Thinking 按钮显示，可选择 |
 | 网络断开时加载 | 按钮显示"加载失败" |
 | 切换失败 | SnackBar 提示，按钮保持原值 |
+
+---
+
+## 代码评审
+
+> 评审基线：OpenAPI spec `opencode_openapi.json` + 已实现代码（`opencode_client.dart` / `models.dart`）。
+> 评审结论按优先级分级。`_AgentModelBar` UI 尚未实现（grep 0 命中），本文「已实现」仅指 client/models 层。
+
+### 已核查正确的部分（无需改动）
+
+- **端点与 OpenAPI spec 一致**：`GET /agent?directory=`（v1，返回 `Agent[]`）、`GET /api/model?location[directory]=`（v2，返回 `{data: ModelV2Info[]}`）、`POST /api/session/:id/agent`（body `{agent}`）、`POST /api/session/:id/model`（body `{model: ModelRef}`）——均与 spec 对得上。
+- **过滤逻辑与实现一致**：agent 过滤 `hidden`（`client.dart:267` `.where((a) => !a.hidden)`）、model 过滤 `enabled && status=='active'`（`:285`）。
+- **`ModelV2Info.variants` 描述正确**：spec 里是 array，每项 `{id, headers, body}`，与本文第 42 行一致。
+- **v1 `Session` 含 `agent` + `model`**：已核对 spec `Session` schema（`opencode_openapi.json:15839/15842`）含 `agent`/`model` 字段 → `serverStore.refresh()` → `_fetchAllSessions()`（走 `/session`）能拿到切换后的新值，数据流通。
+- **`SessionModel.model` / `ModelRef` / `AgentInfo`** 已在 `models.dart` 实现。
+
+### 🔴 AM-1 — `ModelInfo` 缺 `variants` 字段 · ✅ 已修复
+
+补 `ModelVariant`（`{id}`）类型 + `ModelInfo.variants`，`listModels` 的 `ModelInfo.fromJson` 解析 `j['variants']`（数组，空时 `const []`）。
+
+### 🟡 AM-2 — 端点表「返回 session」与 spec 不符 · ✅ 已修复
+
+端点表改为「204 No Content，需 `refresh()` 回拉」。
+
+### 🟡 AM-3 — `switchModel` 无条件发 `variant:null` · ✅ 已修复
+
+`switchModel` 改为条件包含：`if (model.variant != null) m['variant'] = model.variant`，与 `ModelRef.toJson()` 一致。
+
+### 🟢 AM-4 — UI 未实现但文档未区分状态 · ✅ 已修复
+
+涉及文件表新增「状态」列，标注「✅ 已实现 / ⏳ 待实现」。
+
+### 🟢 AM-5 — 切换后全量 refresh，可改单会话 · 🟢 非阻塞
+
+后续可优化为 `sessionMeta(sessionId)` 单会话刷新。
