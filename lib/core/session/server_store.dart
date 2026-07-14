@@ -56,6 +56,19 @@ class ServerStore extends ChangeNotifier {
       LinkedHashMap<String, ConversationStore>();
   static const _kMaxConversations = 20;
   bool connected = false;
+
+  /// Whether the global watchdog SSE is actively connected (for status indicator).
+  bool get sseConnected => _sseByDir.containsKey(_kGlobalWatchdog) &&
+      _watchdogConnected;
+
+  /// Whether the SSE stream for a session's directory is connected.
+  bool isSessionSseConnected(String sessionId) {
+    if (!_watchdogConnected) return false;
+    final session = sessionById(sessionId);
+    if (session == null) return false;
+    return _sseByDir.containsKey(session.directory);
+  }
+  bool _watchdogConnected = false;
   String? error;
 
   List<ProjectModel> get projects => List.unmodifiable(_projects);
@@ -405,7 +418,10 @@ class ServerStore extends ChangeNotifier {
     } catch (e) {
       error = '$e';
     }
-    // Conversation-layer healing.
+    // Conversation-layer healing: only reload the active conversation if it's
+    // stale (SSE was interrupted). If SSE is live and delivering, reload would
+    // clobber incremental updates with a REST snapshot. markStale() is safe —
+    // it defers to reloadIfStale() which has backoff.
     final activeId = _activeSessionId;
     final activeConv =
         activeId != null ? _conversations[activeId] : null;
@@ -414,9 +430,10 @@ class ServerStore extends ChangeNotifier {
         _resumeReloadedSessionId = null;
       } else if (activeConv.busy) {
         activeConv.markStale();
-      } else {
+      } else if (activeConv.isStale) {
         unawaited(activeConv.reload());
       }
+      // If not stale and not busy, SSE is delivering — don't reload.
     }
     if (_needsStaleMarking) {
       for (final entry in _conversations.entries) {
@@ -531,6 +548,9 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _onSseState(String dir, SseState s) {
+    if (dir == _kGlobalWatchdog) {
+      _watchdogConnected = s.connected;
+    }
     // Only watchdog's reconnecting → connected triggers a reconcile.
     // Directory SSE reconnections are handled silently — REST refresh
     // compensates for missed events.
@@ -542,6 +562,7 @@ class ServerStore extends ChangeNotifier {
       // Watchdog recovered — trigger reconcile to catch up.
       _scheduleReconcile();
     }
+    notifyListeners();
   }
 
   void _onEvent(OpencodeEvent ev) {

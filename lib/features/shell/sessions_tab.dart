@@ -39,7 +39,9 @@ class _SessionsTabState extends State<SessionsTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('会话')),
+      appBar: AppBar(
+        title: const Text('会话'),
+      ),
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
@@ -82,6 +84,8 @@ class _SessionsTabState extends State<SessionsTab> {
                       serverStore.hasPendingPermission(s.id),
                   hasQuestion:
                       serverStore.hasPendingQuestion(s.id),
+                  sseConnected:
+                      serverStore.isSessionSseConnected(s.id),
                   onTap: () => context.push('/session/${s.id}'),
                 );
               },
@@ -103,6 +107,7 @@ class _SessionTile extends StatelessWidget {
   final String? preview;
   final bool hasPermission;
   final bool hasQuestion;
+  final bool sseConnected;
   final VoidCallback onTap;
 
   const _SessionTile({
@@ -115,6 +120,7 @@ class _SessionTile extends StatelessWidget {
     required this.preview,
     this.hasPermission = false,
     this.hasQuestion = false,
+    this.sseConnected = true,
     required this.onTap,
   });
 
@@ -158,6 +164,20 @@ class _SessionTile extends StatelessWidget {
           Row(
             children: [
               StatusDot(type: status),
+              if (!sseConnected) ...[
+                const SizedBox(width: 4),
+                Tooltip(
+                  message: 'SSE 未连接',
+                  child: Container(
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFF85149),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(width: 6),
               Expanded(
                 child: Text(

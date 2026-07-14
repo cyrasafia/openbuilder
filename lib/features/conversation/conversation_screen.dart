@@ -7,6 +7,7 @@ import '../../app_state.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
+import '../../ui/widgets.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 class ConversationScreen extends StatefulWidget {
@@ -80,6 +81,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
           },
         ),
         actions: [
+          ListenableBuilder(
+            listenable: serverStore,
+            builder: (context, _) => SseStatusDot(
+              connected: serverStore.sseConnected,
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             tooltip: '文件',

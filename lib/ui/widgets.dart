@@ -212,3 +212,43 @@ String relTime(int ms) {
   if (d.inDays < 7) return '${d.inDays}d';
   return '${dt.month}/${dt.day}';
 }
+
+/// A subtle SSE connection status indicator (small dot) for app bars.
+/// Green = connected, amber = reconnecting, red = disconnected.
+class SseStatusDot extends StatelessWidget {
+  final bool connected;
+  final bool reconnecting;
+  const SseStatusDot({super.key, required this.connected, this.reconnecting = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final (color, tooltip) = switch ((connected, reconnecting)) {
+      (true, _) => (const Color(0xFF3FB950), 'SSE 已连接'),
+      (false, true) => (const Color(0xFFF0883E), 'SSE 重连中'),
+      (false, false) => (const Color(0xFFF85149), 'SSE 未连接'),
+    };
+    return Tooltip(
+      message: tooltip,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            boxShadow: reconnecting
+                ? [
+                    BoxShadow(
+                      color: color.withAlpha(80),
+                      blurRadius: 6,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : null,
+          ),
+        ),
+      ),
+    );
+  }
+}
