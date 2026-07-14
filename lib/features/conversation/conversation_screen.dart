@@ -636,20 +636,31 @@ class _PermissionCard extends StatelessWidget {
           Text(permission.title,
               style: AppTheme.mono.copyWith(fontSize: 12.5)),
           const SizedBox(height: 12),
-          Row(children: [
-            FilledButton(
-              onPressed: () => store.respondPermission(permission, 'allow'),
-              child: const Text('允许'),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.tonal(
-              style: FilledButton.styleFrom(
-                  foregroundColor: Colors.red,
-                  backgroundColor: Colors.red.withAlpha(25)),
-              onPressed: () => store.respondPermission(permission, 'deny'),
-              child: const Text('拒绝'),
-            ),
-          ]),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              FilledButton.tonal(
+                style: FilledButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    backgroundColor: Colors.red.withAlpha(25)),
+                onPressed: () =>
+                    store.respondPermission(permission, 'deny'),
+                child: const Text('拒绝'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonal(
+                onPressed: () => store.respondPermission(permission, 'allow',
+                    remember: true),
+                child: const Text('始终允许'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: () =>
+                    store.respondPermission(permission, 'allow'),
+                child: const Text('允许一次'),
+              ),
+            ],
+          ),
         ],
       ),
     );
