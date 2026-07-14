@@ -344,10 +344,8 @@ class ConversationStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> respondPermission(Permission p, String response,
-      {bool? remember}) async {
-    await client.respondPermission(sessionId, p.id, response,
-        remember: remember);
+  Future<void> respondPermission(Permission p, String response) async {
+    await client.respondPermission(sessionId, p.id, response);
     onPermissionReplied(p.id);
   }
 

@@ -649,19 +649,18 @@ class _PermissionCard extends StatelessWidget {
                     foregroundColor: Colors.red,
                     backgroundColor: Colors.red.withAlpha(25)),
                 onPressed: () =>
-                    store.respondPermission(permission, 'deny'),
+                    store.respondPermission(permission, 'reject'),
                 child: const Text('拒绝'),
               ),
               const SizedBox(width: 8),
               FilledButton.tonal(
-                onPressed: () => store.respondPermission(permission, 'allow',
-                    remember: true),
+                onPressed: () => store.respondPermission(permission, 'always'),
                 child: const Text('始终允许'),
               ),
               const SizedBox(width: 8),
               FilledButton(
                 onPressed: () =>
-                    store.respondPermission(permission, 'allow'),
+                    store.respondPermission(permission, 'once'),
                 child: const Text('允许一次'),
               ),
             ],

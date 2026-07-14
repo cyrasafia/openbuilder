@@ -157,20 +157,16 @@ class OpencodeClient {
     return const [];
   }
 
-  /// `POST /session/:id/permissions/:permissionID`
+  /// `POST /session/:id/permissions/:permissionID` — respond to a permission.
+  /// [response] is one of: `'once'`, `'always'`, `'reject'`.
   Future<void> respondPermission(
     String sessionId,
     String permissionId,
-    String response, {
-    bool? remember,
-  }) async {
+    String response,
+  ) async {
     await dio.post(
       '/session/$sessionId/permissions/$permissionId',
-      data: {
-        'response': response,
-        // ignore: use_null_aware_elements
-        if (remember != null) 'remember': remember,
-      },
+      data: {'response': response},
     );
   }
 
