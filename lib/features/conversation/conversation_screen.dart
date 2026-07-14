@@ -1007,17 +1007,17 @@ class _BottomBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _AgentModelBar(
-            sessionId: sessionId,
-            directory: directory,
-            session: session,
-          ),
           _ComposeBar(
             ctl: ctl,
             busy: busy,
             onAbort: onAbort,
             onChanged: onChanged,
             onSend: onSend,
+          ),
+          _AgentModelBar(
+            sessionId: sessionId,
+            directory: directory,
+            session: session,
           ),
         ],
       ),
@@ -1266,10 +1266,6 @@ class _MoreMenu extends StatelessWidget {
       try {
         await client.updateTitle(sessionId, title, directory: directory);
         unawaited(serverStore.refresh());
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('标题已更新')));
-        }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
