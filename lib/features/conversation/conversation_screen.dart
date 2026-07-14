@@ -140,6 +140,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   error: _cmdError,
                   onPick: _pickCommand,
                 ),
+              _AgentModelBar(
+                sessionId: widget.sessionId,
+                directory: directory,
+                session: session,
+              ),
               _ComposeBar(
                 ctl: _ctl,
                 busy: conv.busy,
@@ -996,5 +1001,308 @@ class _MoreMenu extends StatelessWidget {
         }
       }
     }
+  }
+}
+
+/// Agent / Model / Thinking variant switcher bar, shown above the compose bar.
+class _AgentModelBar extends StatefulWidget {
+  final String sessionId;
+  final String directory;
+  final SessionModel? session;
+
+  const _AgentModelBar({
+    required this.sessionId,
+    required this.directory,
+    this.session,
+  });
+
+  @override
+  State<_AgentModelBar> createState() => _AgentModelBarState();
+}
+
+class _AgentModelBarState extends State<_AgentModelBar> {
+  List<AgentInfo> _agents = const [];
+  List<ModelInfo> _models = const [];
+  bool _loading = false;
+  bool _switching = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOptions();
+  }
+
+  Future<void> _loadOptions() async {
+    final client = serverStore.client;
+    if (client == null) return;
+    setState(() => _loading = true);
+    try {
+      final results = await Future.wait([
+        client.listAgents(directory: widget.directory),
+        client.listModels(directory: widget.directory),
+      ]);
+      if (mounted) {
+        setState(() {
+          _agents = results[0] as List<AgentInfo>;
+          _models = results[1] as List<ModelInfo>;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _switchAgent(String agent) async {
+    final client = serverStore.client;
+    if (client == null) return;
+    setState(() => _switching = true);
+    try {
+      await client.switchAgent(widget.sessionId, agent);
+      unawaited(serverStore.refresh());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('切换 Agent 失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _switching = false);
+    }
+  }
+
+  Future<void> _switchModel(ModelInfo model, [ModelVariant? variant]) async {
+    final client = serverStore.client;
+    if (client == null) return;
+    setState(() => _switching = true);
+    try {
+      await client.switchModel(
+        widget.sessionId,
+        ModelRef(
+          id: model.id,
+          providerID: model.providerID,
+          variant: variant?.id,
+        ),
+      );
+      unawaited(serverStore.refresh());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('切换模型失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _switching = false);
+    }
+  }
+
+  void _showAgentSheet() {
+    if (_agents.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: _agents
+              .map((a) => ListTile(
+                    leading: Icon(
+                      a.mode == 'primary' ? Icons.person : Icons.subdirectory_arrow_right,
+                      size: 20,
+                    ),
+                    title: Text(a.name),
+                    subtitle: a.description != null && a.description!.isNotEmpty
+                        ? Text(a.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
+                        : null,
+                    trailing: widget.session?.agent == a.name
+                        ? const Icon(Icons.check, size: 18)
+                        : null,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _switchAgent(a.name);
+                    },
+                  ))
+              .toList(),
+        ),
+      ),
+    );
+  }
+
+  void _showModelSheet() {
+    if (_models.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: _models
+              .map((m) => ListTile(
+                    leading: const Icon(Icons.memory, size: 20),
+                    title: Text(m.name),
+                    subtitle: Text('${m.providerID}/${m.id}',
+                        style: AppTheme.mono.copyWith(fontSize: 11)),
+                    trailing: widget.session?.model?.id == m.id
+                        ? const Icon(Icons.check, size: 18)
+                        : null,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _switchModel(m);
+                    },
+                  ))
+              .toList(),
+        ),
+      ),
+    );
+  }
+
+  void _showVariantSheet(List<ModelVariant> variants) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.do_not_disturb, size: 20),
+              title: const Text('默认'),
+              trailing: widget.session?.model?.variant == null
+                  ? const Icon(Icons.check, size: 18)
+                  : null,
+              onTap: () {
+                final m = _models.firstWhere(
+                  (m) => m.id == widget.session?.model?.id,
+                  orElse: () => _models.first,
+                );
+                Navigator.pop(ctx);
+                _switchModel(m);
+              },
+            ),
+            ...variants.map((v) => ListTile(
+                  leading: const Icon(Icons.tune, size: 20),
+                  title: Text(v.id),
+                  trailing: widget.session?.model?.variant == v.id
+                      ? const Icon(Icons.check, size: 18)
+                      : null,
+                  onTap: () {
+                    final m = _models.firstWhere(
+                      (m) => m.id == widget.session?.model?.id,
+                      orElse: () => _models.first,
+                    );
+                    Navigator.pop(ctx);
+                    _switchModel(m, v);
+                  },
+                )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final muted = scheme.outline;
+
+    if (_loading) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: SizedBox(
+          height: 20,
+          child: Center(
+            child: SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: muted),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final agentName = widget.session?.agent ?? '—';
+    final modelName = widget.session?.model?.id ?? '—';
+
+    // Find current model's variants for thinking level button.
+    final currentModel = _models
+        .where((m) => m.id == widget.session?.model?.id)
+        .toList();
+    final hasVariants =
+        currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(
+          bottom: BorderSide(color: Theme.of(context).dividerTheme.color ?? const Color(0xFF33373E)),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            _Chip(
+              icon: Icons.smart_toy_outlined,
+              label: agentName,
+              onTap: _switching ? null : _showAgentSheet,
+              muted: muted,
+            ),
+            const SizedBox(width: 8),
+            _Chip(
+              icon: Icons.memory,
+              label: modelName,
+              onTap: _switching ? null : _showModelSheet,
+              muted: muted,
+            ),
+            if (hasVariants) ...[
+              const SizedBox(width: 8),
+              _Chip(
+                icon: Icons.psychology_outlined,
+                label: widget.session?.model?.variant ?? '默认',
+                onTap: _switching ? null : () => _showVariantSheet(currentModel.first.variants),
+                muted: muted,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Chip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final Color muted;
+
+  const _Chip({
+    required this.icon,
+    required this.label,
+    this.onTap,
+    required this.muted,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: muted),
+            const SizedBox(width: 4),
+            Text(label, style: TextStyle(fontSize: 12, color: muted)),
+            const SizedBox(width: 2),
+            Icon(Icons.expand_more, size: 14, color: muted),
+          ],
+        ),
+      ),
+    );
   }
 }
