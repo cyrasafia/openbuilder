@@ -55,23 +55,29 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final directory = session?.directory ?? '';
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(session?.title ?? '会话',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 16)),
-            if (session != null)
-              Text(
-                '${serverStore.projectDisplayOf(session)} › ${serverStore.worktreeDisplayOf(session)}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppTheme.mono.copyWith(
-                    fontSize: 11,
-                    color: Theme.of(context).colorScheme.outline),
-              ),
-          ],
+        title: ListenableBuilder(
+          listenable: serverStore,
+          builder: (context, _) {
+            final s = serverStore.sessionById(widget.sessionId);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(s?.title ?? '会话',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 16)),
+                if (s != null)
+                  Text(
+                    '${serverStore.projectDisplayOf(s)} › ${serverStore.worktreeDisplayOf(s)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTheme.mono.copyWith(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.outline),
+                  ),
+              ],
+            );
+          },
         ),
         actions: [
           IconButton(
@@ -144,12 +150,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   error: _cmdError,
                   onPick: _pickCommand,
                 ),
-              _AgentModelBar(
+              _BottomBar(
                 sessionId: widget.sessionId,
                 directory: directory,
                 session: session,
-              ),
-              _ComposeBar(
                 ctl: _ctl,
                 busy: conv.busy,
                 onAbort: () => _abort(directory),
@@ -964,6 +968,63 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
   }
 }
 
+/// Combined bottom bar: agent/model chips row + compose input row,
+/// sharing a single background and bottom safe-area padding.
+class _BottomBar extends StatelessWidget {
+  final String sessionId;
+  final String directory;
+  final SessionModel? session;
+  final TextEditingController ctl;
+  final bool busy;
+  final VoidCallback onAbort;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onSend;
+
+  const _BottomBar({
+    required this.sessionId,
+    required this.directory,
+    this.session,
+    required this.ctl,
+    required this.busy,
+    required this.onAbort,
+    required this.onChanged,
+    required this.onSend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(
+            top: BorderSide(
+                color: Theme.of(context).dividerTheme.color ??
+                    const Color(0xFF33373E))),
+      ),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).padding.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _AgentModelBar(
+            sessionId: sessionId,
+            directory: directory,
+            session: session,
+          ),
+          _ComposeBar(
+            ctl: ctl,
+            busy: busy,
+            onAbort: onAbort,
+            onChanged: onChanged,
+            onSend: onSend,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ComposeBar extends StatelessWidget {
   final TextEditingController ctl;
   final ValueChanged<String> onChanged;
@@ -983,17 +1044,8 @@ class _ComposeBar extends StatelessWidget {
     // When the agent is running and the input is empty, the send button
     // doubles as the stop/abort control (merging the old title-bar button).
     final showStop = busy && ctl.text.trim().isEmpty;
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
-      ),
-      padding: EdgeInsets.only(
-        left: 12,
-        right: 8,
-        top: 8,
-        bottom: 8 + MediaQuery.of(context).padding.bottom,
-      ),
+    return Padding(
+      padding: const EdgeInsets.only(left: 12, right: 8, top: 8, bottom: 8),
       child: Row(
         children: [
           Expanded(
@@ -1454,14 +1506,8 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     final hasVariants =
         currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: scheme.surface,
-        border: Border(
-          bottom: BorderSide(color: Theme.of(context).dividerTheme.color ?? const Color(0xFF33373E)),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
