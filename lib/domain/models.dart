@@ -551,3 +551,65 @@ class ModelInfo {
             : const [],
       );
 }
+
+// ── Question types ──
+
+class QuestionOption {
+  final String label;
+  final String description;
+  const QuestionOption({required this.label, required this.description});
+
+  factory QuestionOption.fromJson(Map<String, dynamic> j) => QuestionOption(
+        label: (j['label'] ?? '').toString(),
+        description: (j['description'] ?? '').toString(),
+      );
+}
+
+class QuestionInfo {
+  final String question;
+  final String header;
+  final List<QuestionOption> options;
+  final bool multiple;
+  final bool custom;
+  const QuestionInfo({
+    required this.question,
+    required this.header,
+    required this.options,
+    this.multiple = false,
+    this.custom = false,
+  });
+
+  factory QuestionInfo.fromJson(Map<String, dynamic> j) => QuestionInfo(
+        question: (j['question'] ?? '').toString(),
+        header: (j['header'] ?? '').toString(),
+        options: j['options'] is List
+            ? (j['options'] as List)
+                .map((e) => QuestionOption.fromJson((e as Map).cast<String, dynamic>()))
+                .toList()
+            : const [],
+        multiple: j['multiple'] == true,
+        custom: j['custom'] == true,
+      );
+}
+
+/// A pending question request: `{id, sessionID, questions[], tool?}`.
+class QuestionRequest {
+  final String id;
+  final String sessionID;
+  final List<QuestionInfo> questions;
+  const QuestionRequest({
+    required this.id,
+    required this.sessionID,
+    required this.questions,
+  });
+
+  factory QuestionRequest.fromJson(Map<String, dynamic> j) => QuestionRequest(
+        id: (j['id'] ?? '').toString(),
+        sessionID: (j['sessionID'] ?? '').toString(),
+        questions: j['questions'] is List
+            ? (j['questions'] as List)
+                .map((e) => QuestionInfo.fromJson((e as Map).cast<String, dynamic>()))
+                .toList()
+            : const [],
+      );
+}

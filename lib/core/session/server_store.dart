@@ -35,6 +35,9 @@ class ServerStore extends ChangeNotifier {
   /// Pending permissions keyed by sessionId (fed by SSE + REST backfill).
   final Map<String, Permission> _pendingPermissions = {};
 
+  /// Pending questions keyed by questionId (fed by SSE + REST backfill).
+  final Map<String, QuestionRequest> _pendingQuestions = {};
+
   /// True while the SSE connection is in backoff reconnect (specs §11 banner).
   bool reconnecting = false;
   /// Current reconnect attempt (1-based); 0 when connected / idle.
@@ -68,6 +71,9 @@ class ServerStore extends ChangeNotifier {
 
   bool hasPendingPermission(String sessionId) =>
       _pendingPermissions.containsKey(sessionId);
+
+  bool hasPendingQuestion(String sessionId) =>
+      _pendingQuestions.values.any((q) => q.sessionID == sessionId);
 
   ProjectModel? projectOf(String id) {
     for (final p in _projects) {
@@ -141,6 +147,12 @@ class ServerStore extends ChangeNotifier {
     final pending = _pendingPermissions[sessionId];
     if (pending != null) {
       conv.onPermission(pending);
+    }
+    // Inject any pending questions known from SSE/REST backfill.
+    for (final q in _pendingQuestions.values) {
+      if (q.sessionID == sessionId) {
+        conv.onQuestion(q);
+      }
     }
     unawaited(conv.load());
     // After loading, backfill the list preview (frontend §2.2 D4 compromise).
@@ -431,6 +443,29 @@ class ServerStore extends ChangeNotifier {
     if (changed) {
       notifyListeners();
     }
+    unawaited(_backfillQuestions());
+  }
+
+  /// Fetch pending questions via REST, same pattern as permissions.
+  Future<void> _backfillQuestions() async {
+    final c = client;
+    if (c == null) return;
+    final prev = Map.of(_pendingQuestions);
+    _pendingQuestions.clear();
+    final dirs = _eventDirectories();
+    for (final dir in dirs) {
+      try {
+        final pending = await c.listQuestions(directory: dir);
+        for (final q in pending) {
+          _pendingQuestions[q.id] = q;
+          _conversations[q.sessionID]?.onQuestion(q);
+        }
+      } catch (_) {}
+    }
+    if (prev.length != _pendingQuestions.length ||
+        !prev.keys.toSet().containsAll(_pendingQuestions.keys)) {
+      notifyListeners();
+    }
   }
 
   void _onSseState(String dir, SseState s) {
@@ -534,6 +569,27 @@ class ServerStore extends ChangeNotifier {
         }
         if (sid != null && pid != null) {
           _conversations[sid]?.onPermissionReplied(pid);
+        }
+        break;
+      case 'question.asked':
+      case 'question.v2.asked':
+        final qr = QuestionRequest.fromJson(ev.properties);
+        _pendingQuestions[qr.id] = qr;
+        _conversations[qr.sessionID]?.onQuestion(qr);
+        final title = sessionById(qr.sessionID)?.title ?? '会话';
+        unawaited(NotificationService.notifyPermission(title, qr.questions.firstOrNull?.header ?? '问题').catchError((_) {}));
+        break;
+      case 'question.replied':
+      case 'question.v2.replied':
+      case 'question.rejected':
+      case 'question.v2.rejected':
+        final qid = ev.properties['id']?.toString();
+        final sid = ev.properties['sessionID']?.toString();
+        if (qid != null) {
+          _pendingQuestions.remove(qid);
+        }
+        if (sid != null && qid != null) {
+          _conversations[sid]?.onQuestionReplied(qid);
         }
         break;
     }
@@ -661,6 +717,7 @@ class ServerStore extends ChangeNotifier {
     _statusMap.clear();
     _lastMessage.clear();
     _pendingPermissions.clear();
+    _pendingQuestions.clear();
     client = null;
     _profile = null;
     notifyListeners();

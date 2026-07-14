@@ -122,7 +122,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
           );
           _scheduleAutoScroll();
           final showFooter =
-              conv.permissions.isNotEmpty || conv.todos.any((t) => !t.done);
+              conv.permissions.isNotEmpty ||
+              conv.questions.isNotEmpty ||
+              conv.todos.any((t) => !t.done);
           return Column(
             children: [
               Expanded(child: list),
@@ -130,6 +132,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 _FooterPanel(
                   todos: conv.todos,
                   permissions: conv.permissions,
+                  questions: conv.questions,
                   store: conv,
                 ),
               if (_cmdMode)
@@ -460,25 +463,30 @@ class _TodoCard extends StatelessWidget {
 class _FooterPanel extends StatefulWidget {
   final List<Todo> todos;
   final List<Permission> permissions;
+  final List<QuestionRequest> questions;
   final ConversationStore store;
-  const _FooterPanel(
-      {required this.todos, required this.permissions, required this.store});
+  const _FooterPanel({
+    required this.todos,
+    required this.permissions,
+    required this.questions,
+    required this.store,
+  });
 
   @override
   State<_FooterPanel> createState() => _FooterPanelState();
 }
 
 class _FooterPanelState extends State<_FooterPanel> {
-  // Todos start collapsed; permission cards render expanded by default.
   bool _todoExpanded = false;
 
   @override
   Widget build(BuildContext context) {
     final children = <Widget>[];
-    // Permission cards take priority (actionable) and render above the todo
-    // card when both are present.
     for (final p in widget.permissions) {
       children.add(_PermissionCard(permission: p, store: widget.store));
+    }
+    for (final q in widget.questions) {
+      children.add(_QuestionCard(question: q, store: widget.store));
     }
     if (widget.todos.isNotEmpty) {
       children.add(_TodoCard(
@@ -667,6 +675,180 @@ class _PermissionCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _QuestionCard extends StatefulWidget {
+  final QuestionRequest question;
+  final ConversationStore store;
+  const _QuestionCard({required this.question, required this.store});
+
+  @override
+  State<_QuestionCard> createState() => _QuestionCardState();
+}
+
+class _QuestionCardState extends State<_QuestionCard> {
+  final Map<int, Set<String>> _selected = {};
+  bool _replying = false;
+
+  void _toggle(int qIdx, String label) {
+    final q = widget.question.questions[qIdx];
+    setState(() {
+      final sel = _selected.putIfAbsent(qIdx, () => {});
+      if (sel.contains(label)) {
+        sel.remove(label);
+      } else {
+        if (!q.multiple) sel.clear();
+        sel.add(label);
+      }
+    });
+  }
+
+  Future<void> _reply() async {
+    final answers = <List<String>>[];
+    for (var i = 0; i < widget.question.questions.length; i++) {
+      answers.add((_selected[i] ?? const {}).toList());
+    }
+    setState(() => _replying = true);
+    try {
+      await widget.store.replyQuestion(widget.question, answers);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('回复失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _replying = false);
+    }
+  }
+
+  Future<void> _reject() async {
+    setState(() => _replying = true);
+    try {
+      await widget.store.rejectQuestion(widget.question);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('拒绝失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _replying = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.tertiaryContainer.withAlpha(100),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.tertiary.withAlpha(120)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < widget.question.questions.length; i++) ...[
+            if (i > 0) const SizedBox(height: 16),
+            _questionBlock(i),
+          ],
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              FilledButton.tonal(
+                style: FilledButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    backgroundColor: Colors.red.withAlpha(25)),
+                onPressed: _replying ? null : _reject,
+                child: const Text('拒绝'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _replying ? null : _reply,
+                child: _replying
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('提交'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _questionBlock(int qIdx) {
+    final q = widget.question.questions[qIdx];
+    final sel = _selected[qIdx] ?? const <String>{};
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Icon(Icons.help_outline,
+              size: 16, color: Theme.of(context).colorScheme.tertiary),
+          const SizedBox(width: 6),
+          Text(q.header,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 6),
+        Text(q.question, style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface)),
+        const SizedBox(height: 8),
+        for (final opt in q.options)
+          InkWell(
+            onTap: _replying ? null : () => _toggle(qIdx, opt.label),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: sel.contains(opt.label)
+                    ? Theme.of(context).colorScheme.tertiary.withAlpha(60)
+                    : Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: sel.contains(opt.label)
+                      ? Theme.of(context).colorScheme.tertiary
+                      : Colors.transparent,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    sel.contains(opt.label)
+                        ? (q.multiple ? Icons.check_box : Icons.radio_button_checked)
+                        : (q.multiple ? Icons.check_box_outline_blank : Icons.radio_button_unchecked),
+                    size: 18,
+                    color: Theme.of(context).colorScheme.tertiary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(opt.label,
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                        if (opt.description.isNotEmpty)
+                          Text(opt.description,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: Theme.of(context).colorScheme.outline)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

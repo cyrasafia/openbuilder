@@ -56,6 +56,7 @@ class ConversationStore extends ChangeNotifier {
   final List<DisplayMessage> _messages = [];
   List<Todo> _todos = [];
   final List<Permission> _permissions = [];
+  final List<QuestionRequest> _questions = [];
   bool loading = false;
   bool loaded = false;
   String? error;
@@ -69,6 +70,7 @@ class ConversationStore extends ChangeNotifier {
   List<DisplayMessage> get messages => List.unmodifiable(_messages);
   List<Todo> get todos => List.unmodifiable(_todos);
   List<Permission> get permissions => List.unmodifiable(_permissions);
+  List<QuestionRequest> get questions => List.unmodifiable(_questions);
   bool get busy => status == 'busy' || status == 'retry';
 
   // ── Self-healing public API ──
@@ -347,6 +349,31 @@ class ConversationStore extends ChangeNotifier {
   Future<void> respondPermission(Permission p, String response) async {
     await client.respondPermission(sessionId, p.id, response);
     onPermissionReplied(p.id);
+  }
+
+  void onQuestion(QuestionRequest q) {
+    final idx = _questions.indexWhere((x) => x.id == q.id);
+    if (idx == -1) {
+      _questions.add(q);
+    } else {
+      _questions[idx] = q;
+    }
+    notifyListeners();
+  }
+
+  void onQuestionReplied(String questionId) {
+    _questions.removeWhere((q) => q.id == questionId);
+    notifyListeners();
+  }
+
+  Future<void> replyQuestion(QuestionRequest q, List<List<String>> answers) async {
+    await client.replyQuestion(q.id, answers);
+    onQuestionReplied(q.id);
+  }
+
+  Future<void> rejectQuestion(QuestionRequest q) async {
+    await client.rejectQuestion(q.id);
+    onQuestionReplied(q.id);
   }
 
   DisplayMessage? _findMessage(String id) {

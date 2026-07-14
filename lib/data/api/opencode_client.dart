@@ -301,6 +301,35 @@ class OpencodeClient {
     await dio.post('/api/session/$sessionId/model', data: {'model': m});
   }
 
+  // ── Questions ──
+
+  /// `GET /question?directory=<dir>` — list pending questions.
+  Future<List<QuestionRequest>> listQuestions({String? directory}) async {
+    final r = await dio.get<dynamic>('/question',
+        queryParameters:
+            directory != null && directory.isNotEmpty ? {'directory': directory} : null);
+    if (r.data is List) {
+      return (r.data as List)
+          .map((e) => QuestionRequest.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+    }
+    return const [];
+  }
+
+  /// `POST /question/:id/reply` — reply to a question.
+  /// [answers] is a list of answer arrays (one per question), each containing
+  /// selected option labels.
+  Future<void> replyQuestion(String questionId, List<List<String>> answers) async {
+    await dio.post('/question/$questionId/reply', data: {
+      'answers': answers.map((a) => a).toList(),
+    });
+  }
+
+  /// `POST /question/:id/reject` — reject a question.
+  Future<void> rejectQuestion(String questionId) async {
+    await dio.post('/question/$questionId/reject');
+  }
+
   /// `POST /session/:id/revert` — revert the session back to [messageID].
   Future<void> revert(
     String sessionId, {
