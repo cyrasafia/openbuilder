@@ -62,4 +62,24 @@ class NotificationService {
       ),
     );
   }
+
+  /// Notify that a question is awaiting the user's answer.
+  static Future<void> notifyQuestion(
+      String sessionTitle, String header) async {
+    if (!_initialized) await init();
+    await _plugin.show(
+      2,
+      '需要回答',
+      '「$sessionTitle」: $header',
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'question',
+          '问题请求',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
+    );
+  }
 }

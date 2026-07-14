@@ -737,6 +737,14 @@ class _QuestionCardState extends State<_QuestionCard> {
     }
   }
 
+  /// At least one option selected for every question.
+  bool get _canSubmit {
+    for (var i = 0; i < widget.question.questions.length; i++) {
+      if ((_selected[i] ?? const {}).isEmpty) return false;
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -768,7 +776,7 @@ class _QuestionCardState extends State<_QuestionCard> {
               ),
               const SizedBox(width: 8),
               FilledButton(
-                onPressed: _replying ? null : _reply,
+                onPressed: _replying || !_canSubmit ? null : _reply,
                 child: _replying
                     ? const SizedBox(
                         width: 16,

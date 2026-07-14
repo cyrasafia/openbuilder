@@ -453,6 +453,7 @@ class ServerStore extends ChangeNotifier {
     final prev = Map.of(_pendingQuestions);
     _pendingQuestions.clear();
     final dirs = _eventDirectories();
+    final failedDirs = <String>{};
     for (final dir in dirs) {
       try {
         final pending = await c.listQuestions(directory: dir);
@@ -460,7 +461,18 @@ class ServerStore extends ChangeNotifier {
           _pendingQuestions[q.id] = q;
           _conversations[q.sessionID]?.onQuestion(q);
         }
-      } catch (_) {}
+      } catch (_) {
+        failedDirs.add(dir);
+      }
+    }
+    // Restore SSE-delivered questions whose session's directory had a failed
+    // REST fetch — successful fetches are authoritative.
+    for (final entry in prev.entries) {
+      final session = sessionById(entry.value.sessionID);
+      final dir = session?.directory ?? '';
+      if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
+        _pendingQuestions.putIfAbsent(entry.key, () => entry.value);
+      }
     }
     if (prev.length != _pendingQuestions.length ||
         !prev.keys.toSet().containsAll(_pendingQuestions.keys)) {
@@ -577,14 +589,15 @@ class ServerStore extends ChangeNotifier {
         _pendingQuestions[qr.id] = qr;
         _conversations[qr.sessionID]?.onQuestion(qr);
         final title = sessionById(qr.sessionID)?.title ?? '会话';
-        unawaited(NotificationService.notifyPermission(title, qr.questions.firstOrNull?.header ?? '问题').catchError((_) {}));
+        unawaited(NotificationService.notifyQuestion(title, qr.questions.firstOrNull?.header ?? '问题').catchError((_) {}));
         break;
       case 'question.replied':
       case 'question.v2.replied':
       case 'question.rejected':
       case 'question.v2.rejected':
         final qid = ev.properties['id']?.toString();
-        final sid = ev.properties['sessionID']?.toString();
+        final existing = qid != null ? _pendingQuestions[qid] : null;
+        final sid = ev.properties['sessionID']?.toString() ?? existing?.sessionID;
         if (qid != null) {
           _pendingQuestions.remove(qid);
         }

@@ -321,7 +321,7 @@ class OpencodeClient {
   /// selected option labels.
   Future<void> replyQuestion(String questionId, List<List<String>> answers) async {
     await dio.post('/question/$questionId/reply', data: {
-      'answers': answers.map((a) => a).toList(),
+      'answers': answers,
     });
   }
 
