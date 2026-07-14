@@ -158,6 +158,18 @@ class ConversationStore extends ChangeNotifier {
     _lastReloadAt = DateTime.now();
     try {
       final entries = await client.messages(sessionId);
+      // Infer session status from the latest message before replacing
+      // _messages — if the last assistant message has a finish reason,
+      // the session is idle (not still running). This corrects stale
+      // 'busy' status when SSE was disconnected and session.idle was missed.
+      if (entries.isNotEmpty) {
+        final last = entries.last.info;
+        if (last.role == 'assistant' &&
+            last.finish != null &&
+            last.finish!.isNotEmpty) {
+          status = 'idle';
+        }
+      }
       _messages
         ..clear()
         ..addAll(entries.map(_toDisplay));
