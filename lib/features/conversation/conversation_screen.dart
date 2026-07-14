@@ -1048,8 +1048,12 @@ class _AgentModelBarState extends State<_AgentModelBar> {
           _loading = false;
         });
       }
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('加载选项失败：$e')));
+      }
     }
   }
 

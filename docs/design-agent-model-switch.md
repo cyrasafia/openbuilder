@@ -200,3 +200,45 @@ Thinking 按钮的显示条件：
 ### 🟢 AM-5 — 切换后全量 refresh，可改单会话 · 🟢 非阻塞
 
 后续可优化为 `sessionMeta(sessionId)` 单会话刷新。
+
+---
+
+## UI 实现复审（acacafd — `_AgentModelBar`）
+
+> 评审对象：commit `acacafd feat: agent/model/thinking switcher bar above compose bar`。
+> 设计文档「涉及文件」表里 `_AgentModelBar` 原标 ⏳ 待实现，本 commit 已落地，可标 ✅。
+> `dart analyze` 0 issue；`flutter test` 6/6 通过。
+
+### ✅ 实现与设计对齐
+
+| 设计点 | 实现 | 核对 |
+|------|------|------|
+| Agent chip（当前 agent，tap→sheet） | `_showAgentSheet` 列出非 hidden agents，选中→`switchAgent`+`refresh` | ✅ |
+| Model chip（当前 model，tap→sheet） | `_showModelSheet` 列出 enabled+active models，选中→`switchModel`+`refresh` | ✅ |
+| Thinking chip（仅有 variants 时显示） | `hasVariants` 条件渲染，tap→`_showVariantSheet`（variants+「默认」） | ✅ |
+| 切换后 refresh() 回拉 session | `unawaited(serverStore.refresh())` | ✅（AM-2 设计要求） |
+| Loading 状态 | `_loading` spinner | ✅ |
+| Switching 状态禁用 tap | `onTap: _switching ? null : ...` | ✅ |
+| 失败 SnackBar | catch 里 `ScaffoldMessenger.showSnackBar` | ✅ |
+| 当前选中项打勾 | trailing `Icon(Icons.check)` | ✅ |
+| `initState` 并行拉 agents+models | `Future.wait([listAgents, listModels])` | ✅ |
+
+### 🟡 UI 小项（非阻塞）
+
+**AM-UI-1 — `_loadOptions` 失败静默 · ✅ 已修复**
+
+catch 块改为 `catch (e)` + `ScaffoldMessenger.showSnackBar`，用户在加载失败时能看到提示。
+
+**AM-UI-2 — `_loadOptions` 只在 `initState` 调一次，不随 directory/session 变化重载**
+若 `widget.directory`/`widget.sessionId` 变了（didUpdateWidget），`_agents`/`_models` 不刷新。但 `conversation_screen` 每次 push 新 State，实际不触发。理论项（与 MU-3 同类）。
+
+**AM-UI-3 — `_AgentModelBar` 始终渲染，占用垂直空间**
+无论加载成功/失败，bar 始终在 compose bar 上方。若用户不需要切换，仍占空间。属设计取舍，可接受。
+
+**AM-UI-4 — `refresh()` 全量重拉（AM-5，已记录）**
+切换后 `serverStore.refresh()` → `_bootstrap()` 全量。后续可优化为 `sessionMeta(sessionId)` 单会话。🟢 非阻塞。
+
+### 安全性核查
+
+- `_showVariantSheet` 的「默认」项用 `_models.firstWhere(... orElse: () => _models.first)`，但只在 `hasVariants`（即 `currentModel.isNotEmpty`→`_models` 非空）时调用 → `orElse` 不触发 → 无 `StateError` 风险。✅
+- `mounted` 守卫在所有 `setState`/`ScaffoldMessenger` 前检查。✅
