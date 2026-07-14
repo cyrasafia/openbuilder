@@ -158,14 +158,15 @@ class ConversationStore extends ChangeNotifier {
     _lastReloadAt = DateTime.now();
     try {
       final entries = await client.messages(sessionId);
-      // Infer session status from the last message — if the last assistant
-      // message has finish="stop" + completed time, the session has finished.
-      // finish="tool-calls" is an intermediate step, not final completion.
-      // finish=null means the message is still being generated.
+      // Infer session status from the last message — terminal finish values
+      // ('stop' = normal completion, 'error' = abnormal termination) mean
+      // the session is idle. 'tool-calls' is an intermediate step (still
+      // running); null means the message is still being generated.
       if (entries.isNotEmpty) {
         final last = entries.last.info;
-        if (last.role == 'assistant' && last.finish == 'stop') {
-          status = 'idle';
+        if (last.role == 'assistant' &&
+            (last.finish == 'stop' || last.finish == 'error')) {
+          setStatus('idle');
         }
       }
       _messages

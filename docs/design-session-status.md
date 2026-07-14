@@ -27,11 +27,12 @@
 
 | finish 值 | 含义 | 会话状态 |
 |-----------|------|----------|
-| `"stop"` | assistant 最终完成 | idle |
+| `"stop"` | assistant 正常完成 | idle |
+| `"error"` | assistant 异常终止 | idle（会话已结束） |
 | `"tool-calls"` | 中间步骤完成 | 可能仍在运行 |
 | `null` | 消息正在生成 | busy |
 
-`"tool-calls"` 不是最终完成，不能用来判断 idle。
+`"tool-calls"` 和 `null` 不是终态，不能用来判断 idle。`"stop"` 和 `"error"` 都是终态。
 
 ### 正常的状态查询方式
 
@@ -48,13 +49,15 @@
 ```dart
 if (entries.isNotEmpty) {
   final last = entries.last.info;
-  if (last.role == 'assistant' && last.finish == 'stop') {
-    status = 'idle';
+  if (last.role == 'assistant' &&
+      (last.finish == 'stop' || last.finish == 'error')) {
+    setStatus('idle');
   }
 }
 ```
 
-- 只认 `finish == 'stop'`（最终完成），`'tool-calls'`（中间步骤）不触发
+- 只认终态 finish（`'stop'` / `'error'`），`'tool-calls'`（中间步骤）和 `null`（生成中）不触发
+- 用 `setStatus()` 而非直接赋值（语义清晰、单独 notify）
 - 零额外 REST 请求，复用已拉到的数据
 - 覆盖所有 reload 路径：手动刷新、self-healing、resume
 
@@ -78,7 +81,13 @@ if (entries.isNotEmpty) {
 
 ### 为什么不从消息推断 `finish != null`？
 
-`finish: "tool-calls"` 是中间步骤完成——agent 调了工具，正在等结果，会话仍在运行。只有 `finish: "stop"` 表示 agent 最终完成回复。泛化到任何非空 `finish` 会误清 busy 状态。
+`finish: "tool-calls"` 是中间步骤完成——agent 调了工具，正在等结果，会话仍在运行。只有 `finish: "stop"`（正常完成）和 `finish: "error"`（异常终止）表示会话已结束。泛化到任何非空 `finish` 会误清 busy 状态。
+
+### 验证结论（D-SS-A / D-SS-B）
+
+**D-SS-A**：在测试服务器上对一个正在流式输出的 busy 会话调 `GET /session/:id/message`，最后一条是 `finish=null` 的进行中 assistant 消息——**进行中消息在 REST 可见**，Layer 1 安全，不会误判。
+
+**D-SS-B**：实际数据中 finish 枚举值为 `stop` / `error` / `tool-calls` / `null`。`error` 是异常终态（会话已结束），需纳入 idle 判定。OpenAPI spec 中 finish 为 `type: string`（无 enum 限制），未来可能出现其他终态值，但 `stop` + `error` 覆盖当前已知场景，Layer 2 兜底。
 
 ## 涉及文件
 
@@ -96,3 +105,31 @@ if (entries.isNotEmpty) {
 | 会话仍在运行，手动刷新 | ✅ 正常显示 busy | ✅ finish=null 或 tool-calls → 保持 busy |
 | SSE 重连后 | ✅ _reconcile 同步 status | ✅ 不变 |
 | 发消息后 SSE 断，会话完成 | ❌ 卡 busy | ⚠️ 需手动刷新（第 1 层覆盖） |
+
+---
+
+## 复审注释
+
+> 评审结论：设计**整体合理**，两层互补覆盖主要场景，根因与 finish 语义判断准确。以下两条依赖 opencode 行为的假设需落地前验证；确认后即可实现。
+
+### 🟡 D-SS-A — Layer 1 假设「进行中消息在 REST `/message` 里可见且 `finish=null`」
+
+**验证结果**：✅ 已验证。在测试服务器上对 busy 会话调 `GET /message`，最后一条是 `finish=null` 的进行中 assistant 消息。Layer 1 安全，不会误判 idle。
+
+### 🟡 D-SS-B — 只认 `finish=='stop'`，其他终态 finish 值是否遗漏
+
+**验证结果**：✅ 已确认。实际数据中 finish 枚举为 `stop` / `error` / `tool-calls` / `null`。`error` 是异常终态，已纳入 idle 判定（`finish == 'stop' || finish == 'error'`）。OpenAPI spec 中 finish 为 `type: string`（无 enum），未来新终态由 Layer 2 兜底。
+
+### 🟢 实现细节
+
+`status = 'idle'` 改为 `setStatus('idle')`（语义清晰、单独 notify）。已采纳。
+
+### 优先级结论
+
+| 编号 | 问题 | 优先级 | 状态 |
+|------|------|--------|------|
+| D-SS-A | 进行中消息是否在 `/message` 可见（finish=null） | 🟡 中 | ✅ 已验证：可见，Layer 1 安全 |
+| D-SS-B | finish 枚举是否只有 stop/tool-calls/null | 🟡 中 | ✅ 已确认：stop/error/tool-calls/null，error 已纳入 idle |
+| 实现细节 | `status='idle'` 建议改 `setStatus('idle')` | 🟢 低 | ✅ 已采纳 |
+
+两条假设已验证，设计无需调整，可放心实现。
