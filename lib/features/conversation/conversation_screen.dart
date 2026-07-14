@@ -207,6 +207,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final conv = serverStore.conversationFor(widget.sessionId);
     final client = serverStore.client;
     if (conv == null || client == null) return;
+    // Ensure SSE is open for this session's directory — we need it to
+    // receive the streaming response.
+    serverStore.ensureSseForSession(widget.sessionId);
     _ctl.clear();
     setState(() => _cmdMode = false);
     final session = serverStore.sessionById(widget.sessionId);

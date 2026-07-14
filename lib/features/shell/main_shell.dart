@@ -59,7 +59,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         builder: (context, _) => Column(
           children: [
             Expanded(child: widget.shell),
-            if (serverStore.reconnecting) const _ReconnectBanner(),
+            if (serverStore.error != null) _ErrorBanner(error: serverStore.error!),
           ],
         ),
       ),
@@ -89,9 +89,11 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   }
 }
 
-/// Top banner shown while the SSE connection is in backoff reconnect (specs §11).
-class _ReconnectBanner extends StatelessWidget {
-  const _ReconnectBanner();
+/// Error banner shown when the server connection fails (replaces the old
+/// reconnecting banner — on-demand SSE no longer has a global reconnect state).
+class _ErrorBanner extends StatelessWidget {
+  final String error;
+  const _ErrorBanner({required this.error});
 
   @override
   Widget build(BuildContext context) {
@@ -99,25 +101,16 @@ class _ReconnectBanner extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: scheme.primaryContainer,
-      child: Row(
-        children: [
-          const SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            '重连中'
-            '${serverStore.reconnectAttempt > 1 ? ' (${serverStore.reconnectAttempt})' : ''}…',
-            style: TextStyle(
-              fontSize: 13,
-              color: scheme.onPrimaryContainer,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
+      color: scheme.errorContainer,
+      child: Text(
+        error,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 13,
+          color: scheme.onErrorContainer,
+          fontWeight: FontWeight.w500,
+        ),
       ),
     );
   }

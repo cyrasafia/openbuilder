@@ -16,16 +16,24 @@ import 'conversation_store.dart';
 /// subscription to `/event` (specs §5, frontend §2.2).
 class ServerStore extends ChangeNotifier {
   OpencodeClient? client;
-  /// One SSE subscription per project directory. opencode's `/event` stream is
-  /// scoped to a `directory` (no directory ⇒ only `server.connected`), so we
-  /// open one connection per directory to receive that project's live events.
+  /// One SSE subscription per directory + watchdog. opencode's `/event` stream
+  /// is scoped to a `directory` (no directory ⇒ only `server.connected` /
+  /// `server.heartbeat`). We keep a watchdog (bare `/event`) for liveness and
+  /// per-directory SSE only for busy/retry sessions + active conversation.
   final Map<String, SseClient> _sseByDir = {};
   final Map<String, StreamSubscription<OpencodeEvent>> _sseSubs = {};
   final Map<String, StreamSubscription<SseState>> _sseStateSubs = {};
-  final Map<String, SseState> _stateByDir = {};
+  final Map<String, bool> _sseRequired = {}; // dir -> protected from LRU
   Map<String, String> _sseHeaders = {};
   Timer? _reconcileTimer;
   ConnectionProfile? _profile;
+
+  // ── On-demand SSE constants ──
+  static const _kGlobalWatchdog = '\u0000__global_watchdog__';
+  static const _kMaxIdleSseConnections = 5;
+  static const kMaxRefreshInterval = Duration(seconds: 30);
+  static const _kMaxRefreshInterval = kMaxRefreshInterval;
+  DateTime? _lastFullRefreshAt;
 
   // ── Self-healing state ──
   String? _activeSessionId;
@@ -37,11 +45,6 @@ class ServerStore extends ChangeNotifier {
 
   /// Pending questions keyed by questionId (fed by SSE + REST backfill).
   final Map<String, QuestionRequest> _pendingQuestions = {};
-
-  /// True while the SSE connection is in backoff reconnect (specs §11 banner).
-  bool reconnecting = false;
-  /// Current reconnect attempt (1-based); 0 when connected / idle.
-  int reconnectAttempt = 0;
 
   List<ProjectModel> _projects = [];
   List<SessionModel> _sessions = [];
@@ -120,7 +123,28 @@ class ServerStore extends ChangeNotifier {
   }
 
   void setActiveConversation(String? sid) {
+    final oldId = _activeSessionId;
     _activeSessionId = sid;
+    // Ensure SSE for the new active session's directory (required).
+    if (sid != null) {
+      final s = sessionById(sid);
+      if (s != null && s.directory.isNotEmpty) {
+        _startSse(s.directory, required: true);
+      }
+    }
+    // Old active session's SSE may be downgraded — trim.
+    if (oldId != null && oldId != sid) {
+      _trimSse();
+    }
+  }
+
+  /// Ensure SSE is open for a session's directory (used when user sends a
+  /// message or interacts with permission/question cards in the detail page).
+  void ensureSseForSession(String sessionId) {
+    final s = sessionById(sessionId);
+    if (s != null && s.directory.isNotEmpty) {
+      _startSse(s.directory, required: true);
+    }
   }
 
   ConversationStore? conversationFor(String sessionId, {bool force = false}) {
@@ -162,8 +186,6 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> connect(ConnectionProfile profile) async {
     // Idempotent: no-op if already connected with same server + credentials.
-    // On bootstrap failure connected stays false, so a retry (calling
-    // connect again with the same profile) bypasses this guard and re-runs.
     if (_profile != null &&
         _profile!.id == profile.id &&
         _signature(_profile!) == _signature(profile) &&
@@ -179,30 +201,18 @@ class ServerStore extends ChangeNotifier {
         (k, v) => MapEntry(k, v is String ? v : v.toString())));
     final ok = await _bootstrap();
     if (!ok) {
-      // Bootstrap failed: stay disconnected with a clear error. Don't start
-      // SSE — there's no point streaming from a server we can't talk to.
       connected = false;
       notifyListeners();
       return;
     }
-    // Always open a bare `/event` as a global watchdog so we still receive
-    // `server.connected` (and any future un-scoped events) even when the
-    // server has zero projects/sessions — without it an empty server would
-    // open no SSE at all and miss newly-created sessions until a manual
-    // refresh.
-    _startSse(_kGlobalWatchdog);
-    // Subscribe to `/event` once per project directory (specs §5: the stream
-    // is directory-scoped — a bare `/event` only yields `server.connected`).
-    for (final dir in _eventDirectories()) {
-      _startSse(dir);
-    }
-    connected = true;
-    notifyListeners();
+    // Start watchdog + SSE for busy/retry sessions only.
+    await refreshListAndWorkingSse(force: true);
   }
 
   /// Sentinel key for the always-on bare `/event` connection (no `directory`
-  /// query). Kept distinct from any real directory path.
-  static const _kGlobalWatchdog = '\u0000__global_watchdog__';
+  /// query). Kept distinct from any real directory path. Used for liveness
+  /// detection — only receives `server.connected` and `server.heartbeat`.
+  // (defined as class constant _kGlobalWatchdog)
 
   /// Distinct directories to stream: every project's worktree plus every known
   /// session directory (covers sandbox worktrees too).
@@ -217,18 +227,24 @@ class ServerStore extends ChangeNotifier {
     return dirs;
   }
 
-  void _startSse(String key) {
-    if (_sseByDir.containsKey(key)) return;
+  void _startSse(String dir, {bool required = false}) {
+    if (_sseByDir.containsKey(dir)) {
+      // Upgrade to required if needed (don't downgrade).
+      _sseRequired[dir] = required || (_sseRequired[dir] ?? false);
+      return;
+    }
     final base = Uri.parse('${_profile!.baseUrl}/event');
-    final uri = key == _kGlobalWatchdog
+    final uri = dir == _kGlobalWatchdog
         ? base // bare /event — global watchdog
-        : base.replace(queryParameters: {'directory': key});
+        : base.replace(queryParameters: {'directory': dir});
     final c = SseClient(uri: uri, headers: _sseHeaders);
-    _sseByDir[key] = c;
-    _sseSubs[key] =
+    _sseByDir[dir] = c;
+    _sseSubs[dir] =
         c.events.listen(_onEvent, onError: (Object e) => error = '$e');
-    _sseStateSubs[key] = c.state.listen((s) => _onSseState(key, s));
+    _sseStateSubs[dir] = c.state.listen((s) => _onSseState(dir, s));
+    _sseRequired[dir] = required;
     c.start();
+    _trimSse();
   }
 
   String _signature(ConnectionProfile p) =>
@@ -353,9 +369,16 @@ class ServerStore extends ChangeNotifier {
     });
   }
 
-  Future<void> _reconcile() async {
-    // server.connected: refresh authoritative state.
+  /// Unified refresh entry point: REST fetch + SSE management for busy/retry.
+  ///
+  /// `force: true` — also (re)start the watchdog SSE. Used when watchdog is
+  ///   missing (resume after pause, refresh recovering a failed connection).
+  /// `force: false` — REST refresh + SSE marking/LRU only. Watchdog untouched.
+  Future<void> refreshListAndWorkingSse({bool force = false}) async {
     if (client == null) return;
+    if (force || !_sseByDir.containsKey(_kGlobalWatchdog)) {
+      _startSse(_kGlobalWatchdog);
+    }
     try {
       final sessions = await _fetchAllSessions();
       final status =
@@ -367,19 +390,16 @@ class ServerStore extends ChangeNotifier {
       for (final conv in _conversations.values) {
         conv.setStatus(status[conv.sessionId]?.type ?? 'idle');
       }
-      // Drop SSE for directories that vanished (sessions deleted / projects
-      // removed) and add any newly-appeared directories.
-      _pruneSse();
-      for (final dir in _eventDirectories()) {
-        _startSse(dir);
-      }
+      // Start SSE for busy/retry sessions + active conversation.
+      _startRequiredSse();
+      _trimSse();
       error = null;
+      connected = true;
     } catch (e) {
       error = '$e';
     }
-    // R1: Conversation-layer healing lives OUTSIDE the try so it only
-    // depends on conversation-level REST, not list/status fetching. A weak
-    // network may fail _fetchAllSessions while messages() still works.
+    _lastFullRefreshAt = DateTime.now();
+    // Conversation-layer healing.
     final activeId = _activeSessionId;
     final activeConv =
         activeId != null ? _conversations[activeId] : null;
@@ -402,6 +422,30 @@ class ServerStore extends ChangeNotifier {
     }
     unawaited(_backfillPermissions());
     notifyListeners();
+  }
+
+  /// Start SSE for all busy/retry sessions + active conversation directory.
+  void _startRequiredSse() {
+    for (final s in _sessions) {
+      final status = _statusMap[s.id];
+      if (status != null &&
+          (status.type == 'busy' || status.type == 'retry') &&
+          s.directory.isNotEmpty) {
+        _startSse(s.directory, required: true);
+      }
+    }
+    final activeId = _activeSessionId;
+    if (activeId != null) {
+      final s = sessionById(activeId);
+      if (s != null && s.directory.isNotEmpty) {
+        _startSse(s.directory, required: true);
+      }
+    }
+  }
+
+  Future<void> _reconcile() async {
+    if (client == null) return;
+    await refreshListAndWorkingSse(force: false);
   }
 
   /// Fetch pending permissions via REST and route to cached conversations.
@@ -481,22 +525,15 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _onSseState(String dir, SseState s) {
-    final wasReconnecting = _stateByDir[dir]?.reconnecting ?? false;
-    _stateByDir[dir] = s;
-    final anyReconnecting = _stateByDir.values.any((e) => e.reconnecting);
-    final maxAttempt = _stateByDir.values
-        .map((e) => e.attempt)
-        .fold(0, (a, b) => a > b ? a : b);
-    if (anyReconnecting != reconnecting || maxAttempt != reconnectAttempt) {
-      reconnecting = anyReconnecting;
-      reconnectAttempt = maxAttempt;
-      notifyListeners();
-    }
-    // When a connection transitions from reconnecting → connected, trigger a
-    // reconcile to catch up on anything missed during the disconnect (the
-    // server may not always emit server.connected on every reconnect).
-    if (wasReconnecting && !s.reconnecting) {
+    // Only watchdog's reconnecting → connected triggers a reconcile.
+    // Directory SSE reconnections are handled silently — REST refresh
+    // compensates for missed events.
+    if (dir == _kGlobalWatchdog && s.reconnecting) {
+      // Watchdog dropped — mark stale for conversation healing on recovery.
       _needsStaleMarking = true;
+    }
+    if (dir == _kGlobalWatchdog && !s.reconnecting && s.connected) {
+      // Watchdog recovered — trigger reconcile to catch up.
       _scheduleReconcile();
     }
   }
@@ -681,40 +718,85 @@ class ServerStore extends ChangeNotifier {
     } else {
       _sessions[idx] = s;
     }
-    // A session for a directory we aren't streaming yet (e.g. a brand-new
-    // project) — start a scoped SSE so it receives live events too.
-    if (s.directory.isNotEmpty && !_sseByDir.containsKey(s.directory)) {
-      _startSse(s.directory);
+    // A new/updated session — only start SSE if it's busy/retry or active.
+    if (s.directory.isNotEmpty) {
+      final status = _statusMap[s.id];
+      final isWorking = status != null &&
+          (status.type == 'busy' || status.type == 'retry');
+      final isActive = _activeSessionId == s.id;
+      if (isWorking || isActive) {
+        _startSse(s.directory, required: true);
+      }
     }
   }
 
   void _removeSession(String id) {
     _sessions.removeWhere((s) => s.id == id);
     _conversations.remove(id);
-    _pruneSse();
+    _trimSse();
   }
 
-  /// Stop SSE connections for directories that no longer have any session nor
-  /// match a project worktree (keeps the connection count bounded — review §2).
-  /// The global watchdog (`_kGlobalWatchdog`) is always retained.
-  void _pruneSse() {
-    final keep = <String>{_kGlobalWatchdog};
-    for (final p in _projects) {
-      if (p.worktree.isNotEmpty) keep.add(p.worktree);
-    }
+  /// LRU eviction + stale directory cleanup. Merges the old `_pruneSse()`
+  /// logic with idle SSE pool management.
+  ///
+  /// Rules:
+  /// 1. Watchdog is never evicted.
+  /// 2. Directories not in `_eventDirectories()` are closed immediately.
+  /// 3. Required directories (busy/retry + active conversation) are kept.
+  /// 4. Non-required (idle) SSE are capped at `_kMaxIdleSseConnections`,
+  ///    evicting oldest by `lastEventAt`.
+  void _trimSse() {
+    // 1. Compute required directories.
+    final requiredDirs = <String>{};
     for (final s in _sessions) {
-      if (s.directory.isNotEmpty) keep.add(s.directory);
+      final status = _statusMap[s.id];
+      if (status != null &&
+          (status.type == 'busy' || status.type == 'retry') &&
+          s.directory.isNotEmpty) {
+        requiredDirs.add(s.directory);
+      }
     }
-    final stale = _sseByDir.keys.where((k) => !keep.contains(k)).toList();
-    for (final k in stale) {
-      _sseSubs[k]?.cancel();
-      _sseSubs.remove(k);
-      _sseStateSubs[k]?.cancel();
-      _sseStateSubs.remove(k);
-      _stateByDir.remove(k);
-      _sseByDir[k]?.stop();
-      _sseByDir.remove(k);
+    final activeId = _activeSessionId;
+    if (activeId != null) {
+      final s = sessionById(activeId);
+      if (s != null && s.directory.isNotEmpty) {
+        requiredDirs.add(s.directory);
+      }
     }
+
+    // 2. Clean up + classify.
+    final validDirs = _eventDirectories();
+    final removable = <String>[];
+    for (final dir in _sseByDir.keys.toList()) {
+      if (dir == _kGlobalWatchdog) continue;
+      if (!validDirs.contains(dir)) {
+        _stopSseForDirectory(dir);
+        continue;
+      }
+      if (requiredDirs.contains(dir)) {
+        _sseRequired[dir] = true;
+        continue;
+      }
+      _sseRequired[dir] = false;
+      removable.add(dir);
+    }
+
+    // 3. Evict oldest idle SSE if over limit.
+    removable.sort((a, b) =>
+        _sseByDir[a]!.lastEventAt.compareTo(_sseByDir[b]!.lastEventAt));
+    while (removable.length > _kMaxIdleSseConnections) {
+      final oldest = removable.removeAt(0);
+      _stopSseForDirectory(oldest);
+    }
+  }
+
+  Future<void> _stopSseForDirectory(String dir) {
+    _sseSubs[dir]?.cancel();
+    _sseSubs.remove(dir);
+    _sseStateSubs[dir]?.cancel();
+    _sseStateSubs.remove(dir);
+    _sseRequired.remove(dir);
+    return _sseByDir.remove(dir)?.stop() ?? Future.value();
   }
 
   Future<void> _teardown() async {
@@ -738,16 +820,7 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> refresh() async {
     if (client == null) return;
-    final ok = await _bootstrap();
-    if (ok && !connected) {
-      // A refresh recovered a previously-failed connection: start SSE now.
-      _startSse(_kGlobalWatchdog);
-      for (final dir in _eventDirectories()) {
-        _startSse(dir);
-      }
-      connected = true;
-    }
-    notifyListeners();
+    await refreshListAndWorkingSse(force: true);
   }
 
   // ── App lifecycle (specs §5: background → pause, foreground → resume) ──
@@ -763,57 +836,28 @@ class ServerStore extends ChangeNotifier {
     await _stopSse();
   }
 
-  /// Called when the app returns to foreground: restart SSE and do a full
-  /// reconcile to catch up on anything missed while backgrounded.
-  ///
-  /// Only runs the heavy bootstrap+reload path when SSE was actually torn
-  /// down by [pause] (backgrounded ≥30s), or when no live connection is
-  /// confirmed. On a quick app switch the 30s pause timer is cancelled
-  /// before firing, so SSE stays connected and buffered events drain
-  /// naturally on resume — triggering a REST reload here would clear those
-  /// SSE-delivered deltas with a stale snapshot (MU-2 race made
-  /// deterministic), silently dropping a message segment.
-  ///
-  /// The liveness check is on a *confirmed* `connected` state, not mere
-  /// presence in `_sseByDir`: on iOS the isolate may be suspended with the
-  /// socket already dead while `_sseByDir` still holds the entry (the 30s
-  /// pause timer never fired). If [SseClient] has already noticed the drop
-  /// (state = reconnecting) we fall through to the full reload now — nothing
-  /// is streaming to clobber, and reconcile runs again on reconnect (MU-2-R1).
+  /// Called when the app returns to foreground. Decision logic:
+  /// - No watchdog → SSE was torn down by pause → full refresh.
+  /// - Has watchdog but last refresh >30s ago → refresh.
+  /// - Has watchdog and recent refresh → just backfill permissions.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
-    if (_sseByDir.isNotEmpty &&
-        _stateByDir.values.any((s) => s.connected)) {
-      // SSE is live and delivering — events buffered while backgrounded are
-      // still waiting in the socket and will be dispatched now that the
-      // event loop is running again. A reload would clobber them; just
-      // backfill permissions (idempotent) and let SSE continue.
-      unawaited(_backfillPermissions());
-      notifyListeners();
+
+    // No watchdog: SSE was torn down (pause timer fired). Full refresh.
+    if (!_sseByDir.containsKey(_kGlobalWatchdog)) {
+      await refreshListAndWorkingSse(force: true);
       return;
     }
-    await _bootstrap();
-    // Directly reload the active conversation — don't wait for the
-    // server.connected SSE event (which may be delayed or whose reconcile
-    // may fail before reaching the reload step on weak networks).
-    final activeId = _activeSessionId;
-    final activeConv =
-        activeId != null ? _conversations[activeId] : null;
-    if (activeConv != null) {
-      // Sync conv status from _bootstrap's fresh _statusMap — pause may have
-      // missed a session.idle event, leaving conv.status stuck on 'busy'.
-      activeConv.setStatus(_statusMap[activeId]?.type ?? 'idle');
-      if (activeConv.busy) {
-        activeConv.markStale();
-      } else {
-        unawaited(activeConv.reload());
-        _resumeReloadedSessionId = activeId;
-      }
+
+    // Has watchdog but data is stale.
+    final stale = _lastFullRefreshAt == null ||
+        DateTime.now().difference(_lastFullRefreshAt!) > _kMaxRefreshInterval;
+    if (stale) {
+      await refreshListAndWorkingSse(force: false);
+      return;
     }
-    _startSse(_kGlobalWatchdog);
-    for (final dir in _eventDirectories()) {
-      _startSse(dir);
-    }
+
+    // SSE still live and data fresh — just backfill permissions.
     unawaited(_backfillPermissions());
     notifyListeners();
   }
@@ -834,10 +878,6 @@ class ServerStore extends ChangeNotifier {
       await c.stop();
     }
     _sseByDir.clear();
-    _stateByDir.clear();
-    // Reset public reconnect indicators so the banner doesn't linger after
-    // all connections are torn down (pause / teardown / disconnect).
-    reconnecting = false;
-    reconnectAttempt = 0;
+    _sseRequired.clear();
   }
 }

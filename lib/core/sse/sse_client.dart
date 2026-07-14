@@ -47,6 +47,7 @@ class SseClient {
   bool _reconnecting = false;
   int _reconnectAttempt = 0;
   bool _reconnectPending = false;
+  DateTime _lastEventAt = DateTime.now();
 
   SseClient({required this.uri, this.headers = const {}});
 
@@ -54,6 +55,12 @@ class SseClient {
   /// Lifecycle changes (connected / reconnecting + attempt), for UI banners.
   Stream<SseState> get state => _stateCtl.stream;
   bool get isRunning => !_stopped;
+
+  /// Last time an SSE data frame was received. Used for LRU eviction.
+  /// Only updated in `_onData` — NOT on connection establishment.
+  /// Idle directories with no events keep their creation timestamp,
+  /// so LRU correctly prioritizes evicting them.
+  DateTime get lastEventAt => _lastEventAt;
 
   void _emit(SseState s) {
     if (!_stateCtl.isClosed) _stateCtl.add(s);
@@ -105,6 +112,7 @@ class SseClient {
   }
 
   void _onData(String data) {
+    _lastEventAt = DateTime.now();
     _backoff = 1; // healthy
     try {
       final j = jsonDecode(data) as Map<String, dynamic>;

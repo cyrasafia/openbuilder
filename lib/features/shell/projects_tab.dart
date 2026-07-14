@@ -1,13 +1,39 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
+import '../../core/session/server_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 
-class ProjectsTab extends StatelessWidget {
+class ProjectsTab extends StatefulWidget {
   const ProjectsTab({super.key});
+
+  @override
+  State<ProjectsTab> createState() => _ProjectsTabState();
+}
+
+class _ProjectsTabState extends State<ProjectsTab> {
+  Timer? _periodicRefreshTimer;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    serverStore.refreshListAndWorkingSse(force: false);
+    _periodicRefreshTimer?.cancel();
+    _periodicRefreshTimer = Timer.periodic(
+        ServerStore.kMaxRefreshInterval,
+        (_) => serverStore.refreshListAndWorkingSse(force: false));
+  }
+
+  @override
+  void dispose() {
+    _periodicRefreshTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
