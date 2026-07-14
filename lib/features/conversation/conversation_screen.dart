@@ -912,7 +912,6 @@ class _MoreMenu extends StatelessWidget {
   }
 
   Future<void> _onSelected(BuildContext context, String value) async {
-    final client = serverStore.client;
     switch (value) {
       case 'refresh':
         final conv = serverStore.conversationFor(sessionId);
@@ -920,6 +919,8 @@ class _MoreMenu extends StatelessWidget {
       case 'rename':
         await _showRenameDialog(context);
       case 'archive':
+        final client = serverStore.client;
+        if (client == null) return;
         final ok = await showDialog<bool>(
           context: context,
           builder: (_) => AlertDialog(
@@ -935,7 +936,7 @@ class _MoreMenu extends StatelessWidget {
             ],
           ),
         );
-        if (ok == true && client != null) {
+        if (ok == true) {
           try {
             await client.archive(sessionId,
                 directory: directory,
