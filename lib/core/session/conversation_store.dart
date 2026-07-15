@@ -225,13 +225,9 @@ class ConversationStore extends ChangeNotifier {
     loading = true;
     notifyListeners();
     try {
-      await reconcile(); // 委托：拉 REST + 合并不 clear + _saveCache
-    } catch (e) {
-      error = '$e';
-      _stale = true;
-      // Offline fallback: restore last-known messages from local cache so the
-      // user can still review the conversation (specs §5, plan item 19).
-      await _loadCache();
+      // 委托 reconcile：成功设 messages/error=null/_saveCache；失败内部设
+      // error/_stale + _loadCache 兜底（不 rethrow，故此处无需 catch）。
+      await reconcile();
     } finally {
       loading = false;
       notifyListeners();
@@ -291,7 +287,11 @@ class ConversationStore extends ChangeNotifier {
       error = null;
       _stale = false;
       unawaited(_saveCache());
-    } catch (_) {
+    } catch (e) {
+      // Set error so first-load failure surfaces in the UI ("加载失败");
+      // background reconcile failures on a conv with messages stay hidden
+      // (UI gates on messages.isEmpty) and clear on next success.
+      error = '$e';
       _stale = true;
       // Only restore from cache if we have no data at all — if SSE has been
       // delivering messages (_messages is non-empty), that data is always more

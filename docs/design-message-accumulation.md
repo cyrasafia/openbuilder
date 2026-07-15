@@ -141,7 +141,8 @@ Future<void> reconcile() async {
     try { _todos = await client.todos(sessionId); } catch (_) {}
     loaded = true; error = null; _stale = false;
     unawaited(_saveCache());
-  } catch (_) {
+  } catch (e) {
+    error = '$e';                          // MAI-1: 首次加载失败时 UI 显示"加载失败"
     _stale = true;
     if (_messages.isEmpty) await _loadCache();   // 仅空时离线兜底
     // 否则保留 SSE 累积，标 stale 下次重试

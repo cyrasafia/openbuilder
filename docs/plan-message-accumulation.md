@@ -70,7 +70,8 @@ Future<void> reconcile() async {
     error = null;
     _stale = false;
     unawaited(_saveCache());
-  } catch (_) {
+  } catch (e) {
+    error = '$e'; // MAI-1: 首次加载失败时 UI 显示"加载失败"
     _stale = true;
     if (_messages.isEmpty) await _loadCache(); // 仅空时离线兜底
     // 否则保留 SSE 累积，标 stale 下次重试
@@ -148,10 +149,9 @@ Future<void> load() async {
   loading = true;
   notifyListeners();
   try {
-    await reconcile(); // 委托：拉 REST + 合并 + _saveCache
-  } catch (e) {
-    error = '$e';
-    await _loadCache(); // 首次加载失败的离线兜底（_messages 必空）
+    // 委托 reconcile：成功设 messages/error=null/_saveCache；失败内部设
+    // error/_stale + _loadCache 兜底（不 rethrow，故此处无需 catch）。
+    await reconcile();
   } finally {
     loading = false;
     notifyListeners();
