@@ -22,13 +22,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _scrollController = ScrollController();
   final _ctl = TextEditingController();
   bool _cmdMode = false;
-  // Slash commands fetched from `GET /api/command` for this session's
-  // directory (replaces the previous hard-coded list).
   List<CommandInfo> _commands = const [];
   bool _cmdLoaded = false;
   bool _cmdLoading = false;
   String? _cmdError;
   bool _didForceReload = false;
+  int _lastMsgCount = 0;
 
   @override
   void dispose() {
@@ -138,7 +137,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ...conv.messages.map(_message).toList().reversed,
             ],
           );
-          _scheduleAutoScroll();
+          if (conv.messages.length != _lastMsgCount) {
+            _lastMsgCount = conv.messages.length;
+            _scheduleAutoScroll();
+          }
           final showFooter =
               conv.permissions.isNotEmpty ||
               conv.questions.isNotEmpty ||
@@ -279,6 +281,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _message(DisplayMessage m) {
     if (m.info.role == 'user') {
       return Padding(
+        key: ValueKey(m.info.id),
         padding: const EdgeInsets.only(left: 40, top: 10, bottom: 10),
         child: Align(
           alignment: Alignment.centerRight,
@@ -295,6 +298,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
     return Padding(
+      key: ValueKey(m.info.id),
       padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
