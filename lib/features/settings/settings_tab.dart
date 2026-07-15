@@ -162,7 +162,26 @@ class _SettingsTabState extends State<SettingsTab> {
                 ListTile(
                   leading: const Icon(Icons.language),
                   title: const Text('语言'),
-                  trailing: const Text('简体中文'),
+                  trailing: SegmentedButton<Locale?>(
+                    showSelectedIcon: false,
+                    selected: {localeMode.value},
+                    onSelectionChanged: (s) =>
+                        setState(() => localeMode.value = s.first),
+                    segments: const [
+                      ButtonSegment(
+                        value: null,
+                        label: Text('系统'),
+                      ),
+                      ButtonSegment(
+                        value: Locale('zh'),
+                        label: Text('中文'),
+                      ),
+                      ButtonSegment(
+                        value: Locale('en'),
+                        label: Text('English'),
+                      ),
+                    ],
+                  ),
                 ),
               ]),
               _section('关于', [

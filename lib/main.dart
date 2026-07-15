@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'app_router.dart';
 import 'app_state.dart';
@@ -22,13 +23,23 @@ class OpencodeMobileApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: themeMode,
-      builder: (_, mode, _) => MaterialApp.router(
-        title: 'opencode',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.light,
-        darkTheme: AppTheme.dark,
-        themeMode: mode,
-        routerConfig: buildRouter(connectionStore),
+      builder: (_, mode, _) => ValueListenableBuilder<Locale?>(
+        valueListenable: localeMode,
+        builder: (_, locale, _) => MaterialApp.router(
+          title: 'opencode',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light,
+          darkTheme: AppTheme.dark,
+          themeMode: mode,
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: const [Locale('zh'), Locale('en')],
+          locale: locale,
+          routerConfig: buildRouter(connectionStore),
+        ),
       ),
     );
   }
