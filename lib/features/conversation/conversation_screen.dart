@@ -677,10 +677,31 @@ class _FileChip extends StatelessWidget {
   }
 }
 
-class _PermissionCard extends StatelessWidget {
+class _PermissionCard extends StatefulWidget {
   final Permission permission;
   final ConversationStore store;
   const _PermissionCard({required this.permission, required this.store});
+
+  @override
+  State<_PermissionCard> createState() => _PermissionCardState();
+}
+
+class _PermissionCardState extends State<_PermissionCard> {
+  bool _replying = false;
+
+  Future<void> _respond(String response) async {
+    setState(() => _replying = true);
+    try {
+      await widget.store.respondPermission(widget.permission, response);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('回复失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _replying = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -704,7 +725,7 @@ class _PermissionCard extends StatelessWidget {
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           ]),
           const SizedBox(height: 8),
-          Text(permission.title,
+          Text(widget.permission.title,
               style: AppTheme.mono.copyWith(fontSize: 12.5)),
           const SizedBox(height: 12),
           Row(
@@ -714,20 +735,24 @@ class _PermissionCard extends StatelessWidget {
                 style: FilledButton.styleFrom(
                     foregroundColor: Colors.red,
                     backgroundColor: Colors.red.withAlpha(25)),
-                onPressed: () =>
-                    store.respondPermission(permission, 'reject'),
+                onPressed: _replying ? null : () => _respond('reject'),
                 child: const Text('拒绝'),
               ),
               const SizedBox(width: 8),
               FilledButton.tonal(
-                onPressed: () => store.respondPermission(permission, 'always'),
+                onPressed: _replying ? null : () => _respond('always'),
                 child: const Text('始终允许'),
               ),
               const SizedBox(width: 8),
               FilledButton(
-                onPressed: () =>
-                    store.respondPermission(permission, 'once'),
-                child: const Text('允许一次'),
+                onPressed: _replying ? null : () => _respond('once'),
+                child: _replying
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('允许一次'),
               ),
             ],
           ),

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -137,6 +138,32 @@ class ConversationStore extends ChangeNotifier {
   List<Permission> get permissions => List.unmodifiable(_permissions);
   List<QuestionRequest> get questions => List.unmodifiable(_questions);
   bool get busy => status == 'busy' || status == 'retry';
+
+  /// One-line preview of the last message, aligned with what the detail view
+  /// renders. Walks parts last→first, skipping hidden types, and returns the
+  /// first non-empty summary (null when there is nothing to show).
+  ///
+  /// Single source of truth for the session-list preview so it tracks the
+  /// detail view's last message during streaming — not only on completion
+  /// (frontend §2.2 D1).
+  String? lastMessagePreview() {
+    if (_messages.isEmpty) return null;
+    final last = _messages.last;
+    var preview = '';
+    for (var i = last.parts.length - 1; i >= 0; i--) {
+      final dp = last.parts[i];
+      if (_hidden.contains(dp.type)) continue;
+      final pv = dp.type == 'tool'
+          ? '${dp.tool ?? 'tool'}${(dp.toolStatus == null || dp.toolStatus!.isEmpty) ? '' : ' · ${dp.toolStatus}'}'
+          : dp.text.replaceAll('\n', ' ').trim();
+      if (pv.isNotEmpty) {
+        preview = pv;
+        break;
+      }
+    }
+    if (preview.isEmpty) return null;
+    return (last.info.role == 'user' ? '你: ' : '') + preview;
+  }
 
   // ── Self-healing public API ──
 
@@ -415,7 +442,12 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> respondPermission(Permission p, String response) async {
-    await client.respondPermission(sessionId, p.id, response);
+    try {
+      await client.respondPermission(sessionId, p.id, response);
+    } on DioException catch (e) {
+      // 404 = already resolved (e.g. accepted on another device) — remove locally.
+      if (e.response?.statusCode != 404) rethrow;
+    }
     onPermissionReplied(p.id);
   }
 
@@ -435,12 +467,20 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> replyQuestion(QuestionRequest q, List<List<String>> answers) async {
-    await client.replyQuestion(q.id, answers);
+    try {
+      await client.replyQuestion(q.id, answers);
+    } on DioException catch (e) {
+      if (e.response?.statusCode != 404) rethrow;
+    }
     onQuestionReplied(q.id);
   }
 
   Future<void> rejectQuestion(QuestionRequest q) async {
-    await client.rejectQuestion(q.id);
+    try {
+      await client.rejectQuestion(q.id);
+    } on DioException catch (e) {
+      if (e.response?.statusCode != 404) rethrow;
+    }
     onQuestionReplied(q.id);
   }
 

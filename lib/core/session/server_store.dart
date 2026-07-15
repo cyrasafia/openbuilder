@@ -26,6 +26,9 @@ class ServerStore extends ChangeNotifier {
   final Map<String, bool> _sseRequired = {}; // dir -> protected from LRU
   Map<String, String> _sseHeaders = {};
   Timer? _reconcileTimer;
+  Timer? _previewNotifyTimer;
+  DateTime? _lastPreviewNotifyAt;
+  static const _previewNotifyInterval = Duration(milliseconds: 120);
   ConnectionProfile? _profile;
 
   // ── On-demand SSE constants ──
@@ -97,6 +100,29 @@ class ServerStore extends ChangeNotifier {
       _statusMap[id] ?? const SessionStatusValue('idle');
 
   String? lastMessageOf(String id) => _lastMessage[id];
+
+  /// Throttled notify for streaming preview updates. The session list rebuilds
+  /// on every [notifyListeners], so coalescing the burst of
+  /// `message.part.updated` events (one per token) keeps the UI smooth while
+  /// still tracking the latest content. Always emits a trailing notify so the
+  /// final state is reflected.
+  void _notifyPreviewChanged() {
+    final now = DateTime.now();
+    if (_lastPreviewNotifyAt == null ||
+        now.difference(_lastPreviewNotifyAt!) >= _previewNotifyInterval) {
+      _lastPreviewNotifyAt = now;
+      _previewNotifyTimer?.cancel();
+      _previewNotifyTimer = null;
+      notifyListeners();
+    } else {
+      // Ensure a trailing notify so the final streaming state is reflected.
+      _previewNotifyTimer ??= Timer(_previewNotifyInterval, () {
+        _lastPreviewNotifyAt = DateTime.now();
+        _previewNotifyTimer = null;
+        notifyListeners();
+      });
+    }
+  }
 
   bool hasPendingPermission(String sessionId) =>
       _pendingPermissions.containsKey(sessionId);
@@ -629,7 +655,17 @@ class ServerStore extends ChangeNotifier {
         final sid = part is Map ? part['sessionID']?.toString() : null;
         final delta = ev.properties['delta']?.toString();
         if (sid != null && part is Map) {
-          _conversations[sid]?.onPartUpdated(part.cast(), delta);
+          final conv = _conversations[sid];
+          if (conv != null) {
+            conv.onPartUpdated(part.cast(), delta);
+            // Keep the list preview aligned with the detail view's last
+            // message during streaming, instead of waiting for completion.
+            final pv = conv.lastMessagePreview();
+            if (pv != null) {
+              _lastMessage[sid] = pv;
+              _notifyPreviewChanged();
+            }
+          }
         }
         break;
       case 'todo.updated':
@@ -655,11 +691,12 @@ class ServerStore extends ChangeNotifier {
       case 'permission.replied':
       case 'permission.v2.replied':
         final sid = ev.properties['sessionID']?.toString();
-        final pid = ev.properties['permissionID']?.toString();
-        if (sid != null) {
-          _pendingPermissions.removeWhere((_, p) => p.id == pid);
-        }
+        // Spec: permission.replied carries the permission id under "requestID"
+        // (additionalProperties:false — there is no "permissionID" key).
+        final pid = ev.properties['requestID']?.toString() ??
+            ev.properties['permissionID']?.toString();
         if (sid != null && pid != null) {
+          _pendingPermissions.removeWhere((_, p) => p.id == pid);
           _conversations[sid]?.onPermissionReplied(pid);
         }
         break;
@@ -675,7 +712,10 @@ class ServerStore extends ChangeNotifier {
       case 'question.v2.replied':
       case 'question.rejected':
       case 'question.v2.rejected':
-        final qid = ev.properties['id']?.toString();
+        // Spec: question.replied/rejected carry the question id under
+        // "requestID" (additionalProperties:false — there is no "id" key).
+        final qid = ev.properties['requestID']?.toString() ??
+            ev.properties['id']?.toString();
         final existing = qid != null ? _pendingQuestions[qid] : null;
         final sid = ev.properties['sessionID']?.toString() ?? existing?.sessionID;
         if (qid != null) {
@@ -695,12 +735,24 @@ class ServerStore extends ChangeNotifier {
     final m = MessageInfo.fromJson(infoRaw.cast<String, dynamic>());
     final sid = m.sessionID;
     if (sid == null || sid.isEmpty) return;
-    _conversations[sid]?.onMessageUpdated(m);
+    final conv = _conversations[sid];
+    conv?.onMessageUpdated(m);
     // MU-1: notify immediately so the list layer knows a message changed,
     // before the preview fetch (which may be slow on weak networks).
     notifyListeners();
     // Preview (frontend §2.2 D1/D2): refresh on message completion / user msg.
     if (m.role == 'user' || (m.finish != null && m.finish!.isNotEmpty)) {
+      // Prefer the already-loaded conversation's last message — aligned with
+      // the detail view and avoids an extra network round-trip. The streaming
+      // parts kept it in sync, so this is just the authoritative settle.
+      final local = conv?.lastMessagePreview();
+      if (local != null) {
+        _lastMessage[sid] = local;
+        notifyListeners();
+        return;
+      }
+      // Fallback for sessions whose conversation isn't loaded locally: fetch
+      // the message parts over the network.
       try {
         final entry = await client!.message(sid, m.id);
         final preview = _previewOf(entry);
@@ -729,22 +781,9 @@ class ServerStore extends ChangeNotifier {
   Future<void> _backfillPreview(String sid, ConversationStore conv) async {
     // After the conversation loads, surface its last message as the list preview
     // (avoids bulk-proactive fetch but keeps viewed sessions informative).
-    if (conv.messages.isEmpty) return;
-    final last = conv.messages.last;
-    var preview = '';
-    for (var i = last.parts.length - 1; i >= 0; i--) {
-      final dp = last.parts[i];
-      final pv = dp.type == 'tool'
-          ? '${dp.tool ?? 'tool'}${dp.toolStatus == null ? '' : ' · ${dp.toolStatus}'}'
-          : dp.text.replaceAll('\n', ' ').trim();
-      if (pv.isNotEmpty) {
-        preview = pv;
-        break;
-      }
-    }
-    if (preview.isNotEmpty) {
-      _lastMessage[sid] =
-          (last.info.role == 'user' ? '你: ' : '') + preview;
+    final preview = conv.lastMessagePreview();
+    if (preview != null) {
+      _lastMessage[sid] = preview;
       notifyListeners();
     }
   }
@@ -845,6 +884,9 @@ class ServerStore extends ChangeNotifier {
   Future<void> _teardown() async {
     await _stopSse();
     _conversations.clear();
+    _previewNotifyTimer?.cancel();
+    _previewNotifyTimer = null;
+    _lastPreviewNotifyAt = null;
   }
 
   Future<void> disconnect() async {

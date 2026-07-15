@@ -135,3 +135,15 @@ val.substring(0, 57)
 | FW-5 | `toolSummary` 格式不一致 | ⚪ 很低 | ⏳ 可选 |
 
 **FW-1 需真机验证**——如果 dark theme 文本确实不可见，是阻塞项。根因是 `Typography.material2021().black` 覆盖了 `ThemeData` 的自动颜色派生。修复方案：按 brightness 选择 `.black`/`.white`，或不在 `textTheme` 中覆盖 color。FW-2 为 fallback 死代码，影响低。`toolSummary` 实现正确，两种提取路径一致。
+
+### 修复复审（3a545b1）
+
+> 评审对象：commit `3a545b1 fix: review FW-1~2,5 — dark theme text color, Typeface weight reflection, tool separator`。
+> `dart analyze` 0 issue；`flutter test` 6/6 通过。
+
+- **FW-1**：① `TextTheme?` 改为 nullable，无 variations 时为 null → `ThemeData` 自动派生颜色（保留原行为）。② 有 variations 时按 `scheme.brightness` 选 `.white`（dark）/ `.black`（light）。三处修复正确。✅
+- **FW-2**：`typeface.javaClass.getDeclaredField("weight")`（移除 `.superclass`），方法 3（`Resources.getSystem()` 死代码）移除。✅
+- **FW-5**：`bash! cmd` → `bash: cmd`，统一为冒号分隔。✅
+- **FW-3**（mono 无 fontVariations）/ **FW-4**（substring 代理对）：合理延后，影响极低。
+
+3 项修复全部正确，无新问题引入。review-04c8b07 闭合。

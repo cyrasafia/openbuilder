@@ -192,3 +192,17 @@ void initState() {
 | OD-impl-6 | `setActiveConversation` 在 build 而非 initState | ⚪ 很低 | ❌ 不修复（build re-assert 是设计要求，见 design-self-healing.md §为什么用 build() re-assert 而非 initState/dispose？） |
 
 **OD-impl-1 是阻塞项**——不修复则按需 SSE 的核心降级逻辑不工作，用户访问过的会话 SSE 会持续累积为 required，违背设计目标。OD-impl-2/3 影响弱网体验和连接开销，建议一并修复。OD-impl-4~6 为小优化。
+
+### 修复复审（22aa06f）
+
+> 评审对象：commit `22aa06f fix: on-demand SSE review OD-impl-1~5`。
+> `dart analyze` 0 issue；`flutter test` 6/6 通过。
+
+- **OD-impl-1**：`dispose()` 中加 `serverStore.setActiveConversation(null)`。与 `design-self-healing.md` 的 build re-assert 兼容——叠层 pop（B dispose → active=null → A rebuild → active=A）期间 SSE 短暂降级后立即恢复，SSE client 不会 stop/restart（pool ≤5 时降级不移除，仅标记变更）。✅
+- **OD-impl-2**：`_lastFullRefreshAt` 移入 try 成功路径。失败时保留旧值，stale 检测下次重试。✅
+- **OD-impl-3**：`connect()` 在 `_bootstrap()` 后直接 `_startSse(watchdog)` + `_startRequiredSse()` + `_trimSse()`，不再经 `refreshListAndWorkingSse`。无双重 REST。`connect()` 时 `_conversations` 为空（刚 `_teardown`），跳过 conversation-layer healing 正确。✅
+- **OD-impl-4**：`_ErrorBanner` 加 `TextButton` 调 `serverStore.refresh()`（→ `refreshListAndWorkingSse(force: true)`）。成功后 `error = null` → banner 消失。✅
+- **OD-impl-5**：移除 `_kMaxRefreshInterval`，统一用 `kMaxRefreshInterval`。`resume()` 已更新引用。✅
+- **OD-impl-6**：不修复——`build()` re-assert 是 `design-self-healing.md` 的显式设计决策（go_router 叠层导航 initState/dispose 盲区）。合理。
+
+5 项修复全部正确，无新问题引入。review-on-demand-sse 全部闭合。
