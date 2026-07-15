@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'app_router.dart';
 import 'app_state.dart';
 import 'core/notifications/notification_service.dart';
+import 'core/net/system_font_weight.dart';
 import 'ui/theme.dart';
 
 void main() async {
@@ -10,6 +11,7 @@ void main() async {
   await connectionStore.load();
   wireServerStore();
   await NotificationService.init();
+  await SystemFontWeight.init();
   runApp(const OpencodeMobileApp());
 }
 

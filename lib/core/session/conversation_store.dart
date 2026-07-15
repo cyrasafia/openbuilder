@@ -15,6 +15,7 @@ class DisplayPart {
   String text;
   String? toolStatus;
   String? toolOutput;
+  Map<String, dynamic>? toolInput;
 
   DisplayPart({
     required this.id,
@@ -23,7 +24,68 @@ class DisplayPart {
     this.text = '',
     this.toolStatus,
     this.toolOutput,
+    this.toolInput,
   });
+
+  /// One-line summary of what the tool is doing (e.g. "bash: ls -la").
+  String get toolSummary {
+    if (tool == null) return '';
+    final input = toolInput;
+    if (input == null || input.isEmpty) return tool!;
+    switch (tool) {
+      case 'bash':
+      case 'shell':
+        final cmd = input['command']?.toString();
+        if (cmd != null && cmd.isNotEmpty) {
+          final firstLine = cmd.split('\n').first.trim();
+          return firstLine.length > 80
+              ? '$tool! ${firstLine.substring(0, 77)}...'
+              : '$tool! $firstLine';
+        }
+        return tool!;
+      case 'read':
+      case 'write':
+      case 'edit':
+        final path = input['filePath']?.toString() ?? input['path']?.toString();
+        if (path != null && path.isNotEmpty) {
+          final name = path.split('/').last;
+          return '$tool: $name';
+        }
+        return tool!;
+      case 'list':
+        final path = input['path']?.toString();
+        if (path != null && path.isNotEmpty) {
+          return '$tool: ${path.split('/').last}';
+        }
+        return tool!;
+      case 'glob':
+        final pattern = input['pattern']?.toString();
+        if (pattern != null && pattern.isNotEmpty) {
+          return '$tool: $pattern';
+        }
+        return tool!;
+      case 'grep':
+        final pattern = input['pattern']?.toString();
+        if (pattern != null && pattern.isNotEmpty) {
+          return '$tool: "$pattern"';
+        }
+        return tool!;
+      case 'task':
+        final desc = input['description']?.toString();
+        if (desc != null && desc.isNotEmpty) return '$tool: $desc';
+        return tool!;
+      default:
+        // Generic: show first key-value pair.
+        if (input.isNotEmpty) {
+          final firstKey = input.keys.first;
+          final val = input[firstKey]?.toString() ?? '';
+          if (val.isNotEmpty) {
+            return '$tool: ${val.length > 60 ? '${val.substring(0, 57)}...' : val}';
+          }
+        }
+        return tool!;
+    }
+  }
 
   factory DisplayPart.from(MessagePart p) {
     if (p.type == 'tool') {
@@ -33,6 +95,9 @@ class DisplayPart {
         tool: p.tool,
         toolStatus: p.stateStatus,
         toolOutput: p.stateOutput,
+        toolInput: p.state?['input'] is Map
+            ? (p.state!['input'] as Map).cast<String, dynamic>()
+            : null,
       );
     }
     return DisplayPart(id: p.id, type: p.type, text: p.text ?? '');
@@ -313,6 +378,9 @@ class ConversationStore extends ChangeNotifier {
         if (p.tool != null) dp.tool = p.tool;
         if (p.stateStatus != null) dp.toolStatus = p.stateStatus;
         if (p.stateOutput != null) dp.toolOutput = p.stateOutput;
+        if (p.state?['input'] is Map) {
+          dp.toolInput = (p.state!['input'] as Map).cast<String, dynamic>();
+        }
         break;
       case 'text':
       case 'reasoning':
