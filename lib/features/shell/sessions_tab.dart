@@ -45,6 +45,13 @@ class _SessionsTabState extends State<SessionsTab> {
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
+          if (!serverStore.connected && serverStore.bootstrapFailed) {
+            return _ErrorView(
+              onRetry: () => connectionStore.active != null
+                  ? serverStore.connect(connectionStore.active!)
+                  : null,
+            );
+          }
           if (!serverStore.connected) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -235,6 +242,41 @@ class _EmptyView extends StatelessWidget {
           const SizedBox(height: 12),
           Text(message, style: Theme.of(context).textTheme.titleMedium),
         ],
+      ),
+    );
+  }
+}
+
+class _ErrorView extends StatelessWidget {
+  final VoidCallback? onRetry;
+  const _ErrorView({this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off,
+                size: 48, color: Theme.of(context).colorScheme.outline),
+            const SizedBox(height: 12),
+            Text('连接失败',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text('请检查网络和服务器设置',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.outline)),
+            if (onRetry != null) ...[
+              const SizedBox(height: 16),
+              FilledButton(
+                  onPressed: onRetry, child: const Text('重试')),
+            ],
+          ],
+        ),
       ),
     );
   }

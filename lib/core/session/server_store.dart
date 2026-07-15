@@ -73,7 +73,14 @@ class ServerStore extends ChangeNotifier {
     return _sseByDir.containsKey(session.directory);
   }
   bool _watchdogConnected = false;
-  bool _watchdogFailed = false; // true after watchdog has failed at least once
+  // Set true when watchdog transitions connected → disconnected.
+  // Stays true after recovery — banner is controlled by !_watchdogConnected,
+  // not _watchdogFailed (which just gates "has ever failed" to suppress
+  // the banner on first connect).
+  bool _watchdogFailed = false;
+
+  /// Whether the initial bootstrap failed (for showing error view + retry).
+  bool bootstrapFailed = false;
 
   /// Whether to show the "network disconnected" banner.
   bool get showDisconnectBanner => _watchdogFailed && !_watchdogConnected;
@@ -219,6 +226,7 @@ class ServerStore extends ChangeNotifier {
     _sseHeaders = Map.from(dio.options.headers.map(
         (k, v) => MapEntry(k, v is String ? v : v.toString())));
     final ok = await _bootstrap();
+    bootstrapFailed = !ok;
     if (!ok) {
       connected = false;
       notifyListeners();
@@ -420,8 +428,9 @@ class ServerStore extends ChangeNotifier {
       _lastFullRefreshAt = DateTime.now();
       connected = true;
     } catch (_) {
-      // Auto-refresh failures are silent — watchdog banner + SSE indicator
-      // convey connection state; manual refresh shows toast.
+      // REST failed — return false so manual refresh shows toast.
+      notifyListeners();
+      return false;
     }
     // Conversation-layer healing (outside try/catch): only reload the active
     // conversation if it's stale. If SSE is live, reload would clobber
@@ -448,7 +457,7 @@ class ServerStore extends ChangeNotifier {
     }
     unawaited(_backfillPermissions());
     notifyListeners();
-    return client != null;
+    return true;
   }
 
   /// Start SSE for all busy/retry sessions + active conversation directory.
