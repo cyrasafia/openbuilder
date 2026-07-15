@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/connection/connection_store.dart';
 import 'core/session/server_store.dart';
@@ -7,6 +8,29 @@ final ConnectionStore connectionStore = ConnectionStore();
 final ServerStore serverStore = ServerStore();
 final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 final ValueNotifier<Locale?> localeMode = ValueNotifier(null);
+
+/// Load persisted theme/locale preferences and wire up change listeners to
+/// auto-save. Call once after [connectionStore] is loaded, before [runApp].
+Future<void> initSettings() async {
+  final prefs = await SharedPreferences.getInstance();
+  final themeIdx = prefs.getInt('themeMode');
+  if (themeIdx != null && themeIdx >= 0 && themeIdx < ThemeMode.values.length) {
+    themeMode.value = ThemeMode.values[themeIdx];
+  }
+  final localeStr = prefs.getString('locale');
+  if (localeStr != null) {
+    localeMode.value = Locale(localeStr);
+  }
+  themeMode.addListener(() => prefs.setInt('themeMode', themeMode.value.index));
+  localeMode.addListener(() {
+    final l = localeMode.value;
+    if (l != null) {
+      prefs.setString('locale', l.languageCode);
+    } else {
+      prefs.remove('locale');
+    }
+  });
+}
 
 /// Bind the active server in [connectionStore] to [serverStore] (connect on
 /// change / disconnect when none). Idempotent; call once after [connectionStore]

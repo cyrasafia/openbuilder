@@ -7,12 +7,15 @@ import 'core/notifications/notification_service.dart';
 import 'core/net/system_font_weight.dart';
 import 'ui/theme.dart';
 
+final _router = buildRouter(connectionStore);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await connectionStore.load();
   wireServerStore();
   await NotificationService.init();
   await SystemFontWeight.init();
+  await initSettings();
   runApp(const OpencodeMobileApp());
 }
 
@@ -38,7 +41,7 @@ class OpencodeMobileApp extends StatelessWidget {
           ],
           supportedLocales: const [Locale('zh'), Locale('en')],
           locale: locale,
-          routerConfig: buildRouter(connectionStore),
+          routerConfig: _router,
         ),
       ),
     );
