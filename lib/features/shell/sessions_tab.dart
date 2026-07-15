@@ -45,16 +45,8 @@ class _SessionsTabState extends State<SessionsTab> {
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
-          if (!serverStore.connected && serverStore.error == null) {
+          if (!serverStore.connected) {
             return const Center(child: CircularProgressIndicator());
-          }
-          if (serverStore.error != null && serverStore.sessions.isEmpty) {
-            return _ErrorView(
-              message: serverStore.error!,
-              onRetry: () => connectionStore.active != null
-                  ? serverStore.connect(connectionStore.active!)
-                  : null,
-            );
           }
           final sessions = serverStore.sortedSessions().toList();
           if (sessions.isEmpty) {
@@ -64,7 +56,14 @@ class _SessionsTabState extends State<SessionsTab> {
             );
           }
           return RefreshIndicator(
-            onRefresh: () => serverStore.refresh(),
+            onRefresh: () async {
+              final ok = await serverStore.refresh();
+              if (!ok && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('刷新失败，请稍后再试')),
+                );
+              }
+            },
             child: ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
               itemCount: sessions.length,
@@ -130,7 +129,21 @@ class _SessionTile extends StatelessWidget {
     return ListTile(
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      leading: ProjectAvatar(name: projectName, icon: project?.icon),
+      leading: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          ProjectAvatar(name: projectName, icon: project?.icon),
+          Positioned(
+            right: -2,
+            bottom: -2,
+            child: SseStatusDot(
+              connected: sseConnected,
+              reconnecting: !sseConnected && serverStore.sseReconnecting,
+              size: 10,
+            ),
+          ),
+        ],
+      ),
       title: Row(
         children: [
           Expanded(
@@ -164,20 +177,6 @@ class _SessionTile extends StatelessWidget {
           Row(
             children: [
               StatusDot(type: status),
-              if (!sseConnected) ...[
-                const SizedBox(width: 4),
-                Tooltip(
-                  message: 'SSE 未连接',
-                  child: Container(
-                    width: 6,
-                    height: 6,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFFF85149),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
-              ],
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
@@ -236,41 +235,6 @@ class _EmptyView extends StatelessWidget {
           const SizedBox(height: 12),
           Text(message, style: Theme.of(context).textTheme.titleMedium),
         ],
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  final String message;
-  final VoidCallback? onRetry;
-  const _ErrorView({required this.message, this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off,
-                size: 48, color: Theme.of(context).colorScheme.outline),
-            const SizedBox(height: 12),
-            Text('连接失败',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: AppTheme.mono.copyWith(
-                    fontSize: 12, color: Theme.of(context).colorScheme.outline)),
-            if (onRetry != null) ...[
-              const SizedBox(height: 16),
-              FilledButton(
-                  onPressed: onRetry, child: const Text('重试')),
-            ],
-          ],
-        ),
       ),
     );
   }

@@ -73,7 +73,10 @@ class ServerStore extends ChangeNotifier {
     return _sseByDir.containsKey(session.directory);
   }
   bool _watchdogConnected = false;
-  String? error;
+  bool _watchdogFailed = false; // true after watchdog has failed at least once
+
+  /// Whether to show the "network disconnected" banner.
+  bool get showDisconnectBanner => _watchdogFailed && !_watchdogConnected;
 
   List<ProjectModel> get projects => List.unmodifiable(_projects);
   List<SessionModel> get sessions => List.unmodifiable(_sessions);
@@ -263,7 +266,7 @@ class ServerStore extends ChangeNotifier {
     final c = SseClient(uri: uri, headers: _sseHeaders);
     _sseByDir[dir] = c;
     _sseSubs[dir] =
-        c.events.listen(_onEvent, onError: (Object e) => error = '$e');
+        c.events.listen(_onEvent); // SSE errors handled by _onSseState reconnect
     _sseStateSubs[dir] = c.state.listen((s) => _onSseState(dir, s));
     _sseRequired[dir] = required;
     c.start();
@@ -284,10 +287,8 @@ class ServerStore extends ChangeNotifier {
       _statusMap
         ..clear()
         ..addAll(status);
-      error = null;
       return true;
-    } catch (e) {
-      error = '$e';
+    } catch (_) {
       return false;
     }
   }
@@ -397,8 +398,8 @@ class ServerStore extends ChangeNotifier {
   /// `force: true` — also (re)start the watchdog SSE. Used when watchdog is
   ///   missing (resume after pause, refresh recovering a failed connection).
   /// `force: false` — REST refresh + SSE marking/LRU only. Watchdog untouched.
-  Future<void> refreshListAndWorkingSse({bool force = false}) async {
-    if (client == null) return;
+  Future<bool> refreshListAndWorkingSse({bool force = false}) async {
+    if (client == null) return false;
     if (force || !_sseByDir.containsKey(_kGlobalWatchdog)) {
       _startSse(_kGlobalWatchdog);
     }
@@ -417,15 +418,14 @@ class ServerStore extends ChangeNotifier {
       _startRequiredSse();
       _trimSse();
       _lastFullRefreshAt = DateTime.now();
-      error = null;
       connected = true;
-    } catch (e) {
-      error = '$e';
+    } catch (_) {
+      // Auto-refresh failures are silent — watchdog banner + SSE indicator
+      // convey connection state; manual refresh shows toast.
     }
-    // Conversation-layer healing: only reload the active conversation if it's
-    // stale (SSE was interrupted). If SSE is live and delivering, reload would
-    // clobber incremental updates with a REST snapshot. markStale() is safe —
-    // it defers to reloadIfStale() which has backoff.
+    // Conversation-layer healing (outside try/catch): only reload the active
+    // conversation if it's stale. If SSE is live, reload would clobber
+    // incremental updates. markStale() is safe — it defers to reloadIfStale().
     final activeId = _activeSessionId;
     final activeConv =
         activeId != null ? _conversations[activeId] : null;
@@ -437,7 +437,6 @@ class ServerStore extends ChangeNotifier {
       } else if (activeConv.isStale) {
         unawaited(activeConv.reload());
       }
-      // If not stale and not busy, SSE is delivering — don't reload.
     }
     if (_needsStaleMarking) {
       for (final entry in _conversations.entries) {
@@ -449,6 +448,7 @@ class ServerStore extends ChangeNotifier {
     }
     unawaited(_backfillPermissions());
     notifyListeners();
+    return client != null;
   }
 
   /// Start SSE for all busy/retry sessions + active conversation directory.
@@ -553,17 +553,20 @@ class ServerStore extends ChangeNotifier {
 
   void _onSseState(String dir, SseState s) {
     if (dir == _kGlobalWatchdog) {
+      final wasConnected = _watchdogConnected;
       _watchdogConnected = s.connected;
+      // Mark "failed" when transitioning from connected → reconnecting.
+      // This suppresses the banner on first connect (which starts as
+      // not-connected → connected without ever being "failed").
+      if (wasConnected && !s.connected) {
+        _watchdogFailed = true;
+      }
     }
     // Only watchdog's reconnecting → connected triggers a reconcile.
-    // Directory SSE reconnections are handled silently — REST refresh
-    // compensates for missed events.
     if (dir == _kGlobalWatchdog && s.reconnecting) {
-      // Watchdog dropped — mark stale for conversation healing on recovery.
       _needsStaleMarking = true;
     }
     if (dir == _kGlobalWatchdog && !s.reconnecting && s.connected) {
-      // Watchdog recovered — trigger reconcile to catch up.
       _scheduleReconcile();
     }
     notifyListeners();
@@ -849,9 +852,10 @@ class ServerStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> refresh() async {
-    if (client == null) return;
-    await refreshListAndWorkingSse(force: true);
+  /// Manual refresh (from pull-to-refresh). Returns true on success.
+  Future<bool> refresh() async {
+    if (client == null) return false;
+    return await refreshListAndWorkingSse(force: true);
   }
 
   // ── App lifecycle (specs §5: background → pause, foreground → resume) ──
@@ -911,5 +915,6 @@ class ServerStore extends ChangeNotifier {
     _sseByDir.clear();
     _sseRequired.clear();
     _watchdogConnected = false;
+    _watchdogFailed = false;
   }
 }

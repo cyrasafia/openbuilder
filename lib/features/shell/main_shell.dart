@@ -59,7 +59,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         builder: (context, _) => Column(
           children: [
             Expanded(child: widget.shell),
-            if (serverStore.error != null) _ErrorBanner(error: serverStore.error!),
+            if (serverStore.showDisconnectBanner) const _DisconnectBanner(),
           ],
         ),
       ),
@@ -89,11 +89,10 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   }
 }
 
-/// Error banner shown when the server connection fails (replaces the old
-/// reconnecting banner — on-demand SSE no longer has a global reconnect state).
-class _ErrorBanner extends StatelessWidget {
-  final String error;
-  const _ErrorBanner({required this.error});
+/// Plain-styled banner shown when the watchdog SSE detects a network
+/// disconnect. Uses surfaceContainerHighest (theme-aware, not error style).
+class _DisconnectBanner extends StatelessWidget {
+  const _DisconnectBanner();
 
   @override
   Widget build(BuildContext context) {
@@ -101,30 +100,24 @@ class _ErrorBanner extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: scheme.errorContainer,
+      color: scheme.surfaceContainerHighest,
       child: Row(
         children: [
-          Expanded(
-            child: Text(
-              error,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 13,
-                color: scheme.onErrorContainer,
-                fontWeight: FontWeight.w500,
-              ),
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: scheme.outline,
             ),
           ),
-          TextButton(
-            onPressed: () => serverStore.refresh(),
-            child: Text(
-              '重试',
-              style: TextStyle(
-                fontSize: 13,
-                color: scheme.onErrorContainer,
-                fontWeight: FontWeight.w500,
-              ),
+          const SizedBox(width: 10),
+          Text(
+            '网络已断开，重连中…',
+            style: TextStyle(
+              fontSize: 13,
+              color: scheme.onSurface,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],
