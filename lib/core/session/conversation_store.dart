@@ -39,8 +39,8 @@ class DisplayPart {
         if (cmd != null && cmd.isNotEmpty) {
           final firstLine = cmd.split('\n').first.trim();
           return firstLine.length > 80
-              ? '$tool! ${firstLine.substring(0, 77)}...'
-              : '$tool! $firstLine';
+              ? '$tool: ${firstLine.substring(0, 77)}...'
+              : '$tool: $firstLine';
         }
         return tool!;
       case 'read':

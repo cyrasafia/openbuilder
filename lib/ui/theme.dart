@@ -37,10 +37,16 @@ class AppTheme {
     final variations = _weightVariations;
     final hasVariations = variations != null && variations.isNotEmpty;
 
-    // Apply fontVariations to every text style in the default TextTheme.
-    TextTheme textTheme;
+    // Only set a custom textTheme when we have font variations to inject.
+    // Otherwise, let ThemeData auto-derive colors from colorScheme (correct
+    // for both light/dark). Using Typography.black unconditionally would
+    // give dark theme dark-on-dark text (FW-1).
+    TextTheme? textTheme;
     if (hasVariations) {
-      final base = Typography.material2021().black;
+      // Pick the correct base: .black for light, .white for dark.
+      final base = scheme.brightness == Brightness.dark
+          ? Typography.material2021().white
+          : Typography.material2021().black;
       TextStyle? apply(TextStyle? s) =>
           s?.copyWith(fontVariations: [...(s.fontVariations ?? []), ...variations]);
       textTheme = TextTheme(
@@ -60,8 +66,6 @@ class AppTheme {
         labelMedium: apply(base.labelMedium),
         labelSmall: apply(base.labelSmall),
       );
-    } else {
-      textTheme = Typography.material2021().black;
     }
 
     return ThemeData(
