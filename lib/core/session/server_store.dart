@@ -199,39 +199,76 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
+  /// Ensure the session has an accumulation container in `_conversations`
+  /// (no load). Used by SSE event routing so messages from sessions that were
+  /// never opened in the detail view still accumulate. REST reconcile is
+  /// deferred to [conversationFor] (detail-page open).
+  ///
+  /// Intentionally does NOT touch [_lastMessage]: the existing preview (set by
+  /// a prior REST [_backfillPreview] or SSE settle) stays valid, and new SSE
+  /// events update it via the per-unit preview path.
+  ConversationStore? ensureConversation(String sid) {
+    final existing = _conversations[sid];
+    if (existing != null) return existing;
+    final c = client;
+    if (c == null) return null;
+    final conv = ConversationStore(sid, c);
+    _conversations[sid] = conv;
+    conv.status = statusOf(sid).type;
+    // Inject any pending permission/question known from SSE/REST backfill.
+    final pending = _pendingPermissions[sid];
+    if (pending != null) conv.onPermission(pending);
+    for (final q in _pendingQuestions.values) {
+      if (q.sessionID == sid) conv.onQuestion(q);
+    }
+    _evictConversations();
+    return conv;
+  }
+
+  /// LRU eviction: when over [_kMaxConversations], drop the oldest
+  /// non-streaming entry. Sessions that are busy/retry or the active detail
+  /// session are protected — evicting them mid-stream would lose accumulated
+  /// content.
+  void _evictConversations() {
+    while (_conversations.length > _kMaxConversations) {
+      String? victim;
+      for (final sid in _conversations.keys) {
+        final st = _statusMap[sid]?.type;
+        final streaming =
+            st == 'busy' || st == 'retry' || sid == _activeSessionId;
+        if (streaming) continue;
+        victim = sid; // LinkedHashMap order = access order; first non-streaming
+        break;
+      }
+      if (victim == null) break; // all streaming this round — don't evict
+      _conversations.remove(victim);
+    }
+  }
+
   ConversationStore? conversationFor(String sessionId, {bool force = false}) {
     final existing = _conversations[sessionId];
     if (existing != null) {
       _conversations.remove(sessionId);
-      _conversations[sessionId] = existing;
-      if (existing.isStale) {
-        unawaited(force ? existing.reload() : existing.reloadIfStale());
+      _conversations[sessionId] = existing; // LRU promote
+      // Trigger reconcile: three paths (MA-8). reloadIfStale() is guarded by
+      // _stale, so it cannot reconcile a never-loaded conv (whose _stale is
+      // initially false) — route !loaded through load() instead.
+      if (force) {
+        unawaited(existing.reconcile()); // active refresh, ignore backoff
+      } else if (!existing.loaded) {
+        unawaited(existing.load()); // first reconcile, load→reconcile, no backoff
+      } else if (existing.isStale) {
+        unawaited(existing.reloadIfStale()); // loaded + stale, backoff-guarded
       }
       return existing;
     }
-    final c = client;
-    if (c == null) return null;
-    final conv = ConversationStore(sessionId, c);
-    _conversations[sessionId] = conv;
-    // LRU eviction: drop the oldest entries while over capacity.
-    while (_conversations.length > _kMaxConversations) {
-      final oldest = _conversations.keys.first;
-      _conversations.remove(oldest);
-    }
-    conv.status = statusOf(sessionId).type;
-    // Inject any pending permission known from SSE/REST backfill.
-    final pending = _pendingPermissions[sessionId];
-    if (pending != null) {
-      conv.onPermission(pending);
-    }
-    // Inject any pending questions known from SSE/REST backfill.
-    for (final q in _pendingQuestions.values) {
-      if (q.sessionID == sessionId) {
-        conv.onQuestion(q);
-      }
-    }
-    unawaited(conv.load());
-    // After loading, backfill the list preview (frontend §2.2 D4 compromise).
+    // New: ensureConversation injects pending, then load (→ reconcile).
+    final conv = ensureConversation(sessionId);
+    if (conv == null) return null;
+    unawaited(conv.load()); // load internally calls reconcile
+    // _backfillPreview kept (MA-3): seeds _lastMessage from the conv's last
+    // message for the "open an idle, never-streamed session" case; complementary
+    // to the per-unit live preview updates.
     unawaited(_backfillPreview(sessionId, conv));
     return conv;
   }
@@ -655,15 +692,18 @@ class ServerStore extends ChangeNotifier {
         final sid = part is Map ? part['sessionID']?.toString() : null;
         final delta = ev.properties['delta']?.toString();
         if (sid != null && part is Map) {
-          final conv = _conversations[sid];
+          final conv = ensureConversation(sid);
           if (conv != null) {
             conv.onPartUpdated(part.cast(), delta);
-            // Keep the list preview aligned with the detail view's last
-            // message during streaming, instead of waiting for completion.
-            final pv = conv.lastMessagePreview();
-            if (pv != null) {
-              _lastMessage[sid] = pv;
-              _notifyPreviewChanged();
+            // List preview: update only on tool-part events (start/status/
+            // complete), not on streaming text/reasoning deltas. Keeps the
+            // preview stable per completed unit instead of per-token.
+            if (part['type']?.toString() == 'tool') {
+              final pv = conv.lastMessagePreview();
+              if (pv != null) {
+                _lastMessage[sid] = pv;
+                _notifyPreviewChanged();
+              }
             }
           }
         }
@@ -735,30 +775,28 @@ class ServerStore extends ChangeNotifier {
     final m = MessageInfo.fromJson(infoRaw.cast<String, dynamic>());
     final sid = m.sessionID;
     if (sid == null || sid.isEmpty) return;
-    final conv = _conversations[sid];
-    conv?.onMessageUpdated(m);
+    final conv = ensureConversation(sid);
+    conv?.onMessageUpdated(m); // internally _saveCache()s on settle
     // MU-1: notify immediately so the list layer knows a message changed,
     // before the preview fetch (which may be slow on weak networks).
     notifyListeners();
-    // Preview (frontend §2.2 D1/D2): refresh on message completion / user msg.
+    // List preview: refresh on message completion / user msg (per completed
+    // unit, not per-token). Accumulation + part events cover the content, so
+    // no per-message network fetch is needed (REST stays a reconcile-only path).
     if (m.role == 'user' || (m.finish != null && m.finish!.isNotEmpty)) {
-      // Prefer the already-loaded conversation's last message — aligned with
-      // the detail view and avoids an extra network round-trip. The streaming
-      // parts kept it in sync, so this is just the authoritative settle.
       final local = conv?.lastMessagePreview();
       if (local != null) {
         _lastMessage[sid] = local;
-        notifyListeners();
+        _notifyPreviewChanged();
         return;
       }
-      // Fallback for sessions whose conversation isn't loaded locally: fetch
-      // the message parts over the network.
+      // Fallback only when the conversation couldn't be created (not connected):
+      // fetch this message's parts over the network to seed the preview.
       try {
         final entry = await client!.message(sid, m.id);
         final preview = _previewOf(entry);
         if (preview != null) {
-          _lastMessage[sid] =
-              (m.role == 'user' ? '你: ' : '') + preview;
+          _lastMessage[sid] = (m.role == 'user' ? '你: ' : '') + preview;
           notifyListeners();
         }
       } catch (_) {}

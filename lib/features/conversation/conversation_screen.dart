@@ -118,7 +118,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       body: ListenableBuilder(
         listenable: conv,
         builder: (context, _) {
-          if (conv.loading && !conv.loaded) {
+          if (conv.loading && conv.messages.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
           if (conv.error != null && conv.messages.isEmpty) {

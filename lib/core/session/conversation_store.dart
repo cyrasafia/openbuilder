@@ -129,7 +129,7 @@ class ConversationStore extends ChangeNotifier {
   String status = 'idle';
 
   bool _stale = false;
-  bool _reloading = false;
+  bool _reconciling = false;
   DateTime? _lastReloadAt;
   static const _reloadBackoff = Duration(seconds: 10);
 
@@ -204,7 +204,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> reloadIfStale() async {
-    if (!_stale || _reloading) return;
+    if (!_stale || _reconciling) return;
     if (_lastReloadAt != null &&
         DateTime.now().difference(_lastReloadAt!) < _reloadBackoff) {
       return;
@@ -225,18 +225,10 @@ class ConversationStore extends ChangeNotifier {
     loading = true;
     notifyListeners();
     try {
-      final entries = await client.messages(sessionId);
-      _messages
-        ..clear()
-        ..addAll(entries.map(_toDisplay));
-      try {
-        _todos = await client.todos(sessionId);
-      } catch (_) {}
-      loaded = true;
-      error = null;
-      unawaited(_saveCache());
+      await reconcile(); // 委托：拉 REST + 合并不 clear + _saveCache
     } catch (e) {
       error = '$e';
+      _stale = true;
       // Offline fallback: restore last-known messages from local cache so the
       // user can still review the conversation (specs §5, plan item 19).
       await _loadCache();
@@ -246,16 +238,19 @@ class ConversationStore extends ChangeNotifier {
     }
   }
 
-  Future<void> reload() async {
-    if (_reloading) return;
-    _reloading = true;
+  /// 对账合并：拉 REST 权威历史，与 SSE 累积的 `_messages` 按 id 做 part 级
+  /// 并集合并（不 clear），消除清空竞争。失败回退：`_messages` 空才
+  /// `_loadCache`，否则保 SSE 累积并标 stale。
+  Future<void> reconcile() async {
+    if (_reconciling) return; // 互斥
+    _reconciling = true;
     _lastReloadAt = DateTime.now();
     try {
       final entries = await client.messages(sessionId);
       // Infer session status from the last message — terminal finish values
-      // ('stop' = normal completion, 'error' = abnormal termination) mean
-      // the session is idle. 'tool-calls' is an intermediate step (still
-      // running); null means the message is still being generated.
+      // ('stop'/'error') mean the session is idle. Preserved from reload so
+      // self-healing paths (watchdog reconnect, manual refresh) still correct
+      // a missed idle transition.
       if (entries.isNotEmpty) {
         final last = entries.last.info;
         if (last.role == 'assistant' &&
@@ -263,9 +258,32 @@ class ConversationStore extends ChangeNotifier {
           setStatus('idle');
         }
       }
+      // 1. 索引：REST 按 id、当前 SSE 累积按 id（跳过 optimistic）
+      final restById = {for (final e in entries) e.info.id: e};
+      final sseById = <String, DisplayMessage>{
+        for (final m in _messages) if (!m.optimistic) m.info.id: m
+      };
+      // 2. REST 定义历史 + 顺序；同时存在则字段级合并 parts
+      final result = <DisplayMessage>[];
+      for (final e in entries) {
+        final sse = sseById[e.info.id];
+        if (sse != null && sse.parts.isNotEmpty) {
+          final merged = DisplayMessage(e.info);
+          merged.parts.addAll(_mergeParts(e.parts, sse.parts));
+          result.add(merged);
+        } else {
+          result.add(_toDisplay(e));
+        }
+      }
+      // 3. 追加 SSE-only（订阅后新建、REST 快照还没有的消息）
+      for (final m in _messages) {
+        if (m.optimistic) continue;
+        if (!restById.containsKey(m.info.id)) result.add(m);
+      }
       _messages
         ..clear()
-        ..addAll(entries.map(_toDisplay));
+        ..addAll(result);
+      _sort();
       try {
         _todos = await client.todos(sessionId);
       } catch (_) {}
@@ -277,17 +295,51 @@ class ConversationStore extends ChangeNotifier {
       _stale = true;
       // Only restore from cache if we have no data at all — if SSE has been
       // delivering messages (_messages is non-empty), that data is always more
-      // current than the cache (saved during the last successful load/reload).
-      // Overwriting SSE-delivered messages with stale cache causes data loss
-      // when switching sessions on flaky networks.
+      // current than the cache. Overwriting it with stale cache causes data
+      // loss when switching sessions on flaky networks.
       if (_messages.isEmpty) {
         await _loadCache();
       }
+      // 否则保留 SSE 累积，标 stale 下次重试
     } finally {
-      _reloading = false;
+      _reconciling = false;
     }
     notifyListeners();
   }
+
+  /// 字段级 part 并集。REST 定义顺序 + 字段合并，SSE-only 追加尾。
+  /// text 取更长；tool 的 status/output/input 取 SSE 非空者、否则留 REST。
+  /// hidden 类型跳过（与 `_toDisplay` 一致）。
+  List<DisplayPart> _mergeParts(
+      List<MessagePart> rest, List<DisplayPart> sse) {
+    final result = <DisplayPart>[];
+    final sseById = {for (final p in sse) p.id: p};
+    final seen = <String>{};
+    for (final rp in rest) {
+      if (_hidden.contains(rp.type)) continue;
+      final sp = sseById[rp.id];
+      if (sp != null) {
+        seen.add(rp.id);
+        final merged = DisplayPart.from(rp);
+        if (sp.text.length > merged.text.length) merged.text = sp.text;
+        if (sp.toolStatus != null) merged.toolStatus = sp.toolStatus;
+        if (sp.toolOutput != null) merged.toolOutput = sp.toolOutput;
+        if (sp.toolInput != null) merged.toolInput = sp.toolInput;
+        result.add(merged);
+      } else {
+        result.add(DisplayPart.from(rp));
+      }
+    }
+    for (final sp in sse) {
+      if (_hidden.contains(sp.type)) continue;
+      if (!seen.contains(sp.id)) result.add(sp);
+    }
+    return result;
+  }
+
+  /// Force refresh (re-entrant safe). Delegates to [reconcile] (merge, no
+  /// clear). Used by manual refresh + watchdog reconnect.
+  Future<void> reload() async => reconcile();
 
   // ── Local cache for offline read-back ──
 
@@ -308,6 +360,7 @@ class ConversationStore extends ChangeNotifier {
                             'text': p.text,
                             'toolStatus': p.toolStatus,
                             'toolOutput': p.toolOutput,
+                            'toolInput': p.toolInput, // MA-5: 补存
                           })
                       .toList(),
                 })
@@ -323,6 +376,8 @@ class ConversationStore extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_cacheKey);
       if (raw == null || raw.isEmpty) return;
+      // MA-2: 若 async gap 期间已有 SSE 累积，不再用陈旧缓存覆盖。
+      if (_messages.isNotEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
       final msgs = j['messages'] as List? ?? [];
       _messages.clear();
@@ -340,6 +395,9 @@ class ConversationStore extends ChangeNotifier {
             text: p2['text']?.toString() ?? '',
             toolStatus: p2['toolStatus']?.toString(),
             toolOutput: p2['toolOutput']?.toString(),
+            toolInput: p2['toolInput'] is Map
+                ? (p2['toolInput'] as Map).cast<String, dynamic>()
+                : null, // MA-5: 补读 toolInput
           ));
         }
         _messages.add(dm);
@@ -382,6 +440,11 @@ class ConversationStore extends ChangeNotifier {
       _messages.add(DisplayMessage(info));
     }
     _sort();
+    // 消息完成即异步落盘（off-screen conv 也覆盖，因 ensureConversation 会
+    // 创建 conv）。非 per-token，频率低。
+    if (info.role == 'user' || (info.finish != null && info.finish!.isNotEmpty)) {
+      unawaited(_saveCache());
+    }
     notifyListeners();
   }
 
