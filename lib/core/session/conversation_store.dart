@@ -133,6 +133,12 @@ class ConversationStore extends ChangeNotifier {
   DateTime? _lastReloadAt;
   static const _reloadBackoff = Duration(seconds: 10);
 
+  Timer? _loadRetryTimer;
+  int _loadRetryAttempt = 0;
+  bool _disposed = false;
+  static const _loadInitialBackoff = Duration(seconds: 2);
+  static const _loadMaxBackoff = Duration(seconds: 30);
+
   List<DisplayMessage> get messages => List.unmodifiable(_messages);
   List<Todo> get todos => List.unmodifiable(_todos);
   List<Permission> get permissions => List.unmodifiable(_permissions);
@@ -170,6 +176,19 @@ class ConversationStore extends ChangeNotifier {
   bool get isStale => _stale;
   void markStale() => _stale = true;
 
+  @override
+  void dispose() {
+    _disposed = true;
+    _loadRetryTimer?.cancel();
+    super.dispose();
+  }
+
+  void cancelLoadRetry() {
+    _loadRetryTimer?.cancel();
+    _loadRetryTimer = null;
+    loading = false;
+  }
+
   /// Insert an optimistic user message immediately after sending, so the UI
   /// shows it without waiting for SSE/rest confirmation. Removed when the
   /// authoritative message list arrives (reload) or when a matching user
@@ -204,7 +223,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> reloadIfStale() async {
-    if (!_stale || _reconciling) return;
+    if (!_stale || _reconciling || loading) return;
     if (_lastReloadAt != null &&
         DateTime.now().difference(_lastReloadAt!) < _reloadBackoff) {
       return;
@@ -224,14 +243,40 @@ class ConversationStore extends ChangeNotifier {
     if (loaded || loading) return;
     loading = true;
     notifyListeners();
-    try {
-      // 委托 reconcile：成功设 messages/error=null/_saveCache；失败内部设
-      // error/_stale + _loadCache 兜底（不 rethrow，故此处无需 catch）。
-      await reconcile();
-    } finally {
-      loading = false;
-      notifyListeners();
+    unawaited(_attemptLoad());
+  }
+
+  Future<void> _attemptLoad() async {
+    if (_disposed) return;
+    if (loaded && !_stale) {
+      _loadRetryTimer?.cancel();
+      return;
     }
+    if (_reconciling) {
+      _scheduleLoadRetry(incrementAttempt: false);
+      return;
+    }
+    await reconcile();
+    if (_disposed) return;
+    if (_stale) {
+      _scheduleLoadRetry();
+    } else {
+      _loadRetryAttempt = 0;
+      _loadRetryTimer?.cancel();
+    }
+    notifyListeners();
+  }
+
+  void _scheduleLoadRetry({bool incrementAttempt = true}) {
+    _loadRetryTimer?.cancel();
+    if (incrementAttempt) _loadRetryAttempt++;
+    final exp = (_loadRetryAttempt - 1).clamp(0, 4);
+    final secs = (_loadInitialBackoff.inSeconds << exp)
+        .clamp(1, _loadMaxBackoff.inSeconds);
+    _loadRetryTimer = Timer(Duration(seconds: secs), () {
+      if (_disposed) return;
+      _attemptLoad();
+    });
   }
 
   /// 对账合并：拉 REST 权威历史，与 SSE 累积的 `_messages` 按 id 做 part 级
@@ -286,6 +331,7 @@ class ConversationStore extends ChangeNotifier {
       loaded = true;
       error = null;
       _stale = false;
+      loading = false;
       unawaited(_saveCache());
     } catch (e) {
       // Set error so first-load failure surfaces in the UI ("加载失败");
@@ -304,7 +350,7 @@ class ConversationStore extends ChangeNotifier {
     } finally {
       _reconciling = false;
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   /// 字段级 part 并集。REST 定义顺序 + 字段合并，SSE-only 追加尾。
@@ -421,7 +467,7 @@ class ConversationStore extends ChangeNotifier {
 
   void setStatus(String s) {
     status = s;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   void onMessageUpdated(MessageInfo info) {

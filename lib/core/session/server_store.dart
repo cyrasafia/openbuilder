@@ -241,7 +241,7 @@ class ServerStore extends ChangeNotifier {
         break;
       }
       if (victim == null) break; // all streaming this round — don't evict
-      _conversations.remove(victim);
+      _conversations.remove(victim)?.dispose();
     }
   }
 
@@ -506,6 +506,8 @@ class ServerStore extends ChangeNotifier {
         _resumeReloadedSessionId = null;
       } else if (activeConv.busy) {
         activeConv.markStale();
+      } else if (!activeConv.loaded) {
+        unawaited(activeConv.load());
       } else if (activeConv.isStale) {
         unawaited(activeConv.reload());
       }
@@ -921,6 +923,9 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> _teardown() async {
     await _stopSse();
+    for (final conv in _conversations.values) {
+      conv.dispose();
+    }
     _conversations.clear();
     _previewNotifyTimer?.cancel();
     _previewNotifyTimer = null;
@@ -956,6 +961,7 @@ class ServerStore extends ChangeNotifier {
     if (!connected || _profile == null) return;
     for (final conv in _conversations.values) {
       conv.markStale();
+      conv.cancelLoadRetry();
     }
     await _stopSse();
   }

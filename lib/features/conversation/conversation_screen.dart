@@ -118,10 +118,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       body: ListenableBuilder(
         listenable: conv,
         builder: (context, _) {
-          if (conv.loading && conv.messages.isEmpty) {
+          if (conv.loading && !conv.loaded && conv.messages.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (conv.error != null && conv.messages.isEmpty) {
+          if (!conv.loading && conv.error != null && conv.messages.isEmpty) {
             return Center(child: Text('加载失败：${conv.error}'));
           }
           // Reversed ListView pins to the newest message (bottom) on open,
@@ -134,7 +134,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             children: [
               const SizedBox(height: 8),
-              if (conv.busy) const _TypingDots(),
+              if (conv.busy || conv.loading) const _TypingDots(),
               ...conv.messages.map(_message).toList().reversed,
             ],
           );
