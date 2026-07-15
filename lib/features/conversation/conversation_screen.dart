@@ -83,9 +83,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
         actions: [
           ListenableBuilder(
             listenable: serverStore,
-            builder: (context, _) => SseStatusDot(
-              connected: serverStore.sseConnected,
-              reconnecting: serverStore.sseReconnecting,
+            builder: (context, _) => Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: SseStatusDot(
+                connected: serverStore.sseConnected,
+                reconnecting: serverStore.sseReconnecting,
+              ),
             ),
           ),
           IconButton(
