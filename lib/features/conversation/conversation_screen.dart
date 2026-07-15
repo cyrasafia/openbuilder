@@ -272,6 +272,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('终止失败：$e')));
       }
+      rethrow;
     }
   }
 
@@ -1020,7 +1021,7 @@ class _BottomBar extends StatelessWidget {
   final SessionModel? session;
   final TextEditingController ctl;
   final bool busy;
-  final VoidCallback onAbort;
+  final Future<void> Function() onAbort;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
 
@@ -1069,12 +1070,12 @@ class _BottomBar extends StatelessWidget {
   }
 }
 
-class _ComposeBar extends StatelessWidget {
+class _ComposeBar extends StatefulWidget {
   final TextEditingController ctl;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
   final bool busy;
-  final VoidCallback onAbort;
+  final Future<void> Function() onAbort;
   const _ComposeBar({
     required this.ctl,
     required this.onChanged,
@@ -1084,19 +1085,42 @@ class _ComposeBar extends StatelessWidget {
   });
 
   @override
+  State<_ComposeBar> createState() => _ComposeBarState();
+}
+
+class _ComposeBarState extends State<_ComposeBar> {
+  bool _aborting = false;
+
+  @override
+  void didUpdateWidget(_ComposeBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_aborting && oldWidget.busy && !widget.busy) {
+      _aborting = false;
+    }
+  }
+
+  Future<void> _onStopPressed() async {
+    if (_aborting) return;
+    setState(() => _aborting = true);
+    try {
+      await widget.onAbort();
+    } catch (_) {
+      if (mounted) setState(() => _aborting = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // When the agent is running and the input is empty, the send button
-    // doubles as the stop/abort control (merging the old title-bar button).
-    final showStop = busy && ctl.text.trim().isEmpty;
+    final showStop = widget.busy && widget.ctl.text.trim().isEmpty;
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 8, top: 8, bottom: 8),
       child: Row(
         children: [
           Expanded(
             child: TextField(
-              controller: ctl,
-              onChanged: onChanged,
-              onSubmitted: (_) => onSend(),
+              controller: widget.ctl,
+              onChanged: widget.onChanged,
+              onSubmitted: (_) => widget.onSend(),
               minLines: 1,
               maxLines: 4,
               decoration: InputDecoration(
@@ -1117,15 +1141,24 @@ class _ComposeBar extends StatelessWidget {
           const SizedBox(width: 6),
           showStop
               ? IconButton.filled(
-                  onPressed: onAbort,
-                  icon: const Icon(Icons.stop_circle_outlined),
+                  onPressed: _onStopPressed,
+                  icon: _aborting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.stop_rounded),
                   tooltip: '停止推理',
                   style: IconButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.error,
                   ),
                 )
               : IconButton.filled(
-                  onPressed: onSend,
+                  onPressed: widget.onSend,
                   icon: const Icon(Icons.send),
                   tooltip: '发送',
                 ),
