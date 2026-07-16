@@ -1709,7 +1709,7 @@ class _AgentCapsuleToggle extends StatelessWidget {
           return Semantics(
             selected: active,
             button: true,
-            enabled: onSwitch != null,
+            enabled: onSwitch != null && !active,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: onSwitch == null || active ? null : () => onSwitch!(a.name),

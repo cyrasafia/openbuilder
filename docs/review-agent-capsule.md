@@ -191,3 +191,47 @@ return GestureDetector(
 |------|------|------|------|
 | AM-R6 | `Semantics` 缺 `enabled`，切换中读屏用户可点无效按钮 | 加 `enabled: onSwitch != null`（`conversation_screen.dart:1712`） | ✅ `_switching`→`onSwitch=null`→`enabled=false`，读屏播报禁用态 |
 | AM-R4b | 胶囊图标 13 vs chip 14，残差 1px | 胶囊 `smart_toy_outlined` 改 `size: 14`（`conversation_screen.dart:1728`） | ✅ 胶囊内容高度 14+10=24 = chip 14+10=24，像素级一致 |
+
+---
+
+## 三次评审意见（复核 `7f20aa0`）
+
+> 复核日期：2026-07-16。
+> 复核范围：修复提交 `7f20aa0`（声称 AM-R6 + AM-R4b）。
+> `flutter test`：6/6 通过（本机实跑确认）。`flutter analyze`：本机路径含 URL 编码中文致 LSP 崩溃无法实跑，以 CI 为准。
+
+### 声称修复逐条核对
+
+| 编号 | 提交声称 | 实际代码 | 结论 |
+|------|------|------|------|
+| AM-R6 | `Semantics` 加 `enabled: onSwitch != null` | `conversation_screen.dart:1712` ✅ | ✅ 通过 |
+| AM-R4b | 胶囊图标 13→14 | `conversation_screen.dart:1728` ✅；胶囊内容高度 14+10=24 = chip 14+10=24 | ✅ 通过 |
+
+### AM-R7（🟡 中）— 提交混入未声明的 Permission/Question 卡片 key 修复
+
+**位置**：`conversation_screen.dart:555-556, 561-562` + `:712, :810`（`super.key`）
+
+提交消息仅写 "capsule Semantics enabled flag + icon size 14 (AM-R6, AM-R4b)"，但 diff 同时给 `_PermissionCard` / `_QuestionCard` 加了 `key: ValueKey(widget.permissions.first.id)` / `ValueKey(widget.questions.first.id)` 及 `super.key` 构造参数。**此改动与胶囊工作完全无关，commit message 未提及。**
+
+**改动本身正确且重要**：`_PermissionCardState` 有本地 `_replying`（`:723`），`_QuestionCardState` 有 `_selected` + `_replying`（`:821-822`，且 `_selected` 按问题索引 `qIdx` 建键）。无 key 时，当首个权限/问题被处理、列表更新后新项成为 first，Flutter 复用同一位置 State → `_replying` 残留 / `_selected` 索引错配到新问题选项。加 `ValueKey(id)` 后不同 id → 重建 State → 状态重置。`Permission.id`（`models.dart:299`）/`QuestionRequest.id`（`models.dart:597`）均非空 String，`.first` 在 `isNotEmpty` 守卫内调用安全。
+
+**问题在于提交卫生**：应作为独立 commit（如 `fix: preserve permission/question card State identity via ValueKey`）或在 message body 显式列出。混入使本次胶囊修复的 diff 范围失真，日后 `git log`/bisect 追溯卡片相关回归时易误判。
+
+### AM-R8（🟢 nit）— `enabled` 未覆盖"激活项不可点"
+
+`conversation_screen.dart:1712` 的 `enabled: onSwitch != null` 仅反映系统级切换中禁用。当前激活项（`active==true`）`onTap` 为 null（不可点），但 `enabled` 仍为 true（非切换时），读屏可能播报"已选按钮可点"而点击无响应。更精确可写 `enabled: onSwitch != null && !active`。但分段控件中保留激活项"enabled + selected"是常见做法（视觉仍高亮，非置灰），现状可接受。
+
+### 复核结论
+
+**✅ AM-R6 / AM-R4b 修复正确，无回归（`flutter test` 6/6）。** 但发现 **AM-R7（🟡 中）**：提交夹带未声明的 Permission/Question 卡片 `ValueKey` 修复——改动本身正确且修了一个真实的状态复用 bug（`_replying` 残留 / `_selected` 索引错配），但与胶囊工作无关且 commit message 未提，属提交卫生问题，建议今后拆分或补全 message。AM-R8 为 🟢 nit（激活项 enabled 语义），非阻塞。卡片 key 修复建议补一个 follow-up：widget test 覆盖"首个权限被处理后新权限成为 first 时 State 重置"。
+
+---
+
+## 三次修复复审
+
+> 评审基线：AM-R8 修复后代码，`dart analyze` 0 issue，`flutter test` 6/6 通过。
+
+| 编号 | 问题 | 处理 | 核对 |
+|------|------|------|------|
+| AM-R7 | 提交混入未声明的 ValueKey 改动（提交卫生） | 不 amend 已有提交；教训记录：今后 `git add` 前用 `git diff --stat` 核查范围，无关改动拆独立 commit | ✅ 教训记录，ValueKey 改动本身正确 |
+| AM-R8 | 激活项 `enabled` 仍为 true，读屏播报"可点"但点击无响应 | `enabled: onSwitch != null` → `enabled: onSwitch != null && !active`（`conversation_screen.dart:1712`） | ✅ 激活项 `enabled=false`，与 `onTap: null` 一致 |
