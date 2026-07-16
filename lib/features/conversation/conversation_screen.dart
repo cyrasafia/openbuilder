@@ -552,12 +552,14 @@ class _FooterPanelState extends State<_FooterPanel> {
     final children = <Widget>[];
     if (widget.permissions.isNotEmpty) {
       children.add(_PermissionCard(
+        key: ValueKey(widget.permissions.first.id),
         permission: widget.permissions.first,
         store: widget.store,
         queueTotal: totalPending,
       ));
     } else if (widget.questions.isNotEmpty) {
       children.add(_QuestionCard(
+        key: ValueKey(widget.questions.first.id),
         question: widget.questions.first,
         store: widget.store,
         queueTotal: totalPending,
@@ -707,6 +709,7 @@ class _PermissionCard extends StatefulWidget {
   final ConversationStore store;
   final int queueTotal;
   const _PermissionCard({
+    super.key,
     required this.permission,
     required this.store,
     this.queueTotal = 1,
@@ -804,6 +807,7 @@ class _QuestionCard extends StatefulWidget {
   final ConversationStore store;
   final int queueTotal;
   const _QuestionCard({
+    super.key,
     required this.question,
     required this.store,
     this.queueTotal = 1,
@@ -1705,6 +1709,7 @@ class _AgentCapsuleToggle extends StatelessWidget {
           return Semantics(
             selected: active,
             button: true,
+            enabled: onSwitch != null,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: onSwitch == null || active ? null : () => onSwitch!(a.name),
@@ -1720,7 +1725,7 @@ class _AgentCapsuleToggle extends StatelessWidget {
                   children: [
                     Icon(
                       Icons.smart_toy_outlined,
-                      size: 13,
+                      size: 14,
                       color:
                           active ? scheme.onPrimaryContainer : scheme.outline,
                     ),

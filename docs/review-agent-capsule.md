@@ -140,3 +140,54 @@ return GestureDetector(
 ### 测试覆盖
 
 当前无 `_AgentModelBar` / `_AgentCapsuleToggle` 专用测试（需 mock `serverStore` 全局单例 + `client`，基础设施待建）。`flutter test` 6/6 通过（含 smoke / parse / sse），未引入回归。建议后续补 widget test 固化分支判定（2-agent→胶囊 / 3-agent→chip+sheet / 0-agent→静态 chip / currentAgent 不匹配→chip）。
+
+---
+
+## 二次评审意见（复核 `23e2755`）
+
+> 复核日期：2026-07-16。
+> 复核范围：修复提交 `23e2755`（AM-R1~R5）。
+> `flutter test`：6/6 通过（本机实跑确认）。`flutter analyze`：本机因工作区路径含 URL 编码中文致 LSP analysis server `FormatException` 崩溃，无法实跑；代码静态核查无明显 analyzer 可检问题，作者"0 issue"结论以 CI 为准。
+
+### 修复逐条复核
+
+| 编号 | 修复点（提交声称） | 实际代码核对 | 结论 |
+|------|------|------|------|
+| AM-R1 | `if` 加 `&& _agents.any((a) => a.name == agentName)` 守卫 | `conversation_screen.dart:1638-1639` ✅ 存在 | ✅ 通过 |
+| AM-R2 | `onTap: (_switching \|\| _agents.length <= 1) ? null : _showAgentSheet` | `conversation_screen.dart:1649-1651` ✅ 存在 | ✅ 通过 |
+| AM-R3 | `behavior: HitTestBehavior.opaque` | `conversation_screen.dart:1709` ✅ 存在 | ✅ 通过 |
+| AM-R4 | 外 `all(2)` + 内 `v:3` → 总 10px | `conversation_screen.dart:1700,1713` ✅ 存在；padding 和（外 4 + 内 6 = 10）与 chip 的 `v:5`(10) 一致 | ✅ 通过（见 AM-R4b 说明） |
+| AM-R5 | `Semantics(selected: active, button: true, ...)` | `conversation_screen.dart:1705-1707` ✅ 存在 | ✅ 通过 |
+
+### 分支逻辑穷举核对（AM-R1+R2 联动）
+
+| `_agents.length` | `currentAgent` 命中 | 渲染 | `onTap` 行为 | 结论 |
+|---|---|---|---|---|
+| 2 | ✅ | 胶囊 | 切换另一项 | ✅ |
+| 2 | ❌（null/`—`/被过滤） | chip（显示 `agentName`） | `_switching ? null : _showAgentSheet` → 可弹 sheet 选有效 agent | ✅ 回退合理 |
+| 1 | — | chip | `null`（静态，`<=1`） | ✅ 与文档"静态"对齐 |
+| 0 | — | chip（`—`） | `null`（静态） | ✅ |
+| ≥3 | — | chip | `_switching ? null : _showAgentSheet` → 弹 sheet | ✅ 原逻辑 |
+
+### AM-R4b（🟢 nit）— 高度差由 ~4px 收敛至 ~1px
+
+`_Chip` 内容高度由 `expand_more` 图标（14px）驱动 → 14 + 10 = 24px；`_AgentCapsuleToggle` 内容由 `smart_toy_outlined`（13px）驱动 → 13 + 10 = 23px。修复后 padding 和一致（均 10px），残差 1px 源于 chip 有下拉箭头(14) 而胶囊无(13)，视觉不可察，"同高"结论成立。如需像素级一致可给胶囊图标改 14，非必要。
+
+### AM-R6（🟢 nit，新增）— `Semantics` 未反映禁用态
+
+`conversation_screen.dart:1705-1707` 的 `Semantics(selected: active, button: true)` 未带 `enabled`。当 `_switching` 时 `onSwitch` 为 null → `onTap` 失效，但语义节点仍标 `button: true` 无禁用指示，读屏用户可能尝试点击无效按钮。切换窗口很短，影响小。建议 `enabled: onSwitch != null`。
+
+### 复核结论
+
+**✅ AM-R1~R5 全部修复正确，可合入。** 修复后无回归（`flutter test` 6/6），分支逻辑穷举覆盖 5 类场景均正确，AM-R1 守卫与 AM-R2 静态化联动后"2 agent 但 currentAgent 不匹配"的回退路径（chip + 可弹 sheet）反而优于原胶囊双不高亮。新增 AM-R6 为 🟢 nit（禁用态语义），AM-R4b 仅作像素级说明，均非阻塞。建议 follow-up：补 widget test 固化分支判定 + 给胶囊 `Semantics(enabled:)` + CI 复核 `flutter analyze`。
+
+---
+
+## 二次修复复审
+
+> 评审基线：AM-R6 + AM-R4b 修复后代码，`dart analyze` 0 issue，`flutter test` 6/6 通过。
+
+| 编号 | 问题 | 修复 | 核对 |
+|------|------|------|------|
+| AM-R6 | `Semantics` 缺 `enabled`，切换中读屏用户可点无效按钮 | 加 `enabled: onSwitch != null`（`conversation_screen.dart:1712`） | ✅ `_switching`→`onSwitch=null`→`enabled=false`，读屏播报禁用态 |
+| AM-R4b | 胶囊图标 13 vs chip 14，残差 1px | 胶囊 `smart_toy_outlined` 改 `size: 14`（`conversation_screen.dart:1728`） | ✅ 胶囊内容高度 14+10=24 = chip 14+10=24，像素级一致 |
