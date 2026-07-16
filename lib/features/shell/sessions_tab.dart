@@ -46,22 +46,21 @@ class _SessionsTabState extends State<SessionsTab> {
         listenable: serverStore,
         builder: (context, _) {
           if (!serverStore.connected && serverStore.bootstrapFailed) {
-            return _ErrorView(
-              onRetry: () => connectionStore.active != null
-                  ? serverStore.connect(connectionStore.active!)
-                  : null,
+            return RefreshIndicator(
+              onRefresh: () => serverStore.refresh(),
+              child: emptyScrollable(
+                ErrorView(
+                  onRetry: () => connectionStore.active != null
+                      ? serverStore.connect(connectionStore.active!)
+                      : null,
+                ),
+              ),
             );
           }
           if (!serverStore.connected) {
             return const Center(child: CircularProgressIndicator());
           }
           final sessions = serverStore.sortedSessions().toList();
-          if (sessions.isEmpty) {
-            return const _EmptyView(
-              icon: Icons.chat_bubble_outline,
-              message: '暂无会话',
-            );
-          }
           return RefreshIndicator(
             onRefresh: () async {
               final ok = await serverStore.refresh();
@@ -71,7 +70,19 @@ class _SessionsTabState extends State<SessionsTab> {
                 );
               }
             },
-            child: ListView.separated(
+            child: sessions.isEmpty
+                ? emptyScrollable(
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.chat_bubble_outline,
+                            size: 56, color: Theme.of(context).colorScheme.outline),
+                        const SizedBox(height: 12),
+                        Text('暂无会话', style: Theme.of(context).textTheme.titleMedium),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
               itemCount: sessions.length,
               separatorBuilder: (_, _) =>
@@ -227,57 +238,3 @@ class _SessionTile extends StatelessWidget {
   }
 }
 
-class _EmptyView extends StatelessWidget {
-  final IconData icon;
-  final String message;
-  const _EmptyView({required this.icon, required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 56, color: Theme.of(context).colorScheme.outline),
-          const SizedBox(height: 12),
-          Text(message, style: Theme.of(context).textTheme.titleMedium),
-        ],
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  final VoidCallback? onRetry;
-  const _ErrorView({this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off,
-                size: 48, color: Theme.of(context).colorScheme.outline),
-            const SizedBox(height: 12),
-            Text('连接失败',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text('请检查网络和服务器设置',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.outline)),
-            if (onRetry != null) ...[
-              const SizedBox(height: 16),
-              FilledButton(
-                  onPressed: onRetry, child: const Text('重试')),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}

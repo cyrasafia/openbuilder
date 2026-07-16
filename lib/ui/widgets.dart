@@ -257,3 +257,49 @@ class SseStatusDot extends StatelessWidget {
     );
   }
 }
+
+class ErrorView extends StatelessWidget {
+  final VoidCallback? onRetry;
+  const ErrorView({this.onRetry, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off,
+                size: 48, color: Theme.of(context).colorScheme.outline),
+            const SizedBox(height: 12),
+            Text('连接失败',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text('请检查网络和服务器设置',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.outline)),
+            if (onRetry != null) ...[
+              const SizedBox(height: 16),
+              FilledButton(onPressed: onRetry, child: const Text('重试')),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Widget emptyScrollable(Widget child) {
+  return LayoutBuilder(
+    builder: (context, constraints) => ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        SizedBox(height: constraints.maxHeight * 0.35),
+        child,
+      ],
+    ),
+  );
+}

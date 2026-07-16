@@ -52,6 +52,7 @@ class ServerStore extends ChangeNotifier {
   List<SessionModel> _sessions = [];
   final Map<String, SessionStatusValue> _statusMap = {};
   final Map<String, String> _lastMessage = {};
+  bool _projectsFetched = false;
   /// Per-session conversation caches, capped at [_kMaxConversations] with
   /// LRU eviction (oldest accessed evicted on insert). Uses a LinkedHashMap
   /// so iteration order reflects access recency.
@@ -284,6 +285,11 @@ class ServerStore extends ChangeNotifier {
     }
     _profile = profile;
     await _teardown();
+    _projects = [];
+    _sessions = [];
+    _statusMap.clear();
+    _lastMessage.clear();
+    _projectsFetched = false;
     final dio = dioFor(profile);
     client = OpencodeClient(dio);
     _sseHeaders = Map.from(dio.options.headers.map(
@@ -354,6 +360,7 @@ class ServerStore extends ChangeNotifier {
       final status =
           await _fetchAllStatuses(projects: projects, sessions: sessions);
       _projects = projects;
+      _projectsFetched = true;
       _sessions = sessions;
       _statusMap
         ..clear()
@@ -475,6 +482,10 @@ class ServerStore extends ChangeNotifier {
       _startSse(_kGlobalWatchdog);
     }
     try {
+      if (!_projectsFetched) {
+        _projects = await client!.projects();
+        _projectsFetched = true;
+      }
       final sessions = await _fetchAllSessions();
       final status =
           await _fetchAllStatuses(projects: _projects, sessions: sessions);

@@ -42,19 +42,30 @@ class _ProjectsTabState extends State<ProjectsTab> {
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
-          if (!serverStore.connected && serverStore.projects.isEmpty) {
+          if (!serverStore.connected && serverStore.bootstrapFailed) {
+            return RefreshIndicator(
+              onRefresh: () => serverStore.refresh(),
+              child: emptyScrollable(
+                ErrorView(
+                  onRetry: () => connectionStore.active != null
+                      ? serverStore.connect(connectionStore.active!)
+                      : null,
+                ),
+              ),
+            );
+          }
+          if (!serverStore.connected) {
             return const Center(child: CircularProgressIndicator());
           }
           final items = _buildItems(context);
-          if (items.isEmpty) {
-            return const Center(
-              child: Text('服务器上暂无项目',
-                  style: TextStyle(fontSize: 14)),
-            );
-          }
           return RefreshIndicator(
             onRefresh: () => serverStore.refresh(),
-            child: ListView.separated(
+            child: items.isEmpty
+                ? emptyScrollable(
+                    const Text('服务器上暂无项目',
+                        style: TextStyle(fontSize: 14)),
+                  )
+                : ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
               itemCount: items.length,
               separatorBuilder: (_, _) =>
