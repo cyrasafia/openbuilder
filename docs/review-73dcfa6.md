@@ -141,3 +141,52 @@ const _QuestionCard({
 | OC-3 | 无改动 | ✅ 语义自洽，确认无需改 |
 
 3 项全部闭合。键化方案与 review 建议一致，无新问题引入。
+
+---
+
+### 二次复审（独立验证）
+
+> 复审对象：OC-1/OC-2 修复实际落地代码 + 文档 commit `9e64b9d`。
+> 复审方式：独立读源码 + 实跑静态分析/测试，不依赖文档自述。
+
+**代码核对（当前 `lib/features/conversation/conversation_screen.dart`）**
+
+| 位置 | 内容 | 核对 |
+|------|------|------|
+| `_FooterPanelState.build` `:554-559` | `_PermissionCard(key: ValueKey(widget.permissions.first.id), …)` | ✅ |
+| `_FooterPanelState.build` `:561-566` | `_QuestionCard(key: ValueKey(widget.questions.first.id), …)` | ✅ |
+| `_PermissionCard` 构造 `:711-716` | `super.key` 已加，`const` 仍合法 | ✅ |
+| `_QuestionCard` 构造 `:809-814` | `super.key` 已加，`const` 仍合法 | ✅ |
+
+**机制复核**：`id` 随 `.first` 后移而变化 → Flutter 见同槽位 `key` 不同 → dispose 旧 `State`、创建新 `State`（`_selected={}`、`_replying=false`）。OC-1/OC-2 根因（State 复用导致状态串台）被消除。
+
+**边界路径复核（源码追踪）**
+
+- **成功路径**：`replyQuestion`/`respondPermission` → `onQuestionReplied`/`onPermissionReplied` 移除条目 + `notifyListeners()`（仅 `markNeedsBuild` 调度下一帧，非同步 dispose）→ `_reply()`/`_respond()` 的 `finally` 中 `if (mounted) setState(_replying=false)` 仍在旧 State dispose 前执行，无 "setState after dispose" 风险 ✅
+- **失败路径（非 404 网络错误）**：`replyQuestion` rethrow → `_reply()` catch 弹 SnackBar + `finally` 复位 `_replying=false`，**不调用** `onQuestionReplied` → 条目不移除、State 不换、用户 `_selected` 选择保留，可重试 ✅
+- **404 路径**：`replyQuestion` 吞 404 后仍 `onQuestionReplied` → 正常后移 ✅
+- **重复提交防护**：`_replying=true` 期间按钮 `onPressed: _replying || !_canSubmit ? null` ✅
+
+**静态分析 / 测试（实跑）**
+
+- `dart analyze lib`（经 ASCII 路径软链 `/tmp/opencode/openbuilder` 运行）→ **No issues found!** ✅
+  - 注：`flutter analyze --fatal-infos` 在本机因项目路径含非 ASCII 字符（`协作工作区/我的工具`）触发 analysis server LSP 的 `FormatException: Unterminated string`（exit 255），属**环境/工具链问题**，非代码问题；`dart analyze`（非 LSP 路径）等价覆盖 `lib/`，0 issue。
+- `flutter test` → **All tests passed!**（6/6：widget + integration_parse×3 + sse_smoke，SSE smoke 需本地 `opencode serve`，本次已跑通）✅
+
+**🟢 OC-4（P4/很低）— 修复落地 commit 与消息不匹配（可追溯性）**
+
+`git log -S "ValueKey(widget.permissions.first.id)"` 显示 ValueKey 键化实际落地于 commit `7f20aa0`，而该 commit 消息为 `fix: capsule Semantics enabled flag + icon size 14…`（属 capsule 修复批次），OC-1/OC-2 的代码修复被并入了一条不相关的提交。文档 commit `9e64b9d` 自身仅含 `review-73dcfa6.md`（+143）。
+
+- 影响：仅可追溯性——`git log` 按消息找 "OC 修复" 会漏；不影响功能。
+- 建议：后续修复尽量独占一条 commit 或在消息中带出（如 `fix: OC-1/OC-2 ValueKey keying`）。本次不追溯改写历史。
+
+**结论**
+
+| 编号 | 复审结果 |
+|------|----------|
+| OC-1 | ✅ 已修复并独立验证（键化 + 边界路径无误） |
+| OC-2 | ✅ 已修复（随键化） |
+| OC-3 | ✅ 确认无需改 |
+| OC-4 | 🟢 新增（流程/可追溯性，不阻塞） |
+
+OC-1/OC-2/OC-3 全部闭合。修复与 review 建议一致，静态分析 0 issue、测试 6/6 通过，无新功能性问题引入。仅留 OC-4 流程提示。review-73dcfa6 闭合。

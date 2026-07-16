@@ -235,3 +235,48 @@ return GestureDetector(
 |------|------|------|------|
 | AM-R7 | 提交混入未声明的 ValueKey 改动（提交卫生） | 不 amend 已有提交；教训记录：今后 `git add` 前用 `git diff --stat` 核查范围，无关改动拆独立 commit | ✅ 教训记录，ValueKey 改动本身正确 |
 | AM-R8 | 激活项 `enabled` 仍为 true，读屏播报"可点"但点击无响应 | `enabled: onSwitch != null` → `enabled: onSwitch != null && !active`（`conversation_screen.dart:1712`） | ✅ 激活项 `enabled=false`，与 `onTap: null` 一致 |
+
+---
+
+## 四次评审意见（复核 `799e106`）
+
+> 复核日期：2026-07-16。
+> 复核范围：修复提交 `799e106`（声称 AM-R8）。
+> `flutter test`：6/6 通过（本机实跑确认）。`flutter analyze`：本机路径含 URL 编码中文致 LSP 崩溃无法实跑，以 CI 为准。
+
+### 修复核对
+
+**AM-R8** — `conversation_screen.dart:1712`：
+
+```dart
+enabled: onSwitch != null && !active,   // 改前: onSwitch != null
+...
+onTap: onSwitch == null || active ? null : () => onSwitch!(a.name),
+```
+
+`enabled` 现与 `onTap` 精确对应：`onTap` 非空 ⟺ `!(onSwitch==null || active)` ⟺ `onSwitch != null && !active` ⟺ `enabled: true`。三态一致：
+
+| 状态 | `onTap` | `enabled` | 读屏 |
+|------|---------|-----------|------|
+| 切换中（`onSwitch==null`） | null | false | 禁用 |
+| 激活项（`active`） | null | false | selected + 禁用 |
+| 可切换项 | 函数 | true | 可点 |
+
+结论：✅ 通过。
+
+### 补充说明（非阻塞）
+
+激活项 `selected: true + enabled: false` 会让读屏播报"已选/禁用"。对分段控件这是合理表达（当前选项不可重复选）；若个别读屏因 `enabled:false` 降低该节点可聚焦性，可退回 `enabled: onSwitch != null`（仅系统级禁用）+ 接受激活项"可点但 no-op"。现状与 `onTap` 严格一致，优先保留。
+
+### AM-R7 复核（提交卫生）
+
+`799e106` 范围干净——仅 `conversation_screen.dart:1712` 一行 + 文档，未再夹带无关改动。AM-R7 教训（`git add` 前用 `git diff --stat` 核查、无关改动拆 commit）已记录并执行。
+
+### 最终结论
+
+**✅ AM-R8 修复正确，`799e106` 可合入。** `enabled` 与 `onTap` 三态精确对应，无回归（`flutter test` 6/6），提交范围干净。AM-R1~R8 全部闭环：R1~R6/R8 为代码修复（已验证），R7 为提交卫生教训（已记录并践行）。
+
+**遗留 follow-up（非本次范围）**：
+1. 补 `_AgentModelBar` / `_AgentCapsuleToggle` widget test 固化分支判定（2-agent→胶囊 / 3-agent→chip / 0/1→静态 chip / currentAgent 不匹配→chip）；
+2. 补 `_PermissionCard` / `_QuestionCard` key 修复的回归用例（首个权限处理后新权限成 first 时 State 重置）；
+3. CI 复核 `flutter analyze --fatal-infos`（本机受路径中文所限无法实跑）。
