@@ -166,7 +166,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
               _BottomBar(
                 sessionId: widget.sessionId,
                 directory: directory,
-                session: session,
                 ctl: _ctl,
                 busy: conv.busy,
                 onAbort: () => _abort(directory),
@@ -1022,7 +1021,6 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
 class _BottomBar extends StatelessWidget {
   final String sessionId;
   final String directory;
-  final SessionModel? session;
   final TextEditingController ctl;
   final bool busy;
   final Future<void> Function() onAbort;
@@ -1032,7 +1030,6 @@ class _BottomBar extends StatelessWidget {
   const _BottomBar({
     required this.sessionId,
     required this.directory,
-    this.session,
     required this.ctl,
     required this.busy,
     required this.onAbort,
@@ -1066,7 +1063,6 @@ class _BottomBar extends StatelessWidget {
           _AgentModelBar(
             sessionId: sessionId,
             directory: directory,
-            session: session,
           ),
         ],
       ),
@@ -1361,12 +1357,10 @@ class _MoreMenu extends StatelessWidget {
 class _AgentModelBar extends StatefulWidget {
   final String sessionId;
   final String directory;
-  final SessionModel? session;
 
   const _AgentModelBar({
     required this.sessionId,
     required this.directory,
-    this.session,
   });
 
   @override
@@ -1468,7 +1462,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                     subtitle: a.description != null && a.description!.isNotEmpty
                         ? Text(a.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
                         : null,
-                    trailing: widget.session?.agent == a.name
+                    trailing: serverStore.sessionById(widget.sessionId)?.agent == a.name
                         ? const Icon(Icons.check, size: 18)
                         : null,
                     onTap: () {
@@ -1484,6 +1478,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
 
   void _showModelSheet() {
     if (_models.isEmpty) return;
+    final session = serverStore.sessionById(widget.sessionId);
     showModalBottomSheet(
       context: context,
       builder: (ctx) => SafeArea(
@@ -1495,7 +1490,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                     title: Text(m.name),
                     subtitle: Text('${m.providerID}/${m.id}',
                         style: AppTheme.mono.copyWith(fontSize: 11)),
-                    trailing: widget.session?.model?.id == m.id
+                    trailing: session?.model?.id == m.id
                         ? const Icon(Icons.check, size: 18)
                         : null,
                     onTap: () {
@@ -1510,6 +1505,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
   }
 
   void _showVariantSheet(List<ModelVariant> variants) {
+    final session = serverStore.sessionById(widget.sessionId);
     showModalBottomSheet(
       context: context,
       builder: (ctx) => SafeArea(
@@ -1519,12 +1515,12 @@ class _AgentModelBarState extends State<_AgentModelBar> {
             ListTile(
               leading: const Icon(Icons.do_not_disturb, size: 20),
               title: const Text('默认'),
-              trailing: widget.session?.model?.variant == null
+              trailing: session?.model?.variant == null
                   ? const Icon(Icons.check, size: 18)
                   : null,
               onTap: () {
                 final m = _models.firstWhere(
-                  (m) => m.id == widget.session?.model?.id,
+                  (m) => m.id == session?.model?.id,
                   orElse: () => _models.first,
                 );
                 Navigator.pop(ctx);
@@ -1534,12 +1530,12 @@ class _AgentModelBarState extends State<_AgentModelBar> {
             ...variants.map((v) => ListTile(
                   leading: const Icon(Icons.tune, size: 20),
                   title: Text(v.id),
-                  trailing: widget.session?.model?.variant == v.id
+                  trailing: session?.model?.variant == v.id
                       ? const Icon(Icons.check, size: 18)
                       : null,
                   onTap: () {
                     final m = _models.firstWhere(
-                      (m) => m.id == widget.session?.model?.id,
+                      (m) => m.id == session?.model?.id,
                       orElse: () => _models.first,
                     );
                     Navigator.pop(ctx);
@@ -1573,47 +1569,53 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       );
     }
 
-    final agentName = widget.session?.agent ?? '—';
-    final modelName = widget.session?.model?.id ?? '—';
+    return ListenableBuilder(
+      listenable: serverStore,
+      builder: (context, _) {
+        final session = serverStore.sessionById(widget.sessionId);
+        final agentName = session?.agent ?? '—';
+        final modelName = session?.model?.id ?? '—';
 
-    // Find current model's variants for thinking level button.
-    final currentModel = _models
-        .where((m) => m.id == widget.session?.model?.id)
-        .toList();
-    final hasVariants =
-        currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
+        // Find current model's variants for thinking level button.
+        final currentModel = _models
+            .where((m) => m.id == session?.model?.id)
+            .toList();
+        final hasVariants =
+            currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            _Chip(
-              icon: Icons.smart_toy_outlined,
-              label: agentName,
-              onTap: _switching ? null : _showAgentSheet,
-              muted: muted,
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _Chip(
+                  icon: Icons.smart_toy_outlined,
+                  label: agentName,
+                  onTap: _switching ? null : _showAgentSheet,
+                  muted: muted,
+                ),
+                const SizedBox(width: 8),
+                _Chip(
+                  icon: Icons.memory,
+                  label: modelName,
+                  onTap: _switching ? null : _showModelSheet,
+                  muted: muted,
+                ),
+                if (hasVariants) ...[
+                  const SizedBox(width: 8),
+                  _Chip(
+                    icon: Icons.psychology_outlined,
+                    label: session?.model?.variant ?? '默认',
+                    onTap: _switching ? null : () => _showVariantSheet(currentModel.first.variants),
+                    muted: muted,
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 8),
-            _Chip(
-              icon: Icons.memory,
-              label: modelName,
-              onTap: _switching ? null : _showModelSheet,
-              muted: muted,
-            ),
-            if (hasVariants) ...[
-              const SizedBox(width: 8),
-              _Chip(
-                icon: Icons.psychology_outlined,
-                label: widget.session?.model?.variant ?? '默认',
-                onTap: _switching ? null : () => _showVariantSheet(currentModel.first.variants),
-                muted: muted,
-              ),
-            ],
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }

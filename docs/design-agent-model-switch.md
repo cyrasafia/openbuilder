@@ -8,7 +8,7 @@
 
 | 功能 | 端点 | 方法 | 说明 |
 |------|------|------|------|
-| 列出 agents | `GET /agent?directory=<dir>` | v1 | 返回 `[{name, mode, hidden, ...}]`，过滤 `hidden=true` |
+| 列出 agents | `GET /agent?directory=<dir>` | v1 | 返回 `[{name, mode, hidden, ...}]`，过滤 `hidden=true` 且 `mode=='primary'`（subagent 不可设为会话主 agent） |
 | 列出 models | `GET /api/model?location[directory]=<dir>` | v2 | 返回 `{data: [{id, providerID, name, variants, ...}]}`，必须用 `location[directory]` 编码 |
 | 切换 agent | `POST /api/session/:id/agent` | v2 | body `{agent: "build"}`，204 No Content，需 `refresh()` 回拉 |
 | 切换 model | `POST /api/session/:id/model` | v2 | body `{model: {id, providerID, variant?}}`，204 No Content，需 `refresh()` 回拉 |
@@ -17,14 +17,14 @@
 
 服务器返回 7 个 agent，过滤 hidden 后 4 个用户可见：
 
-| name | mode | 说明 |
-|------|------|------|
-| `build` | primary | 默认 agent，执行工具 |
-| `plan` | primary | 计划模式，禁止编辑工具 |
-| `general` | subagent | 通用研究 |
-| `explore` | subagent | 快速代码库探索 |
+| name | mode | 说明 | 会话切换可选 |
+|------|------|------|--------------|
+| `build` | primary | 默认 agent，执行工具 | ✅ |
+| `plan` | primary | 计划模式，禁止编辑工具 | ✅ |
+| `general` | subagent | 通用研究 | ❌（由 build 作为工具内部调用） |
+| `explore` | subagent | 快速代码库探索 | ❌（由 build 作为工具内部调用） |
 
-`SessionModel.agent` 字段已存在，记录当前会话的 agent。
+`SessionModel.agent` 字段已存在，记录当前会话的 agent。会话级切换器（`_AgentModelBar`）仅列出 `mode == 'primary'` 的 agent，subagent 不可设为会话主 agent。
 
 ### Model
 
@@ -152,7 +152,7 @@ Thinking 按钮的显示条件：
 |------|------|------|
 | `lib/data/api/opencode_client.dart` | `listAgents` / `listModels` / `switchAgent` / `switchModel` | ✅ 已实现 |
 | `lib/domain/models.dart` | `ModelRef` / `AgentInfo` / `ModelInfo` / `ModelVariant` / `SessionModel.model` | ✅ 已实现 |
-| `lib/features/conversation/conversation_screen.dart` | 新增 `_AgentModelBar` 组件（agent/model/thinking 切换栏） | ⏳ 待实现 |
+| `lib/features/conversation/conversation_screen.dart` | 新增 `_AgentModelBar` 组件（agent/model/thinking 切换栏） | ✅ 已实现 |
 
 ## 场景验证
 
@@ -242,3 +242,26 @@ catch 块改为 `catch (e)` + `ScaffoldMessenger.showSnackBar`，用户在加载
 
 - `_showVariantSheet` 的「默认」项用 `_models.firstWhere(... orElse: () => _models.first)`，但只在 `hasVariants`（即 `currentModel.isNotEmpty`→`_models` 非空）时调用 → `orElse` 不触发 → 无 `StateError` 风险。✅
 - `mounted` 守卫在所有 `setState`/`ScaffoldMessenger` 前检查。✅
+
+---
+
+## Bug 修复复审（subagent 误显 + 切换不生效）
+
+> 评审对象：修复「会话详情页切换 agent」两个 bug 的改动。
+
+### 🔴 AM-FIX-1 — 子 agent 误显在切换列表 · ✅ 已修复
+
+**问题**：`listAgents` 仅过滤 `!a.hidden`，未按 `mode` 过滤，导致 `general`/`explore`（`mode:"subagent"`）也出现在会话 agent 切换 sheet 中。子 agent 由 `build` 作为工具内部调用，不可设为会话主 agent。
+
+**修复**：`opencode_client.dart` `listAgents` 过滤改为 `.where((a) => !a.hidden && a.mode == 'primary')`。数据入口唯一，UI 层无需重复过滤。
+
+### 🔴 AM-FIX-2 — 切换后芯片不刷新（看似 no-op）· ✅ 已修复
+
+**问题**：`onTap → _switchAgent` 实际触发了 `POST /api/session/:id/agent` + `serverStore.refresh()`，数据已回拉。但 `_ConversationScreenState.build()` 不监听 `serverStore`，body 包在 `ListenableBuilder(listenable: conv)` 下，传入 `_AgentModelBar` 的 `widget.session` 是 build 开头捕获的 stale 值 → agent chip 标签、model chip 标签、variant chip、勾选标记均不更新，面板收起后用户看不到变化。model/thinking 切换同根因。
+
+**修复**：`_AgentModelBar` 不再接收 `session` 参数，改为在 `build()` 内 `ListenableBuilder(listenable: serverStore, ...)` 自监听并用 `serverStore.sessionById(widget.sessionId)` 重读最新 session。`_BottomBar` 同步删除 `session` 字段与传参。切换 → `refresh()` → `notifyListeners()` → `ListenableBuilder` 重建 → 三个芯片标签与勾选标记即时更新。
+
+### 影响范围
+
+- agent/model/variant 三个芯片均受益于 stale-session 修复（原 model/thinking 切换存在同样 UI 不刷新问题）。
+- `mode == 'primary'` 过滤语义：`AgentInfo.mode` 枚举为 `["subagent","primary","all"]`，`all`（可作主 agent 也可作子 agent）一并排除，仅留 `primary`。

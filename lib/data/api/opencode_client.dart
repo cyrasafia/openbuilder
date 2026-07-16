@@ -260,7 +260,7 @@ class OpencodeClient {
     if (r.data is List) {
       return (r.data as List)
           .map((e) => AgentInfo.fromJson((e as Map).cast<String, dynamic>()))
-          .where((a) => !a.hidden)
+          .where((a) => !a.hidden && a.mode == 'primary')
           .toList();
     }
     return const [];
