@@ -1425,6 +1425,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
   List<ModelInfo> _models = const [];
   bool _loading = false;
   bool _switching = false;
+  String? _optimisticAgent;
 
   @override
   void initState() {
@@ -1459,13 +1460,18 @@ class _AgentModelBarState extends State<_AgentModelBar> {
 
   Future<void> _switchAgent(String agent) async {
     final client = serverStore.client;
-    if (client == null) return;
-    setState(() => _switching = true);
+    if (client == null || _switching) return;
+    setState(() {
+      _switching = true;
+      _optimisticAgent = agent;
+    });
     try {
       await client.switchAgent(widget.sessionId, agent);
-      unawaited(serverStore.refresh());
+      await serverStore.refresh();
+      if (mounted) setState(() => _optimisticAgent = null);
     } catch (e) {
       if (mounted) {
+        setState(() => _optimisticAgent = null);
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('切换 Agent 失败：$e')));
       }
@@ -1626,7 +1632,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       listenable: serverStore,
       builder: (context, _) {
         final session = serverStore.sessionById(widget.sessionId);
-        final agentName = session?.agent ?? '—';
+        final agentName = _optimisticAgent ?? session?.agent ?? '—';
         final modelName = session?.model?.id ?? '—';
 
         // Find current model's variants for thinking level button.
@@ -1684,8 +1690,8 @@ class _AgentModelBarState extends State<_AgentModelBar> {
 }
 
 /// Capsule-style segmented toggle for exactly 2 agents.
-/// Both options are visible side-by-side; the active one is filled.
-class _AgentCapsuleToggle extends StatelessWidget {
+/// Both options are visible side-by-side; a highlight slides to the active one.
+class _AgentCapsuleToggle extends StatefulWidget {
   final List<AgentInfo> agents;
   final String currentAgent;
   final ValueChanged<String>? onSwitch;
@@ -1697,57 +1703,150 @@ class _AgentCapsuleToggle extends StatelessWidget {
   });
 
   @override
+  State<_AgentCapsuleToggle> createState() => _AgentCapsuleToggleState();
+}
+
+class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  final GlobalKey _stackKey = GlobalKey();
+  late final List<GlobalKey> _optionKeys;
+
+  double _left = 0, _width = 0;
+  double _fromLeft = 0, _fromWidth = 0;
+  bool _measured = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 200),
+    );
+    _optionKeys = List.generate(widget.agents.length, (_) => GlobalKey());
+    _ctrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _measure(true));
+  }
+
+  @override
+  void didUpdateWidget(covariant _AgentCapsuleToggle old) {
+    super.didUpdateWidget(old);
+    if (old.currentAgent != widget.currentAgent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _measure(false));
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _measure(bool initial) {
+    final idx = widget.agents.indexWhere((a) => a.name == widget.currentAgent);
+    final stackCtx = _stackKey.currentContext;
+    if (idx < 0 || stackCtx == null) return;
+    final stackBox = stackCtx.findRenderObject() as RenderBox?;
+    final optionCtx = _optionKeys[idx].currentContext;
+    if (stackBox == null || !stackBox.hasSize || optionCtx == null) return;
+    final optionBox = optionCtx.findRenderObject() as RenderBox?;
+    if (optionBox == null || !optionBox.hasSize) return;
+    final pos = optionBox.localToGlobal(Offset.zero, ancestor: stackBox);
+    final newLeft = pos.dx;
+    final newWidth = optionBox.size.width;
+    if (initial) {
+      _fromLeft = _left = newLeft;
+      _fromWidth = _width = newWidth;
+      _measured = true;
+      _ctrl.value = 1;
+    } else {
+      _fromLeft = _left;
+      _fromWidth = _width;
+      _left = newLeft;
+      _width = newWidth;
+      _ctrl.forward(from: 0);
+    }
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final t = _ctrl.value;
+    final curLeft = _fromLeft + (_left - _fromLeft) * t;
+    final curWidth = _fromWidth + (_width - _fromWidth) * t;
+
     return Container(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(16),
       ),
       padding: const EdgeInsets.all(2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: agents.map((a) {
-          final active = a.name == currentAgent;
-          return Semantics(
-            selected: active,
-            button: true,
-            enabled: onSwitch != null && !active,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: onSwitch == null || active ? null : () => onSwitch!(a.name),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                decoration: BoxDecoration(
-                  color: active ? scheme.primaryContainer : Colors.transparent,
-                  borderRadius: BorderRadius.circular(13),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.smart_toy_outlined,
-                      size: 14,
-                      color:
-                          active ? scheme.onPrimaryContainer : scheme.outline,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      a.name,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: active
-                            ? scheme.onPrimaryContainer
-                            : scheme.outline,
-                      ),
-                    ),
-                  ],
+      child: Stack(
+        key: _stackKey,
+        children: [
+          if (_measured)
+            Positioned(
+              left: curLeft,
+              width: curWidth,
+              top: 0,
+              bottom: 0,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(13),
+                  ),
                 ),
               ),
             ),
-          );
-        }).toList(),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < widget.agents.length; i++)
+                _buildOption(widget.agents[i], i, scheme),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOption(AgentInfo a, int idx, ColorScheme scheme) {
+    final active = a.name == widget.currentAgent;
+    return Semantics(
+      selected: active,
+      button: true,
+      enabled: widget.onSwitch != null && !active,
+      child: GestureDetector(
+        key: _optionKeys[idx],
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onSwitch == null || active
+            ? null
+            : () => widget.onSwitch!(a.name),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.smart_toy_outlined,
+                size: 14,
+                color: active ? scheme.onPrimaryContainer : scheme.outline,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                a.name,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: active ? scheme.onPrimaryContainer : scheme.outline,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
