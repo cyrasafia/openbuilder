@@ -686,6 +686,14 @@ class ServerStore extends ChangeNotifier {
         final info = ev.properties['info'];
         if (info is Map) _removeSession((info['id'] ?? '').toString());
         break;
+      case 'session.error':
+        final sid = ev.properties['sessionID']?.toString();
+        final err = ev.properties['error'];
+        if (sid != null && err is Map) {
+          ensureConversation(sid)
+              ?.onSessionError(err.cast<String, dynamic>());
+        }
+        break;
       case 'message.updated':
         unawaited(_onMessageUpdated(ev.properties));
         return;

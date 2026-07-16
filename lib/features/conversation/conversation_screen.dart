@@ -147,6 +147,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
               conv.todos.any((t) => !t.done);
           return Column(
             children: [
+              if (conv.sessionError != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                  child: _errorBanner(conv.sessionError!,
+                      onDismiss: conv.clearSessionError),
+                ),
               Expanded(child: list),
               if (showFooter)
                 _FooterPanel(
@@ -309,7 +315,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Widget _errorBanner(Map<String, dynamic> error) {
+  Widget _errorBanner(Map<String, dynamic> error, {VoidCallback? onDismiss}) {
     final name = (error['name'] ?? 'Error').toString();
     final data = error['data'];
     final message = data is Map
@@ -334,6 +340,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
               style: const TextStyle(fontSize: 13, color: Color(0xFFF85149)),
             ),
           ),
+          if (onDismiss != null) ...[
+            const SizedBox(width: 8),
+            InkWell(
+              onTap: onDismiss,
+              child: const Icon(Icons.close, size: 16, color: Color(0xFFF85149)),
+            ),
+          ],
         ],
       ),
     );

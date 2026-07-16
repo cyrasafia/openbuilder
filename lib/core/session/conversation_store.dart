@@ -126,6 +126,7 @@ class ConversationStore extends ChangeNotifier {
   bool loading = false;
   bool loaded = false;
   String? error;
+  Map<String, dynamic>? sessionError;
   String status = 'idle';
 
   bool _stale = false;
@@ -470,11 +471,23 @@ class ConversationStore extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  void onSessionError(Map<String, dynamic> error) {
+    sessionError = error;
+    if (!_disposed) notifyListeners();
+  }
+
+  void clearSessionError() {
+    if (sessionError == null) return;
+    sessionError = null;
+    if (!_disposed) notifyListeners();
+  }
+
   void onMessageUpdated(MessageInfo info) {
     // When a real user message arrives from SSE, prune optimistic user
     // messages (the authoritative one replaces the local guess).
     if (info.role == 'user') {
       _pruneOptimistic();
+      sessionError = null;
     }
     final existing = _findMessage(info.id);
     if (existing != null) {
