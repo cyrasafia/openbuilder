@@ -269,11 +269,11 @@ class ServerStore extends ChangeNotifier {
     // New: ensureConversation injects pending, then load (→ reconcile).
     final conv = ensureConversation(sessionId);
     if (conv == null) return null;
-    unawaited(conv.load()); // load internally calls reconcile
-    // _backfillPreview kept (MA-3): seeds _lastMessage from the conv's last
-    // message for the "open an idle, never-streamed session" case; complementary
-    // to the per-unit live preview updates.
-    unawaited(_backfillPreview(sessionId, conv));
+    // Chain _backfillPreview after load (→ reconcile) so _lastMessage seeds
+    // from the REST-merged last message; previously concurrent unawaited raced
+    // ahead of reconcile and no-op'd on empty _messages (LPS-19).
+    unawaited(conv.load()
+        .then((_) => _backfillPreview(sessionId, conv)));
     return conv;
   }
 
