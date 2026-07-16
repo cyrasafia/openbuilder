@@ -1635,7 +1635,8 @@ class _AgentModelBarState extends State<_AgentModelBar> {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                if (_agents.length == 2)
+                if (_agents.length == 2 &&
+                    _agents.any((a) => a.name == agentName))
                   _AgentCapsuleToggle(
                     agents: _agents,
                     currentAgent: agentName,
@@ -1645,7 +1646,9 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                   _Chip(
                     icon: Icons.smart_toy_outlined,
                     label: agentName,
-                    onTap: _switching ? null : _showAgentSheet,
+                    onTap: (_switching || _agents.length <= 1)
+                        ? null
+                        : _showAgentSheet,
                     muted: muted,
                   ),
                 const SizedBox(width: 8),
@@ -1694,40 +1697,45 @@ class _AgentCapsuleToggle extends StatelessWidget {
         color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(16),
       ),
-      padding: const EdgeInsets.all(3),
+      padding: const EdgeInsets.all(2),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: agents.map((a) {
           final active = a.name == currentAgent;
-          return GestureDetector(
-            onTap: onSwitch == null || active ? null : () => onSwitch!(a.name),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: active ? scheme.primaryContainer : Colors.transparent,
-                borderRadius: BorderRadius.circular(13),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.smart_toy_outlined,
-                    size: 13,
-                    color:
-                        active ? scheme.onPrimaryContainer : scheme.outline,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    a.name,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: active
-                          ? scheme.onPrimaryContainer
-                          : scheme.outline,
+          return Semantics(
+            selected: active,
+            button: true,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onSwitch == null || active ? null : () => onSwitch!(a.name),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                  color: active ? scheme.primaryContainer : Colors.transparent,
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.smart_toy_outlined,
+                      size: 13,
+                      color:
+                          active ? scheme.onPrimaryContainer : scheme.outline,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 4),
+                    Text(
+                      a.name,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: active
+                            ? scheme.onPrimaryContainer
+                            : scheme.outline,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           );
