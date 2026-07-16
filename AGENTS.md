@@ -95,6 +95,26 @@ flutter test                     # 含 widget + parse + smoke（smoke 需本地 
 - API client 手写（`lib/data/api/opencode_client.dart`），不用生成器接入 app
 - commit message 前缀：`feat:` / `fix:` / `ui:` / `docs:` / `perf:`
 
+## 前端样式约定
+
+> 前端样式与字重系统的权威参考：根目录 [`DESIGN.md`](DESIGN.md)。改 UI / 文字样式前必读，新增样式须在三档内对齐。
+
+**字重三档制（全局约束）**：`FontWeight.` 常量只允许 `w300` / `w400` / `w600`，禁止 `normal`、`w500`、`bold`、`w700`。
+
+| 常量 | 字重 | 名称 | 语义 |
+|------|------|------|------|
+| `w300` | 300 | Light | 仅大号 hero 标题（页顶展示） |
+| `w400` | 400 | Regular | 正文、标签、次级信息（默认） |
+| `w600` | 600 | Semi Bold | 强调、标题、AppBar 标题、Markdown 加粗（最重一档） |
+
+要点：
+- 层级靠「字号 + 三档字重」组合表达，不堆砌中间字重；需更强强调从 Regular 跳到 Semi Bold，不经过 Medium (500)。
+- 最重一档固定 Semi Bold (600)，移动端窄屏不用 Bold (700) 避免小字笔画黏连。
+- Light 仅限大号 hero，不用在小号文字 / 正文。
+- 命名用数值常量（`w300`/`w400`/`w600`），不用 `normal`/`bold` 语义别名。
+- 字体族：正文用系统字体（小米/HyperOS 上为 MiSans 变体字体）；等宽用 `monospace` + 回退栈 `DejaVu Sans Mono → Menlo → Courier New`。
+- 系统字重联动：小米/HyperOS 上 `FontVariation('wght', n)` 会跟随系统滑块覆盖渲染，属预期行为；非小米或读取失败时由三档常量决定，三档常量同时作语义标注与 fallback。
+
 ## 文档命名约定（docs/）
 
 | 前缀 | 用途 | 示例 |
@@ -116,6 +136,7 @@ flutter test                     # 含 widget + parse + smoke（smoke 需本地 
 
 | 文档 | 主题 |
 |------|------|
+| [`DESIGN.md`](DESIGN.md) | 前端样式与字重系统（三档字重制、字体族、Do/Don't） |
 | `spec-overview.md` | 整体架构、技术栈、领域模型、端点映射 |
 | `design-frontend.md` | 前端页面、组件、交互设计 |
 | `plan-overview.md` | 分阶段执行计划（Phase 0-3） |
