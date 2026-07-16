@@ -242,7 +242,7 @@ class _Crumb extends StatelessWidget {
               color: onTap == null
                   ? Theme.of(context).colorScheme.outline
                   : Theme.of(context).colorScheme.primary,
-              fontWeight: onTap == null ? FontWeight.w600 : FontWeight.normal,
+              fontWeight: onTap == null ? FontWeight.w600 : FontWeight.w400,
             )),
       );
 }

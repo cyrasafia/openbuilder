@@ -18,7 +18,7 @@ class WelcomeScreen extends StatelessWidget {
               Icon(Icons.hub, size: 80, color: scheme.primary),
               const SizedBox(height: 20),
               const Text('opencode',
-                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700)),
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.w300)),
               const SizedBox(height: 10),
               Text(
                 '连接到你的 opencode 服务器\n查看任务进度、下指令、看 diff 与文档。',

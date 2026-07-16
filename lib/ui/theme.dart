@@ -89,7 +89,7 @@ class AppTheme {
         labelTextStyle: WidgetStateProperty.all(
           TextStyle(
             fontSize: 11,
-            fontWeight: FontWeight.w500,
+            fontWeight: FontWeight.w400,
             fontVariations: hasVariations ? variations : null,
           ),
         ),

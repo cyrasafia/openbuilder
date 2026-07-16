@@ -292,7 +292,7 @@ class _Header extends StatelessWidget {
               children: [
                 Text(name,
                     style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w700)),
+                        fontSize: 17, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 4),
                 Text(worktree,
                     maxLines: 1,

@@ -117,7 +117,7 @@ class _DisconnectBanner extends StatelessWidget {
             style: TextStyle(
               fontSize: 13,
               color: scheme.onSurface,
-              fontWeight: FontWeight.w500,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ],

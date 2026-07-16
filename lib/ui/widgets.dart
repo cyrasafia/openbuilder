@@ -79,7 +79,7 @@ class ProjectAvatar extends StatelessWidget {
               _initial(name),
               style: TextStyle(
                 color: fg,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 fontSize: size * 0.42,
               ),
             ),

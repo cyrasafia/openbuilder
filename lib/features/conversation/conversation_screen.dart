@@ -405,6 +405,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
               p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
               pPadding: const EdgeInsets.only(bottom: 6),
+              strong: TextStyle(fontWeight: FontWeight.w600, color: baseColor),
               code: TextStyle(
                 fontSize: 13,
                 fontFamily: 'monospace',
@@ -675,7 +676,7 @@ class _ToolChip extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: AppTheme.mono.copyWith(
-                  fontSize: 12, fontWeight: FontWeight.w500),
+                  fontSize: 12, fontWeight: FontWeight.w400),
             ),
           ),
         ],
@@ -980,7 +981,7 @@ class _QuestionCardState extends State<_QuestionCard> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(opt.label,
-                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w400)),
                         if (opt.description.isNotEmpty)
                           Text(opt.description,
                               maxLines: 2,
