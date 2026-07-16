@@ -200,3 +200,45 @@ test('part.updated events coalesce via throttle (locks LPS-1 break->return)', ()
 | 修复复审表 LPSI-1 行 | 已订正措辞：区分测试③（节流合并）与测试④（break→return 锁），不再过度声称。 | ✅ |
 
 **闭合结论**：LPSI-1R1/R2 已落地并实测验证（lock 真实有效），LPSI-1 名副其实闭合。`dart analyze lib test` 0 issue；`flutter test` 11/11 通过。review 闭合。
+
+---
+
+## 四次复审（1011105 独立实证）
+
+> 复审日期：2026-07-16。核对对象：commit `1011105` 的接缝 + 测试④⑤ + 三次复审自评。**独立复现回归实证**（非采信作者自述）。
+
+### ✅ 接缝
+
+`server_store.dart:664-665`：`@visibleForTesting void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);`——仅委托库私有 `_onEvent`，零行为改变。`@visibleForTesting`（`package:flutter/foundation.dart`，已在 `:4` 导入）在 `--fatal-infos` 下会拦截生产代码误用。LPS-1 的 `return` 因接缝插入 +7 行，现位于 `:752`（原 `:745`）。✅
+
+### ✅ LPSI-1R1 — 独立回归实证（真正锁定 break→return）
+
+测试④经 `onEventForTesting` 喂 20 个 `message.part.updated` 事件直驱 `_onEvent` 真实路由。**我独立复现回归**：临时把 `:752` `return;` 改回 `break;` → 跑测试④ → 失败，`Expected: <1> / Actual: <21>`（1 次首事件 `_notifyPreviewChanged` 立即通知 + 20 次 `:790` 无节流逐次通知，与作者三次复审「count 1→21」一致）。还原后 11/11。
+
+即测试④**真能发现 `break`↔`return` 回退**——LPS-1 最易回归路径名副其实被锁定，不再有假信心。✅
+
+### ✅ LPSI-1R2 — trailing timer 兜底最终态
+
+测试⑤ `testWidgets` + `pumpWidget(SizedBox.shrink())`（仅启用 fake-async/Timer 环境）+ `pump(121ms)`：5 个 part 事件后 `count==1`（立即合并）且 `lastMessageOf` 含最终累积文本 `seg4`；`pump(121ms)` 后 `count==2`（trailing timer 兜底）。锁 §7/§9.1 的最终态反映。`FakeAsync` 捕获 `_notifyPreviewChanged` 的 `Timer(120ms)`、`pump` 推进触发，时序一致。✅
+
+### ✅ 措辞订正
+
+- 测试③注释：已改为「锁 `_notifyPreviewChanged` 合并，**不**直驱 `_onEvent` part.updated 路径；break↔return 回退锁见测试④」。消除过度声称。✅
+- 修复复审表 LPSI-1 行：已区分测试③（节流合并）与测试④（break→return 锁）。✅
+
+### 验证
+
+- `dart analyze --fatal-infos` → No issues found。
+- `flutter test` → 11/11 通过（原 6 + 本特性 5：①②③④⑤）。
+- 回归实证：`return`→`break` 回退 → 测试④失败（Actual 21）；还原后全绿。
+
+### 闭合
+
+| 编号 | 状态 | 复审 |
+|------|------|------|
+| LPSI-1R1 | 接缝 + 测试④直驱 `_onEvent`，独立实证锁定 break→return | ✅ |
+| LPSI-1R2 | 测试⑤ trailing timer 兜底最终态 | ✅ |
+| LPSI-2 | reflectPreviewFrom 节流通知，维持不修 | ✅ 认可 |
+| LPSI-3 | MU-1 pre-existing，维持不修 | ✅ 认可 |
+
+**最终结论**：commit `1011105` 正确闭合 LPSI-1R1/R2——`@visibleForTesting` 接缝 + 测试④（直驱 `_onEvent` part.updated，`return`→`break` 回退经独立实证确认失败）+ 测试⑤（trailing 兜底）+ 测试③/复审表措辞订正。analyze 0 issue、11/11 通过。三次复审自评准确。**LPSI-1 全链路（含最易回归路径）名副其实闭合，review-9179d4e 闭合。**
