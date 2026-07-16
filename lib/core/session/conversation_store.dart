@@ -160,7 +160,7 @@ class ConversationStore extends ChangeNotifier {
       final dp = last.parts[i];
       if (_hidden.contains(dp.type)) continue;
       final pv = dp.type == 'tool'
-          ? '${dp.tool ?? 'tool'}${(dp.toolStatus == null || dp.toolStatus!.isEmpty) ? '' : ' · ${dp.toolStatus}'}'
+          ? dp.toolSummary
           : dp.text.replaceAll('\n', ' ').trim();
       if (pv.isNotEmpty) {
         preview = pv;
