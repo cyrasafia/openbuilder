@@ -6,6 +6,7 @@ import 'package:opencode_mobile/core/session/conversation_store.dart';
 import 'package:opencode_mobile/core/session/server_store.dart';
 import 'package:opencode_mobile/core/sse/sse_client.dart';
 import 'package:opencode_mobile/data/api/opencode_client.dart';
+import 'package:opencode_mobile/domain/models.dart';
 
 // A non-null [OpencodeClient] pointing at a discard port. The preview logic
 // under test never makes network calls (onPartUpdated / lastMessagePreview /
@@ -145,5 +146,39 @@ void main() {
     await tester.pump(const Duration(milliseconds: 121));
     expect(count, 2); // trailing timer fired → final state reflected
     store.dispose();
+  });
+
+  // LPSI-D (§12.11, cross-clock): a server-stamped user message (created in
+  // the "future" relative to the client clock, simulating client-behind-server)
+  // must NOT outrank the streaming-assistant placeholder. Old code stamped the
+  // placeholder with DateTime.now() (client clock) → sorted before the user →
+  // _messages.last = user → lastMessagePreview() returned "你: …". D path
+  // stamps max(existing created)+1 so the placeholder is always last.
+  test('streaming assistant stays last against server-stamped user (D path, §1.6)', () {
+    final conv = ConversationStore('s1', _fakeClient());
+    final futureMs = DateTime.now().millisecondsSinceEpoch + 60000;
+    conv.onMessageUpdated(MessageInfo(
+      id: 'msg_u1',
+      role: 'user',
+      sessionID: 's1',
+      created: futureMs,
+    ));
+    conv.onPartUpdated(
+        <String, dynamic>{'messageID': 'msg_u1', 'id': 'pu1', 'type': 'text'},
+        'hi');
+    conv.onPartUpdated(
+        <String, dynamic>{'messageID': 'msg_a1', 'id': 'pa1', 'type': 'text'},
+        'world');
+    expect(conv.messages.last.info.id, 'msg_a1');
+    expect(conv.lastMessagePreview(), 'world'); // not '你: hi'
+    conv.onMessageUpdated(MessageInfo(
+      id: 'msg_a1',
+      role: 'assistant',
+      sessionID: 's1',
+      created: futureMs + 1000,
+      finish: 'stop',
+    ));
+    expect(conv.messages.last.info.id, 'msg_a1');
+    expect(conv.lastMessagePreview(), 'world'); // no flash-back to '你: hi'
   });
 }

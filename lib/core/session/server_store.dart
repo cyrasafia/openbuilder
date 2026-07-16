@@ -660,7 +660,7 @@ class ServerStore extends ChangeNotifier {
   /// Test seam to drive SSE events directly into [_onEvent] (which is library-
   /// private). Lets tests assert the `message.part.updated` case's
   /// `break`->`return` (LPS-1) throttle behavior through the real event route
-  /// (including the switch's trailing :790 notify).
+  /// (including the switch's trailing :811 notify).
   @visibleForTesting
   void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);
 
@@ -731,7 +731,7 @@ class ServerStore extends ChangeNotifier {
             // user message.
             // LPS-7: because this case returns early (LPS-1), the guard below
             // also implicitly decides whether to notify — non-matching part
-            // types neither write the preview nor fire :790. Safe today (other
+            // types neither write the preview nor fire :811. Safe today (other
             // types are _hidden or carry no preview text), but a future
             // preview-bearing part type MUST be added here.
             if (ptype == 'tool' || ptype == 'text' || ptype == 'reasoning') {
@@ -744,11 +744,11 @@ class ServerStore extends ChangeNotifier {
           }
         }
         // LPS-1: early-return (not break) so this case does NOT fall through
-        // to the switch's trailing notifyListeners() at :790 — that notify is
+        // to the switch's trailing notifyListeners() at :811 — that notify is
         // unthrottled and per-token, which would bypass _notifyPreviewChanged()'s
         // 120ms coalescing and make the preview jitter per-token. Detail-page
         // typing is driven by conv.notifyListeners() in onPartUpdated, so it is
-        // unaffected. Other cases still break -> :790 as before.
+        // unaffected. Other cases still break -> :811 as before.
         return;
       case 'todo.updated':
         final sid = ev.properties['sessionID']?.toString();
@@ -999,6 +999,15 @@ class ServerStore extends ChangeNotifier {
     client = null;
     _profile = null;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _reconcileTimer?.cancel();
+    _reconcileTimer = null;
+    _previewNotifyTimer?.cancel();
+    _previewNotifyTimer = null;
+    super.dispose();
   }
 
   /// Manual refresh (from pull-to-refresh). Returns true on success.

@@ -616,10 +616,20 @@ class ConversationStore extends ChangeNotifier {
   DisplayMessage _ensureMessage(String id) {
     final found = _findMessage(id);
     if (found != null) return found;
+    // Placeholder must sort after all existing messages: lastMessagePreview()
+    // reads _messages.last, so the streaming assistant must be last. Don't use
+    // DateTime.now() (client clock) — it can sort before a server-stamped user
+    // message when the client lags the server, jumping the preview back to the
+    // user message (design §1.6). message.updated later replaces this with the
+    // server created, which always sorts after the user (server clock).
+    final maxCreated = _messages.fold<int>(0, (a, m) {
+      final c = m.info.created ?? 0;
+      return c > a ? c : a;
+    });
     final m = DisplayMessage(MessageInfo(
       id: id,
       role: 'assistant',
-      created: DateTime.now().millisecondsSinceEpoch,
+      created: maxCreated + 1,
     ));
     _messages.add(m);
     _sort();

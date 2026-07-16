@@ -29,6 +29,8 @@
 | `message.part.updated` | 仅 `part.type == 'tool'` 才回写预览 | `server_store.dart:722` |
 | `message.updated` | 仅 `m.role == 'user' \|\| (finish 非空)` 才回写 | `server_store.dart:807` |
 
+> **行号说明（LPS-9 续）**：§1.3–§1.5 描述 LPS-1 落地**前**的原始问题，表/文中的 `:722`/`:807`/`:810` 为当时锚点；现行代码已由 LPS-1 修订——`message.part.updated` 守卫现 `:737`（见 §6.1）、`_onMessageUpdated` 现 `:814-848`（见 §6.2），跨时钟根因见 §1.6。直接按本节行号跳转会落到无关代码（如 `:807` 现为 `question.replied` 处理）。
+
 纯文本流式期间：每个 text token → `message.part.updated`(type=text) → 守卫 1 拦截 → `_lastMessage` 不变；消息未完成 → `message.updated` finish 为空 → 守卫 2 拦截。结果预览停在用户消息，直到 assistant 调 tool（触发守卫 1）或消息完成（触发守卫 2）。
 
 用户说的"**有时**"即此形态——取决于 assistant 是否调 tool / 是否已完成，并非间歇性 bug。
@@ -43,11 +45,31 @@
 
 同样，`lastMessagePreview()` 的注释（`conversation_store.dart:153-155`）声称它是"session-list preview 的唯一真相源，**在流式期间追踪详情视图最后一条消息，不仅完成时**"。但实际它在纯文本流式期间从不被调用。
 
-**结论**：流式期间追踪预览是**既定设计意图**，只是被两处守卫意外阉割。本设计是恢复该意图，而非引入新能力。
+**结论**：流式期间追踪预览是**既定设计意图**，只是被两处守卫意外阉割。本设计是恢复该意图，而非引入新能力。（订正：守卫仅为**必要非充分**因——去守卫后预览仍会因跨时钟 `created` 重排序跳回用户消息，见 §1.6 与 D 路径 §6.5。）
 
 ### 1.5 附带问题：乐观消息不回写预览
 
 `addOptimisticUserMessage`（`conversation_store.dart:197-211`）只往 `conv._messages` 加消息 + 触发 `conv.notifyListeners()`，**不回写 `ServerStore._lastMessage`**，也不触发 `serverStore.notifyListeners()`。用户发消息后预览要等 `message.updated`(role=user) SSE 事件（经 `_onMessageUpdated` :807/:810）到达才变；SSE 延迟时列表预览短暂停在更早内容，体感"发完消息预览没动"。
+
+### 1.6 二次根因：跨时钟 `created` 重排序（A/B/C 未生效原因）
+
+> 二次修订（2026-07-16）：A/B/C 落地后实测预览仍"跳回上一条用户消息"，回溯发现 §1.3 的"两处守卫"只是**部分**因，另有更深的结构性因——本节订正 §3 末"`lastMessagePreview()` 无需改动其逻辑"的前提。
+
+**现象复现**：流式期间列表预览仍停在"你: …"，直到 `message.updated(finish='stop')` 才刷新——与 §1.1 原始症状**完全一致**。即 A/B/C 对该症状**无改善**。
+
+**根因链**：
+
+1. 所有预览回写路径（A `server_store.dart:738-740`、B `:830-832`、C `:879-881`、backfill `:866-868`）最终都调 `conv.lastMessagePreview()`。
+2. `lastMessagePreview()`（`conversation_store.dart:156-173`）**只读 `_messages.last`**（`:158`），仅遍历该条消息的 parts，**不**回退到前一条。故预览内容完全取决于"`_messages.last` 是不是流式 assistant"。
+3. `_messages.last` 由 `_sort()` 按 `info.created` 决定（`conversation_store.dart:630`）。
+4. 流式期间 assistant 消息是收到首个 `message.part.updated` 时**本地合成**的占位消息（`_ensureMessage` `conversation_store.dart:616-627`），`created` 盖的是**客户端时钟** `DateTime.now().millisecondsSinceEpoch`（`:622`）；而 user 消息的 `created` 来自**服务器** `time.created`（`models.dart:186`）。
+5. 已核对 opencode 源码：`DateTimeUtcFromMillis`（encode=`DateTime.toEpochMillis`）= **毫秒**，与 app 同单位——**非单位错配**。但两条 `created` 来自**不同时钟**（客户端 vs 服务器）。
+
+**后果**：当客户端时钟落后服务器超过该轮首 token 时延时，本地合成的 assistant（客户端 ms）会排到 user（服务器 ms）**之前** → `_messages.last` = user → `lastMessagePreview()` 返回 "你: …" → 去掉守卫后的 A/B 路径**每个 token 都把 user 消息写进 `_lastMessage`**，预览仍卡在用户消息。直到 `message.updated(finish='stop')` 到达，`onMessageUpdated`（`:485-508`）用服务器 `created` 替换 assistant 时间戳（服务器时钟下 assistant 恒晚于 user），assistant 才排到 user 之后，预览才显示 assistant 文本。**这正是 §1.1 自称要修掉的症状**。
+
+**关键结论**：§1.3 的两处守卫是红鲱鱼（或仅部分因）——真正因是 `lastMessagePreview()` 返回的是 user 消息，因为 `_messages.last` 确实就是 user。去掉守卫、改成每 token 调一次，只是把"写 user 消息"从"不写"变成"每 token 写一次 user 消息"，对体感毫无改善。设计前提"`lastMessagePreview()` 已是正确的真相源"在跨时钟场景下**不成立**。
+
+**为何测试未拦截**：`test/list_preview_streaming_test.dart` 从不混用"服务器时间戳消息"与"本地合成消息"——要么单条消息，要么 optimistic user（客户端 ms）+ `_ensureMessage` 造的 assistant（同客户端 ms），两者同源时钟，assistant 恒排最后，测不出重排序；且无任何测试注入带服务器 `created` 的 `message.updated` 事件去替换 assistant 时间戳。
 
 ---
 
@@ -59,6 +81,7 @@
 4. 不改变消息累积/对账/落盘机制（其 §4.5/§5.3 预览粒度决策已被本设计修订，见 LPS-2；机制本身不变）。
 5. 保留 busy 状态点（`StatusDot`）作为"正在运行"的并行指示。
 6. 修正 `lastMessagePreview()` / `_notifyPreviewChanged()` 注释与实现脱节的矛盾。
+7. （二次修订）流式 assistant 占位消息的 `created` 不取客户端时钟，保证 `_messages.last` 恒为流式 assistant（解 §1.6 跨时钟重排序，A/B/C 未覆盖）。
 
 ---
 
@@ -70,11 +93,12 @@
 
 | # | 位置 | 改动 |
 |---|------|------|
-| A | `message.part.updated`（`:711-731`） | text/reasoning part 也回写预览（经节流）；case 改 `return` 早返回，避免落到 `:790` 无节流通知（LPS-1） |
-| B | `message.updated`（`:793-825`） | 进行中 assistant 消息（finish 为空）也回写预览 |
+| A | `message.part.updated`（`:718-752`） | text/reasoning part 也回写预览（经节流）；case 改 `return` 早返回，避免落到 `:811` 无节流通知（LPS-1） |
+| B | `message.updated`（`:814-848`） | 进行中 assistant 消息（finish 为空）也回写预览 |
 | C | 乐观消息发送（`conversation_screen.dart:227-270`） | 发送后由 ServerStore 回写预览 + 通知 |
+| D | `_ensureMessage`（`conversation_store.dart:616-627`） | 流式 assistant 占位消息的 `created` 改为"排到所有现存消息之后"的值，解耦客户端时钟（见 §1.6、§6.5） |
 
-`lastMessagePreview()` 已是正确的真相源，无需改动其逻辑——只改"谁调它、何时调"。
+> （二次修订）原述"`lastMessagePreview()` 已是正确的真相源，无需改动其逻辑"在跨时钟场景下**不成立**：它只读 `_messages.last`，而 `_messages.last` 由 `created` 排序决定；流式 assistant 占位消息的 `created` 曾取客户端时钟，会排到服务器时间戳的 user 之前（§1.6）。故除"谁调它、何时调"外，还需 D 路径保证 `_messages.last` 确为流式 assistant。
 
 ---
 
@@ -100,7 +124,7 @@
 
 ## 6. 方法拆分
 
-### 6.1 A — `message.part.updated` 放宽守卫（`server_store.dart:711-731`）
+### 6.1 A — `message.part.updated` 放宽守卫（`server_store.dart:718-752`）
 
 ```dart
 case 'message.part.updated':
@@ -118,7 +142,7 @@ case 'message.part.updated':
       // preview instead of stalling on the previous user message.
       // LPS-7: because the case returns early (LPS-1), this guard now also
       // implicitly decides whether to notify at all — non-matching part types
-      // neither write the preview nor fire :790. Safe today (other types are
+      // neither write the preview nor fire :811. Safe today (other types are
       // _hidden or carry no preview text), but a future preview-bearing part
       // type MUST be added here, or its preview won't refresh and no notify
       // fires. (Alternative: call _notifyPreviewChanged() once before return
@@ -134,21 +158,21 @@ case 'message.part.updated':
     }
   }
   // LPS-1: early-return (not break) so this case does NOT fall through to the
-  // switch's trailing notifyListeners() at :790 — that notify is unthrottled
+  // switch's trailing notifyListeners() at :811 — that notify is unthrottled
   // and per-token, which would bypass _notifyPreviewChanged()'s 120ms coalescing
   // and make the preview jitter per-token. message.updated also returns early
-  // (:710). Detail-page typing is driven by conv.notifyListeners() in
+  // (:717). Detail-page typing is driven by conv.notifyListeners() in
   // onPartUpdated (:543), unaffected. Other cases (session.*/todo.*/etc) still
-  // break -> :790 as before.
+  // break -> :811 as before.
   return;
 ```
 
 - text/reasoning delta 经 `onPartUpdated` 累积后，`lastMessagePreview()` 取最新一条消息的最后一段非空文本，回写 `_lastMessage`。
 - `_notifyPreviewChanged()` 120ms 节流 + trailing timer 兜底最终态（`:110-126`），ListView 重建受控。
-- **case 改 `return`（LPS-1，关键）**：原 `:731` 的 `break;` 会落到 switch 之后 `:790` 的**无节流** `notifyListeners()`——今天每个 text token 就已 per-token 重建整列（只是 `:722` 守卫拦住回写、预览内容没变，掩盖了浪费）。改 `return` 后，流式期间**唯一**驱动 SessionsTab 重建的通知是 case 内的 `_notifyPreviewChanged()`（120ms 节流），重建频率真正降到 ≈8 次/秒。已核对安全：详情页打字由 `conv.notifyListeners()`（`conversation_store.dart:543`）驱动，与 ServerStore 通知解耦，不受影响；其余 case（session.*/todo.*/permission.*/question.*）仍 `break`→`:790`，行为不变。
+- **case 改 `return`（LPS-1，关键）**：LPS-1 前 `break;`（现 `return;`，`server_store.dart:752`）会落到 switch 之后 `:811` 的**无节流** `notifyListeners()`——LPS-1 前每个 text token 就已 per-token 重建整列（只是 `:737` 守卫拦住回写、预览内容没变，掩盖了浪费）。改 `return` 后，流式期间**唯一**驱动 SessionsTab 重建的通知是 case 内的 `_notifyPreviewChanged()`（120ms 节流），重建频率真正降到 ≈8 次/秒。已核对安全：详情页打字由 `conv.notifyListeners()`（`conversation_store.dart:543`）驱动，与 ServerStore 通知解耦，不受影响；其余 case（session.*/todo.*/permission.*/question.*）仍 `break`→`:811`，行为不变。
 - **空预览守卫**：`if (pv != null)` 保留——assistant 消息刚创建、parts 尚无非空文本时返回 null，不覆盖已有预览（停在用户消息，可接受；首个有内容 part 到达即更新）。
 
-### 6.2 B — `message.updated` 进行中也回写（`server_store.dart:793-825`）
+### 6.2 B — `message.updated` 进行中也回写（`server_store.dart:814-848`）
 
 ```dart
 Future<void> _onMessageUpdated(Map<String, dynamic> props) async {
@@ -185,7 +209,7 @@ Future<void> _onMessageUpdated(Map<String, dynamic> props) async {
 }
 ```
 
-- 移除 `:807` 的 `if (role==user || finish 非空)` 守卫**对本地预览的包裹**：任何 `message.updated` 都先尝试本地回写。进行中 assistant（finish 为空）也回写，覆盖"仅有 message.updated、无 part 事件"的边角。
+- 移除 LPS-1 前 `:807` 的 `if (role==user || finish 非空)` 守卫**对本地预览的包裹**（现本地预览回写在 `:830-834`）：任何 `message.updated` 都先尝试本地回写。进行中 assistant（finish 为空）也回写，覆盖"仅有 message.updated、无 part 事件"的边角。
 - **网络回退保留守卫**：`client.message()` 拉取仍只在 user/完成时做（避免对进行中消息发网络请求；进行中消息 part 累积已覆盖本地预览）。
 - 空预览守卫 `if (local != null)` 保留。
 
@@ -231,7 +255,46 @@ if (!text.startsWith('!')) {
 ### 6.4 注释订正
 
 - `conversation_store.dart:153-155`：`lastMessagePreview()` 注释"在流式期间追踪"现与实现一致，保留即可（或加注：现在由 `_onEvent` 在每个 text/reasoning part 经节流调用）。
-- `server_store.dart:719-721` 旧注释"not on streaming text/reasoning deltas"删除/改写为 6.1 的新注释。
+- `server_store.dart:727-736` 旧注释"not on streaming text/reasoning deltas"删除/改写为 6.1 的新注释。
+
+### 6.5 D — 流式 assistant 占位消息解耦客户端时钟（`conversation_store.dart:616-627`）
+
+`_ensureMessage` 在收到首个 `message.part.updated`（此时 `message.updated` 尚未到达、parts 已在累积）时合成 assistant 占位消息。原实现盖 `created: DateTime.now().millisecondsSinceEpoch`（客户端时钟），与 user 消息的服务器 `created` 跨时钟比较，排序不可靠（§1.6）。
+
+改为盖一个**保证排到所有现存消息之后**的值，使占位 assistant 在 `message.updated` 到达前恒为 `_messages.last`：
+
+```dart
+DisplayMessage _ensureMessage(String id) {
+  final found = _findMessage(id);
+  if (found != null) return found;
+  // 占位 assistant 的 created 必须排到所有现存消息之后，保证它是
+  // _messages.last（lastMessagePreview 只读末条）。绝不能用客户端时钟
+  // DateTime.now()——它会与 user 消息的服务器 created 跨时钟比较，在
+  // 客户端落后于服务器时把 assistant 排到 user 之前，使预览跳回用户
+  // 消息（见 §1.6）。message.updated 到达后由 onMessageUpdated 用服务器
+  // created 替换，服务器时钟下 assistant 恒晚于 user，排序仍正确。
+  final maxCreated = _messages.fold<int>(0, (a, m) {
+    final c = m.info.created ?? 0;
+    return c > a ? c : a;
+  });
+  final m = DisplayMessage(MessageInfo(
+    id: id,
+    role: 'assistant',
+    created: maxCreated + 1,
+  ));
+  _messages.add(m);
+  _sort();
+  return m;
+}
+```
+
+- `maxCreated + 1` 取所有现存消息 `created`（无论服务器还是客户端来源）的最大值 +1，故占位 assistant 恒排末尾，与任何时钟无关。
+- `message.updated(finish='')` / `finish='stop'` 到达时，`onMessageUpdated`（`:485-508`）用服务器 `created` 替换：服务器时钟下 `S_assistant > S_user`（assistant 晚于 user 创建），且 `S_assistant` 晚于所有更早消息，故**正常情形**（乐观 user 已被真实 `message.updated(user)` 对账替换）下 assistant 仍在末尾——过渡安全。
+  - **边角（LPS-8，非阻塞）**：client 时钟**领先**服务器 + 乐观 user（`addOptimisticUserMessage:198` 客户端 `C_user`）尚未被对账替换 + assistant `finish='stop'`（服务器 `S_assistant < C_user`）先于 user `message.updated` 到达时，残留乐观 user 会在 `_sort()` 后排到 assistant 之后 → 瞬时闪回"你:…"。实际概率极低（user 消息服务器侧发送即建，`message.updated(user)` 通常远早于 assistant finish），**且自愈**：真实 user `message.updated` 到达 → `_pruneOptimistic()`(`:489`) 删乐观 user → assistant 重新排到末尾，预览恢复。如需根治，应在乐观 user 未被对账替换期间不让其参与 `lastMessagePreview`（闪回源是残留乐观 user，非 assistant——`onMessageUpdated` 后 assistant 已被服务器 `info` 替换、不再是占位），本设计暂不引入。
+- 不改 `_sort()`、不改 `lastMessagePreview()`：D 只修"占位消息盖什么 created"，根因点精准。
+- `addOptimisticUserMessage`（`:197-211`）仍用 `DateTime.now().millisecondsSinceEpoch`：它本身是最新一条、且会被真实 user `message.updated` 对账替换；它之后的 `_ensureMessage` assistant 取 `maxCreated+1` 必大于它，不涉及跨时钟重排序。保持不变。
+- 替代方案（未采纳）：让 `lastMessagePreview()` 从 `_messages` 末尾向前遍历找第一条有可渲染内容者。**朴素版无效**——若 user 排在末尾且自身有文本，向前遍历仍会先命中 user 返回"你: …"。改良版（如记录 active 流式 message id 优先返回、或当存在进行中 assistant 时跳过 role=user）能绕开，但需在 `lastMessagePreview` 引入"活跃消息"概念，侵入性高于 D。D 直改排序根因、外科手术式、不扩 `lastMessagePreview` 契约，故选 D；改良版作为后续可选增强备案。
+- 排序确定性（LPS-12）：`maxCreated+1` 严格大于所有现存 `created`（最大者为 `maxCreated`，`+1` 后必更大，余者更小），故占位 assistant 不与任何现存消息并列，`_messages.sort`（Dart 非保证稳定）不影响其末尾位置。唯一理论风险是后续某条服务器 `created` 恰等于 `maxCreated+1`（毫秒级巧合），但占位在 `message.updated` 即被服务器值替换，瞬时且无实际影响。
 
 ---
 
@@ -242,11 +305,11 @@ if (!text.startsWith('!')) {
 - 流式文本期间：每 ≤120ms 刷新一次预览文本（节流），末尾 trailing 兜底到最终态。用户看到 assistant 文本逐段出现在列表预览行（单行省略，滚动式）。
 - busy 状态点（`StatusDot`，`sessions_tab.dart:197`）保留——仍指示"正在运行"，与预览文本互补。
 
-**性能（LPS-1 订正）**：`_onEvent`（`server_store.dart:660`）是 switch，case 末尾 `break;` 会落到 switch 之后 `:790` 的**无节流** `notifyListeners()`。当前 `message.part.updated`（`:731` `break;`）**本就** per-token 触发 `:790` 重建整列 SessionsTab——只是 `:722` 守卫拦住了 `_lastMessage` 回写，文本内容没变，掩盖了这次 per-token 浪费。本设计 A 路径回写 `_lastMessage` 后，若保留 `break;`，`:790` 仍 per-token 无节流通知 → `_notifyPreviewChanged()` 的 120ms 节流**完全失效** → 预览 per-token 抖（~30–50 次/秒），§2 目标 #1「不 per-token 抖」落空。
+**性能（LPS-1 订正）**：`_onEvent`（`server_store.dart:667`）是 switch，case 末尾 `break;` 会落到 switch 之后 `:811` 的**无节流** `notifyListeners()`。LPS-1 前 `message.part.updated`（`:752` 现为 `return;`）**本就** per-token 触发 `:811` 重建整列 SessionsTab——只是 `:737` 守卫拦住了 `_lastMessage` 回写，文本内容没变，掩盖了这次 per-token 浪费。本设计 A 路径回写 `_lastMessage` 后，若保留 `break;`，`:811` 仍 per-token 无节流通知 → `_notifyPreviewChanged()` 的 120ms 节流**完全失效** → 预览 per-token 抖（~30–50 次/秒），§2 目标 #1「不 per-token 抖」落空。
 
-故 A 路径把 `:731` `break;` 改为 `return;`（对齐 `message.updated` 的 `:710` 早返回），使流式期间**唯一**驱动 SessionsTab 重建的通知是 case 内的 `_notifyPreviewChanged()`（120ms 节流 + trailing）。如此重建频率真正降到 ≈8 次/秒。当前 `:731` break→`:790` 的 per-token 通知是既有浪费，本设计一并消除。ListView item 数 ≤数十，单行 Text 重建开销低，≈8 次/秒可接受。详情页打字由 `conv.notifyListeners()`（`conversation_store.dart:543`）驱动，与 ServerStore 通知解耦，不受 `return` 影响。
+故 A 路径把 `:752` `break;` 改为 `return;`（对齐 `message.updated` 的 `:717` 早返回），使流式期间**唯一**驱动 SessionsTab 重建的通知是 case 内的 `_notifyPreviewChanged()`（120ms 节流 + trailing）。如此重建频率真正降到 ≈8 次/秒。LPS-1 前 `:752` break→`:811` 的 per-token 通知是既有浪费，本设计一并消除。ListView item 数 ≤数十，单行 Text 重建开销低，≈8 次/秒可接受。详情页打字由 `conv.notifyListeners()`（`conversation_store.dart:543`）驱动，与 ServerStore 通知解耦，不受 `return` 影响。
 
-> §1.4 原述「`_notifyPreviewChanged()` 为 per-token 合并设计、节流能力被闲置」需补一限定：节流函数本身闲置属实（仅 tool 调它），但 `:790` 的无节流 per-token 通知**已在运行**——即流式期间整列重建从未被节流过。本设计既启用节流函数处理 text/reasoning，又改 `return` 关掉 `:790` 对该 case 的 per-token 通知，双管齐下才达成 ≈8 次/秒。
+> §1.4 原述「`_notifyPreviewChanged()` 为 per-token 合并设计、节流能力被闲置」需补一限定：节流函数本身闲置属实（仅 tool 调它），但 `:811` 的无节流 per-token 通知**已在运行**——即流式期间整列重建从未被节流过。本设计既启用节流函数处理 text/reasoning，又改 `return` 关掉 `:811` 对该 case 的 per-token 通知，双管齐下才达成 ≈8 次/秒。
 
 ---
 
@@ -264,6 +327,7 @@ if (!text.startsWith('!')) {
 | V8 | off-screen busy 会话流式 | 不更新 | 同 A 路径更新（ensureConversation 已建 conv） |
 | V9 | 多会话并发流式 | 各自停在上一条 | 各 `_lastMessage[sid]` 独立更新；`_notifyPreviewChanged` 全局合并通知，trailing 反映全部最终态 |
 | V10 | assistant 空消息（part 无非空文本） | 停在上一条 | 空预览守卫返回 null，不覆盖，停在上一条（合理） |
+| V11 | 客户端时钟落后服务器的流式会话（§1.6） | assistant 占位盖客户端 ms，排到 user 之前，预览卡在"你:…"直到 finish='stop' | D 路径占位盖 `maxCreated+1`，assistant 恒排末尾，预览随文本更新 |
 
 ---
 
@@ -317,9 +381,9 @@ C 路径不新增乐观预览字段，复用 `conv.addOptimisticUserMessage` →
 
 | 文件 | 改动 |
 |------|------|
-| `lib/core/session/server_store.dart` | A：`:722` 守卫放宽到 text/reasoning；A：`:731` `break`→`return` 早返回（LPS-1，避免 `:790` 无节流 per-token 通知）；B：`:793-825` 本地预览对所有 `message.updated` 放开（网络回退守卫保留）；新增 `reflectPreviewFrom(sid)` 公共方法；`:719-721` 注释改写 |
+| `lib/core/session/server_store.dart` | A：`:737` 守卫放宽到 text/reasoning；A：`:752` `break`→`return` 早返回（LPS-1，避免 `:811` 无节流 per-token 通知）；B：`:814-848` 本地预览对所有 `message.updated` 放开（网络回退守卫保留）；新增 `reflectPreviewFrom(sid)` 公共方法（`:876`）；`:727-736` 注释改写 |
 | `lib/features/conversation/conversation_screen.dart` | C：`_send` 成功路径（`:242` 后）+ 失败 catch（`:263` 后）调 `serverStore.reflectPreviewFrom(widget.sessionId)` |
-| `lib/core/session/conversation_store.dart` | 仅 `:153-155` 注释订正（说明现由 `_onEvent` 在每个 text/reasoning part 经节流调用）；逻辑不变 |
+| `lib/core/session/conversation_store.dart` | D：`_ensureMessage`（`:616-627`）占位 assistant 的 `created` 由 `DateTime.now().millisecondsSinceEpoch` 改为 `max(_messages created)+1`，解耦客户端时钟（§1.6/§6.5）；`:153-155` 注释订正；其余逻辑不变 |
 | `lib/features/shell/sessions_tab.dart` | 不改 |
 | `lib/domain/models.dart` | 不改 |
 
@@ -335,8 +399,9 @@ C 路径不新增乐观预览字段，复用 `conv.addOptimisticUserMessage` →
 6. assistant 空/纯 reasoning 消息：空则停在上一条（合理），reasoning 则更新。
 7. 多会话并发流式：各预览独立更新，全局通知合并，trailing 反映最终态。
 8. `flutter analyze --fatal-infos` 0 issue；现有 smoke 测试通过。
-9. （LPS-1）流式期间 ServerStore 的 `notifyListeners()` 频率受 120ms 节流管控（`message.part.updated` 改 `return` 早返回，不到 `:790`），不再是 per-token 无节流通知。
+9. （LPS-1）流式期间 ServerStore 的 `notifyListeners()` 频率受 120ms 节流管控（`message.part.updated` 改 `return` 早返回，不到 `:811`），不再是 per-token 无节流通知。
 10. （LPS-5）自动化测试：单测 `lastMessagePreview()` 在 `onPartUpdated` 累积中途返回进行中文本；单测 `reflectPreviewFrom` + `removeOptimisticMessages` 的乐观→真实预览切换；widget 测试断言节流下 ListView 重建次数有上限（如 ≤10 次/秒）。
+11. （D 路径，二次修订）单测：注入一条**服务器时间戳**的 user 消息（`created` 取一个"未来"毫秒值模拟客户端落后），再 `onPartUpdated` 流式 assistant，断言 `_messages.last` 为 assistant、`lastMessagePreview()` 返回 assistant 文本而非"你: …"；再注入 `message.updated(finish='stop')` 带服务器 `created`，断言排序仍正确、预览不闪回。
 
 ---
 
@@ -466,3 +531,183 @@ C 路径不新增乐观预览字段，复用 `conv.addOptimisticUserMessage` →
 | LPS-7 | §6.1 代码注释（doc 行 119-126）已补 LPS-7 前瞻提示：说明守卫因早返回而兼管「是否通知」、非匹配类型今天安全（`_hidden` 或无预览文本）、未来预览型 part 须加入守卫；并记录已考虑的兜底方案（`return` 前调 `_notifyPreviewChanged()`）及拒绝理由（避免对 `_hidden` 事件无谓重建）。提示位置（守卫处注释）恰当，拒绝理由合理 | ✅ |
 
 **最终结论**：LPS-1~LPS-7 全部正确落地，事实无误，无新引入问题。阻塞项 LPS-1 已解决，其余为低优先增强/前瞻项。**设计评审通过，可进入实现阶段。** 后续按 §11 涉及文件 + §12 验证点（含 §12.9/§12.10 自动化测试）执行即可。
+
+### 四次评审（复核二次修订：§1.6 跨时钟根因 + §6.5 D 路径）
+
+> 复核日期：2026-07-16。
+> 复核对象：二次修订新增内容（§1.6、§2 目标 #7、§3 D 路径、§6.5、§8 V11、§11 conversation_store 行、§12.11）。
+> 核对基准：当前代码 `server_store.dart` / `conversation_store.dart` / `models.dart` / `test/list_preview_streaming_test.dart`。
+> 总体：二次修订的代码论点**逐条核对无误**，跨时钟 `created` 重排序根因链成立，D 路径对目标场景（client-behind）有效且外科手术式精准。无阻塞项；1 中、4 低。
+
+#### 事实核对（对照代码）
+
+| 二次修订论点 | 代码事实 | 核对 |
+|---|---|---|
+| 四条回写路径都调 `lastMessagePreview()`：A`:738-740`/B`:830-832`/C`:879-881`/backfill`:866-868` | `server_store.dart` 四处均调 `conv.lastMessagePreview()` | ✅ |
+| `lastMessagePreview()` 只读 `_messages.last`，不回退前一条 | `conversation_store.dart:158` `final last = _messages.last` | ✅ |
+| `_messages.last` 由 `_sort()` 按 `info.created` 决定 | `:629-631` sort by `info.created` | ✅ |
+| 占位 assistant `created` 盖客户端时钟（`:622`） | `:622` `DateTime.now().millisecondsSinceEpoch` | ✅ |
+| user `created` 来自服务器 `time.created`（`models.dart:186`） | `:186`；`_i`(`:345`) int 透传，单位 ms | ✅ |
+| `onMessageUpdated`(`:485-508`) 用服务器 `created` 替换占位 | `:492-501` remove→`DisplayMessage(info)` 重建→`_sort()` | ✅ |
+| 测试未拦截：从不注入服务器时间戳 `message.updated` | `list_preview_streaming_test.dart` 全程客户端时钟，无 `onMessageUpdated(server created)` 注入 | ✅ |
+| A/B/C 已落地、D 未落地 | `_ensureMessage:616-627` 仍 `DateTime.now()`，D 路径未写入代码 | ✅ |
+
+#### 🟢 LPS-8（P3/低）— §6.5「过渡安全，不会闪回」对 client-ahead + 乐观消息残留边角未限定
+
+**位置**：§6.5 第 2 条「`message.updated` 到达时…替换后 assistant 仍在末尾——过渡安全，不会闪回」。
+
+**问题**：该结论对 §1.6 的 client-**behind** 目标场景成立——此时 user 已是服务器时间戳，占位=`maxCreated+1`≥`S_user+1`>`S_user`，且 `S_assistant`>`S_user`，替换后恒在末尾。但存在一个未覆盖的镜像边角：
+
+1. client 时钟**领先**服务器；
+2. 乐观 user 消息（`addOptimisticUserMessage:198` 用客户端 `C_user`，领先）尚未被真实 `message.updated(user)` 对账替换；
+3. assistant `message.updated(finish='stop')` 携服务器 `S_assistant`（落后于 `C_user`）先于 user 的 `message.updated` 到达。
+
+此时 `onMessageUpdated`(`:492-501`) 把占位（`maxCreated+1`，客户端派生，可能是个"未来"值）换成 `S_assistant`（小），而残留乐观 user（`C_user` 大）会在 `_sort()` 后排到 assistant **之后** → `_messages.last`=user → `lastMessagePreview()` 返回"你:…" → **闪回**。
+
+**实际概率极低**：user 消息在服务器侧发送即建，`message.updated(user)` 通常紧随发送到达、远早于 assistant 首个 part 及 finish，故乐观 user 在 assistant finish 时几乎已被 `_pruneOptimistic()`(`:489`) 替换。但文档做了**无条件**断言。
+
+**修复建议**：把该句限定为「（乐观 user 已被真实 `message.updated(user)` 对账替换后——正常情形如此，因 user 消息服务器侧发送即建）替换后 assistant 仍在末尾」，或补一句承认该瞬时边角。非阻塞。
+
+#### 🟡 LPS-9（P2/中）— 相邻非更新章节行号陈旧，被二次修订现行行号反衬
+
+**范围**：此问题**不在**二次修订新增章节内（§1.6/§6.5 行号均准确），但二次修订引入的精确现行行号使相邻老章节陈旧行号更显眼，易误导实现者。
+
+二次修订用**现行**行号（`:738-740`/`:830-832`/`:616-627`/`:156-173`/`:630`/`:485-508` 均对得上当前代码）。但 §6.1/§6.2/§7/§11 仍用 **LPS-1 落地前**行号（A/B/C 已于 `9179d4e` 提交，代码下移约 21 行）：
+
+| 文档处 | 文档行号 | 现行代码实际 |
+|---|---|---|
+| §6.1/§13/§11 | case `:711-731`、守卫 `:722`、`break` `:731` | case `:718-752`、守卫 `:737`、`return` `:752`（无 break） |
+| §6.2/§11 | `_onMessageUpdated` `:793-825`、守卫 `:807`、网络回退 `:816-823` | `:814-848`、本地预览 `:830-834`、网络守卫 `:838` |
+| §7 | trailing notify `:790` | `:811` |
+
+§6.1/§6.2 的**代码块**本身是现行正确的，仅行号锚点陈旧。
+
+**后果**：实现者按 §6.5（正确行号）改完 `_ensureMessage`，若回看 §6.1 找 `:722`/`:731` 会落到注释中、且找不到 `break`（已是 `return`）。
+
+**修复建议**：趁二次修订一并把 §6.1/§6.2/§7/§11 行号刷新到现行代码，或在 §6.1 顶部注明「以下行号为 LPS-1 落地前锚点，现行代码已下移」。纯文档卫生，无设计影响。
+
+#### 🟢 LPS-10（P3/低）— §1.4 结论缺前向引用 §1.6
+
+§1.4 结论「流式期间追踪预览是既定设计意图，只是被两处守卫意外阉割。本设计是恢复该意图」读起来像"去守卫即足"。§1.6 把守卫定性「红鲱鱼（或仅部分因）」并指出去守卫不够（还需 D）。两节无冲突，但 §1.4 结论句缺指向 §1.6 的前向引用，读者可能停在"去守卫即修复"。建议 §1.4 结论句补「（守卫为必要非充分因，跨时钟重排序见 §1.6/D 路径）」。
+
+#### 🟢 LPS-11（P3/低）— §6.5 替代方案驳回偏稻草人
+
+§6.5 驳回「`lastMessagePreview()` 从末尾向前找第一条有内容者」，理由是「user 排末尾且自身有文本时仍先命中 user 返回'你: …'」。该理由对**朴素版**成立，但一个改良版（如「向前遍历优先返回正在流式/活跃的 assistant」、或记录 active message id）能绕开。驳回偏弱。不影响结论——D（修排序根因）比改 `lastMessagePreview()` 更外科手术式，选择正确；建议加强论证或标注「更彻底的替代亦可行但侵入性更高，故选 D」。
+
+#### 🟢 LPS-12（P4/很低）— `maxCreated+1` 与 `_sort` 稳定性
+
+`_messages.sort`（Dart 非保证稳定）。`maxCreated+1` 严格大于所有现存 `created`（最大者=`maxCreated`≠`+1`，余者更小），故不与现存消息并列、顺序确定；唯一理论风险是未来某条服务器 `created` 恰等于 `maxCreated+1`（毫秒级巧合，且占位在 `message.updated` 即被替换为服务器值，瞬时）。基本可忽略，可不改。
+
+#### 优先级结论
+
+| 编号 | 问题 | 优先级 | 是否在更新部分内 |
+|---|---|---|---|
+| LPS-8 | §6.5「过渡安全」对 client-ahead+乐观残留边角未限定 | 🟢 低 | 是（§6.5） |
+| LPS-9 | §6.1/§6.2/§7/§11 行号陈旧（现行下移~21 行） | 🟡 中 | 否（相邻老章节） |
+| LPS-10 | §1.4 结论缺前向引用 §1.6 | 🟢 低 | 半（§1.6 引发的张力） |
+| LPS-11 | §6.5 替代方案驳回偏稻草人 | 🟢 低 | 是（§6.5） |
+| LPS-12 | `maxCreated+1` 与 sort 稳定性 | 🟢 很低 | 是（§6.5） |
+
+**总评**：二次修订代码事实**全部核对无误**，跨时钟 `created` 重排序根因诊断成立，D 路径对目标场景（client-behind）有效且外科手术式精准。无阻塞项。LPS-9（中）为相邻老章节行号陈旧、被二次修订现行行号反衬，建议同轮刷新；LPS-8/10/11/12 为低优先论证限定/衔接加强，非阻塞。**二次修订本身可进入实现**（D 路径 + §12.11 测试）；LPS-9 建议在实现 PR 前一并修掉以免行号误导。
+
+#### 修复复审（LPS-8 ~ LPS-12）
+
+> 复审日期：2026-07-16。逐条核对落地：
+
+| 编号 | 修正位置 | 复审 |
+|------|----------|------|
+| LPS-8 | §6.5 第 2 条「过渡安全」限定为「正常情形」，补「client-ahead + 乐观 user 残留 + assistant finish 先于 user `message.updated`」瞬时闪回边角 + 概率评估 + 根治可选方案（对账后重盖 `maxCreated+1`，暂不引入） | ✅ |
+| LPS-9 | §6.1 header `:711-731`→`:718-752`；§6.2 header `:793-825`→`:814-848`；§6.1 代码注释 `:790`→`:811`(×2)、`:710`→`:717`；§6.1 散文 `:731`→`:752`、`:722`→`:737`、`:790`→`:811`；§6.2 散文 `:807`→`:830-834`；§7 三段 `_onEvent :660`→`:667`、`:790`→`:811`、`:731`→`:752`、`:710`→`:717`、`:722`→`:737`；§11 server_store 行全刷新（`:737`/`:752`/`:811`/`:814-848`/`:876`/`:727-736`）；§3 表 A/B、§6.4（`:719-721`→`:727-736`）、§12.9（`:790`→`:811`）同步刷新。前态描述均加「LPS-1 前」限定，避免读者误以为现行仍有 `break` | ✅ |
+| LPS-10 | §1.4 结论句补「守卫为必要非充分因——去守卫后预览仍会因跨时钟 `created` 重排序跳回用户消息，见 §1.6 与 D 路径 §6.5」前向引用 | ✅ |
+| LPS-11 | §6.5 替代方案驳回加强：区分朴素版（无效，理由保留）与改良版（记录 active message id / 跳过 role=user，可行但侵入性高），明确选 D 理由（直改排序根因、不扩 `lastMessagePreview` 契约），改良版列为后续可选增强 | ✅ |
+| LPS-12 | §6.5 新增「排序确定性」条目：`maxCreated+1` 严格大于现存 `created`，与 `_messages.sort` 稳定性无关；毫秒级巧合风险瞬时且无实际影响 | ✅ |
+
+**结论**：LPS-8~LPS-12 全部落地。LPS-9（中）已把 §6.1/§6.2/§7/§11 行号锚点刷新到现行代码（LPS-1 落地后下移约 21 行），前态描述加「LPS-1 前」限定，消除实现者按陈旧行号查 `break`/`:790` 的误导；LPS-8/10/11/12 为论证限定/衔接/确定性加强，均非阻塞。二次修订（§1.6 跨时钟根因 + §6.5 D 路径）经四次评审复核 + 本轮修复复审，**可进入实现**（D 路径 `conversation_store.dart:_ensureMessage` + §12.11 跨时钟单测）。
+
+### 五次评审（复审 LPS-8~LPS-12 落地）
+
+> 复审日期：2026-07-16。
+> 复核对象：作者针对四次评审 LPS-8~12 的修复 + 修复复审表。
+> 核对基准：当前代码 `server_store.dart` / `conversation_store.dart`。
+> 总体：LPS-8/10/11/12 落地正确；LPS-9 **部分未修**（方法章节已刷新，问题分析章节 §1.3-§1.5 漏改）；另发现代码注释陈旧（LPS-13）。无阻塞。
+
+#### 落地核对（逐条）
+
+| 编号 | 修复内容 | 复核 |
+|---|---|---|
+| LPS-8 | §6.5「过渡安全」限定为「正常情形」，补 client-ahead+乐观残留+assistant finish 先于 user `message.updated` 的瞬时闪回边角 + 概率评估 + 推迟根治方案 | ✅ |
+| LPS-9 | §6.1/§6.2/§7/§11/§3/§6.4/§12.9 行号刷新到现行代码，前态加「LPS-1 前」限定 | ⚠️ 部分（见 LPS-9 续） |
+| LPS-10 | §1.4 结论补「守卫为必要非充分因」+ 前向引用 §1.6/D | ✅ |
+| LPS-11 | §6.5 替代方案区分朴素版/改良版，明确选 D 理由（不扩 `lastMessagePreview` 契约），改良版列为后续增强 | ✅ |
+| LPS-12 | §6.5 新增「排序确定性」条目，论证 `maxCreated+1` 严格大于现存 `created` | ✅ |
+
+行号抽查（现行代码）：`_onEvent`=`:667`、case `:718-752`、守卫 `:737`、`return` `:752`、trailing `:811`、本地预览 `:830-834`、网络守卫 `:838`、`reflectPreviewFrom` `:876`——刷新后均对得上。
+
+#### 🟡 LPS-9 续（P2/中）— §1.3/§1.4/§1.5 行号未刷新，现指向无关代码
+
+LPS-9 的刷新范围是方法/方案章节（§6/§7/§11/§3/§6.4/§12.9），**未覆盖**问题分析章节 §1.3（根因表）、§1.4、§1.5。它们仍引用 LPS-1 前行号且**无**「LPS-1 前」限定（§6.2 散文 doc:210 已加此限定，§1.3-§1.5 没有）：
+
+| 文档处 | 引用 | 现行代码实际 | 误导 |
+|---|---|---|---|
+| §1.3 表（doc:29） | `server_store.dart:722`（守卫） | `:722` 是 sid 空检查 `if (sid != null && part is Map)` | 守卫现 `:737` |
+| §1.3 表（doc:30） | `:807`（守卫） | `:807` 是 `_conversations[sid]?.onQuestionReplied(qid)`（question.replied） | 守卫已移除 |
+| §1.4（doc:42） | `:722` | 同上 | 同上 |
+| §1.5（doc:50） | `:807/:810` | `:807` question.replied、`:810` switch 末 `}` | `_onMessageUpdated` 现 `:814` |
+
+§1.3 的「行号」是一级结构化列，读者会直接拿它跳转代码，落点是无关代码（`:807` 落到 question.replied）。§1.3-§1.5 描述的是 LPS-1 落地前的原始问题，行号本身是「当时锚点」，但需明确标注以免误导——§6.2 已对同类引用加「LPS-1 前」限定，§1.3-§1.5 应一致。
+
+**修复建议**：在 §1.3 表头/§1.4/§1.5 加一行「本节描述 LPS-1 落地前的原始问题，行号为当时锚点；现行代码已由 LPS-1 修订（守卫见 §6.1，跨时钟根因见 §1.6）」，或把 §1.3 表的行号加「（LPS-1 前）」限定（对齐 §6.2 doc:210 的写法）。
+
+#### 🟢 LPS-13（P3/低，新）— 代码注释 `:790` 陈旧，致文档代码块与实际代码注释分叉
+
+LPS-9 把**文档**里的 `:790` 刷新为 `:811`，但 `server_store.dart` 的**代码注释**仍写 `:790`（4 处：`:663`、`:734`、`:747`、`:751`）。实际 trailing `notifyListeners()` 在 `:811`。结果：文档 §6.1 代码块显示 `:811`（正确），实际代码注释写 `:790`（陈旧）——文档代码块与实际代码注释**分叉**，读者对照时困惑。
+
+**修复建议**：把 `server_store.dart:663/734/747/751` 的 `:790` 改为 `:811`。纯注释，无行为影响。
+
+#### 🟢 LPS-8 续（P3/低）— §6.5 根治方案措辞 + 自愈性
+
+1. §6.5 边角注的根治方案「在 `onMessageUpdated` 对账替换后对**仍存活的占位 assistant** 重新盖 `maxCreated+1`」措辞矛盾——`onMessageUpdated` 后 assistant 已被服务器 `info` 替换、不再是「占位」；闪回源是残留的**乐观 user**（非 assistant）。
+2. 该边角**自愈**：真实 user `message.updated` 到达 → `_pruneOptimistic()`(`:489`) 删乐观 user → assistant 重新排到末尾，预览恢复。注只写「概率极低」，补「且自愈」可更强支撑非阻塞。
+
+均非阻塞（根治方案已标「暂不引入」）。可选加强。
+
+#### 结论
+
+LPS-8/10/11/12 落地正确（LPS-8 边角注与限定到位、LPS-10 前向引用、LPS-11 替代方案论证、LPS-12 确定性论证均成立）。LPS-9 **部分未修**：方法章节行号已刷新且经抽查准确，但问题分析章节 §1.3/§1.4/§1.5 的 `:722`/`:807`/`:810` 未加「LPS-1 前」限定，现指向无关代码（`:807`→question.replied），建议补限定（LPS-9 续，🟡 中）。另发现代码注释 `:790` 陈旧（LPS-13，🟢 低）。无阻塞项；二次修订 + LPS-8~12 修复可进入实现，建议实现 PR 前顺手修 LPS-9 续 + LPS-13 以保持行号一致。
+
+#### 修复复审（五次评审：LPS-9 续 / LPS-13 / LPS-8 续）
+
+> 复审日期：2026-07-16。逐条核对落地：
+
+| 编号 | 修正内容 | 复审 |
+|------|----------|------|
+| LPS-9 续 | §1.3 表后加「行号说明」注：§1.3–§1.5 描述 LPS-1 落地前原始问题，`:722`/`:807`/`:810` 为当时锚点，现行守卫 `:737`/`_onMessageUpdated` `:814-848`，并提示直接跳转会落到无关代码（`:807`→question.replied） | ✅ |
+| LPS-13 | `server_store.dart` 4 处代码注释 `:790`→`:811`（`:663`/`:734`/`:747`/`:751`，纯注释，无行为影响）；文档 §6.1 代码块与实际代码注释不再分叉 | ✅ |
+| LPS-8 续 | §6.5 LPS-8 边角注订正：根治方案措辞矛盾已消除（闪回源是残留乐观 user，非 assistant——`onMessageUpdated` 后 assistant 已被服务器 `info` 替换、不再是占位）；补「且自愈：真实 user `message.updated` → `_pruneOptimistic()`(`:489`) → assistant 回末尾」 | ✅ |
+
+**结论**：五次评审三项（LPS-9 续 🟡、LPS-13 🟢、LPS-8 续 🟢）全部落地。LPS-9 续消除 §1.3–§1.5 陈旧行号对实现者的误导；LPS-13 使文档代码块与实际代码注释一致；LPS-8 续订正 §6.5 根治方案措辞矛盾并补自愈性。无阻塞项。二次修订（§1.6 跨时钟根因 + §6.5 D 路径）经四轮评审 + 五次评审复核 + 本轮修复复审，**可进入实现**（D 路径 `conversation_store.dart:_ensureMessage` + §12.11 跨时钟单测；LPS-13 已在代码落地）。
+
+### 六次评审（复审 LPS-9 续 / LPS-13 / LPS-8 续 落地）
+
+> 复审日期：2026-07-16。
+> 复核对象：作者针对五次评审 LPS-9 续 / LPS-13 / LPS-8 续 的修复 + 修复复审表。
+> 核对基准：当前代码 `server_store.dart` / `conversation_store.dart` + 文档 §1.3 / §6.5。
+> 总体：三项全部正确落地，事实无误，无新引入问题。无阻塞。
+
+#### 落地核对
+
+| 编号 | 修复内容 | 复核 |
+|---|---|---|
+| LPS-9 续 | §1.3 表后（doc:32）加「行号说明」注：§1.3–§1.5 描述 LPS-1 落地前原始问题，`:722`/`:807`/`:810` 为当时锚点；给出现行 `:737`/`:814-848` 并提示直接跳转落点（`:807`→question.replied） | ✅ |
+| LPS-13 | `server_store.dart` 4 处代码注释 `:790`→`:811`（`:663`/`:734`/`:747`/`:751`，纯注释、无行为影响；注释改动未移位，trailing notify 仍 `:811`） | ✅ |
+| LPS-8 续 | §6.5 LPS-8 边角注（doc:293）：补「**且自愈**：真实 user `message.updated` → `_pruneOptimistic()`(`:489`) → assistant 回末尾」；根治方案措辞矛盾消除（闪回源是残留乐观 user、非 assistant——`onMessageUpdated` 后 assistant 已被服务器 `info` 替换；根治改为「乐观 user 未对账替换期间不让其参与 `lastMessagePreview`」） | ✅ |
+
+#### 抽查（代码/文档一致性）
+
+- 代码注释：`rg :811 lib/core/session/server_store.dart` 命中 4 处（`:663/734/747/751`），无 `:790` 残留；trailing `notifyListeners()` 仍在 `:811`（注释改动未移位）。
+- §1.3 注（doc:32）现行行号 `:737`/`:814-848` 与代码一致；`:807`→`_conversations[sid]?.onQuestionReplied(qid)` 属实。
+- §6.5 自愈机制：`onMessageUpdated`（`conversation_store.dart:488-489`）`if (info.role == 'user') _pruneOptimistic()` 属实，删乐观 user 后 assistant（`S_assistant`>`S_user`）回末尾，预览恢复——自愈论证成立。
+
+#### 结论
+
+LPS-9 续（🟡 中）/ LPS-13（🟢 低）/ LPS-8 续（🟢 低）三项全部正确落地，事实无误，无新引入问题。LPS-9 续以「行号说明」注（而非逐格加「LPS-1 前」限定）解决，放置在 §1.3 表后、读者顺读必经，将陈旧行号定性为历史锚点并给出当前行号，误导消除；LPS-13 使文档代码块与实际代码注释一致（均 `:811`）；LPS-8 续消除根治方案措辞矛盾并补自愈性，非阻塞论据更充分。**二次修订（§1.6 跨时钟根因 + §6.5 D 路径）经六轮评审全部通过，无阻塞项，可进入实现**（D 路径 `conversation_store.dart:_ensureMessage` + §12.11 跨时钟单测）。
