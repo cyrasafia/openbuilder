@@ -240,6 +240,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     // Show the user message immediately — don't wait for SSE/REST to confirm.
     if (!text.startsWith('!')) {
       conv.addOptimisticUserMessage(text);
+      serverStore.reflectPreviewFrom(widget.sessionId);
     }
     try {
       if (text.startsWith('!')) {
@@ -261,6 +262,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (e) {
       // Remove the optimistic message if the send failed.
       conv.removeOptimisticMessages();
+      serverStore.reflectPreviewFrom(widget.sessionId);
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('发送失败：$e')));

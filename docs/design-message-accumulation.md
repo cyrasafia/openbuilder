@@ -178,6 +178,8 @@ void onMessageUpdated(MessageInfo info) {
 
 ### 4.5 列表预览：per-完整单元
 
+> **⚠️ 已被 [design-list-preview-streaming.md](./design-list-preview-streaming.md) 修订**：本节「per-完整单元 / 文本 streaming delta 不触发列表更新」决策已反转为「per-token 节流更新」（复用 `_notifyPreviewChanged()` 120ms 节流，并把该 case 改 `return` 以免落到 `_onEvent` 的 `:790` 无节流 `notifyListeners()`）。本节保留作历史记录，实现以新设计为准。§8 tradeoff 表、§9 风险表中「纯流式文本期间列表停在上一条」相关行同步作废。
+
 ```dart
 // message.part.updated（server_store）
 final conv = ensureConversation(sid);
@@ -287,6 +289,8 @@ List<DisplayPart> _mergeParts(List<MessagePart> rest, List<DisplayPart> sse) {
 
 ### 5.3 列表预览粒度：per-完整单元（而非 per-token）
 
+> **⚠️ 已被 [design-list-preview-streaming.md](./design-list-preview-streaming.md) 修订为 per-token 节流**。下方论证保留作历史记录；新设计证明 per-token 经 120ms 节流 + `message.part.updated` 改 `return`（避免 `:790` 无节流通知）后并不「逐 token 抖」，且恢复了流式期间追踪预览的既定意图。本节「纯流式文本期间列表停在上一条」的 tradeoff 同步作废。
+
 - per-token（即使 120ms 节流）仍逐 token 抖动；per-完整单元稳定。
 - 文本 streaming delta 不触发；消息完成 / 工具调用开始+完成才回写。
 - **后果（已接受）**：纯流式文本期间列表预览停在上一条直到该消息 `finish`；状态点 busy 仍指示在跑。常见场景（本端发消息→agent 跑→完成）不受影响：用户消息立即显示 `你: …`，完成时刷新。
@@ -346,7 +350,7 @@ void _evictConversations() {
 | SSE 事件不再丢弃，列表/详情更实时 | off-screen 会话也建 conv，内存略增（有界） |
 | 进详情页无转圈直接展示 | 首次进从未见过的会话仍需 reconcile（转圈） |
 | 完成即落盘，离线兜底更鲜 | 消息完成时一次全量 JSON 编码（频率低，可接受） |
-| 列表预览稳定不逐 token 抖 | 纯流式文本期间列表停在上一条（状态点 busy 仍指示） |
+| 列表预览稳定不逐 token 抖 | ~~纯流式文本期间列表停在上一条（状态点 busy 仍指示）~~ ⚠️ 已作废，见 [design-list-preview-streaming.md](./design-list-preview-streaming.md)：流式期间改为 per-token 节流更新 |
 | 三层兜底，断线不丢 | 磁盘快照滞后于内存（至多丢最后未完成那条，REST 补） |
 
 ---
@@ -359,7 +363,7 @@ void _evictConversations() {
 | 流式中途被 LRU 淘汰丢内存 | 淘汰跳过 busy/retry/active；磁盘兜底 + REST 对账 |
 | reconcile 与 SSE 并发写竞争 | `reconcile()` 用 `_reconciling` 互斥；合并而非清空，无丢数据 |
 | `_saveCache` 并发写（settle + reconcile） | SharedPreferences setString 原子，last-write-wins，无损坏 |
-| 连接到正在纯文本流式的非本端会话 | 列表显示 `—` 直到该消息完成；状态点 busy 指示；可选 busy 首连一次性 backfill（非必需） |
+| 连接到正在纯文本流式的非本端会话 | ~~列表显示 `—` 直到该消息完成~~ ⚠️ 已作废，见 [design-list-preview-streaming.md](./design-list-preview-streaming.md)：首个有内容 part 到达即更新；状态点 busy 指示；可选 busy 首连一次性 backfill（非必需） |
 
 ---
 

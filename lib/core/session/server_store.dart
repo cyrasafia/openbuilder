@@ -716,10 +716,18 @@ class ServerStore extends ChangeNotifier {
           final conv = ensureConversation(sid);
           if (conv != null) {
             conv.onPartUpdated(part.cast(), delta);
-            // List preview: update only on tool-part events (start/status/
-            // complete), not on streaming text/reasoning deltas. Keeps the
-            // preview stable per completed unit instead of per-token.
-            if (part['type']?.toString() == 'tool') {
+            final ptype = part['type']?.toString();
+            // List preview: refresh on every renderable part event (text/
+            // reasoning deltas included), coalesced by _notifyPreviewChanged()
+            // (120ms). Tool parts already triggered before; now streaming text
+            // also updates the preview instead of stalling on the previous
+            // user message.
+            // LPS-7: because this case returns early (LPS-1), the guard below
+            // also implicitly decides whether to notify — non-matching part
+            // types neither write the preview nor fire :790. Safe today (other
+            // types are _hidden or carry no preview text), but a future
+            // preview-bearing part type MUST be added here.
+            if (ptype == 'tool' || ptype == 'text' || ptype == 'reasoning') {
               final pv = conv.lastMessagePreview();
               if (pv != null) {
                 _lastMessage[sid] = pv;
@@ -728,7 +736,13 @@ class ServerStore extends ChangeNotifier {
             }
           }
         }
-        break;
+        // LPS-1: early-return (not break) so this case does NOT fall through
+        // to the switch's trailing notifyListeners() at :790 — that notify is
+        // unthrottled and per-token, which would bypass _notifyPreviewChanged()'s
+        // 120ms coalescing and make the preview jitter per-token. Detail-page
+        // typing is driven by conv.notifyListeners() in onPartUpdated, so it is
+        // unaffected. Other cases still break -> :790 as before.
+        return;
       case 'todo.updated':
         final sid = ev.properties['sessionID']?.toString();
         final todos = ev.properties['todos'];
@@ -801,18 +815,20 @@ class ServerStore extends ChangeNotifier {
     // MU-1: notify immediately so the list layer knows a message changed,
     // before the preview fetch (which may be slow on weak networks).
     notifyListeners();
-    // List preview: refresh on message completion / user msg (per completed
-    // unit, not per-token). Accumulation + part events cover the content, so
-    // no per-message network fetch is needed (REST stays a reconcile-only path).
+    // List preview: refresh on every message event — user msg, in-flight
+    // assistant (finish empty), and completed assistant (finish non-empty).
+    // Covers the "no part event, only message.updated" edge (e.g. empty or
+    // reasoning-only assistant messages). Part events keep the preview live
+    // during streaming; this keeps it correct at message boundaries.
+    final local = conv?.lastMessagePreview();
+    if (local != null) {
+      _lastMessage[sid] = local;
+      _notifyPreviewChanged();
+      return;
+    }
+    // Fallback only when the conversation couldn't be created (not connected):
+    // fetch this message's parts over the network to seed the preview.
     if (m.role == 'user' || (m.finish != null && m.finish!.isNotEmpty)) {
-      final local = conv?.lastMessagePreview();
-      if (local != null) {
-        _lastMessage[sid] = local;
-        _notifyPreviewChanged();
-        return;
-      }
-      // Fallback only when the conversation couldn't be created (not connected):
-      // fetch this message's parts over the network to seed the preview.
       try {
         final entry = await client!.message(sid, m.id);
         final preview = _previewOf(entry);
@@ -844,6 +860,19 @@ class ServerStore extends ChangeNotifier {
     if (preview != null) {
       _lastMessage[sid] = preview;
       notifyListeners();
+    }
+  }
+
+  /// Reflect the latest preview from the given conversation into the list cache.
+  /// Used after optimistic user-message insertion so the list shows it without
+  /// waiting for the message.updated(user) SSE event.
+  void reflectPreviewFrom(String sid) {
+    final conv = _conversations[sid];
+    if (conv == null) return;
+    final pv = conv.lastMessagePreview();
+    if (pv != null) {
+      _lastMessage[sid] = pv;
+      _notifyPreviewChanged();
     }
   }
 
