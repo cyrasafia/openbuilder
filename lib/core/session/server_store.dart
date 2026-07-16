@@ -657,6 +657,13 @@ class ServerStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Test seam to drive SSE events directly into [_onEvent] (which is library-
+  /// private). Lets tests assert the `message.part.updated` case's
+  /// `break`->`return` (LPS-1) throttle behavior through the real event route
+  /// (including the switch's trailing :790 notify).
+  @visibleForTesting
+  void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);
+
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
       case 'server.connected':
