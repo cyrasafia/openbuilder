@@ -1602,12 +1602,19 @@ class _AgentModelBarState extends State<_AgentModelBar> {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                _Chip(
-                  icon: Icons.smart_toy_outlined,
-                  label: agentName,
-                  onTap: _switching ? null : _showAgentSheet,
-                  muted: muted,
-                ),
+                if (_agents.length == 2)
+                  _AgentCapsuleToggle(
+                    agents: _agents,
+                    currentAgent: agentName,
+                    onSwitch: _switching ? null : _switchAgent,
+                  )
+                else
+                  _Chip(
+                    icon: Icons.smart_toy_outlined,
+                    label: agentName,
+                    onTap: _switching ? null : _showAgentSheet,
+                    muted: muted,
+                  ),
                 const SizedBox(width: 8),
                 _Chip(
                   icon: Icons.memory,
@@ -1629,6 +1636,70 @@ class _AgentModelBarState extends State<_AgentModelBar> {
           ),
         );
       },
+    );
+  }
+}
+
+/// Capsule-style segmented toggle for exactly 2 agents.
+/// Both options are visible side-by-side; the active one is filled.
+class _AgentCapsuleToggle extends StatelessWidget {
+  final List<AgentInfo> agents;
+  final String currentAgent;
+  final ValueChanged<String>? onSwitch;
+
+  const _AgentCapsuleToggle({
+    required this.agents,
+    required this.currentAgent,
+    this.onSwitch,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      padding: const EdgeInsets.all(3),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: agents.map((a) {
+          final active = a.name == currentAgent;
+          return GestureDetector(
+            onTap: onSwitch == null || active ? null : () => onSwitch!(a.name),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: active ? scheme.primaryContainer : Colors.transparent,
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.smart_toy_outlined,
+                    size: 13,
+                    color:
+                        active ? scheme.onPrimaryContainer : scheme.outline,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    a.name,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: active
+                          ? scheme.onPrimaryContainer
+                          : scheme.outline,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ),
     );
   }
 }

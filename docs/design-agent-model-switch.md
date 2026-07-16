@@ -65,6 +65,18 @@ Desktop 行为：`cycle()` 检查 `list().length !== 0` 才执行，空列表静
 - **Thinking 按钮**：显示当前 variant，仅当当前 model 有 variants 时显示，否则隐藏
 - 三个按钮横向排列，超长时可横向滚动
 
+### Agent 切换自适应交互
+
+Agent 按钮的交互形态按可用 agent 数量自适应，减少 tap 次数：
+
+| 可用 agent 数 | 交互形态 | 说明 |
+|--------------|---------|------|
+| 恰好 2 | **胶囊开关**（segmented toggle） | 两选项并排可见，当前项高亮填充（`primaryContainer`），点击另一项直接切换，无下拉箭头 |
+| ≥ 3 | **弹出菜单**（bottom sheet） | 回退到 chip + 下拉箭头，点击弹出 bottom sheet 列出全部 agents |
+| 0 / 1 | chip（静态） | 无有效切换目标，仅显示当前/占位 agent 名 |
+
+> 胶囊开关仅用于 agent；model / thinking 因选项数量大（20+ / N），始终使用弹出菜单。
+
 ### 数据流
 
 ```
@@ -152,7 +164,7 @@ Thinking 按钮的显示条件：
 |------|------|------|
 | `lib/data/api/opencode_client.dart` | `listAgents` / `listModels` / `switchAgent` / `switchModel` | ✅ 已实现 |
 | `lib/domain/models.dart` | `ModelRef` / `AgentInfo` / `ModelInfo` / `ModelVariant` / `SessionModel.model` | ✅ 已实现 |
-| `lib/features/conversation/conversation_screen.dart` | 新增 `_AgentModelBar` 组件（agent/model/thinking 切换栏） | ✅ 已实现 |
+| `lib/features/conversation/conversation_screen.dart` | `_AgentModelBar` 组件 + `_AgentCapsuleToggle`（2 agent 胶囊开关） + `_Chip`（3+ agent 弹出菜单） | ✅ 已实现 |
 
 ## 场景验证
 
@@ -165,6 +177,8 @@ Thinking 按钮的显示条件：
 | 当前 model 有 variants | Thinking 按钮显示，可选择 |
 | 网络断开时加载 | 按钮显示"加载失败" |
 | 切换失败 | SnackBar 提示，按钮保持原值 |
+| 可用 agent 恰好 2 个（build/plan） | Agent 区显示胶囊开关，两选项并排，当前项高亮，点击另一项直接切换 |
+| 可用 agent ≥ 3 个 | Agent 区回退为 chip + 下拉箭头，点击弹出 bottom sheet 选择 |
 
 ---
 
@@ -265,3 +279,34 @@ catch 块改为 `catch (e)` + `ScaffoldMessenger.showSnackBar`，用户在加载
 
 - agent/model/variant 三个芯片均受益于 stale-session 修复（原 model/thinking 切换存在同样 UI 不刷新问题）。
 - `mode == 'primary'` 过滤语义：`AgentInfo.mode` 枚举为 `["subagent","primary","all"]`，`all`（可作主 agent 也可作子 agent）一并排除，仅留 `primary`。
+
+---
+
+## 交互调整：2 agent 胶囊开关 / 3+ agent 弹出菜单
+
+> 改动目标：agent 切换从"始终弹出 bottom sheet"改为按数量自适应——2 个 agent 用胶囊开关（segmented toggle），3+ 个回退弹出菜单。model/thinking 不受影响。
+
+### 设计
+
+- `_AgentModelBarState.build()` 内判断 `_agents.length`：
+  - `== 2` → 渲染 `_AgentCapsuleToggle`（两选项并排，当前项 `primaryContainer` 高亮，点击另一项直接 `_switchAgent`）
+  - `>= 3` 或 `< 2` → 渲染 `_Chip` + 下拉箭头 + `_showAgentSheet`（原逻辑不变）
+- `_AgentCapsuleToggle`：`StatelessWidget`，外层 `surfaceContainerHighest` 胶囊容器（圆角 16），内层 `AnimatedContainer`（150ms）做激活/非激活态切换；`onSwitch == null`（`_switching` 时）禁用全部 tap；图标/字号与 `_Chip` 一致（icon 13 / text 12）。
+- 切换数据流不变：`_switchAgent(name)` → `POST /api/session/:id/agent` → `serverStore.refresh()` → `ListenableBuilder` 重建 → 胶囊高亮迁移到新选项。切换中 `currentAgent` 仍为旧值，胶囊保持旧高亮，避免乐观更新导致的闪烁回弹。
+
+### 评审
+
+**AM-CAP-1 — 胶囊仅适用于 2 agent，3+ 回退 · ✅**
+`_agents.length == 2` 精确匹配；3+ 走原 `_Chip` + sheet 路径。0/1 agent 同样走 chip（sheet 空时 early return），无异常。
+
+**AM-CAP-2 — 切换中禁用 tap · ✅**
+`onSwitch: _switching ? null : _switchAgent`，`_switching=true` 时 `onSwitch` 为 null → 所有 `GestureDetector.onTap` 为 null。
+
+**AM-CAP-3 — 无乐观更新，切换成功后才迁移高亮 · ✅**
+`currentAgent` 来自 `serverStore.sessionById` → `ListenableBuilder` 重建后才变 → 胶囊高亮在 `refresh()` 完成后迁移。切换中保持旧高亮。
+
+**AM-CAP-4 — 高亮颜色对比 · ✅**
+激活态 `primaryContainer` + `onPrimaryContainer`；非激活透明 + `outline`，与 `_Chip` 的 `muted`(outline) 一致。
+
+**AM-CAP-5 — 胶囊宽度膨胀 vs 横向滚动 · 🟢 非阻塞**
+胶囊开关两选项总宽 ≈ 2 × chip 宽，仍在 `SingleChildScrollView` 内，超屏可滚动。
