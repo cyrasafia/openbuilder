@@ -548,12 +548,20 @@ class _FooterPanelState extends State<_FooterPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final totalPending = widget.permissions.length + widget.questions.length;
     final children = <Widget>[];
-    for (final p in widget.permissions) {
-      children.add(_PermissionCard(permission: p, store: widget.store));
-    }
-    for (final q in widget.questions) {
-      children.add(_QuestionCard(question: q, store: widget.store));
+    if (widget.permissions.isNotEmpty) {
+      children.add(_PermissionCard(
+        permission: widget.permissions.first,
+        store: widget.store,
+        queueTotal: totalPending,
+      ));
+    } else if (widget.questions.isNotEmpty) {
+      children.add(_QuestionCard(
+        question: widget.questions.first,
+        store: widget.store,
+        queueTotal: totalPending,
+      ));
     }
     if (widget.todos.isNotEmpty) {
       children.add(_TodoCard(
@@ -697,7 +705,12 @@ class _FileChip extends StatelessWidget {
 class _PermissionCard extends StatefulWidget {
   final Permission permission;
   final ConversationStore store;
-  const _PermissionCard({required this.permission, required this.store});
+  final int queueTotal;
+  const _PermissionCard({
+    required this.permission,
+    required this.store,
+    this.queueTotal = 1,
+  });
 
   @override
   State<_PermissionCard> createState() => _PermissionCardState();
@@ -740,6 +753,13 @@ class _PermissionCardState extends State<_PermissionCard> {
             const SizedBox(width: 6),
             const Text('权限请求',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            if (widget.queueTotal > 1) ...[
+              const Spacer(),
+              Text('1/${widget.queueTotal} 待处理',
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      color: Theme.of(context).colorScheme.outline)),
+            ],
           ]),
           const SizedBox(height: 8),
           Text(widget.permission.title,
@@ -782,7 +802,12 @@ class _PermissionCardState extends State<_PermissionCard> {
 class _QuestionCard extends StatefulWidget {
   final QuestionRequest question;
   final ConversationStore store;
-  const _QuestionCard({required this.question, required this.store});
+  final int queueTotal;
+  const _QuestionCard({
+    required this.question,
+    required this.store,
+    this.queueTotal = 1,
+  });
 
   @override
   State<_QuestionCard> createState() => _QuestionCardState();
@@ -859,6 +884,14 @@ class _QuestionCardState extends State<_QuestionCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (widget.queueTotal > 1) ...[
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text('1/${widget.queueTotal} 待处理',
+                  style: TextStyle(fontSize: 11.5, color: scheme.outline)),
+            ),
+            const SizedBox(height: 4),
+          ],
           for (var i = 0; i < widget.question.questions.length; i++) ...[
             if (i > 0) const SizedBox(height: 16),
             _questionBlock(i),
