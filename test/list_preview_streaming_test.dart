@@ -181,4 +181,40 @@ void main() {
     expect(conv.messages.last.info.id, 'msg_a1');
     expect(conv.lastMessagePreview(), 'world'); // no flash-back to '你: hi'
   });
+
+  // LPSI-E (§12.12, LPS-14): when SSE events are missed (app backgrounded,
+  // idle, another client sent), REST reconcile merges the new message into
+  // conv._messages (detail page shows it) but did NOT bridge _lastMessage —
+  // so the list preview stayed stale. E path chains _backfillPreview after
+  // reconcile/load/reload completes. Without E path, conversationFor(force)
+  // fires reconcile but never backfills → _lastMessage stays at the old value.
+  test('reconcile.then backfills _lastMessage after merge (E path, LPS-14)', () async {
+    final store = ServerStore()..client = _fakeClient();
+    const sid = 's1';
+    final conv = store.ensureConversation(sid)!;
+    // Pre-background state: an old user message + its preview seeded.
+    conv.onMessageUpdated(
+        MessageInfo(id: 'old', role: 'user', sessionID: sid, created: 1000));
+    conv.onPartUpdated(
+        <String, dynamic>{'messageID': 'old', 'id': 'po', 'type': 'text'},
+        'old msg');
+    store.reflectPreviewFrom(sid);
+    expect(store.lastMessageOf(sid), '你: old msg');
+    // New message arrived while SSE was missed (simulate the post-reconcile
+    // conv state — reconcile would merge this from REST).
+    conv.onMessageUpdated(MessageInfo(
+        id: 'new', role: 'assistant', sessionID: sid, created: 2000));
+    conv.onPartUpdated(
+        <String, dynamic>{'messageID': 'new', 'id': 'pn', 'type': 'text'},
+        'new reply');
+    // E path: conversationFor(force) chains reconcile → _backfillPreview.
+    store.conversationFor(sid, force: true);
+    // reconcile hits the discard port (fast ECONNREFUSED) then resolves; the
+    // .then(_backfillPreview) runs and updates _lastMessage from conv's latest.
+    for (var i = 0; i < 50 && store.lastMessageOf(sid) == '你: old msg'; i++) {
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
+    expect(store.lastMessageOf(sid), 'new reply');
+    store.dispose();
+  });
 }

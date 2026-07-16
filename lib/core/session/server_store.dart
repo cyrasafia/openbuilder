@@ -255,11 +255,14 @@ class ServerStore extends ChangeNotifier {
       // _stale, so it cannot reconcile a never-loaded conv (whose _stale is
       // initially false) — route !loaded through load() instead.
       if (force) {
-        unawaited(existing.reconcile()); // active refresh, ignore backoff
+        unawaited(existing.reconcile() // active refresh, ignore backoff
+            .then((_) => _backfillPreview(sessionId, existing)));
       } else if (!existing.loaded) {
-        unawaited(existing.load()); // first reconcile, load→reconcile, no backoff
+        unawaited(existing.load() // first reconcile, load→reconcile, no backoff
+            .then((_) => _backfillPreview(sessionId, existing)));
       } else if (existing.isStale) {
-        unawaited(existing.reloadIfStale()); // loaded + stale, backoff-guarded
+        unawaited(existing.reloadIfStale() // loaded + stale, backoff-guarded
+            .then((_) => _backfillPreview(sessionId, existing)));
       }
       return existing;
     }
@@ -518,9 +521,11 @@ class ServerStore extends ChangeNotifier {
       } else if (activeConv.busy) {
         activeConv.markStale();
       } else if (!activeConv.loaded) {
-        unawaited(activeConv.load());
+        unawaited(activeConv.load()
+            .then((_) => _backfillPreview(activeId!, activeConv)));
       } else if (activeConv.isStale) {
-        unawaited(activeConv.reload());
+        unawaited(activeConv.reload()
+            .then((_) => _backfillPreview(activeId!, activeConv)));
       }
     }
     if (_needsStaleMarking) {

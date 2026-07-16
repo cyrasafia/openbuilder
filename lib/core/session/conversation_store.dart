@@ -244,7 +244,12 @@ class ConversationStore extends ChangeNotifier {
     if (loaded || loading) return;
     loading = true;
     notifyListeners();
-    unawaited(_attemptLoad());
+    // Await _attemptLoad so the returned Future resolves after the reconcile
+    // attempt (not immediately). All callers unawait this, so the UI still
+    // gets the conv synchronously with loading=true; but chaining
+    // `.then(_backfillPreview)` (E path, §6.6) now runs after reconcile merged
+    // REST, reading the up-to-date _messages instead of the pre-reconcile state.
+    await _attemptLoad();
   }
 
   Future<void> _attemptLoad() async {
