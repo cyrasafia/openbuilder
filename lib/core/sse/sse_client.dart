@@ -50,6 +50,8 @@ class SseClient {
   int _reconnectAttempt = 0;
   bool _reconnectPending = false;
   DateTime _lastEventAt = DateTime.now();
+  Timer? _heartbeatTimer;
+  static const _heartbeatTimeout = Duration(seconds: 60);
 
   SseClient({required this.uri, this.headers = const {}});
 
@@ -77,6 +79,8 @@ class SseClient {
 
   Future<void> stop() async {
     _stopped = true;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     AppLogger.I.i(_tag, 'stop ${uri.path}');
     await _sub?.cancel();
     _sub = null;
@@ -89,11 +93,24 @@ class SseClient {
       if (_lastId != null) 'Last-Event-ID': _lastId!,
       'Accept': 'text/event-stream',
     };
+    _startHeartbeatTimer();
     _sub = transport.eventDataStream(uri, h).listen(
           _onData,
           onError: (_) => _onDrop(),
           onDone: () => _onDrop(),
         );
+  }
+
+  void _startHeartbeatTimer() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer(_heartbeatTimeout, _onHeartbeatTimeout);
+  }
+
+  void _onHeartbeatTimeout() {
+    if (_stopped) return;
+    AppLogger.I.w(_tag, 'heartbeat timeout (no data for ${_heartbeatTimeout.inSeconds}s) ${uri.path}');
+    _sub?.cancel();
+    _onDrop();
   }
 
   /// Transport dropped (error/done). Schedule one reconnect, guarding against
@@ -119,6 +136,8 @@ class SseClient {
   void _onData(String data) {
     _lastEventAt = DateTime.now();
     _backoff = 1; // healthy
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer(_heartbeatTimeout, _onHeartbeatTimeout);
     try {
       final j = jsonDecode(data) as Map<String, dynamic>;
       final ev = OpencodeEvent.fromJson(j);
