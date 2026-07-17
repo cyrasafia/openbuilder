@@ -1,12 +1,19 @@
 package com.opencode.opencode_mobile
 
+import android.content.ContentValues
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
+import java.io.FileInputStream
 
 class MainActivity : FlutterActivity() {
 
     private val channel = "com.opencode.mobile/font_weight"
+    private val filesChannel = "com.opencode.mobile/files"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -24,6 +31,59 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, filesChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "saveToDownloads" -> {
+                        val srcPath = call.argument<String>("srcPath")
+                        val displayName = call.argument<String>("displayName")
+                        if (srcPath == null || displayName == null) {
+                            result.error("invalid_args", "missing srcPath or displayName", null)
+                        } else {
+                            try {
+                                result.success(saveToDownloads(srcPath, displayName))
+                            } catch (e: Exception) {
+                                result.error("save_failed", e.message, null)
+                            }
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    /// Save [srcPath] into the public Download folder.
+    /// API 29+ uses MediaStore.Downloads (no permission needed);
+    /// older API falls back to a direct file copy into the public Downloads dir.
+    private fun saveToDownloads(srcPath: String, displayName: String): String {
+        val src = File(srcPath)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw RuntimeException("无法在 Download 创建文件")
+            try {
+                resolver.openOutputStream(uri)?.use { out ->
+                    FileInputStream(src).use { it.copyTo(out) }
+                } ?: throw RuntimeException("无法打开输出流")
+            } finally {
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            }
+            return uri.toString()
+        } else {
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!dir.exists()) dir.mkdirs()
+            val dest = File(dir, displayName)
+            src.copyTo(dest, overwrite = true)
+            return dest.absolutePath
+        }
     }
 
     /// Attempt to read the system font weight.

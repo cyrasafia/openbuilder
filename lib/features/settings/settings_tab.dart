@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -22,6 +23,8 @@ class SettingsTab extends StatefulWidget {
 }
 
 class _SettingsTabState extends State<SettingsTab> {
+  static const _filesChannel = MethodChannel('com.opencode.mobile/files');
+
   bool _checking = false;
   HealthInfo? _health;
   String? _error;
@@ -322,7 +325,22 @@ class _SettingsTabState extends State<SettingsTab> {
   }
 
   Future<void> _saveToLocal(File file) async {
+    final name = file.uri.pathSegments.last;
     try {
+      if (Platform.isAndroid) {
+        try {
+          await _filesChannel.invokeMethod<String>('saveToDownloads', {
+            'srcPath': file.path,
+            'displayName': name,
+          });
+          if (!mounted) return;
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('已保存到 Download：$name')));
+          return;
+        } catch (_) {
+          // MediaStore 不可用（旧版 Android）→ 回退应用目录
+        }
+      }
       final dir = await getExternalStorageDirectory();
       if (dir == null) {
         if (!mounted) return;
@@ -332,11 +350,10 @@ class _SettingsTabState extends State<SettingsTab> {
       }
       final dest = Directory('${dir.path}/logs');
       if (!await dest.exists()) await dest.create(recursive: true);
-      final name = file.uri.pathSegments.last;
       final saved = await file.copy('${dest.path}/$name');
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('已保存到本地：${saved.path}')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Download 不可用，已保存到应用目录：${saved.path}')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)

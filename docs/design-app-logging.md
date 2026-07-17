@@ -240,7 +240,7 @@ init() 时执行一次
 `_doExport` 统一流程：生成导出文件（try-catch + 失败 SnackBar `导出失败`）→ 按平台分发：
 
 - **Android**：再弹一「分享」`showModalBottomSheet`，**第一项固定「保存到本地」**，次项「分享…」：
-  - 保存到本地 `[save_alt]` → `_saveToLocal`：`getExternalStorageDirectory()` 下 `logs/` 子目录复制文件（app-specific 外存，无需权限、持久），SnackBar `已保存到本地：<path>`；
+  - 保存到本地 `[save_alt]` → `_saveToLocal`：经平台通道 `com.opencode.mobile/files` 的 `saveToDownloads` 写入公共 **Download** 文件夹——API 29+ 用 `MediaStore.Downloads`（`RELATIVE_PATH=Download`、`IS_PENDING` 翻转，无需权限），旧 API 直接复制到 `Environment.DIRECTORY_DOWNLOADS`；SnackBar `已保存到 Download：<name>`。MediaStore 不可用时回退 app-specific 外存 `logs/` 子目录并提示。
   - 分享… `[share]` → `_share`：`SharePlus` 系统分享面板。
 - **其他平台**：直接 `_share` 走系统分享面板。
 
@@ -266,7 +266,8 @@ init() 时执行一次
 |------|------|
 | `lib/core/logging/app_logger.dart` | **新增**：`AppLogger` 单例 + `LogEntry` + `LogLevel`；导出双路 `exportFileRecent` / `exportFileDisk` + `exportRecent` / `exportDiskText` |
 | `lib/main.dart` | 新增 `AppLogger.I.init()` 调用 |
-| `lib/features/settings/settings_tab.dart` | 「日志」section 压缩为单入口；`_showExportRangeSheet`（范围菜单）+ `_doExport`（统一生成+分发）+ Android `_showShareSheet`（保存到本地优先）/`_share`/`_saveToLocal` |
+| `lib/features/settings/settings_tab.dart` | 「日志」section 压缩为单入口；`_showExportRangeSheet`（范围菜单）+ `_doExport`（统一生成+分发）+ Android `_showShareSheet`（保存到本地优先）/`_share`/`_saveToLocal`（经通道写 Download） |
+| `android/app/src/main/kotlin/.../MainActivity.kt` | 新增 `com.opencode.mobile/files` 通道 + `saveToDownloads`：`MediaStore.Downloads`（API 29+，无权限）/ 旧 API 直接复制到公共 Download 目录 |
 | `lib/core/sse/sse_client.dart` | SSE 连接/断开/重连日志 |
 | `lib/core/session/server_store.dart` | 连接/状态/错误日志 |
 | `lib/core/session/conversation_store.dart` | reconcile 日志 |
