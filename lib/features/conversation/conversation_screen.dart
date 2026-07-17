@@ -473,9 +473,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final codeBlockBorder = user
             ? const Color(0xFF2A4A38)
             : (isDark ? const Color(0xFF30363D) : const Color(0xFFDADDE3));
-        final inlineCodeBg = user
-            ? const Color(0xFF1A3328)
-            : (isDark ? const Color(0xFF23272E) : const Color(0xFFE9ECF1));
+        final codeFg = (user || isDark)
+            ? const Color(0xFFEC407A)
+            : const Color(0xFFC2185B);
         return Padding(
           padding: const EdgeInsets.only(top: 4),
           child: MarkdownBody(
@@ -488,8 +488,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               code: TextStyle(
                 fontSize: 13,
                 fontFamily: 'monospace',
-                color: baseColor,
-                backgroundColor: inlineCodeBg,
+                color: codeFg,
               ),
               codeblockDecoration: BoxDecoration(
                 color: codeBlockBg,
