@@ -264,8 +264,8 @@ void main() {
   // LPSI-R20 (§12.14, LPS-20): retry success backfills _lastMessage. Mock
   // client throws on first call (simulating network failure), then succeeds
   // on retry. Without LPS-20 fix, _scheduleLoadRetry calls _attemptLoad()
-  // without the onLoaded callback, so _lastMessage stays stale after retry.
-  test('retry success backfills _lastMessage via onLoaded callback (LPS-20)', () async {
+  // without triggering _backfillCallback, so _lastMessage stays stale after retry.
+  test('retry success backfills _lastMessage via _backfillCallback (LPS-20)', () async {
     var callCount = 0;
     final entries = [
       MessageEntry(

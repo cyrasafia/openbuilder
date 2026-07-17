@@ -261,20 +261,20 @@ class ConversationStore extends ChangeNotifier {
     await _attemptLoad();
   }
 
-  Future<void> _attemptLoad({Future<void> Function()? onLoaded}) async {
+  Future<void> _attemptLoad() async {
     if (_disposed) return;
     if (loaded && !_stale) {
       _loadRetryTimer?.cancel();
       return;
     }
     if (_reconciling) {
-      _scheduleLoadRetry(incrementAttempt: false, onLoaded: onLoaded);
+      _scheduleLoadRetry(incrementAttempt: false);
       return;
     }
     await reconcile();
     if (_disposed) return;
     if (_stale) {
-      _scheduleLoadRetry(onLoaded: onLoaded);
+      _scheduleLoadRetry();
     } else {
       _loadRetryAttempt = 0;
       _loadRetryTimer?.cancel();
@@ -285,7 +285,7 @@ class ConversationStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _scheduleLoadRetry({bool incrementAttempt = true, Future<void> Function()? onLoaded}) {
+  void _scheduleLoadRetry({bool incrementAttempt = true}) {
     _loadRetryTimer?.cancel();
     if (incrementAttempt) _loadRetryAttempt++;
     final exp = (_loadRetryAttempt - 1).clamp(0, 4);
@@ -293,7 +293,7 @@ class ConversationStore extends ChangeNotifier {
         .clamp(1, _loadMaxBackoff.inSeconds);
     _loadRetryTimer = Timer(Duration(seconds: secs), () {
       if (_disposed) return;
-      _attemptLoad(onLoaded: onLoaded);
+      _attemptLoad();
     });
   }
 
