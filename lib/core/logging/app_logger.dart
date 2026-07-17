@@ -67,7 +67,6 @@ class AppLogger {
     } catch (_) {}
   }
 
-  @visibleForTesting
   static bool shouldDeleteLogFile(String fileName, DateTime now) {
     if (!fileName.endsWith('.log')) return false;
     final base = fileName.replaceAll('.log', '');
@@ -106,7 +105,6 @@ class AppLogger {
     return readDiskLogs(_dir!, _currentDate, todayOnly: todayOnly);
   }
 
-  @visibleForTesting
   static Future<String> readDiskLogs(
       Directory dir, String? currentDate, {required bool todayOnly}) async {
     final files = <File>[];

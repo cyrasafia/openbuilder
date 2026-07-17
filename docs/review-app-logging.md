@@ -135,3 +135,37 @@ AL-4 新增的 8 用例覆盖纯逻辑（`LogEntry.line` 格式/补零/级别、
 |------|--------|------|------|
 | AL-R2 | 🟢 低 | ✅ 已修 | 抽出 `@visibleForTesting readDiskLogs(dir,currentDate,{todayOnly})`（与 `shouldDeleteLogFile` 同模式，exportDiskText 调用它）+ 新增 `prepareDiskForTesting(dir,currentDate)` 测试缝注入 `_dir`/`_currentDate`/`_sink=null`。补 6 用例：readDiskLogs（todayOnly 选当天/缺文件返空/null 日期返空、全部按名排序跳过非 .log、缺尾换行补齐）+ exportDiskText（todayOnly 跨午夜 `_rotate` 刷新日期——stale `2020-01-01` 注入，删 `_rotate()` 即读到 'past content' 而红）。`flutter test` 29/29 全绿 |
 
+## 三次评审意见
+
+> 评审日期：2026-07-17
+> 评审基准：commit 9cafe34（fix: app logging 磁盘回读路补测试覆盖 AL-R2）
+> 评审范围：AL-R2 修复复审
+
+### AL-R2 修复复审 — ✅ 正确落地
+
+重构方式：抽出 `readDiskLogs(dir, currentDate, {todayOnly})` 为 `@visibleForTesting static` 方法，`exportDiskText` 改调 `readDiskLogs(_dir!, _currentDate, ...)`——磁盘读逻辑参数化，无需 mock path_provider 即可单测，行为不变。新增 `prepareDiskForTesting(dir, currentDate)` 测试缝注入 `_dir`/`_currentDate`/`_sink=null`，配合 `Directory.systemTemp` 造真实临时日志目录。
+
+6 用例覆盖：`readDiskLogs` todayOnly 选当天/缺文件返空/null 日期返空、全部按名排序跳过非 `.log`/缺尾换行补齐；`exportDiskText` todayOnly 跨午夜 `_rotate` 刷新日期（stale `2020-01-01` 注入）。
+
+### 回归网独立验证
+
+手动删除 `app_logger.dart:105` 的 `_rotate()` 后运行该用例——预期 `''`，实际 `'past content'`，测试红（正是 AL-R1 bug 表现）。恢复后 29/29 全绿。回归网有效，确能防止 `_rotate()` 被误删。
+
+### 验证
+
+- `dart analyze lib/core/logging/app_logger.dart test/app_logger_test.dart`：无 issue
+- `flutter test`：29/29 通过
+- 文件改动恢复干净（验证后 `git diff --stat` 无残留）
+
+### 新发现问题
+
+无阻塞、无中、无低。
+
+唯一观察（不编号，不必改）：`@visibleForTesting` 标在 `readDiskLogs` 上，但该方法亦被生产代码 `exportDiskText` 调用——注解语义略不精确（暗示 test-only 实为生产方法），无害，不影响功能与可测性。
+
+> 后续优化（应「读取意见并优化」要求）：将 `@visibleForTesting` 从**生产代码调用的** `readDiskLogs`、`shouldDeleteLogFile` 移除（二者分别被 `exportDiskText` / `_cleanup` 调用，非 test-only），仅保留在真正 test-only 的状态注入器 `resetForTesting` / `prepareDiskForTesting` 上。同一原则一致应用到两处（评审仅点名 `readDiskLogs`，`shouldDeleteLogFile` 同病）。`flutter analyze` 无 issue、`flutter test` 14/14 全绿。
+
+### 评审完结
+
+AL-R2 正确闭环。至此 **AL-1~10 + AL-R1 + AL-R2 全部闭环**，应用日志与导出系统评审完结。三轮评审（一次设计层 / 二次实现层 / 三次测试覆盖）共发现 12 条问题，全部修复并通过复审。
+
