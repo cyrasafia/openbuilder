@@ -854,35 +854,9 @@ class ServerStore extends ChangeNotifier {
       _notifyPreviewChanged();
       return;
     }
-    // Fallback only when the conversation couldn't be created (not connected):
-    // fetch this message's parts over the network to seed the preview.
-    // When conv exists but local is null (e.g. streaming assistant has no
-    // parts yet), keep the current _lastMessage — don't overwrite with the
-    // user message text (causes preview revert at tool-call boundaries).
-    if (conv == null &&
-        (m.role == 'user' || (m.finish != null && m.finish!.isNotEmpty))) {
-      try {
-        final entry = await client!.message(sid, m.id);
-        final preview = _previewOf(entry);
-        if (preview != null) {
-          _lastMessage[sid] = (m.role == 'user' ? '你: ' : '') + preview;
-          notifyListeners();
-        }
-      } catch (_) {}
-    }
-  }
-
-  String? _previewOf(MessageEntry entry) {
-    for (var i = entry.parts.length - 1; i >= 0; i--) {
-      final p = entry.parts[i];
-      if (const {'step-start', 'step-finish', 'snapshot', 'retry', 'compaction'}
-          .contains(p.type)) {
-        continue;
-      }
-      final pv = p.preview.replaceAll('\n', ' ').trim();
-      if (pv.isNotEmpty) return pv;
-    }
-    return null;
+    // local == null: streaming assistant has no renderable parts yet, or
+    // last message is empty. Keep current _lastMessage — don't overwrite
+    // (prevents tool-call boundary preview revert).
   }
 
   Future<void> _backfillPreview(String sid, ConversationStore conv) async {

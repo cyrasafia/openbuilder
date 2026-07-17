@@ -306,6 +306,47 @@ void main() {
     expect(callCount, 2); // first failed, second succeeded
     store.dispose();
   });
+
+  // FW-3: regression test for tool-call preview revert. When conv exists but
+  // lastMessagePreview() returns null (streaming assistant has no parts yet),
+  // a message.updated(user) event must NOT overwrite _lastMessage with the
+  // user's text. Before the fix, the network fallback fired and set
+  // _lastMessage = '你: ...', causing the preview to revert at every tool-call
+  // boundary.
+  test('message.updated(user) does not revert preview when conv has no parts (FW-3)', () {
+    final store = ServerStore()..client = _fakeClient();
+    const sid = 's1';
+    final conv = store.ensureConversation(sid)!;
+    // Seed an assistant message with parts so _lastMessage has a real value.
+    conv.onPartUpdated(
+        <String, dynamic>{'messageID': 'a1', 'id': 'p1', 'type': 'text'},
+        'assistant reply');
+    store.reflectPreviewFrom(sid);
+    expect(store.lastMessageOf(sid), 'assistant reply');
+    // Now add a new streaming assistant (finish=null, no parts) — simulates
+    // the tool-call boundary where a new assistant message is created.
+    conv.onMessageUpdated(MessageInfo(
+        id: 'a2', role: 'assistant', sessionID: sid, created: 2000));
+    // lastMessagePreview() is now null (a2 has no parts, sorts after a1).
+    // Actually a2 sorts after a1 (created 2000 > a1's created), so
+    // _messages.last = a2 with no parts → lastMessagePreview() = null.
+    // Now push a message.updated(user) via the SSE event route.
+    store.onEventForTesting(const OpencodeEvent(
+      type: 'message.updated',
+      properties: <String, dynamic>{
+        'info': <String, dynamic>{
+          'id': 'u1',
+          'role': 'user',
+          'sessionID': sid,
+          'created': 1000,
+        },
+      },
+    ));
+    // _lastMessage must NOT revert to '你: ...' — it should stay as
+    // 'assistant reply' (the previous value).
+    expect(store.lastMessageOf(sid), 'assistant reply');
+    store.dispose();
+  });
 }
 
 /// Minimal [OpencodeClient] subclass that returns controlled responses without
