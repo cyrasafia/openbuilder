@@ -191,25 +191,25 @@ class _SettingsTabState extends State<SettingsTab> {
                   leading: const Icon(Icons.timer_outlined),
                   title: const Text('导出最近 5 分钟'),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportLogs(const Duration(minutes: 5)),
+                  onTap: () => _exportRecent(const Duration(minutes: 5)),
                 ),
                 ListTile(
                   leading: const Icon(Icons.schedule_outlined),
                   title: const Text('导出最近 1 小时'),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportLogs(const Duration(hours: 1)),
+                  onTap: () => _exportRecent(const Duration(hours: 1)),
                 ),
                 ListTile(
                   leading: const Icon(Icons.today_outlined),
                   title: const Text('导出今天'),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportLogsToday(),
+                  onTap: () => _exportDisk(todayOnly: true),
                 ),
                 ListTile(
                   leading: const Icon(Icons.file_download_outlined),
                   title: const Text('导出全部'),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportLogs(null),
+                  onTap: () => _exportDisk(todayOnly: false),
                 ),
               ]),
               _section('关于', [
@@ -229,19 +229,19 @@ class _SettingsTabState extends State<SettingsTab> {
     );
   }
 
-  Future<void> _exportLogs(Duration? since) async {
-    final file = await AppLogger.I.exportFile(since: since);
+  Future<void> _exportRecent(Duration since) async {
+    final file = await AppLogger.I.exportFileRecent(since);
     await SharePlus.instance.share(
       ShareParams(files: [XFile(file.path)], text: 'opencode logs'),
     );
   }
 
-  Future<void> _exportLogsToday() async {
-    final now = DateTime.now();
-    final since = DateTime(now.year, now.month, now.day).difference(now);
-    final file = await AppLogger.I.exportFile(since: since.abs());
+  Future<void> _exportDisk({required bool todayOnly}) async {
+    final file = await AppLogger.I.exportFileDisk(todayOnly: todayOnly);
     await SharePlus.instance.share(
-      ShareParams(files: [XFile(file.path)], text: 'opencode logs today'),
+      ShareParams(
+          files: [XFile(file.path)],
+          text: todayOnly ? 'opencode logs today' : 'opencode logs all'),
     );
   }
 

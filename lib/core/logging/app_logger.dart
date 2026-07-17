@@ -87,20 +87,53 @@ class AppLogger {
   void w(String tag, String message) => log(LogLevel.warning, tag, message);
   void e(String tag, String message) => log(LogLevel.error, tag, message);
 
-  Future<List<LogEntry>> export({Duration? since}) async {
-    if (since == null) return List.unmodifiable(_buffer);
+  Future<List<LogEntry>> exportRecent(Duration since) async {
     final cutoff = DateTime.now().subtract(since);
     return _buffer.where((e) => e.time.isAfter(cutoff)).toList();
   }
 
-  Future<String> exportText({Duration? since}) async {
-    final entries = await export(since: since);
-    return entries.map((e) => e.line).join('\n');
+  Future<String> exportDiskText({required bool todayOnly}) async {
+    if (_dir == null) {
+      return _buffer.map((e) => e.line).join('\n');
+    }
+    await _sink?.flush();
+    final files = <File>[];
+    if (todayOnly) {
+      if (_currentDate != null) {
+        final f = File('${_dir!.path}/$_currentDate.log');
+        if (await f.exists()) files.add(f);
+      }
+    } else {
+      final all = _dir!.listSync().whereType<File>().where((f) {
+        return f.uri.pathSegments.last.endsWith('.log');
+      }).toList();
+      all.sort(
+          (a, b) => a.uri.pathSegments.last.compareTo(b.uri.pathSegments.last));
+      files.addAll(all);
+    }
+    final sb = StringBuffer();
+    for (final f in files) {
+      final content = await f.readAsString();
+      if (content.isEmpty) continue;
+      sb.write(content);
+      if (!content.endsWith('\n')) sb.writeln();
+    }
+    return sb.toString().trimRight();
   }
 
-  Future<File> exportFile({Duration? since, String? filename}) async {
-    final text = await exportText(since: since);
-    final name = filename ?? 'opencode-logs-${_p(DateTime.now().hour)}${_p(DateTime.now().minute)}.log';
+  Future<File> exportFileRecent(Duration since, {String? filename}) async {
+    final entries = await exportRecent(since);
+    return _writeTemp(entries.map((e) => e.line).join('\n'), filename);
+  }
+
+  Future<File> exportFileDisk({required bool todayOnly, String? filename}) async {
+    final text = await exportDiskText(todayOnly: todayOnly);
+    return _writeTemp(text, filename);
+  }
+
+  Future<File> _writeTemp(String text, String? filename) async {
+    final name = filename ??
+        'opencode-logs-${_p(DateTime.now().hour)}${_p(DateTime.now().minute)}.log';
     final tmp = await getTemporaryDirectory();
     final file = File('${tmp.path}/$name');
     await file.writeAsString(text);
