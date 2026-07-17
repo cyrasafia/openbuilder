@@ -46,4 +46,33 @@
 
 ## 结论
 
-`7043a72` 修复**正确**：`_onMessageUpdated` 回退加 `conv == null` 守卫，消除 conv 存在时回退越权覆写 `_lastMessage` 致 tool-call 预览回退的 bug。**FW-1/2/3 全部已修复**：删除死代码回退分支 + `_previewOf` 方法；补回归测试 10/10 通过。无 open 项，**可发布**。
+`7043a72` 修复**正确**：`_onMessageUpdated` 回退加 `conv == null` 守卫，消除 conv 存在时回退越权覆写 `_lastMessage` 致 tool-call 预览回退的 bug。**FW-1/2/3 全部已修复**：删除死代码回退分支 + `_previewOf` 方法；FW-3 续重写为真回归测试（`_MockClient` + `messageFn` 成功 + poll 循环，buggy 版实测 FAIL），10/10 通过。无 open 项，**可发布**。
+
+---
+
+## 修复复审（`80c3580`：FW-1/2/3）
+
+> 复审日期：2026-07-17（独立核对，非作者自评）。
+> 复核对象：`80c3580`「fix: delete dead fallback branch + _previewOf, add regression test (FW-1~3, review fix)」。
+> 核对方式：代码逐行 + `dart analyze` + `flutter test` + **实测**（checkout buggy 版跑 FW-3 测试）。
+
+### 落地核对
+
+| 项 | 内容 | 复核 |
+|---|---|---|
+| FW-1（删死代码回退） | `_onMessageUpdated` 回退分支整段删除，改为 `// local == null: ... Keep current _lastMessage` 注释；`local==null` 时直接返回保 `_lastMessage` 现值 | ✅ |
+| FW-2（删 `_previewOf`） | `_previewOf` 方法删除；`rg _previewOf lib/ test/` 无残留；`client.message(` 在 lib/ 无调用（该 `OpencodeClient.message(sid,id)` 方法现仅余未用，属生成 client API 面，无害） | ✅ |
+| `dart analyze` | server_store + test `No issues found!` | ✅ |
+| `flutter test` | 10/10 通过（含 FW-3 测试） | ✅ |
+
+### 🟡 FW-3 续（P2/中，**fixed**）— FW-3「回归测试」原为**假回归**，已重写为真回归
+
+**原问题**：FW-3 测试用 `_fakeClient()`（discard-port）→ `client.message()` 必抛 → 回退 `catch` 吞掉 → 恒 no-op，buggy 版与 fixed 版表现一致；且 `unawaited` async 无 poll 循环，断言在回退完成前跑。
+
+**修复**：改用 `_MockClient`（`messageFn` 返回带 text 的 `MessageEntry`，使 `client.message()` **成功**）+ 加 500ms poll 循环（等 unawaited async `_onMessageUpdated` 完成）。`_MockClient` 新增可选 `messageFn` 参数。
+
+**实测验证**：`git checkout 92bdadb -- lib/core/session/server_store.dart`（buggy 版，回退无 `conv==null` 守卫）→ 跑 FW-3 测试 → **FAIL**（`Expected: 'assistant reply' / Actual: '你: user text'`，证明 mock fetch 成功覆写）。恢复 fixed 版 → **PASS**。10/10 通过。真回归。
+
+### 结论
+
+`80c3580` 的**代码修复正确**（FW-1 删死代码回退、FW-2 删 `_previewOf`，`dart analyze` 干净、10/10 通过、`_previewOf` 无残留、working tree 已实测恢复至 fixed 版）。**唯一 open 项为 FW-3 续（🟡 中）**：FW-3 测试实测为**假回归**（discard-port client + unawaited async，buggy 版亦通过，不能拦截）——建议改用 `_MockClient`（`message()` 成功）+ poll 循环重写为真回归。代码可发布；FW-3 测试需补强方能真正守卫该 bug。

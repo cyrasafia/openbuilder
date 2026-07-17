@@ -310,11 +310,20 @@ void main() {
   // FW-3: regression test for tool-call preview revert. When conv exists but
   // lastMessagePreview() returns null (streaming assistant has no parts yet),
   // a message.updated(user) event must NOT overwrite _lastMessage with the
-  // user's text. Before the fix, the network fallback fired and set
-  // _lastMessage = '你: ...', causing the preview to revert at every tool-call
-  // boundary.
-  test('message.updated(user) does not revert preview when conv has no parts (FW-3)', () {
-    final store = ServerStore()..client = _fakeClient();
+  // user's text. Uses _MockClient with message() returning user text — if
+  // someone re-introduces the network fallback, the mock fetch succeeds,
+  // overwrites _lastMessage, and this test FAILS. Poll loop lets the
+  // unawaited async _onMessageUpdated complete before asserting.
+  test('message.updated(user) does not revert preview when conv has no parts (FW-3)', () async {
+    final store = ServerStore()
+      ..client = _MockClient(
+        messagesFn: (_) async => [],
+        messageFn: (_, __) async => MessageEntry(
+          info: const MessageInfo(
+              id: 'u1', role: 'user', sessionID: 's1', created: 1000),
+          parts: [MessagePart({'type': 'text', 'id': 'pu1', 'text': 'user text'})],
+        ),
+      );
     const sid = 's1';
     final conv = store.ensureConversation(sid)!;
     // Seed an assistant message with parts so _lastMessage has a real value.
@@ -323,14 +332,12 @@ void main() {
         'assistant reply');
     store.reflectPreviewFrom(sid);
     expect(store.lastMessageOf(sid), 'assistant reply');
-    // Now add a new streaming assistant (finish=null, no parts) — simulates
+    // Add a new streaming assistant (finish=null, no parts) — simulates
     // the tool-call boundary where a new assistant message is created.
     conv.onMessageUpdated(MessageInfo(
         id: 'a2', role: 'assistant', sessionID: sid, created: 2000));
-    // lastMessagePreview() is now null (a2 has no parts, sorts after a1).
-    // Actually a2 sorts after a1 (created 2000 > a1's created), so
-    // _messages.last = a2 with no parts → lastMessagePreview() = null.
-    // Now push a message.updated(user) via the SSE event route.
+    // _messages.last = a2 (no parts) → lastMessagePreview() = null.
+    // Push message.updated(user) via SSE route (unawaited async).
     store.onEventForTesting(const OpencodeEvent(
       type: 'message.updated',
       properties: <String, dynamic>{
@@ -342,8 +349,12 @@ void main() {
         },
       },
     ));
-    // _lastMessage must NOT revert to '你: ...' — it should stay as
-    // 'assistant reply' (the previous value).
+    // Poll: let unawaited _onMessageUpdated complete. If a fallback is
+    // re-introduced, the mock returns 'user text' → _lastMessage becomes
+    // '你: user text' → assertion fails (true regression).
+    for (var i = 0; i < 50; i++) {
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
     expect(store.lastMessageOf(sid), 'assistant reply');
     store.dispose();
   });
@@ -354,12 +365,19 @@ void main() {
 /// and retry-success backfill logic.
 class _MockClient extends OpencodeClient {
   final Future<List<MessageEntry>> Function(String sessionId) messagesFn;
-  _MockClient({required this.messagesFn})
+  final Future<MessageEntry> Function(String sessionId, String messageId)? messageFn;
+  _MockClient({required this.messagesFn, this.messageFn})
       : super(_noopDio());
 
   @override
   Future<List<MessageEntry>> messages(String sessionId, {int? limit}) =>
       messagesFn(sessionId);
+
+  @override
+  Future<MessageEntry> message(String sessionId, String messageId) =>
+      messageFn != null
+          ? messageFn!(sessionId, messageId)
+          : super.message(sessionId, messageId);
 
   @override
   Future<List<Todo>> todos(String sessionId) async => [];
