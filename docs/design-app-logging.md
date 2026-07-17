@@ -203,6 +203,8 @@ init() 时执行一次
 | `session.status` 事件 | debug | `session.status $sid=${status.type}` |
 | `session.idle` 事件（wasBusy） | info | `session.idle $sid` |
 | `session.error` 事件 | error | `session.error $sid $err` |
+| `message.updated` 事件（raw） | debug | `message.updated.raw role=$role id=$id` |
+| `_onMessageUpdated`（parsed） | debug | `message.updated.parsed sid=$sid role=$role id=$id finish=$finish pv=$pv _last=($lastRole,$lastId)` |
 
 ### 5.3 会话存储（`lib/core/session/conversation_store.dart`，tag: `Conv`）
 
@@ -211,6 +213,8 @@ init() 时执行一次
 | `reconcile()` 开始 | debug | `reconcile start $sessionId` |
 | `reconcile()` 获取成功 | debug | `reconcile fetched ${entries.length} messages $sessionId` |
 | `reconcile()` 失败 | error | `reconcile failed $sessionId: $e` |
+| `onMessageUpdated` | debug | `onMessageUpdated id=$id role=$role created=$created finish=$finish → last=$lastId($lastRole)` |
+| `_ensureMessage` | debug | `_ensureMessage id=$id created=$created → last=$lastId($lastRole)` |
 
 ## 6. 设置页 UI
 
