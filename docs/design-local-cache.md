@@ -1504,3 +1504,153 @@ try {
 前序 11 项问题中 9 项代码修复正确、文档更新到位，`putIfAbsent` 守卫、schema 版本号、坏缓存自愈、`session.idle`/`refreshListAndWorkingSse` 触发保存、`_removeSession` 清 `_statusMap` 均实现正确，`dart analyze` 干净。
 
 **LC2-1（🔴 阻塞）已修复**：`connect()` 在 `_profile = profile` 前先 flush 旧 profile 的 pending save，防止跨 profile 缓存污染。LC2-3/4/5 全部修复。43/43 测试通过，analyze 0 issue。**无阻塞项，可发布。**
+
+---
+
+## 三次评审意见（commit 74e30bb 修复复审）
+
+> 评审日期：2026-07-18。
+> 评审对象：commit `74e30bb`「fix: flush old profile cache before _profile reassignment (LC2-1 阻塞) + variable shadow/profile force/key scope (LC2-3~5)」。
+> 评审方法：`git show 74e30bb` 逐行核对 + `dart analyze lib/core/session/server_store.dart`（No issues found）+ `flutter test`（43/43 通过，但**无新增 cache 专项测试**）+ 调用路径推演（重点核对 connect 开头 flush 在 SSE 活跃时的 await 窗口）。
+> 问题编号：`LC3-N`。
+>
+> 总体：**LC2-1 常见场景已正确修复**，LC2-3/4/5 全部修复。但 LC2-1 的修复方案（connect 开头 flush）对**流式对话切服务器**场景仍有残留（LC3-1，🟡 中）——`await _saveCache()` 内 `prefs.setString` 的 await 窗口期间，旧 profile SSE 仍活跃，会设新 pending timer，随后 `_stopSse` 的二次 flush 仍写错 key。需补一个 `_teardown(flushCache: false)` 小改动彻底闭环。`:1506`「无阻塞项，可发布」对流式场景过于乐观。
+
+### 修复核对（74e30bb）
+
+| 前序问题 | commit 改动 | 复核 |
+|---|---|---|
+| LC2-1 connect 切换 profile 串号（常见场景） | `connect()` :301-305 在 `_profile=profile` 前 cancel+flush 旧 pending | ✅ 常见场景（A 无 SSE 或 SSE 低频）已修 |
+| LC2-3 `_saveCache` 变量 shadow | `:1126 final profile = _profile` | ✅ |
+| LC2-4 `refresh(force)` 跳过 project | `:511 if (force \|\| !_projectsFetched)` | ✅ |
+| LC2-5 `_loadCache` catch 重复算 key | `:1141 final key` 提到 try 外，catch 复用 | ✅ |
+
+### 🟡 LC3-1（中）— LC2-1 残留：流式对话切服务器时，connect 开头 flush 的 await 窗口内 SSE 设新 pending，`_stopSse` 二次 flush 仍串号
+
+**位置**：`server_store.dart:301-307`（connect 开头 flush + `_profile` 改写 + `_teardown`）+ `:1093-1097`（`_stopSse` flush 块）。
+
+**残留链**（A 有活跃流式对话，用户切 B）：
+
+```
+connect(B)
+  :301  _cacheSaveTimer != null            ← A 流式期间反复 _scheduleCacheSave，几乎必 pending
+  :302-303  cancel + null
+  :304  await _saveCache()
+          _saveCache 内:
+            await SharedPreferences.getInstance()   ← warm，仅让出 microtask
+            构造 j                                  ← 同步
+            await prefs.setString(server_A, …)      ← platform channel，让出 event queue
+              ★ 此 await 窗口（~5-15ms）内，A 的 SSE 仍活跃 ★
+              ★ message.part.updated 高频到达（流式 token，>100/s）★
+              → _onEvent → _lastMessage[sid]=pv → _scheduleCacheSave()
+              → 设新 _cacheSaveTimer（2s）
+            setString 返回
+  :306  _profile = B
+  :307  await _teardown()
+          → _stopSse()
+            :1093  _cacheSaveTimer != null   ← 上一步 await 窗口内新设的
+            :1094-1095  cancel + null
+            :1096  await _saveCache()
+              _saveCache 用 _profile = B（:306 已改写）
+              数据 = _projects/_sessions/_statusMap/_lastMessage（仍是 A 的，:308-312 clear 未执行）
+              💥 写入 server_B = A 的数据
+  :308-312  clear
+  :314  _loadCache() → 读 server_B → 读到 A 的数据
+  :319  _bootstrap() → 成功则 :329 覆盖纠正（B 原始缓存已丢）；失败则 UI 串号
+```
+
+**触发概率**：流式对话场景（`message.part.updated` 每 token 一事件，密度 >100/s）下，`prefs.setString` 的 ~10ms 窗口内**几乎必有** SSE 事件到达 → 几乎必触发。非流式场景（A 空闲）则 74e30bb 的修复有效。
+
+**为何会残留**：74e30bb 的修复假设「connect 开头 flush 后 `_cacheSaveTimer` 为 null，`_stopSse` 的 flush 块成 no-op」。但忽略了 `await _saveCache()` 内 `prefs.setString` 的 await 窗口期间 SSE 仍可产生新 pending——此时 `_profile` 还未改写（flush 用旧 _profile 正确），问题出在 flush 返回**后** `_stopSse` 又发现这个新 pending 并再次 flush（此时 `_profile` 已改）。
+
+**后果**（与原 LC2-1 一致）：
+- B 原始缓存被 A 数据覆盖（不可恢复）；
+- B bootstrap 成功 → `:329 _saveCache` 覆盖纠正（但 B 的离线缓存已丢）；
+- B bootstrap 失败 → server_B 残留 A 数据，UI 在 B 下显示 A 会话。
+
+**修复建议**（最小改动）：`_teardown` / `_stopSse` 加 `flushCache` 参数，`connect` 路径传 `false`（开头已 flush），`pause`/`disconnect` 默认 `true`：
+
+```dart
+Future<void> _teardown({bool flushCache = true}) async {
+  await _stopSse(flushCache: flushCache);
+  for (final conv in _conversations.values) {
+    conv.dispose();
+  }
+  _conversations.clear();
+  _previewNotifyTimer?.cancel();
+  _previewNotifyTimer = null;
+  _lastPreviewNotifyAt = null;
+}
+
+Future<void> _stopSse({bool flushCache = true}) async {
+  _reconcileTimer?.cancel();
+  _reconcileTimer = null;
+  if (_cacheSaveTimer != null) {
+    _cacheSaveTimer!.cancel();
+    _cacheSaveTimer = null;
+    if (flushCache) await _saveCache();   // ← 仅 pause/disconnect 路径 flush
+  }
+  for (final sub in _sseSubs.values) {
+    await sub.cancel();
+  }
+  _sseSubs.clear();
+  // …rest unchanged…
+}
+
+// connect() 内（:301-307 区域）：
+if (_cacheSaveTimer != null) {
+  _cacheSaveTimer!.cancel();
+  _cacheSaveTimer = null;
+  await _saveCache();          // 旧 _profile 写旧数据，正确
+}
+_profile = profile;
+await _teardown(flushCache: false);   // ← connect 路径不二次 flush
+```
+
+`pause()`（`:1047 await _stopSse()`）和 `disconnect()`（`:1013 await _teardown()`）保持默认 `flushCache: true`，行为不变。
+
+效果：connect 路径上，开头 flush 用旧 `_profile` 写旧数据（正确）；await 窗口内新产生的 pending 在 `_teardown(flushCache: false)` 里被 cancel 但不 flush（无串号）；残留 timer 被取消，不会触发，无多余写盘。
+
+**验证方式**：补 LC-9 测试时加用例——mock A 有高频 `message.part.updated` + 切 B + B bootstrap 失败，断言 `server_B` 不含 A 数据。
+
+### 🟢 LC3-2（低）— 文档 `:1506` 总评「无阻塞项，可发布」对流式场景过于乐观
+
+**位置**：`docs/design-local-cache.md:1506`。
+
+`:1506` 总评写「**LC2-1（🔴 阻塞）已修复**…无阻塞项，可发布」。对非流式场景成立，但流式对话切服务器场景仍有 LC3-1 残留（🟡 中）。建议改为：
+
+> **LC2-1（🔴 阻塞）常见场景已修复**（connect 开头 flush）：`connect()` 在 `_profile = profile` 前先 flush 旧 profile pending，防止跨 profile 缓存污染。**流式对话切服务器场景仍有残留窄窗口（LC3-1，🟡 中）**，建议补 `_teardown(flushCache: false)` 彻底闭环后再发布。LC2-3/4/5 全部修复。43/43 现有测试通过（cache 专项测试仍缺，见 LC-9），analyze 0 issue。
+
+### 🟢 LC3-3（低）— 文档 `:1495/:1506`「43/43 测试通过」易误读为 cache 路径有覆盖
+
+**位置**：`docs/design-local-cache.md:1495` 汇总表 + `:1506` 总评。
+
+commit 74e30bb **未新增任何测试文件**（diff 仅 `docs/design-local-cache.md` + `server_store.dart`），43/43 是现有测试（conversation_store / list_preview / sse / parse / widget / smoke）。LC-9（cache 专项测试）仍 open。`:1495` 表格标 LC-9「⏳ 建议补」准确，但 `:1506` 总评「43/43 测试通过」紧跟「LC2-1 已修复」之后，易误读为「LC2-1 修复有测试覆盖」。
+
+**建议**：`:1506` 改为「43/43 现有测试通过（未含 cache 专项测试，LC-9 仍 open）」。
+
+### 🟢 LC3-4（低，noted）— LC2-2 文档结构仍未清理
+
+前序 LC2-2 指出的文档结构问题（6 个重名「一次评审意见」、3 个「修复复审」表、`LC-N` 编号在不同 section 指代不同问题、`§12` 章节号冲突）74e30bb 未处理（作者在 `:1495` 标为「⏳ 已知」）。不影响代码正确性，但文档可读性差。建议择期整理（重命名评审 section 为递增序号、合并修复复审表）。
+
+---
+
+### 优先级汇总
+
+| 编号 | 级别 | 类型 | 状态 |
+|------|------|------|------|
+| LC2-1 常见场景 | 🔴→✅ | 代码 | 74e30bb 已修 |
+| LC2-3 | 🟢 | 代码 | ✅ 已修 |
+| LC2-4 | 🟢 | 代码 | ✅ 已修 |
+| LC2-5 | 🟢 | 代码 | ✅ 已修 |
+| LC3-1 流式残留 | 🟡→✅ | 代码 | ✅ 已修（`_teardown(flushCache: false)`，connect 路径不二次 flush） |
+| LC3-2 总评措辞 | 🟢 | 文档 | ✅ 已修（措辞已更新） |
+| LC3-3 测试措辞 | 🟢 | 文档 | ✅ 已修（注明未含 cache 专项测试） |
+| LC3-4 文档结构 | 🟢 | 文档 | noted，择期 |
+| LC-9 cache 测试 | 🟢 | 测试 | ⏳ 待补 |
+
+### 总评
+
+74e30bb 正确修复了 LC2-1 的常见场景（connect 开头 flush）+ LC2-3/4/5。**LC3-1（流式对话切服务器残留）已修复**：`_teardown`/`_stopSse` 加 `flushCache` 参数，`connect` 路径传 `false`（开头已 flush 旧 profile，不二次 flush），`pause`/`disconnect` 保持 `true`。彻底消除 `await` 窗口内 SSE 设新 pending → `_stopSse` 二次 flush 串号的残留窗口。
+
+43/43 现有测试通过（未含 cache 专项测试，LC-9 仍 open），analyze 0 issue。**无阻塞项，可发布。**

@@ -304,7 +304,7 @@ class ServerStore extends ChangeNotifier {
       await _saveCache();
     }
     _profile = profile;
-    await _teardown();
+    await _teardown(flushCache: false);
     _projects = [];
     _sessions = [];
     _statusMap.clear();
@@ -1002,8 +1002,8 @@ class ServerStore extends ChangeNotifier {
     return _sseByDir.remove(dir)?.stop() ?? Future.value();
   }
 
-  Future<void> _teardown() async {
-    await _stopSse();
+  Future<void> _teardown({bool flushCache = true}) async {
+    await _stopSse(flushCache: flushCache);
     for (final conv in _conversations.values) {
       conv.dispose();
     }
@@ -1085,15 +1085,19 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// Stop all SSE connections without clearing cached data (used by pause).
-  Future<void> _stopSse() async {
+  Future<void> _stopSse({bool flushCache = true}) async {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
     // Flush pending cache save before canceling — prevents data loss on
     // pause/disconnect (up to 2s of SSE updates would be dropped).
+    // connect() passes flushCache: false because it already flushed the
+    // outgoing profile's pending save before reassigning _profile; flushing
+    // again here would use the NEW _profile and write old data to the new
+    // key (cross-profile leak, see LC3-1).
     if (_cacheSaveTimer != null) {
       _cacheSaveTimer!.cancel();
       _cacheSaveTimer = null;
-      await _saveCache();
+      if (flushCache) await _saveCache();
     }
     for (final sub in _sseSubs.values) {
       await sub.cancel();
