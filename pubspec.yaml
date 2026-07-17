@@ -63,6 +63,10 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+# file_picker 用 dart.library.ffi（Linux/macOS 桌面也编译其 windows 实现），
+# 其 8.x/11.x 限定 win32 5.x；package_info_plus 10.x / share_plus 13.x 需 win32 6.x。
+# mobile（Android+iOS）不依赖 win32，此 override 仅为统一 pub 解析 + 桌面/CI 编译通过。
+# 跟踪 file_picker 上游改用平台 conditional 后移除（CR-4）。
 dependency_overrides:
   win32: ^5.9.0
 

@@ -10,7 +10,7 @@
 
 | 文件 | 改动 |
 |------|------|
-| `pubspec.yaml` | 新增 `file_picker: ^8.3.0`、`image_picker: ^1.1.2`、`flutter_image_compress: ^2.3.0`、`mime: ^1.0.6`、`url_launcher: ^6.3.0` |
+| `pubspec.yaml` | 新增 `file_picker: ^8.3.0`、`image_picker: ^1.1.2`、`flutter_image_compress: ^2.3.0`、`mime: ^2.0.0`、`url_launcher: ^6.3.0`、`cross_file: ^0.3.4+2`；`dependency_overrides: win32: ^5.9.0`（见步骤 0 说明，CR-4） |
 | `android/app/src/main/AndroidManifest.xml` | 新增 `CAMERA` 权限 |
 | `ios/Runner/Info.plist` | 新增 `NSCameraUsageDescription`（**不**加 `NSPhotoLibraryUsageDescription`，AT-10） |
 | `lib/core/attachments/attachment_pipeline.dart` | **新建**：`AttachmentPreview` 值类、`AttachmentPicker`、`ImageCompressor` 接口 + `_FlutterImageCompressor`、`AttachmentPipeline`、`AttachmentTooLargeException`、阈值常量 |
@@ -28,8 +28,9 @@
   file_picker: ^8.3.0
   image_picker: ^1.1.2
   flutter_image_compress: ^2.3.0
-  mime: ^1.0.6
+  mime: ^2.0.0
   url_launcher: ^6.3.0
+  cross_file: ^0.3.4+2
 ```
 
 - `image_picker`：图片多选（`pickMultiImage`，iOS 14+ PHPicker / Android 13+ Photo Picker 免相册权限）+ 拍照（`pickImage(source: camera)`）。AT-2/AT-10。

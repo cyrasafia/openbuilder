@@ -245,20 +245,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
       return;
     }
     if (picked.isEmpty) return;
-    final resolved = <AttachmentPreview>[];
-    for (final x in picked) {
+    // CR-6：并行 resolve（含压缩）；逐条收集错误
+    final results = await Future.wait(picked.map((x) async {
       try {
-        resolved.add(await AttachmentPipeline.resolve(x));
+        return (preview: await AttachmentPipeline.resolve(x), error: null);
       } on AttachmentTooLargeException catch (e) {
+        return (preview: null, error: e);
+      } catch (e) {
+        return (preview: null, error: e);
+      }
+    }));
+    final resolved = <AttachmentPreview>[];
+    for (final r in results) {
+      if (r.preview != null) {
+        resolved.add(r.preview!);
+      } else if (r.error is AttachmentTooLargeException) {
+        final e = r.error! as AttachmentTooLargeException;
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text(
                   '「${e.name}」过大（${(e.len / 1048576).toStringAsFixed(1)}MB），未添加')));
         }
-      } catch (e) {
+      } else if (r.error != null) {
         if (mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('读取失败：$e')));
+              .showSnackBar(SnackBar(content: Text('读取失败：${r.error}')));
         }
       }
     }
@@ -296,7 +307,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           conv.setStatus('busy');
         }
       } else {
-        setState(() => _cmdMode = false);
         final parts = <Map<String, dynamic>>[];
         if (text.isNotEmpty) parts.add({'type': 'text', 'text': text});
         for (final a in _attachments) {
@@ -759,35 +769,21 @@ class _FileChip extends StatelessWidget {
   final bool user;
   const _FileChip({required this.part, this.user = false});
 
-  Uint8List? _ensureThumb() {
-    final t = part.previewThumb;
-    if (t != null) return t;
+  bool get _isHttpUrl {
     final url = part.fileUrl;
-    if (url == null || !url.startsWith('data:')) return null;
-    final mime = part.fileMime ?? '';
-    if (!mime.startsWith('image/')) return null;
-    final comma = url.indexOf(',');
-    if (comma < 0) return null;
-    try {
-      final decoded = base64Decode(url.substring(comma + 1));
-      part.previewThumb = decoded;
-      return decoded;
-    } catch (_) {
-      return null;
-    }
+    if (url == null) return false;
+    return url.startsWith('http://') || url.startsWith('https://');
   }
 
   @override
   Widget build(BuildContext context) {
-    final thumb = _ensureThumb();
-    final isHttpUrl = part.fileUrl != null &&
-        (part.fileUrl!.startsWith('http://') ||
-            part.fileUrl!.startsWith('https://'));
+    // CR-2：仅乐观侧有 96px previewThumb；接收侧不解码 data URL（避免内存膨胀/首帧掉帧）
+    final thumb = part.previewThumb;
     if (thumb != null) {
       return Padding(
         padding: const EdgeInsets.only(top: 6),
         child: GestureDetector(
-          onTap: () => _showFullScreen(context, thumb),
+          onTap: () => _showFullScreen(context),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: Image.memory(thumb,
@@ -811,13 +807,10 @@ class _FileChip extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          if (isHttpUrl) ...[
+          if (_isHttpUrl) ...[
             const SizedBox(width: 6),
             GestureDetector(
-              onTap: () async {
-                final uri = Uri.tryParse(part.fileUrl!);
-                if (uri != null) await launchUrl(uri);
-              },
+              onTap: () => _openUrl(context),
               child: Icon(Icons.open_in_new,
                   size: 14, color: Theme.of(context).colorScheme.primary),
             ),
@@ -827,7 +820,40 @@ class _FileChip extends StatelessWidget {
     );
   }
 
-  void _showFullScreen(BuildContext context, Uint8List bytes) {
+  // CR-5：launchUrl 失败提示 + try/catch
+  Future<void> _openUrl(BuildContext context) async {
+    final url = part.fileUrl;
+    if (url == null) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    try {
+      final ok = await launchUrl(uri);
+      if (!ok && context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('无法打开链接')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('无法打开链接：$e')));
+      }
+    }
+  }
+
+  // CR-2(c)：全屏解码 part.fileUrl 全尺寸（点击一次性，不缓存进 previewThumb）
+  void _showFullScreen(BuildContext context) {
+    final url = part.fileUrl;
+    if (url == null) return;
+    Uint8List? bytes;
+    if (url.startsWith('data:')) {
+      final comma = url.indexOf(',');
+      if (comma < 0) return;
+      try {
+        bytes = base64Decode(url.substring(comma + 1));
+      } catch (_) {
+        return;
+      }
+    }
     showDialog<void>(
       context: context,
       builder: (ctx) => GestureDetector(
@@ -835,7 +861,9 @@ class _FileChip extends StatelessWidget {
         child: Scaffold(
           backgroundColor: Colors.black87,
           body: Center(
-            child: Image.memory(bytes, fit: BoxFit.contain),
+            child: bytes != null
+                ? Image.memory(bytes, fit: BoxFit.contain)
+                : Image.network(url, fit: BoxFit.contain),
           ),
         ),
       ),
