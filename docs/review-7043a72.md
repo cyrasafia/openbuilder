@@ -76,3 +76,44 @@
 ### 结论
 
 `80c3580` 的**代码修复正确**（FW-1 删死代码回退、FW-2 删 `_previewOf`，`dart analyze` 干净、10/10 通过、`_previewOf` 无残留、working tree 已实测恢复至 fixed 版）。**唯一 open 项为 FW-3 续（🟡 中）**：FW-3 测试实测为**假回归**（discard-port client + unawaited async，buggy 版亦通过，不能拦截）——建议改用 `_MockClient`（`message()` 成功）+ poll 循环重写为真回归。代码可发布；FW-3 测试需补强方能真正守卫该 bug。
+
+---
+
+## 修复复审（`173e10c`：FW-3 续 → 真回归）
+
+> 复审日期：2026-07-17（独立核对，非作者自评）。
+> 复核对象：`173e10c`「fix: rewrite FW-3 as true regression test with _MockClient + poll (FW-3续, review fix)」——仅改 `test/list_preview_streaming_test.dart`（`_MockClient` 加 `messageFn` + FW-3 测试重写）+ 本 review 文档。
+> 核对方式：代码逐行 + `dart analyze` + `flutter test` + **实测**（checkout buggy 版跑 FW-3）+ **lint 修复实验**。
+
+### 落地核对
+
+| 项 | 内容 | 复核 |
+|---|---|---|
+| FW-3 续（真回归） | `_MockClient` 新增可选 `messageFn`（`override message(sid,id)` 返回带 text 的 `MessageEntry`，使 `client.message()` **成功**而非 discard-port 抛错）；FW-3 测试改用该 mock + 500ms poll 循环（等 unawaited async `_onMessageUpdated` 完成） | ✅ |
+| 实测：buggy 版 FAIL | `git checkout 92bdadb -- lib/core/session/server_store.dart`（回退无 `conv==null` 守卫）→ 跑 FW-3 → **FAIL**：`Expected: 'assistant reply' / Actual: '你: user text'`（mock fetch 成功→覆写 `_lastMessage`）——证明测试现能拦截 bug | ✅ |
+| 实测：fixed 版 PASS | 恢复 `173e10c` server_store → FW-3 **PASS**；全量 10/10 通过 | ✅ |
+| 根因双解 | discard-port（fetch 必抛）→ mock 成功；unawaited async（断言先于 fetch）→ poll 循环等完成——原假回归两根因均消 | ✅ |
+
+### 🟡 LINT-1（P2/中，**open**）— FW-3 测试 `(_, __)` 触发 `unnecessary_underscores`，破坏 `flutter analyze --fatal-infos` CI 门槛
+
+**位置**：`test/list_preview_streaming_test.dart:321` `messageFn: (_, __) async => ...`。
+
+**问题**：`__`（双下划线，第二未用参数）触发 `unnecessary_underscores` lint（`analysis_options.yaml` `include: package:flutter_lints/flutter.yaml` 启用之）。`dart analyze` 报 `info - ...:321:24 - Unnecessary use of multiple underscores. Try using '_'.`（1 issue）。项目 CI 门槛 `flutter analyze --fatal-infos`（AGENTS.md）将 info 视为 fatal → **CI 失败**。
+
+**实测修复**：`sed 's/(_, __)/(_, _)/'` → `dart analyze test/...` `No issues found!`（Dart SDK 3.12.2 支持 wildcard `_`，`(_, _)` 合法）→ 已 revert 回 173e10c 原状。
+
+**修复建议**：`(_, __)` → `(_, _)`（linter 推荐形态，实验已证 0 issue）。一行改动，非阻塞功能但阻塞 CI 绿。
+
+### 🟢 DOC-1（P3/低）— 本文档 80c3580 修复复审的子结论陈旧
+
+**位置**：本文档 `## 修复复审（80c3580）` 的 `### 结论`（上方「唯一 open 项为 FW-3 续... 建议改用 `_MockClient`...」）。
+
+**问题**：该子结论为 80c3580 时点所写（FW-3 续 当时 open）；`173e10c` 把该节 FW-3 续 标题改为 **fixed** + 顶部 `## 结论` 也更新为「FW-3 续 重写为真回归… 无 open 项」，但**未同步订正该子结论**——致该节「标题说 fixed、结论说 open」自相矛盾。
+
+**修复建议**：把该子结论改为「FW-3 续 经 `173e10c` 重写为真回归（buggy 版实测 FAIL、fixed 版 PASS），已闭环；详见下节 修复复审（173e10c）」。或直接删该子结论（顶部 `## 结论` 已是最新）。非阻塞。
+
+### 结论
+
+`173e10c` 的 FW-3 续 修复**正确**：重写为真回归（`_MockClient.messageFn` 成功 fetch + poll 循环），实测 buggy 版 FAIL / fixed 版 PASS，原假回归两根因（discard-port + unawaited async）均消；顶部 `## 结论` 已更新为「FW-3 续 fixed、无 open 项」。
+
+**唯一 open 项为 LINT-1（🟡 中）**：FW-3 测试 `(_, __)` 触发 `unnecessary_underscores` info，破坏 `flutter analyze --fatal-infos` CI 门槛——建议 `(_, __)`→`(_, _)`（实验已证 0 issue）。DOC-1（🟢 低）为本 review 文档子结论陈旧，可顺手订正。代码功能可发布；**LINT-1 需修后 CI 方绿**。
