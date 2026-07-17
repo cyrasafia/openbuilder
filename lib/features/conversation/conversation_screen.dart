@@ -295,6 +295,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
     serverStore.ensureSseForSession(widget.sessionId);
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
+    final attachments = List<AttachmentPreview>.from(_attachments);
+    _ctl.clear();
+    setState(() {
+      _cmdMode = false;
+      _attachments.clear();
+    });
     var ok = false;
     try {
       if (startsShell) {
@@ -309,7 +315,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       } else {
         final parts = <Map<String, dynamic>>[];
         if (text.isNotEmpty) parts.add({'type': 'text', 'text': text});
-        for (final a in _attachments) {
+        for (final a in attachments) {
           parts.add({
             'type': 'file',
             'mime': a.mime,
@@ -317,7 +323,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             'filename': a.filename,
           });
         }
-        conv.addOptimisticUserMessage(text, attachments: _attachments);
+        conv.addOptimisticUserMessage(text, attachments: attachments);
         serverStore.reflectPreviewFrom(widget.sessionId);
         final totalLen = parts.fold<int>(
             0, (s, p) => s + (p['url']?.toString().length ?? 0));
@@ -335,17 +341,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (e) {
       conv.removeOptimisticMessages();
       serverStore.reflectPreviewFrom(widget.sessionId);
+      _ctl.text = text;
+      setState(() {
+        _cmdMode = startsShell;
+        _attachments
+          ..clear()
+          ..addAll(attachments);
+      });
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('发送失败：$e')));
       }
-    }
-    if (ok && mounted) {
-      _ctl.clear();
-      setState(() {
-        _cmdMode = false;
-        _attachments.clear();
-      });
     }
     _scheduleAutoScroll();
   }
