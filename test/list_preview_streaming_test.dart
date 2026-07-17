@@ -318,7 +318,7 @@ void main() {
     final store = ServerStore()
       ..client = _MockClient(
         messagesFn: (_) async => [],
-        messageFn: (_, __) async => MessageEntry(
+        messageFn: (_, _) async => MessageEntry(
           info: const MessageInfo(
               id: 'u1', role: 'user', sessionID: 's1', created: 1000),
           parts: [MessagePart({'type': 'text', 'id': 'pu1', 'text': 'user text'})],
