@@ -1412,12 +1412,6 @@ class _ComposeBarState extends State<_ComposeBar> {
       padding: const EdgeInsets.only(left: 12, right: 8, top: 8, bottom: 8),
       child: Row(
         children: [
-          IconButton(
-            icon: const Icon(Icons.attach_file),
-            tooltip: '附件',
-            onPressed: widget.onPickAttachments,
-          ),
-          const SizedBox(width: 4),
           Expanded(
             child: TextField(
               controller: widget.ctl,
@@ -1428,6 +1422,13 @@ class _ComposeBarState extends State<_ComposeBar> {
               decoration: InputDecoration(
                 hintText: '/ 命令　! shell　发指令…',
                 isDense: true,
+                prefixIcon: IconButton(
+                  icon: const Icon(Icons.add),
+                  tooltip: '附件',
+                  onPressed: widget.onPickAttachments,
+                ),
+                prefixIconColor:
+                    Theme.of(context).colorScheme.onSurfaceVariant,
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 border: OutlineInputBorder(
