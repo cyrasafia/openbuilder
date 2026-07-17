@@ -258,6 +258,7 @@ class ServerStore extends ChangeNotifier {
         unawaited(existing.reconcile() // active refresh, ignore backoff
             .then((_) => _backfillPreview(sessionId, existing)));
       } else if (!existing.loaded) {
+        existing.setBackfillCallback(() => _backfillPreview(sessionId, existing));
         unawaited(existing.load() // first reconcile, load→reconcile, no backoff
             .then((_) => _backfillPreview(sessionId, existing)));
       } else if (existing.isStale) {
@@ -272,6 +273,7 @@ class ServerStore extends ChangeNotifier {
     // Chain _backfillPreview after load (→ reconcile) so _lastMessage seeds
     // from the REST-merged last message; previously concurrent unawaited raced
     // ahead of reconcile and no-op'd on empty _messages (LPS-19).
+    conv.setBackfillCallback(() => _backfillPreview(sessionId, conv));
     unawaited(conv.load()
         .then((_) => _backfillPreview(sessionId, conv)));
     return conv;

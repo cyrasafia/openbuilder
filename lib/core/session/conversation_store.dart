@@ -137,6 +137,12 @@ class ConversationStore extends ChangeNotifier {
   Timer? _loadRetryTimer;
   int _loadRetryAttempt = 0;
   bool _disposed = false;
+  Future<void> Function()? _backfillCallback;
+
+  /// Set a callback to be invoked after a successful reconcile (including
+  /// retries). Used by ServerStore to bridge _lastMessage on retry success
+  /// (LPS-20). Cleared after first successful invocation.
+  void setBackfillCallback(Future<void> Function()? cb) => _backfillCallback = cb;
   static const _loadInitialBackoff = Duration(seconds: 2);
   static const _loadMaxBackoff = Duration(seconds: 30);
 
@@ -252,28 +258,31 @@ class ConversationStore extends ChangeNotifier {
     await _attemptLoad();
   }
 
-  Future<void> _attemptLoad() async {
+  Future<void> _attemptLoad({Future<void> Function()? onLoaded}) async {
     if (_disposed) return;
     if (loaded && !_stale) {
       _loadRetryTimer?.cancel();
       return;
     }
     if (_reconciling) {
-      _scheduleLoadRetry(incrementAttempt: false);
+      _scheduleLoadRetry(incrementAttempt: false, onLoaded: onLoaded);
       return;
     }
     await reconcile();
     if (_disposed) return;
     if (_stale) {
-      _scheduleLoadRetry();
+      _scheduleLoadRetry(onLoaded: onLoaded);
     } else {
       _loadRetryAttempt = 0;
       _loadRetryTimer?.cancel();
+      final cb = _backfillCallback;
+      _backfillCallback = null;
+      if (cb != null) await cb();
     }
     notifyListeners();
   }
 
-  void _scheduleLoadRetry({bool incrementAttempt = true}) {
+  void _scheduleLoadRetry({bool incrementAttempt = true, Future<void> Function()? onLoaded}) {
     _loadRetryTimer?.cancel();
     if (incrementAttempt) _loadRetryAttempt++;
     final exp = (_loadRetryAttempt - 1).clamp(0, 4);
@@ -281,7 +290,7 @@ class ConversationStore extends ChangeNotifier {
         .clamp(1, _loadMaxBackoff.inSeconds);
     _loadRetryTimer = Timer(Duration(seconds: secs), () {
       if (_disposed) return;
-      _attemptLoad();
+      _attemptLoad(onLoaded: onLoaded);
     });
   }
 

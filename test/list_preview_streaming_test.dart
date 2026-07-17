@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencode_mobile/core/connection/connection_profile.dart';
@@ -217,4 +218,113 @@ void main() {
     expect(store.lastMessageOf(sid), 'new reply');
     store.dispose();
   });
+
+  // LPSI-M18 (§12.13, LPS-18): mock OpencodeClient happy-path — reconcile
+  // returns controlled REST messages and _backfillPreview seeds _lastMessage
+  // from the merged result. Proves the happy-path E branch (reconcile succeeds)
+  // actually updates the list preview, not just the .then chain mechanism.
+  test('mock reconcile happy-path backfills _lastMessage (LPS-18)', () async {
+    final entries = [
+      MessageEntry(
+        info: MessageInfo(
+            id: 'rest_u1', role: 'user', sessionID: 's1', created: 1000),
+        parts: [MessagePart({'type': 'text', 'id': 'pu1', 'text': 'ask'})],
+      ),
+      MessageEntry(
+        info: MessageInfo(
+            id: 'rest_a1',
+            role: 'assistant',
+            sessionID: 's1',
+            created: 2000,
+            finish: 'stop'),
+        parts: [MessagePart({'type': 'text', 'id': 'pa1', 'text': 'reply'})],
+      ),
+    ];
+    final store = ServerStore()
+      ..client = _MockClient(messagesFn: (_) async => entries);
+    const sid = 's1';
+    // Seed stale state so conversationFor triggers load→reconcile.
+    final conv = store.ensureConversation(sid)!;
+    conv.onMessageUpdated(
+        MessageInfo(id: 'old', role: 'user', sessionID: sid, created: 500));
+    conv.onPartUpdated(
+        <String, dynamic>{'messageID': 'old', 'id': 'po', 'type': 'text'},
+        'stale');
+    store.reflectPreviewFrom(sid);
+    expect(store.lastMessageOf(sid), '你: stale');
+    // conversationFor(force) → reconcile (mock returns entries) → backfill.
+    store.conversationFor(sid, force: true);
+    for (var i = 0; i < 50 && store.lastMessageOf(sid) == '你: stale'; i++) {
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
+    expect(store.lastMessageOf(sid), 'reply');
+    store.dispose();
+  });
+
+  // LPSI-R20 (§12.14, LPS-20): retry success backfills _lastMessage. Mock
+  // client throws on first call (simulating network failure), then succeeds
+  // on retry. Without LPS-20 fix, _scheduleLoadRetry calls _attemptLoad()
+  // without the onLoaded callback, so _lastMessage stays stale after retry.
+  test('retry success backfills _lastMessage via onLoaded callback (LPS-20)', () async {
+    var callCount = 0;
+    final entries = [
+      MessageEntry(
+        info: MessageInfo(
+            id: 'retry_a1',
+            role: 'assistant',
+            sessionID: 's1',
+            created: 3000,
+            finish: 'stop'),
+        parts: [MessagePart({'type': 'text', 'id': 'ra1', 'text': 'retry reply'})],
+      ),
+    ];
+    final store = ServerStore()
+      ..client = _MockClient(messagesFn: (_) async {
+        callCount++;
+        if (callCount == 1) throw Exception('network error');
+        return entries;
+      });
+    const sid = 's1';
+    // Seed old preview.
+    final conv = store.ensureConversation(sid)!;
+    conv.onMessageUpdated(
+        MessageInfo(id: 'old', role: 'user', sessionID: sid, created: 1000));
+    conv.onPartUpdated(
+        <String, dynamic>{'messageID': 'old', 'id': 'po', 'type': 'text'},
+        'old msg');
+    store.reflectPreviewFrom(sid);
+    expect(store.lastMessageOf(sid), '你: old msg');
+    // conversationFor without force → !loaded path → load() → _attemptLoad()
+    // → reconcile (fails) → _scheduleLoadRetry → retry → reconcile (succeeds)
+    // → _backfillCallback fires (LPS-20).
+    store.conversationFor(sid);
+    // Wait for retry timer (2s initial backoff) + reconcile to complete.
+    for (var i = 0; i < 200 && store.lastMessageOf(sid) == '你: old msg'; i++) {
+      await Future.delayed(const Duration(milliseconds: 20));
+    }
+    expect(store.lastMessageOf(sid), 'retry reply');
+    expect(callCount, 2); // first failed, second succeeded
+    store.dispose();
+  });
 }
+
+/// Minimal [OpencodeClient] subclass that returns controlled responses without
+/// hitting the network. Used by LPS-18 / LPS-20 tests to prove the happy-path
+/// and retry-success backfill logic.
+class _MockClient extends OpencodeClient {
+  final Future<List<MessageEntry>> Function(String sessionId) messagesFn;
+  _MockClient({required this.messagesFn})
+      : super(_noopDio());
+
+  @override
+  Future<List<MessageEntry>> messages(String sessionId, {int? limit}) =>
+      messagesFn(sessionId);
+
+  @override
+  Future<List<Todo>> todos(String sessionId) async => [];
+}
+
+Dio _noopDio() => Dio(BaseOptions(
+      connectTimeout: const Duration(milliseconds: 1),
+      receiveTimeout: const Duration(milliseconds: 1),
+    ));
