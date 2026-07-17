@@ -164,13 +164,14 @@ init() 时执行一次
       → exportDiskText({todayOnly})
           → _dir == null ? 回退 _buffer（测试安全降级）
           → await _sink?.flush()                      ← 先落盘，保证当前会话最新条目入文件
+          → _rotate()                                  ← 刷新 _currentDate（若跨午夜则切到当天文件），先 flush 再 rotate 保尾部
           → todayOnly ? 选 <今天>.log : 列出全部 .log 并按文件名（日期）排序
           → 逐文件 readAsString 拼接
       → _writeTemp()
   → SharePlus.instance.share(...)
 ```
 
-`flush()` 后当天 `.log` 文件含当前会话全部条目（含最新），故「今天」读磁盘即可完整覆盖；「全部」按文件名升序拼接最近 7 天所有文件。
+`flush()` 后当天 `.log` 文件含当前会话全部条目（含最新）；`_rotate()` 刷新 `_currentDate`，使跨午夜静默期「今天」不再误读昨天文件。故「今天」读磁盘即可完整覆盖当天；「全部」按文件名升序拼接最近 7 天所有文件。
 
 **四档导出范围**
 
@@ -265,8 +266,8 @@ init() 时执行一次
 | 未初始化降级 | `init()` 未调用时 `_dir == null`：`log()` 仅写 `_buffer`（`_rotate` 直接 return）；`exportDiskText` 回退 `_buffer` join。不崩溃 | §4.2 / §4.5 |
 | 崩溃后磁盘留存 | 强制 kill 丢 IOSink 尾部；已 flush 的条目留在 `.log`。重启后内存清空，但「今天/全部」磁盘路回读 `.log` 仍可得历史（含崩溃前已落盘条目） | §7 IOSink 决策 / §4.5 磁盘路 |
 | 快速导出（5min/1h） | `exportFileRecent` 仅过滤内存，无 `flush`、无磁盘读，毫秒级返回；覆盖受 2000 条上限约束 | §4.5 快速路 |
-| 磁盘导出（今天） | `exportFileDisk(todayOnly:true)`：`await flush()` → 读当天 `.log` → 完整覆盖当天（含当前会话最新已落盘条目）；读时文件仍 append 打开，POSIX 下新 read fd 可见已 flush 内容 | §4.5 磁盘路 |
-| 磁盘导出（全部） | `exportFileDisk(todayOnly:false)`：列出全部 `.log` 按文件名升序拼接 → 最近 7 天完整时间序 | §4.5 磁盘路 |
+| 磁盘导出（今天） | `exportFileDisk(todayOnly:true)`：`await flush()` → `_rotate()` 刷新日期（跨午夜切当天文件）→ 读当天 `.log` → 完整覆盖当天（含当前会话最新已落盘条目）；读时文件仍 append 打开，POSIX 下新 read fd 可见已 flush 内容 | §4.5 磁盘路 |
+| 磁盘导出（全部） | `exportFileDisk(todayOnly:false)`：`listSync` 列出全部 `.log` 按文件名升序拼接 → 最近 7 天完整时间序（不依赖 `_currentDate`） | §4.5 磁盘路 |
 | 7 天清理 | `init()` 时 `_cleanup` 遍历 `.log`，解析文件名日期，`< now-7d` 删除；异常静默不阻塞启动 | §4.4 |
 
 ## 10. 不做的事
@@ -323,3 +324,21 @@ AGENTS.md design 文档结构约定含「场景验证」，本文缺。建议补
 | AL-2 | 🟡 中 | §7 决策表 IOSink 行改写为「IOSink 异步刷盘：常规退出 `dispose()` flush，导出磁盘路前 `await flush()`；强制 kill 可能丢缓冲区尾部」 | ✅ 表述与 IOSink 实际语义一致 |
 | AL-5 | 🟢 低 | 新增 §9「场景验证」节，覆盖跨天轮转/缓冲超限/未初始化降级/崩溃后磁盘留存/快速路/磁盘路（今天·全部）/7 天清理；原 §9 不做的事顺延为 §10 | ✅ 符合 design 文档结构约定 |
 | AL-10 | 🟢 低 | §6 mockup 去 emoji、标注 Material Icons 名；§3.1 `_maxBuffer`/`_retentionDays` 改 `static const int` | ✅ 文档与实现一致 |
+
+## 二次评审意见
+
+> 评审日期：2026-07-17
+> 评审基准：commit cccb2f6（fix: app logging 导出磁盘回读 + 设计文档评审修复）
+> 评审范围：AL-1/2/5/10 修复复审 + AL-1 修复引入的新问题
+
+### 设计层修复复审
+
+AL-1/AL-2/AL-5/AL-10 四条设计问题均已正确落地，详见上方「修复复审」表。§3 架构图、§4.5 双路流程、§6 UI 调用、§7 决策、§9 场景验证、§10 不做的事均与代码一致。`dart analyze` 无 issue，`flutter test` 15/15 通过。
+
+### 🟡 中
+
+**AL-R1：「今天」磁盘路未刷新 `_currentDate`，跨午夜后可能返回昨天的日志**
+
+§4.5 磁盘路伪代码写「`todayOnly ? 选 <今天>.log`」，实现用 `$_currentDate.log` 选文件，但 `exportDiskText` 未在选文件前调 `_rotate()`。`_currentDate` 仅在 `init()` 与每次 `log()` 时更新——若 app 跨午夜运行且午夜后无 `log()`（SSE 静默），`_currentDate` 仍是昨天 →「今天」读到昨天的文件。「全部」不受影响（`listSync` 不依赖 `_currentDate`）。
+
+属实现层问题，详见 `review-app-logging.md` AL-R1。§4.5 磁盘路伪代码建议补「`_rotate()` 刷新日期」一步以明确意图。

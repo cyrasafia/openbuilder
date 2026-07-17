@@ -230,19 +230,33 @@ class _SettingsTabState extends State<SettingsTab> {
   }
 
   Future<void> _exportRecent(Duration since) async {
-    final file = await AppLogger.I.exportFileRecent(since);
-    await SharePlus.instance.share(
-      ShareParams(files: [XFile(file.path)], text: 'opencode logs'),
-    );
+    try {
+      final file = await AppLogger.I.exportFileRecent(since);
+      if (!mounted) return;
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(file.path)], text: 'opencode logs'),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('导出失败: $e')));
+    }
   }
 
   Future<void> _exportDisk({required bool todayOnly}) async {
-    final file = await AppLogger.I.exportFileDisk(todayOnly: todayOnly);
-    await SharePlus.instance.share(
-      ShareParams(
-          files: [XFile(file.path)],
-          text: todayOnly ? 'opencode logs today' : 'opencode logs all'),
-    );
+    try {
+      final file = await AppLogger.I.exportFileDisk(todayOnly: todayOnly);
+      if (!mounted) return;
+      await SharePlus.instance.share(
+        ShareParams(
+            files: [XFile(file.path)],
+            text: todayOnly ? 'opencode logs today' : 'opencode logs all'),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('导出失败: $e')));
+    }
   }
 
   Widget _kv(String k, String v) {

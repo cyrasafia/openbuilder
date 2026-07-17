@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 enum LogLevel { debug, info, warning, error }
@@ -20,8 +21,8 @@ class LogEntry {
       '${t.year}-${_p(t.month)}-${_p(t.day)} '
       '${_p(t.hour)}:${_p(t.minute)}:${_p(t.second)}.${_p3(t.millisecond)}';
 
-  static String _p(int n) => n < 10 ? '0$n' : '$n';
-  static String _p3(int n) => n < 100 ? n < 10 ? '00$n' : '0$n' : '$n';
+  static String _p(int n) => n.toString().padLeft(2, '0');
+  static String _p3(int n) => n.toString().padLeft(3, '0');
 }
 
 class AppLogger {
@@ -48,28 +49,32 @@ class AppLogger {
     final now = DateTime.now();
     final date = '${now.year}-${_p(now.month)}-${_p(now.day)}';
     if (date == _currentDate && _sink != null) return;
-    _sink?.close();
     _currentDate = date;
     final file = File('${_dir!.path}/$date.log');
+    final old = _sink;
     _sink = file.openWrite(mode: FileMode.append);
+    unawaited(old?.close());
   }
 
   void _cleanup() {
     final now = DateTime.now();
-    final cutoff = now.subtract(const Duration(days: _retentionDays));
     try {
       for (final f in _dir!.listSync().whereType<File>()) {
-        final name = f.uri.pathSegments.last;
-        if (!name.endsWith('.log')) continue;
-        final base = name.replaceAll('.log', '');
-        final parts = base.split('-');
-        if (parts.length != 3) continue;
-        final fileDate = DateTime.tryParse(base);
-        if (fileDate != null && fileDate.isBefore(cutoff)) {
+        if (shouldDeleteLogFile(f.uri.pathSegments.last, now)) {
           f.deleteSync();
         }
       }
     } catch (_) {}
+  }
+
+  @visibleForTesting
+  static bool shouldDeleteLogFile(String fileName, DateTime now) {
+    if (!fileName.endsWith('.log')) return false;
+    final base = fileName.replaceAll('.log', '');
+    if (base.split('-').length != 3) return false;
+    final fileDate = DateTime.tryParse(base);
+    if (fileDate == null) return false;
+    return fileDate.isBefore(now.subtract(const Duration(days: _retentionDays)));
   }
 
   void log(LogLevel level, String tag, String message) {
@@ -87,7 +92,7 @@ class AppLogger {
   void w(String tag, String message) => log(LogLevel.warning, tag, message);
   void e(String tag, String message) => log(LogLevel.error, tag, message);
 
-  Future<List<LogEntry>> exportRecent(Duration since) async {
+  List<LogEntry> exportRecent(Duration since) {
     final cutoff = DateTime.now().subtract(since);
     return _buffer.where((e) => e.time.isAfter(cutoff)).toList();
   }
@@ -97,6 +102,7 @@ class AppLogger {
       return _buffer.map((e) => e.line).join('\n');
     }
     await _sink?.flush();
+    _rotate();
     final files = <File>[];
     if (todayOnly) {
       if (_currentDate != null) {
@@ -122,7 +128,7 @@ class AppLogger {
   }
 
   Future<File> exportFileRecent(Duration since, {String? filename}) async {
-    final entries = await exportRecent(since);
+    final entries = exportRecent(since);
     return _writeTemp(entries.map((e) => e.line).join('\n'), filename);
   }
 
@@ -132,18 +138,31 @@ class AppLogger {
   }
 
   Future<File> _writeTemp(String text, String? filename) async {
-    final name = filename ??
-        'opencode-logs-${_p(DateTime.now().hour)}${_p(DateTime.now().minute)}.log';
+    final n = DateTime.now();
+    final name = filename ?? 'opencode-logs-${_p(n.hour)}${_p(n.minute)}.log';
     final tmp = await getTemporaryDirectory();
     final file = File('${tmp.path}/$name');
     await file.writeAsString(text);
     return file;
   }
 
-  static String _p(int n) => n < 10 ? '0$n' : '$n';
+  static String _p(int n) => n.toString().padLeft(2, '0');
+
+  Future<void> flush() async {
+    await _sink?.flush();
+  }
 
   Future<void> dispose() async {
     await _sink?.flush();
     await _sink?.close();
+    _sink = null;
+  }
+
+  @visibleForTesting
+  static void resetForTesting() {
+    I._buffer.clear();
+    I._dir = null;
+    I._sink = null;
+    I._currentDate = null;
   }
 }

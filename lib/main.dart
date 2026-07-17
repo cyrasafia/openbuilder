@@ -21,8 +21,35 @@ void main() async {
   runApp(const OpencodeMobileApp());
 }
 
-class OpencodeMobileApp extends StatelessWidget {
+class OpencodeMobileApp extends StatefulWidget {
   const OpencodeMobileApp({super.key});
+
+  @override
+  State<OpencodeMobileApp> createState() => _OpencodeMobileAppState();
+}
+
+class _OpencodeMobileAppState extends State<OpencodeMobileApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      AppLogger.I.flush();
+    } else if (state == AppLifecycleState.detached) {
+      AppLogger.I.dispose();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
