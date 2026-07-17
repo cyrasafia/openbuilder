@@ -52,38 +52,40 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    /// Save [srcPath] into the public Download folder.
-    /// API 29+ uses MediaStore.Downloads (no permission needed);
-    /// older API falls back to a direct file copy into the public Downloads dir.
+    /// Save [srcPath] into the public Download folder via MediaStore (API 29+).
+    /// No permission needed. Older API has no permission-free path to public
+    /// Download, so it throws and the Dart side falls back to app storage.
     private fun saveToDownloads(srcPath: String, displayName: String): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            throw UnsupportedOperationException("saveToDownloads 需要 API 29+")
+        }
         val src = File(srcPath)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val resolver = contentResolver
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                put(MediaStore.MediaColumns.IS_PENDING, 1)
-            }
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw RuntimeException("无法在 Download 创建文件")
-            try {
-                resolver.openOutputStream(uri)?.use { out ->
-                    FileInputStream(src).use { it.copyTo(out) }
-                } ?: throw RuntimeException("无法打开输出流")
-            } finally {
+        if (!src.exists()) throw java.io.FileNotFoundException("源日志文件不存在: $srcPath")
+        val resolver = contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw RuntimeException("无法在 Download 创建文件")
+        var success = false
+        try {
+            resolver.openOutputStream(uri)?.use { out ->
+                FileInputStream(src).use { it.copyTo(out) }
+            } ?: throw RuntimeException("无法打开输出流")
+            success = true
+        } finally {
+            if (success) {
                 values.clear()
                 values.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 resolver.update(uri, values, null, null)
+            } else {
+                resolver.delete(uri, null, null)
             }
-            return uri.toString()
-        } else {
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!dir.exists()) dir.mkdirs()
-            val dest = File(dir, displayName)
-            src.copyTo(dest, overwrite = true)
-            return dest.absolutePath
         }
+        return uri.toString()
     }
 
     /// Attempt to read the system font weight.

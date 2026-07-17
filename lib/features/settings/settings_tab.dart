@@ -337,8 +337,8 @@ class _SettingsTabState extends State<SettingsTab> {
           ScaffoldMessenger.of(context)
               .showSnackBar(SnackBar(content: Text('已保存到 Download：$name')));
           return;
-        } catch (_) {
-          // MediaStore 不可用（旧版 Android）→ 回退应用目录
+        } catch (e) {
+          AppLogger.I.w('Settings', 'saveToDownloads failed: $e');
         }
       }
       final dir = await getExternalStorageDirectory();

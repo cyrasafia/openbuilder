@@ -240,7 +240,7 @@ init() 时执行一次
 `_doExport` 统一流程：生成导出文件（try-catch + 失败 SnackBar `导出失败`）→ 按平台分发：
 
 - **Android**：再弹一「分享」`showModalBottomSheet`，**第一项固定「保存到本地」**，次项「分享…」：
-  - 保存到本地 `[save_alt]` → `_saveToLocal`：经平台通道 `com.opencode.mobile/files` 的 `saveToDownloads` 写入公共 **Download** 文件夹——API 29+ 用 `MediaStore.Downloads`（`RELATIVE_PATH=Download`、`IS_PENDING` 翻转，无需权限），旧 API 直接复制到 `Environment.DIRECTORY_DOWNLOADS`；SnackBar `已保存到 Download：<name>`。MediaStore 不可用时回退 app-specific 外存 `logs/` 子目录并提示。
+  - 保存到本地 `[save_alt]` → `_saveToLocal`：经平台通道 `com.opencode.mobile/files` 的 `saveToDownloads` 写入公共 **Download** 文件夹——API 29+ 用 `MediaStore.Downloads`（`RELATIVE_PATH=Download`、`IS_PENDING`：成功翻 0、失败删 URI，不留空/残缺文件，无需权限）；旧 API (<29) 无免权限写公共 Download 的路径，直接抛异常由 Dart 回退；SnackBar `已保存到 Download：<name>`。MediaStore 不可用（含旧 API）时回退 app-specific 外存 `logs/` 子目录并记录 `AppLogger.I.w`。
   - 分享… `[share]` → `_share`：`SharePlus` 系统分享面板。
 - **其他平台**：直接 `_share` 走系统分享面板。
 
