@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencode_mobile/core/logging/app_logger.dart';
 
@@ -72,6 +74,80 @@ void main() {
       expect(AppLogger.shouldDeleteLogFile('2026-06-17.txt', now), isFalse);
       expect(AppLogger.shouldDeleteLogFile('not-a-date.log', now), isFalse);
       expect(AppLogger.shouldDeleteLogFile('2026-13-01.log', now), isFalse);
+    });
+  });
+
+  group('readDiskLogs', () {
+    late Directory tmp;
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('applog_read');
+    });
+    tearDown(() async {
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('todayOnly reads only the current-date file', () async {
+      File('${tmp.path}/2026-07-16.log').writeAsStringSync('yesterday\n');
+      File('${tmp.path}/2026-07-17.log')
+          .writeAsStringSync('today line1\ntoday line2\n');
+      expect(
+        await AppLogger.readDiskLogs(tmp, '2026-07-17', todayOnly: true),
+        'today line1\ntoday line2',
+      );
+    });
+
+    test('todayOnly returns empty when current-date file is missing', () async {
+      File('${tmp.path}/2026-07-16.log').writeAsStringSync('x\n');
+      expect(
+        await AppLogger.readDiskLogs(tmp, '2026-07-17', todayOnly: true),
+        '',
+      );
+    });
+
+    test('todayOnly returns empty when currentDate is null', () async {
+      File('${tmp.path}/2026-07-17.log').writeAsStringSync('x\n');
+      expect(
+        await AppLogger.readDiskLogs(tmp, null, todayOnly: true),
+        '',
+      );
+    });
+
+    test('all reads every .log sorted by name, skips non-.log', () async {
+      File('${tmp.path}/2026-07-17.log').writeAsStringSync('day2\n');
+      File('${tmp.path}/2026-07-16.log').writeAsStringSync('day1\n');
+      File('${tmp.path}/notes.txt').writeAsStringSync('ignore\n');
+      expect(
+        await AppLogger.readDiskLogs(tmp, null, todayOnly: false),
+        'day1\nday2',
+      );
+    });
+
+    test('all joins files, inserting missing trailing newline', () async {
+      File('${tmp.path}/2026-07-16.log').writeAsStringSync('noeol');
+      File('${tmp.path}/2026-07-17.log').writeAsStringSync('has\n');
+      expect(
+        await AppLogger.readDiskLogs(tmp, null, todayOnly: false),
+        'noeol\nhas',
+      );
+    });
+  });
+
+  group('exportDiskText', () {
+    late Directory tmp;
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('applog_export');
+    });
+    tearDown(() async {
+      await AppLogger.I.dispose();
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('todayOnly refreshes stale currentDate via _rotate (AL-R1)', () async {
+      File('${tmp.path}/2020-01-01.log').writeAsStringSync('past content\n');
+      AppLogger.prepareDiskForTesting(tmp, '2020-01-01');
+      final text = await AppLogger.I.exportDiskText(todayOnly: true);
+      expect(text, '');
+      expect(text.contains('past content'), isFalse);
     });
   });
 }

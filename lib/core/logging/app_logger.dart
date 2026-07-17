@@ -103,14 +103,20 @@ class AppLogger {
     }
     await _sink?.flush();
     _rotate();
+    return readDiskLogs(_dir!, _currentDate, todayOnly: todayOnly);
+  }
+
+  @visibleForTesting
+  static Future<String> readDiskLogs(
+      Directory dir, String? currentDate, {required bool todayOnly}) async {
     final files = <File>[];
     if (todayOnly) {
-      if (_currentDate != null) {
-        final f = File('${_dir!.path}/$_currentDate.log');
+      if (currentDate != null) {
+        final f = File('${dir.path}/$currentDate.log');
         if (await f.exists()) files.add(f);
       }
     } else {
-      final all = _dir!.listSync().whereType<File>().where((f) {
+      final all = dir.listSync().whereType<File>().where((f) {
         return f.uri.pathSegments.last.endsWith('.log');
       }).toList();
       all.sort(
@@ -125,6 +131,13 @@ class AppLogger {
       if (!content.endsWith('\n')) sb.writeln();
     }
     return sb.toString().trimRight();
+  }
+
+  @visibleForTesting
+  static void prepareDiskForTesting(Directory dir, String currentDate) {
+    I._dir = dir;
+    I._currentDate = currentDate;
+    I._sink = null;
   }
 
   Future<File> exportFileRecent(Duration since, {String? filename}) async {

@@ -103,3 +103,35 @@ if (todayOnly) {
 | AL-9 | 🟢 低 | ✅ 已修 | `_p`/`_p3` 改 `n.toString().padLeft(N,'0')`；`exportRecent` 去掉无谓 `async`/`Future` 改同步返回 `List<LogEntry>` |
 | AL-R1 | 🟡 中 | ✅ 已修 | `exportDiskText` 在 `await _sink?.flush()` 后补 `_rotate()` 刷新 `_currentDate`（先 flush 再 rotate 保尾部），跨午夜「今天」不再误读昨天文件 |
 
+## 二次评审意见
+
+> 评审日期：2026-07-17
+> 评审基准：commit 016b2f6（fix: app logging 实现层评审修复 AL-2/3/4/6/8/9 + AL-R1）
+> 评审范围：实现层修复复审 + 修复引入的新问题
+
+### 修复复审
+
+AL-2(impl) / AL-3 / AL-4 / AL-6 / AL-7 / AL-8 / AL-9 / AL-R1 八条实现问题均已正确落地，详见上方「修复复审」表。`dart analyze` 无 issue，`flutter test` 23/23 通过（含 AL-4 新增 8 用例）。修复方式与评审建议一致，无偏离设计的实现，无新 bug。至此 AL-1~10 + AL-R1 全部闭环。
+
+### 🟢 低
+
+**AL-R2：AL-R1 修复（`exportDiskText` 的 `_rotate()` 调用）无测试覆盖**
+
+AL-4 新增的 8 用例覆盖纯逻辑（`LogEntry.line` 格式/补零/级别、缓冲 2000 封顶头部丢弃、`exportRecent` 时间边界、`shouldDeleteLogFile` 6 子例），但 `exportDiskText` 需 path_provider（文件系统），均未触及磁盘路。AL-R1 是本次最关键的修复（跨午夜「今天」误读昨天），却无回归保护——若将来误删 `app_logger.dart:105` 的 `_rotate()`，测试不会红。
+
+根因：`resetForTesting` 不设 `_dir`，`exportDiskText` 走 `_dir==null` 回退分支（join `_buffer`），测不到真磁盘路径。
+
+可选补法（择一）：
+- A. 用 `Directory.systemTemp` 造临时日志目录，反射/测试钩子注入 `_dir` + 写入若干 `.log` 文件，断言 `exportDiskText` 回读内容与 `_rotate()` 切日期行为；
+- B. 引入 `path_provider` 平台接口 mock（`PathProviderPlatform` / `MockPathProvider`），隔离文件系统依赖。
+
+优先级低——AL-R1 逻辑简单（一行 `_rotate()`）且 design §9 场景验证已文档化，但作为关键路径的回归网更稳妥。
+
+### 二次修复复审
+
+采用方案 A（`Directory.systemTemp` + 测试钩子注入），不引 path_provider mock。
+
+| 编号 | 优先级 | 状态 | 备注 |
+|------|--------|------|------|
+| AL-R2 | 🟢 低 | ✅ 已修 | 抽出 `@visibleForTesting readDiskLogs(dir,currentDate,{todayOnly})`（与 `shouldDeleteLogFile` 同模式，exportDiskText 调用它）+ 新增 `prepareDiskForTesting(dir,currentDate)` 测试缝注入 `_dir`/`_currentDate`/`_sink=null`。补 6 用例：readDiskLogs（todayOnly 选当天/缺文件返空/null 日期返空、全部按名排序跳过非 .log、缺尾换行补齐）+ exportDiskText（todayOnly 跨午夜 `_rotate` 刷新日期——stale `2020-01-01` 注入，删 `_rotate()` 即读到 'past content' 而红）。`flutter test` 29/29 全绿 |
+
