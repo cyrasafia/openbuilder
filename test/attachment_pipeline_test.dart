@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:cross_file/cross_file.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencode_mobile/core/attachments/attachment_pipeline.dart';
-import 'package:path/path.dart' as p;
 
 class _MockCompressor implements ImageCompressor {
   final List<Uint8List> _compressReturns;
@@ -30,7 +29,7 @@ class _MockCompressor implements ImageCompressor {
 
 XFile _xfile(String name, Uint8List bytes) {
   final dir = Directory.systemTemp.createTempSync('att_test');
-  final f = File(p.join(dir.path, name))..writeAsBytesSync(bytes);
+  final f = File('${dir.path}/$name')..writeAsBytesSync(bytes);
   addTearDown(() => dir.deleteSync(recursive: true));
   return XFile(f.path);
 }
