@@ -14,8 +14,14 @@ rootProject.layout.buildDirectory.value(newBuildDir)
 subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
-}
-subprojects {
+    afterEvaluate {
+        plugins.withId("com.android.library") {
+            extensions.findByType<com.android.build.api.dsl.LibraryExtension>()?.compileSdk = 36
+        }
+        plugins.withId("com.android.application") {
+            extensions.findByType<com.android.build.api.dsl.ApplicationExtension>()?.compileSdk = 36
+        }
+    }
     project.evaluationDependsOn(":app")
 }
 

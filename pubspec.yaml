@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.1.13+14
+version: 0.1.26+27
 
 environment:
   sdk: ^3.12.2
@@ -41,11 +41,11 @@ dependencies:
   bonsoir: ^7.1.4
   dio: ^5.10.0
   flutter_markdown: ^0.7.7
-  package_info_plus: ^10.2.1
+  package_info_plus: ^9.0.0
   flutter_local_notifications: ^18.0.1
   shared_preferences: ^2.3.3
   path_provider: ^2.1.5
-  share_plus: ^13.2.1
+  share_plus: ^12.0.2
   file_picker: ^8.3.0
   image_picker: ^1.1.2
   flutter_image_compress: ^2.3.0
@@ -62,13 +62,6 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
-
-# file_picker 用 dart.library.ffi（Linux/macOS 桌面也编译其 windows 实现），
-# 其 8.x/11.x 限定 win32 5.x；package_info_plus 10.x / share_plus 13.x 需 win32 6.x。
-# mobile（Android+iOS）不依赖 win32，此 override 仅为统一 pub 解析 + 桌面/CI 编译通过。
-# 跟踪 file_picker 上游改用平台 conditional 后移除（CR-4）。
-dependency_overrides:
-  win32: ^5.9.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
