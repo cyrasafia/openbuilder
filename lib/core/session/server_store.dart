@@ -6,10 +6,13 @@ import 'package:flutter/foundation.dart';
 import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
 import '../connection/connection_profile.dart';
+import '../logging/app_logger.dart';
 import '../net/dio_factory.dart';
 import '../notifications/notification_service.dart';
 import '../sse/sse_client.dart';
 import 'conversation_store.dart';
+
+const _tag = 'Server';
 
 /// Live, per-active-server state: projects / sessions / status / latest-message
 /// preview, plus lazy per-session [ConversationStore] caches. Fed by one SSE
@@ -288,6 +291,7 @@ class ServerStore extends ChangeNotifier {
         connected) {
       return;
     }
+    AppLogger.I.i(_tag, 'connect ${profile.hostDisplay}');
     _profile = profile;
     await _teardown();
     _projects = [];
@@ -302,6 +306,7 @@ class ServerStore extends ChangeNotifier {
     final ok = await _bootstrap();
     bootstrapFailed = !ok;
     if (!ok) {
+      AppLogger.I.e(_tag, 'bootstrap failed ${profile.hostDisplay}');
       connected = false;
       notifyListeners();
       return;
@@ -674,14 +679,17 @@ class ServerStore extends ChangeNotifier {
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
       case 'server.connected':
+        AppLogger.I.i(_tag, 'server.connected');
         _scheduleReconcile();
         return; // _reconcile notifies
       case 'session.status':
         final sid = ev.properties['sessionID']?.toString();
         final st = ev.properties['status'];
         if (sid != null && st is Map) {
-          _statusMap[sid] = SessionStatusValue.fromJson(st.cast());
-          _conversations[sid]?.setStatus(_statusMap[sid]!.type);
+          final status = SessionStatusValue.fromJson(st.cast());
+          AppLogger.I.d(_tag, 'session.status $sid=${status.type}');
+          _statusMap[sid] = status;
+          _conversations[sid]?.setStatus(status.type);
         }
         break;
       case 'session.idle':
@@ -692,6 +700,7 @@ class ServerStore extends ChangeNotifier {
           final wasBusy = _statusMap[sid]?.type == 'busy';
           _statusMap[sid] = const SessionStatusValue('idle');
           if (wasBusy) {
+            AppLogger.I.i(_tag, 'session.idle $sid');
             final title = sessionById(sid)?.title ?? '会话';
             unawaited(NotificationService.notifyRunComplete(title)
                 .catchError((_) {}));
@@ -715,6 +724,7 @@ class ServerStore extends ChangeNotifier {
         final sid = ev.properties['sessionID']?.toString();
         final err = ev.properties['error'];
         if (sid != null && err is Map) {
+          AppLogger.I.e(_tag, 'session.error $sid $err');
           ensureConversation(sid)
               ?.onSessionError(err.cast<String, dynamic>());
         }

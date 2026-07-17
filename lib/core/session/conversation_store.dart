@@ -7,6 +7,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../data/api/opencode_client.dart';
 import '../../../domain/models.dart';
+import '../logging/app_logger.dart';
+
+const _tag = 'Conv';
 
 /// Mutable, render-friendly part for the conversation view.
 class DisplayPart {
@@ -301,8 +304,10 @@ class ConversationStore extends ChangeNotifier {
     if (_reconciling) return; // 互斥
     _reconciling = true;
     _lastReloadAt = DateTime.now();
+    AppLogger.I.d(_tag, 'reconcile start $sessionId');
     try {
       final entries = await client.messages(sessionId);
+      AppLogger.I.d(_tag, 'reconcile fetched ${entries.length} messages $sessionId');
       // Infer session status from the last message — terminal finish values
       // ('stop'/'error') mean the session is idle. Preserved from reload so
       // self-healing paths (watchdog reconnect, manual refresh) still correct
@@ -349,6 +354,7 @@ class ConversationStore extends ChangeNotifier {
       loading = false;
       unawaited(_saveCache());
     } catch (e) {
+      AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
       // Set error so first-load failure surfaces in the UI ("加载失败");
       // background reconcile failures on a conv with messages stay hidden
       // (UI gates on messages.isEmpty) and clear on next success.

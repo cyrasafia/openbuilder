@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../app_state.dart';
+import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
 import '../../data/api/opencode_client.dart';
 import '../../ui/theme.dart';
@@ -184,6 +186,32 @@ class _SettingsTabState extends State<SettingsTab> {
                   ),
                 ),
               ]),
+              _section('日志', [
+                ListTile(
+                  leading: const Icon(Icons.timer_outlined),
+                  title: const Text('导出最近 5 分钟'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _exportLogs(const Duration(minutes: 5)),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.schedule_outlined),
+                  title: const Text('导出最近 1 小时'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _exportLogs(const Duration(hours: 1)),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.today_outlined),
+                  title: const Text('导出今天'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _exportLogsToday(),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.file_download_outlined),
+                  title: const Text('导出全部'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _exportLogs(null),
+                ),
+              ]),
               _section('关于', [
                 ListTile(
                   leading: const Icon(Icons.info_outline),
@@ -198,6 +226,22 @@ class _SettingsTabState extends State<SettingsTab> {
           );
         },
       ),
+    );
+  }
+
+  Future<void> _exportLogs(Duration? since) async {
+    final file = await AppLogger.I.exportFile(since: since);
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile(file.path)], text: 'opencode logs'),
+    );
+  }
+
+  Future<void> _exportLogsToday() async {
+    final now = DateTime.now();
+    final since = DateTime(now.year, now.month, now.day).difference(now);
+    final file = await AppLogger.I.exportFile(since: since.abs());
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile(file.path)], text: 'opencode logs today'),
     );
   }
 

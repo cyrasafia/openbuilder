@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'app_router.dart';
 import 'app_state.dart';
+import 'core/logging/app_logger.dart';
 import 'core/notifications/notification_service.dart';
 import 'core/net/system_font_weight.dart';
 import 'ui/theme.dart';
@@ -11,6 +12,7 @@ final _router = buildRouter(connectionStore);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppLogger.I.init();
   await connectionStore.load();
   wireServerStore();
   await NotificationService.init();

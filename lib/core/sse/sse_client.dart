@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 
+import '../logging/app_logger.dart';
 import 'sse_transport.dart' if (dart.library.html) 'sse_transport_web.dart'
     as transport;
+
+const _tag = 'SSE';
 
 /// A parsed opencode SSE event (`data: {id,type,properties}`).
 class OpencodeEvent {
@@ -68,11 +71,13 @@ class SseClient {
   void start() {
     if (!_stopped) return;
     _stopped = false;
+    AppLogger.I.i(_tag, 'start ${uri.path}');
     _connect();
   }
 
   Future<void> stop() async {
     _stopped = true;
+    AppLogger.I.i(_tag, 'stop ${uri.path}');
     await _sub?.cancel();
     _sub = null;
   }
@@ -95,12 +100,14 @@ class SseClient {
   /// duplicate scheduling while a backoff is already pending.
   void _onDrop() {
     if (_stopped || _reconnectPending) return;
+    AppLogger.I.w(_tag, 'dropped ${uri.path}');
     unawaited(_scheduleReconnect());
   }
 
   Future<void> _scheduleReconnect() async {
     _reconnectPending = true;
     _reconnectAttempt++;
+    AppLogger.I.i(_tag, 'reconnect attempt $_reconnectAttempt ${uri.path}');
     _emit(SseState(reconnecting: true, attempt: _reconnectAttempt));
     await Future.delayed(Duration(seconds: _backoff));
     _backoff = (_backoff * 2).clamp(1, 30);
