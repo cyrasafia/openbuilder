@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
@@ -30,6 +32,7 @@ class ServerStore extends ChangeNotifier {
   Map<String, String> _sseHeaders = {};
   Timer? _reconcileTimer;
   Timer? _previewNotifyTimer;
+  Timer? _cacheSaveTimer;
   DateTime? _lastPreviewNotifyAt;
   static const _previewNotifyInterval = Duration(milliseconds: 120);
   ConnectionProfile? _profile;
@@ -299,6 +302,8 @@ class ServerStore extends ChangeNotifier {
     _statusMap.clear();
     _lastMessage.clear();
     _projectsFetched = false;
+    // Load cached data first for instant offline UI, then _bootstrap refreshes.
+    await _loadCache();
     final dio = dioFor(profile);
     client = OpencodeClient(dio);
     _sseHeaders = Map.from(dio.options.headers.map(
@@ -307,10 +312,13 @@ class ServerStore extends ChangeNotifier {
     bootstrapFailed = !ok;
     if (!ok) {
       AppLogger.I.e(_tag, 'bootstrap failed ${profile.hostDisplay}');
+      // Keep cached data visible (offline-first); don't clear on failure.
       connected = false;
       notifyListeners();
       return;
     }
+    // Save fresh REST data to cache for next offline open.
+    unawaited(_saveCache());
     // _bootstrap already fetched projects + sessions + status.
     // Just start watchdog + SSE for busy/retry sessions + active conversation.
     _startSse(_kGlobalWatchdog);
@@ -690,6 +698,7 @@ class ServerStore extends ChangeNotifier {
           AppLogger.I.d(_tag, 'session.status $sid=${status.type}');
           _statusMap[sid] = status;
           _conversations[sid]?.setStatus(status.type);
+          _scheduleCacheSave();
         }
         break;
       case 'session.idle':
@@ -757,6 +766,7 @@ class ServerStore extends ChangeNotifier {
               if (pv != null) {
                 _lastMessage[sid] = pv;
                 _notifyPreviewChanged();
+                _scheduleCacheSave();
               }
             }
           }
@@ -852,6 +862,7 @@ class ServerStore extends ChangeNotifier {
     if (local != null) {
       _lastMessage[sid] = local;
       _notifyPreviewChanged();
+      _scheduleCacheSave();
       return;
     }
     // local == null: streaming assistant has no renderable parts yet, or
@@ -879,6 +890,7 @@ class ServerStore extends ChangeNotifier {
     if (pv != null) {
       _lastMessage[sid] = pv;
       _notifyPreviewChanged();
+      _scheduleCacheSave();
     }
   }
 
@@ -886,6 +898,7 @@ class ServerStore extends ChangeNotifier {
     // Drop archived sessions and subtask/child sessions from the active list.
     if (s.archived != null || s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
+      _scheduleCacheSave();
       return;
     }
     final idx = _sessions.indexWhere((x) => x.id == s.id);
@@ -894,6 +907,7 @@ class ServerStore extends ChangeNotifier {
     } else {
       _sessions[idx] = s;
     }
+    _scheduleCacheSave();
     // A new/updated session — only start SSE if it's busy/retry or active.
     if (s.directory.isNotEmpty) {
       final status = _statusMap[s.id];
@@ -909,7 +923,9 @@ class ServerStore extends ChangeNotifier {
   void _removeSession(String id) {
     _sessions.removeWhere((s) => s.id == id);
     _conversations.remove(id);
+    _lastMessage.remove(id);
     _trimSse();
+    _scheduleCacheSave();
   }
 
   /// LRU eviction + stale directory cleanup. Merges the old `_pruneSse()`
@@ -1006,6 +1022,8 @@ class ServerStore extends ChangeNotifier {
     _reconcileTimer = null;
     _previewNotifyTimer?.cancel();
     _previewNotifyTimer = null;
+    _cacheSaveTimer?.cancel();
+    _cacheSaveTimer = null;
     super.dispose();
   }
 
@@ -1059,6 +1077,8 @@ class ServerStore extends ChangeNotifier {
   Future<void> _stopSse() async {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
+    _cacheSaveTimer?.cancel();
+    _cacheSaveTimer = null;
     for (final sub in _sseSubs.values) {
       await sub.cancel();
     }
@@ -1074,5 +1094,68 @@ class ServerStore extends ChangeNotifier {
     _sseRequired.clear();
     _watchdogConnected = false;
     _watchdogFailed = false;
+  }
+
+  // ── Local cache (offline-first: instant UI on app open) ──
+
+  String _cacheKey(String profileId) => 'server_$profileId';
+
+  void _scheduleCacheSave() {
+    if (_profile == null) return;
+    _cacheSaveTimer?.cancel();
+    _cacheSaveTimer = Timer(const Duration(seconds: 2), () => _saveCache());
+  }
+
+  Future<void> _saveCache() async {
+    if (_profile == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final j = {
+        'projects': _projects.map((p) => p.toJson()).toList(),
+        'sessions': _sessions.map((s) => s.toJson()).toList(),
+        'status': _statusMap.map((k, v) => MapEntry(k, v.toJson())),
+        'lastMessage': _lastMessage,
+      };
+      await prefs.setString(_cacheKey(_profile!.id), jsonEncode(j));
+    } catch (e) {
+      AppLogger.I.w(_tag, 'saveCache failed: $e');
+    }
+  }
+
+  Future<void> _loadCache() async {
+    if (_profile == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKey(_profile!.id));
+      if (raw == null || raw.isEmpty) return;
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      final projects = (j['projects'] as List? ?? [])
+          .map((e) => ProjectModel.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+      final sessions = (j['sessions'] as List? ?? [])
+          .map((e) => SessionModel.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+      final status = <String, SessionStatusValue>{};
+      final statusRaw = j['status'] as Map? ?? {};
+      for (final entry in statusRaw.entries) {
+        status[entry.key] =
+            SessionStatusValue.fromJson((entry.value as Map).cast<String, dynamic>());
+      }
+      final lastMsg = <String, String>{};
+      final lmRaw = j['lastMessage'] as Map? ?? {};
+      for (final entry in lmRaw.entries) {
+        lastMsg[entry.key] = entry.value.toString();
+      }
+      if (_projects.isEmpty) _projects = projects;
+      if (_sessions.isEmpty) _sessions = sessions;
+      _statusMap.addAll(status);
+      _lastMessage.addAll(lastMsg);
+      if (_sessions.isNotEmpty) {
+        _projectsFetched = true;
+        notifyListeners();
+      }
+    } catch (e) {
+      AppLogger.I.w(_tag, 'loadCache failed: $e');
+    }
   }
 }

@@ -39,6 +39,16 @@ class ProjectModel {
     if (n != null && n.trim().isNotEmpty) return n;
     return worktreeName;
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'worktree': worktree,
+        if (vcs != null) 'vcs': vcs,
+        if (name != null) 'name': name,
+        if (icon != null) 'icon': icon!.toJson(),
+        'sandboxes': sandboxes,
+        'time': {'created': created},
+      };
 }
 
 class ProjectIcon {
@@ -52,6 +62,12 @@ class ProjectIcon {
         override: j['override']?.toString(),
         color: j['color']?.toString(),
       );
+
+  Map<String, dynamic> toJson() => {
+        if (url != null) 'url': url,
+        if (override != null) 'override': override,
+        if (color != null) 'color': color,
+      };
 
   /// Best image source (data URL or http URL); null → fallback to monogram.
   String? get image => override ?? url;
@@ -90,6 +106,9 @@ class Tokens {
         output: _i(j['output']),
         reasoning: _i(j['reasoning']),
       );
+
+  Map<String, dynamic> toJson() =>
+      {'input': input, 'output': output, 'reasoning': reasoning};
 }
 
 class SessionModel {
@@ -145,6 +164,23 @@ class SessionModel {
 
   String get dirName =>
       directory.isEmpty ? 'global' : directory.split('/').last;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'projectID': projectID,
+        'directory': directory,
+        'title': title,
+        'time': {
+          'created': created,
+          'updated': updated,
+          if (archived != null) 'archived': archived,
+        },
+        if (parentID != null) 'parentID': parentID,
+        'cost': cost,
+        'tokens': tokens.toJson(),
+        if (agent != null) 'agent': agent,
+        if (model != null) 'model': model!.toJson(),
+      };
 }
 
 /// `idle` | `busy` | `retry`
@@ -154,6 +190,8 @@ class SessionStatusValue {
 
   factory SessionStatusValue.fromJson(Map<String, dynamic> j) =>
       SessionStatusValue((j['type'] ?? 'idle').toString());
+
+  Map<String, dynamic> toJson() => {'type': type};
 }
 
 class MessageInfo {
