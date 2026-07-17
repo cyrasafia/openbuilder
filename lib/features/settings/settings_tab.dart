@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../app_state.dart';
@@ -188,28 +191,10 @@ class _SettingsTabState extends State<SettingsTab> {
               ]),
               _section('日志', [
                 ListTile(
-                  leading: const Icon(Icons.timer_outlined),
-                  title: const Text('导出最近 5 分钟'),
+                  leading: const Icon(Icons.description_outlined),
+                  title: const Text('导出日志'),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportRecent(const Duration(minutes: 5)),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.schedule_outlined),
-                  title: const Text('导出最近 1 小时'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportRecent(const Duration(hours: 1)),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.today_outlined),
-                  title: const Text('导出今天'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportDisk(todayOnly: true),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.file_download_outlined),
-                  title: const Text('导出全部'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _exportDisk(todayOnly: false),
+                  onTap: _showExportRangeSheet,
                 ),
               ]),
               _section('关于', [
@@ -229,33 +214,133 @@ class _SettingsTabState extends State<SettingsTab> {
     );
   }
 
-  Future<void> _exportRecent(Duration since) async {
+  void _showExportRangeSheet() {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.timer_outlined),
+              title: const Text('最近 5 分钟'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _doExport(() => AppLogger.I
+                    .exportFileRecent(const Duration(minutes: 5)));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.schedule_outlined),
+              title: const Text('最近 1 小时'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _doExport(() => AppLogger.I
+                    .exportFileRecent(const Duration(hours: 1)));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.today_outlined),
+              title: const Text('今天'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _doExport(() => AppLogger.I.exportFileDisk(todayOnly: true));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.file_download_outlined),
+              title: const Text('全部'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _doExport(
+                    () => AppLogger.I.exportFileDisk(todayOnly: false));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _doExport(Future<File> Function() build) async {
+    File file;
     try {
-      final file = await AppLogger.I.exportFileRecent(since);
+      file = await build();
+    } catch (e) {
       if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('导出失败: $e')));
+      return;
+    }
+    if (!mounted) return;
+    if (Platform.isAndroid) {
+      await _showShareSheet(file);
+    } else {
+      await _share(file);
+    }
+  }
+
+  Future<void> _showShareSheet(File file) async {
+    await showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.save_alt),
+              title: const Text('保存到本地'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _saveToLocal(file);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share_outlined),
+              title: const Text('分享…'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _share(file);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _share(File file) async {
+    try {
       await SharePlus.instance.share(
         ShareParams(files: [XFile(file.path)], text: 'opencode logs'),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('导出失败: $e')));
+          .showSnackBar(SnackBar(content: Text('分享失败: $e')));
     }
   }
 
-  Future<void> _exportDisk({required bool todayOnly}) async {
+  Future<void> _saveToLocal(File file) async {
     try {
-      final file = await AppLogger.I.exportFileDisk(todayOnly: todayOnly);
+      final dir = await getExternalStorageDirectory();
+      if (dir == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('无法访问本地存储')));
+        return;
+      }
+      final dest = Directory('${dir.path}/logs');
+      if (!await dest.exists()) await dest.create(recursive: true);
+      final name = file.uri.pathSegments.last;
+      final saved = await file.copy('${dest.path}/$name');
       if (!mounted) return;
-      await SharePlus.instance.share(
-        ShareParams(
-            files: [XFile(file.path)],
-            text: todayOnly ? 'opencode logs today' : 'opencode logs all'),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('已保存到本地：${saved.path}')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('导出失败: $e')));
+          .showSnackBar(SnackBar(content: Text('保存失败: $e')));
     }
   }
 

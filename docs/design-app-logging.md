@@ -214,22 +214,33 @@ init() 时执行一次
 
 ## 6. 设置页 UI
 
-在设置页「客户端」section 和「关于」section 之间新增「日志」section：
+在设置页「客户端」section 和「关于」section 之间新增「日志」section，**压缩为单入口**：
 
 ```
 ┌──────────────────────────┐
 │ 日志                      │
 ├──────────────────────────┤
-│ [timer]   导出最近 5 分钟 > │ → _exportRecent(Duration(minutes: 5))
-│ [schedule] 导出最近 1 小时 > │ → _exportRecent(Duration(hours: 1))
-│ [today]   导出今天      > │ → _exportDisk(todayOnly: true)
-│ [download] 导出全部     > │ → _exportDisk(todayOnly: false)
+│ [description] 导出日志  > │ → _showExportRangeSheet()
 └──────────────────────────┘
 ```
 
-`leading` 用 Material Icons：`Icons.timer_outlined` / `Icons.schedule_outlined` / `Icons.today_outlined` / `Icons.file_download_outlined`，`trailing` 统一 `Icons.chevron_right`。
+`leading` 用 `Icons.description_outlined`，`trailing` `Icons.chevron_right`。点击弹出 `showModalBottomSheet` 范围菜单（`SafeArea` + `Column` of `ListTile`，沿用 `AttachmentPicker` 同款样式）：
 
-每个 `ListTile` 的 `onTap` 调用导出方法，导出完成后弹出系统分享面板。
+```
+最近 5 分钟    [timer]      → _doExport(() => exportFileRecent(5min))
+最近 1 小时    [schedule]   → _doExport(() => exportFileRecent(1h))
+今天           [today]      → _doExport(() => exportFileDisk(todayOnly:true))
+全部           [download]   → _doExport(() => exportFileDisk(todayOnly:false))
+```
+
+`_doExport` 统一流程：生成导出文件（try-catch + 失败 SnackBar `导出失败`）→ 按平台分发：
+
+- **Android**：再弹一「分享」`showModalBottomSheet`，**第一项固定「保存到本地」**，次项「分享…」：
+  - 保存到本地 `[save_alt]` → `_saveToLocal`：`getExternalStorageDirectory()` 下 `logs/` 子目录复制文件（app-specific 外存，无需权限、持久），SnackBar `已保存到本地：<path>`；
+  - 分享… `[share]` → `_share`：`SharePlus` 系统分享面板。
+- **其他平台**：直接 `_share` 走系统分享面板。
+
+所有异步动作均有 `mounted` 守卫与 try-catch，错误经 SnackBar 反馈（延续 AL-3）。
 
 ## 7. 关键设计决策
 
@@ -251,7 +262,7 @@ init() 时执行一次
 |------|------|
 | `lib/core/logging/app_logger.dart` | **新增**：`AppLogger` 单例 + `LogEntry` + `LogLevel`；导出双路 `exportFileRecent` / `exportFileDisk` + `exportRecent` / `exportDiskText` |
 | `lib/main.dart` | 新增 `AppLogger.I.init()` 调用 |
-| `lib/features/settings/settings_tab.dart` | 新增「日志」section + `_exportRecent` / `_exportDisk` 方法（5min/1h 走快速路，今天/全部走磁盘路） |
+| `lib/features/settings/settings_tab.dart` | 「日志」section 压缩为单入口；`_showExportRangeSheet`（范围菜单）+ `_doExport`（统一生成+分发）+ Android `_showShareSheet`（保存到本地优先）/`_share`/`_saveToLocal` |
 | `lib/core/sse/sse_client.dart` | SSE 连接/断开/重连日志 |
 | `lib/core/session/server_store.dart` | 连接/状态/错误日志 |
 | `lib/core/session/conversation_store.dart` | reconcile 日志 |
