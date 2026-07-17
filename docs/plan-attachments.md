@@ -10,7 +10,7 @@
 
 | 文件 | 改动 |
 |------|------|
-| `pubspec.yaml` | 新增 `file_picker: ^8.3.0`、`image_picker: ^1.1.2`、`flutter_image_compress: ^2.3.0`、`mime: ^1.0.6` |
+| `pubspec.yaml` | 新增 `file_picker: ^8.3.0`、`image_picker: ^1.1.2`、`flutter_image_compress: ^2.3.0`、`mime: ^1.0.6`、`url_launcher: ^6.3.0` |
 | `android/app/src/main/AndroidManifest.xml` | 新增 `CAMERA` 权限 |
 | `ios/Runner/Info.plist` | 新增 `NSCameraUsageDescription`（**不**加 `NSPhotoLibraryUsageDescription`，AT-10） |
 | `lib/core/attachments/attachment_pipeline.dart` | **新建**：`AttachmentPreview` 值类、`AttachmentPicker`、`ImageCompressor` 接口 + `_FlutterImageCompressor`、`AttachmentPipeline`、`AttachmentTooLargeException`、阈值常量 |
@@ -29,12 +29,14 @@
   image_picker: ^1.1.2
   flutter_image_compress: ^2.3.0
   mime: ^1.0.6
+  url_launcher: ^6.3.0
 ```
 
 - `image_picker`：图片多选（`pickMultiImage`，iOS 14+ PHPicker / Android 13+ Photo Picker 免相册权限）+ 拍照（`pickImage(source: camera)`）。AT-2/AT-10。
 - `file_picker`：任意文件多选（`pickFiles(allowMultiple: true)`，SAF 免存储权限）。
 - `flutter_image_compress`：原生图片降采样+重编码（`ImageCompressor` 默认实现）。
 - `mime`：按文件名/扩展名推断 mime（`XFile.mimeType` 兜底）。
+- `url_launcher`：`_FileChip` 点击 http URL 类 file part 用 `launchUrl` 打开（AT-R6）。
 
 ### AndroidManifest — `<manifest>` 内新增（仅相机）
 
@@ -98,7 +100,7 @@ const _compressFallbackWidth = 1024;
 abstract class ImageCompressor {
   Future<Uint8List> compress(Uint8List src,
       {required int maxWidth, required int maxHeight, required int quality});
-  Uint8List thumbnail(Uint8List src, {required int edge});
+  Future<Uint8List> thumbnail(Uint8List src, {required int edge});  // AT-R1：异步
 }
 
 class _FlutterImageCompressor implements ImageCompressor {
@@ -107,9 +109,9 @@ class _FlutterImageCompressor implements ImageCompressor {
     return FlutterImageCompress.compressWithList(src,
         minWidth: maxWidth, minHeight: maxHeight, quality: quality);
   }
-  Uint8List thumbnail(Uint8List src, {required int edge}) {
-    // 同步/异步均可；预览条可 await，此处返回 Future 兼容——见 1.5
-    ...
+  Future<Uint8List> thumbnail(Uint8List src, {required int edge}) async {  // AT-R1：async
+    // 96 边小预览图：复用 compress 缩到 edge 边、quality 80
+    return compress(src, maxWidth: edge, maxHeight: edge, quality: 80);
   }
 }
 ```
@@ -128,7 +130,7 @@ static Future<List<XFile>> pick(BuildContext context) async {
       return l;
     case 'file':
       final r = await FilePicker.platform.pickFiles(allowMultiple: true);  // file_picker
-      return r?.files.map((f) => f.xfile).toList() ?? [];
+      return r?.files.map((f) => f.xfile).whereType<XFile>().toList() ?? [];  // AT-R8：xfile 为 XFile?，whereType 过滤 null
     case 'camera':
       final x = await ImagePicker().pickImage(source: ImageSource.camera);  // image_picker
       return x == null ? [] : [x];
@@ -337,15 +339,18 @@ Future<void> _send() async {
   // AT-11：_ctl.clear() 延迟到成功后，失败保留文本
   final session = serverStore.sessionById(widget.sessionId);
   final directory = session?.directory;
+  var ok = false;
   try {
     if (startsShell) {
       final command = text.substring(1).trim();
-      if (command.isEmpty) return;
-      await client.shell(widget.sessionId,
-          directory: directory, agent: session?.agent, command: command);
-      if (mounted) { _ctl.clear(); setState(() => _cmdMode = false); }
+      if (command.isNotEmpty) {
+        await client.shell(widget.sessionId,
+            directory: directory, agent: session?.agent, command: command);
+        conv.setStatus('busy');
+      }
+      // 空命令不发送但仍走末尾清理（清掉 "!"）——AT-R5：不再提前 return 跳过清理
     } else {
-      setState(() => _cmdMode = false);
+      // _cmdMode 统一在末尾 if(ok) 内设置（AT-R9：避免非 shell 双 setState）
       final parts = <Map<String, dynamic>>[];
       if (text.isNotEmpty) parts.add({'type': 'text', 'text': text});
       for (final a in _attachments) {
@@ -357,14 +362,22 @@ Future<void> _send() async {
       final totalLen = parts.fold<int>(0, (s, p) => s + (p['url']?.toString().length ?? 0));
       await client.prompt(widget.sessionId, directory: directory, parts: parts,
           sendTimeout: totalLen > 2 * 1024 * 1024 ? const Duration(seconds: 120) : null);
+      conv.setStatus('busy');
     }
-    conv.setStatus('busy');
-    if (mounted) { _ctl.clear(); setState(() => _attachments.clear()); }  // 成功才清文本+附件
+    ok = true;
   } catch (e) {
     conv.removeOptimisticMessages();
     serverStore.reflectPreviewFrom(widget.sessionId);
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败：$e')));
     // AT-11：失败保留文本（未 clear）+ 附件，供重发
+  }
+  // AT-R5：统一在成功路径清文本+附件（shell 与 prompt 共用，无重复 clear）；失败保留供重发
+  if (ok && mounted) {
+    _ctl.clear();
+    setState(() {
+      _cmdMode = false;
+      _attachments.clear();
+    });
   }
   _scheduleAutoScroll();
 }
@@ -376,7 +389,7 @@ Future<void> _send() async {
 - 乐观插入：带 attachments
 - parts：动态 text + 遍历 file part
 - AT-12：按附件体估算传 `sendTimeout`
-- AT-11：`_ctl.clear()` 与 `_attachments.clear()` 均移到成功路径（shell 与 prompt 各自成功后），失败不清单不清文本
+- AT-11 + AT-R5：`_ctl.clear()` 与 `_attachments.clear()` 统一在末尾成功路径（`if (ok)`），shell 与 prompt 共用、无重复 clear；失败保留文本+附件供重发
 
 ### 3.3 _BottomBar / _ComposeBar 传透 + 附件按钮 + 预览条
 
@@ -412,7 +425,7 @@ class _AttachmentPreviewBar extends StatelessWidget {
 
 **文件**：conversation_screen.dart:688-708
 
-删除"显示 `part.tool ?? part.text`"旧行为，改造为消费 `DisplayPart` 新 file 字段：
+删除"显示 `part.tool ?? part.text`"旧行为，改造为消费 `DisplayPart` 新 file 字段。需在 `conversation_screen.dart` 顶部加 `import 'package:url_launcher/url_launcher.dart';`（AT-R6，`launchUrl` 打开 http URL 类 file part）：
 
 ```dart
 class _FileChip extends StatelessWidget {
@@ -426,6 +439,7 @@ class _FileChip extends StatelessWidget {
     //    若 previewThumb 为空且 part.fileUrl 为 data URL 图片 → 惰性 base64Decode + try/catch（AT-4）
     // 2) 非图片：Icons.insert_drive_file + 文件名（+ mime/大小）
     // 3) part.fileUrl 为 http URL：显示文件名 + 可点击链接（launchUrl），不缩略
+    // AT-R2：惰性解码后回写 part.previewThumb（字段可变），后续 build 命中缓存，避免每次 rebuild 重解
     ...
   }
 }
@@ -506,7 +520,7 @@ flutter test
 | `!` + 附件阻止 (AT-5) | 步骤 3.2 | SnackBar「shell 忽略附件」，附件保留 |
 | 乐观消息带附件 | 步骤 2.3 / 3.2 | `addOptimisticUserMessage` 扩展 attachments |
 | 向后兼容 | 步骤 2.3 | 单参 `addOptimisticUserMessage(text)` 仍可用 |
-| 失败保留文本+附件 (AT-11) | 步骤 3.2 | clear 移到成功路径 |
+| 失败保留文本+附件 (AT-11 + AT-R5) | 步骤 3.2 | 统一末尾 `if (ok)` 清理，无重复 clear；失败保留供重发 |
 | 小预览图独立 (AT-6/8) | 步骤 1.1 / 1.5 | `previewThumb` 96 边小图，不存全尺寸 |
 | 接收侧惰性解码 (AT-4) | 步骤 2.2 / 3.5 | 工厂不解码；渲染层惰性 + try/catch |
 | http URL 附件渲染 | 步骤 3.5 | 非 data URL 显示文件名+链接 |
@@ -517,10 +531,19 @@ flutter test
 | 改造 `_FileChip` (AT-1) | 步骤 3.5-3.6 | 复用唯一调用点，非新建第二个类 |
 | 忙时并发语义 (AT-9) | 步骤 3.3 | showStop 与现状对齐，复用现有并发/排队 |
 | 大附件超时 (AT-12) | 步骤 2.5 / 3.2 | prompt 增可选 sendTimeout，大附件放宽 120s |
+| thumbnail 异步签名 (AT-R1) | 步骤 1.3 / 1.5 | `Future<Uint8List> thumbnail() async`，call site `await` 合法（CI 不再触发 `await_only_futures`） |
+| 惰性解码缓存回写 (AT-R2) | 步骤 3.5 | 解码后回写 `part.previewThumb`（字段可变），后续 build 命中缓存 |
+| Phase A 时序措辞 (AT-R3) | 执行顺序 | Phase A 仅 compose 预览条含缩略图；消息列表 file part 待 Phase B 改造 `_FileChip` |
+| 2.4 并入 Phase A (AT-R4) | 执行顺序 | `lastMessagePreview` 兜底提前到 Phase A，纯附件会话列表即时显示 |
+| `_send` 清理去重 (AT-R5) | 步骤 3.2 | `ok` 标志统一末尾清理，删 shell 分支重复 `_ctl.clear()`；空命令不提前 return |
+| url_launcher 依赖 (AT-R6) | 步骤 0 / 3.5 | pubspec 补 `url_launcher: ^6.3.0`；3.5 注 `import 'package:url_launcher/url_launcher.dart'`；`launchUrl` 打开 http URL |
+| `_shrinkToBase64Limit` 补 await (AT-R7) | 设计 resolve | `out = await _shrinkToBase64Limit(...)`（与 plan 1.5 对齐） |
+| FilePicker xfile 可空 (AT-R8) | 步骤 1.4 | `.whereType<XFile>()` 过滤 `XFile?` 中的 null |
+| 非 shell 双 setState (AT-R9) | 步骤 3.2 | 删非 shell 分支 `setState(_cmdMode=false)`，统一末尾 `if(ok)` |
 
 ## 执行顺序
 
-- **Phase A（核心发送）**：步骤 0 + 步骤 1 + 步骤 2.5 + 步骤 2.3 + 步骤 3.1-3.4。可联调"发送带附件"（乐观含缩略图）。接收侧 file 仍由旧 `_FileChip`（空芯片）渲染——Phase B 前不展示。
-- **Phase B（接收侧闭环）**：步骤 2.1 / 2.2 / 2.4 + 步骤 3.5-3.6。改造 `_FileChip` 消费新字段 + 惰性解码 + `lastMessagePreview` 兜底。
+- **Phase A（核心发送）**：步骤 0 + 步骤 1 + 步骤 2.5 + 步骤 2.3 + **2.4** + 步骤 3.1-3.4。compose 区待发预览条含缩略图；会话列表 preview 对纯附件即时显示 `[附件] xxx.pdf`（2.4 兜底，AT-R4 并入）。**消息列表内乐观消息的 file part 在 Phase B 改造 `_FileChip` 后才渲染**——Phase A 仍为空芯片（AT-R3 时序对齐）。
+- **Phase B（接收侧闭环）**：步骤 2.1 / 2.2 + 步骤 3.5-3.6。改造 `_FileChip` 消费新字段 + 惰性解码（AT-R2 缓存回写）。（2.4 已并入 Phase A。）
 
 每个 Phase 结束跑 `flutter analyze --fatal-infos` + `flutter test`，确保 CI 门槛。

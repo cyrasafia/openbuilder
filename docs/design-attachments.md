@@ -111,9 +111,9 @@ static Future<List<XFile>> pick(BuildContext context) async {
 abstract class ImageCompressor {
   Future<Uint8List> compress(Uint8List src, {required int maxWidth,
       required int maxHeight, required int quality});
-  Uint8List thumbnail(Uint8List src, {required int edge});  // 96 边小预览图
+  Future<Uint8List> thumbnail(Uint8List src, {required int edge});  // AT-R1：异步（compressWithList 返回 Future）
 }
-class _FlutterImageCompressor implements ImageCompressor { /* 调 flutter_image_compress */ }
+class _FlutterImageCompressor implements ImageCompressor { /* 两法均 async，调 flutter_image_compress */ }
 ```
 
 #### 解析 — AttachmentPipeline.resolve
@@ -125,8 +125,8 @@ static Future<AttachmentPreview> resolve(XFile f, {ImageCompressor? compressor})
   final mime = f.mimeType ?? lookupMimeType(f.path) ?? 'application/octet-stream';
   if (mime.startsWith('image/')) {
     var out = await c.compress(bytes, maxWidth: imageMaxWidth, maxHeight: imageMaxHeight, quality: 85);
-    out = _shrinkToBase64Limit(out, mime, c);  // 循环降质量/缩放直至 base64 长度 <= maxImageBase64Bytes
-    final thumb = c.thumbnail(out, edge: 96);
+    out = await _shrinkToBase64Limit(out, mime, c);  // AT-R7：补 await（内部 await c.compress → Future）
+    final thumb = await c.thumbnail(out, edge: 96);  // AT-R1：await 合法（thumbnail 返回 Future）
     return AttachmentPreview(mime: mime, filename: f.name,
         dataUrl: _toDataUrl(mime, out), previewThumb: thumb);
   }
@@ -157,13 +157,16 @@ Future<void> _send() async {
   serverStore.ensureSseForSession(widget.sessionId);
   final session = serverStore.sessionById(widget.sessionId);
   final directory = session?.directory;
+  var ok = false;
   try {
     if (startsShell) {
       final command = text.substring(1).trim();
-      if (command.isEmpty) return;
-      await client.shell(widget.sessionId, directory: directory,
-          agent: session?.agent, command: command);
-      if (mounted) { _ctl.clear(); setState(() {}); }   // shell 成功才清文本（无附件）
+      if (command.isNotEmpty) {
+        await client.shell(widget.sessionId, directory: directory,
+            agent: session?.agent, command: command);
+        conv.setStatus('busy');
+      }
+      // 空命令不发送但仍走末尾清理——AT-R5：不再提前 return 跳过清理
     } else {
       final parts = <Map<String, dynamic>>[];
       if (text.isNotEmpty) parts.add({'type': 'text', 'text': text});
@@ -176,20 +179,28 @@ Future<void> _send() async {
       final totalLen = parts.fold<int>(0, (s, p) => s + (p['url']?.toString().length ?? 0));
       await client.prompt(widget.sessionId, directory: directory, parts: parts,
           sendTimeout: totalLen > 2 * 1024 * 1024 ? const Duration(seconds: 120) : null);
+      conv.setStatus('busy');
     }
-    conv.setStatus('busy');
-    if (mounted) { _ctl.clear(); setState(() => _attachments.clear()); }  // 成功才清文本+附件
+    ok = true;
   } catch (e) {
     conv.removeOptimisticMessages();
     serverStore.reflectPreviewFrom(widget.sessionId);
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败：$e')));
     // AT-11：失败保留文本（未 clear）+ 附件，供重发
   }
+  // AT-R5：统一在成功路径清文本+附件（shell 与 prompt 共用，无重复 clear）；失败保留供重发
+  if (ok && mounted) {
+    _ctl.clear();
+    setState(() {
+      _cmdMode = false;
+      _attachments.clear();
+    });
+  }
   _scheduleAutoScroll();
 }
 ```
 
-> 修正（AT-5 + AT-11）：先前版本 `_ctl.clear()` 在 try 前（失败丢文本）、`setState(_attachments.clear())` 在 try 末尾（`!` shell 成功会清空却未发出的附件）。现：带 `!` + 附件直接阻止；`_ctl.clear()` 与 `_attachments.clear()` 均移到成功路径。
+> 修正（AT-5 + AT-11 + AT-R5）：先前版本 `_ctl.clear()` 在 try 前（失败丢文本）、`setState(_attachments.clear())` 在 try 末尾（`!` shell 成功会清空却未发出的附件）、shell 成功路径重复 clear。现：带 `!` + 附件直接阻止；用 `ok` 标志统一在末尾 `if (ok)` 成功路径清文本+附件（shell 与 prompt 共用、无重复），空命令也走清理；失败保留供重发。
 > 修正（AT-12）：`dio_factory` 默认 `sendTimeout: 20s`（dio_factory.dart:13）对弱网下 ~10.6MB base64 JSON 体不足。`prompt()` 增可选 `sendTimeout`，大附件放宽到 120s。
 
 #### 乐观插入 — addOptimisticUserMessage 扩展
@@ -220,7 +231,7 @@ void addOptimisticUserMessage(String text, {List<AttachmentPreview>? attachments
 
 #### 渲染 — 改造 _FileChip（而非新建第二个类）
 
-`_part`(conversation_screen.dart:437) 现有 `case 'file': return _FileChip(part: p)`。**改造 `_FileChip`**(conversation_screen.dart:688) 使其消费 `DisplayPart` 的新 file 字段，删除"显示 `part.tool ?? part.text`"的旧行为：
+`_part`(conversation_screen.dart:437) 现有 `case 'file': return _FileChip(part: p)`。**改造 `_FileChip`**(conversation_screen.dart:688) 使其消费 `DisplayPart` 的新 file 字段，删除"显示 `part.tool ?? part.text`"的旧行为。需 `import 'package:url_launcher/url_launcher.dart';`（AT-R6，`launchUrl` 打开 http URL 类 file part）：
 
 ```dart
 class _FileChip extends StatelessWidget {
@@ -231,6 +242,7 @@ class _FileChip extends StatelessWidget {
   //        全屏时若 thumb 为空则从 part.fileUrl 惰性 base64Decode + try/catch）
   // 非图片：Icons.insert_drive_file + 文件名（+ mime/大小）
   // part.fileUrl 为 http URL：显示文件名 + 可点击链接（launchUrl），不缩略
+  // AT-R2：惰性解码后回写 part.previewThumb（DisplayPart 字段可变），后续 build 命中缓存，避免每次 rebuild 重解
 }
 ```
 
@@ -377,3 +389,77 @@ class _FileChip extends StatelessWidget {
 | AT-10 | 🟢 | ✅ 已修复 | 删 `NSPhotoLibraryUsageDescription`（image_picker PHPicker 免权限）；仅留 `NSCameraUsageDescription`。 |
 | AT-11 | 🟢 | ✅ 已修复 | `_ctl.clear()` 移到成功路径；失败保留文本+附件。 |
 | AT-12 | 🟢 | ✅ 已修复 | `prompt()` 增可选 `sendTimeout`；大附件（dataUrl 总长 >2MB）放宽至 120s；设计记 dio 默认 20s。 |
+
+## 二次评审意见
+
+> 设计 + 计划已对齐一次评审 AT-1~AT-12，修复复审表完整，事实经复核无误（`dio_factory.dart:13` 确为 `sendTimeout: 20s`，AT-12 基础成立）。本轮聚焦修订本身引入的残余问题，均为小项。
+
+### AT-R1 🟡 `ImageCompressor.thumbnail` 签名 sync/Future 自相矛盾（CI 阻塞）
+
+**问题**：设计 L114 / plan 1.3 接口声明 `Uint8List thumbnail(Uint8List src, {required int edge})`（同步返回），但：
+- plan 1.5 L154 调用 `final thumb = await c.thumbnail(...)` —— 对非 Future 值 `await` 触发 `flutter_lints` 的 `await_only_futures`，`--fatal-infos` 下 CI 失败。
+- `_FlutterImageCompressor.thumbnail` 内部须调 `FlutterImageCompress.compressWithList`（`Future<Uint8List>`），impl 必须 `async` → 返回型被迫 `Future<Uint8List>`；声明为 `Uint8List thumbnail()` 且 `async` 是编译错（"async function can't return Uint8List"）。
+**建议**：接口与 impl 均改为 `Future<Uint8List> thumbnail(...)` + `async`，call site `await` 即合法。设计 L114、plan 1.3、1.5 三处同步。
+
+### AT-R2 🟢 接收侧惰性解码须缓存回写，避免每次 build 重解码
+
+**问题**：plan 3.5 `_FileChip.build` 对 `previewThumb==null && fileUrl 为 data URL 图片` 惰性 `base64Decode`。`build` 在滚动/主题切换/rebuild 时反复调用，若不缓存则每次重解数 MB → jank。
+**建议**：解码后回写 `part.previewThumb = decoded`（`DisplayPart` 字段可变），后续 build 命中缓存。plan 3.5 注一笔"解码后回写缓存"。
+
+### AT-R3 🟢 Phase A「乐观含缩略图」措辞与渲染时序不符
+
+**问题**：plan 执行顺序 L523 称 Phase A「可联调发送带附件（乐观含缩略图）」。但 `_FileChip` 改造在 Phase B（3.5），Phase A 的乐观消息（`_messages` 内 file part）仍走未改造的 `_FileChip` → 空芯片。Phase A 能显示的是 compose 区的待发预览条（`_AttachmentPreviewBar`，3.4），非消息列表内乐观消息。
+**建议**：改措辞为「Phase A：compose 区待发预览条含缩略图；消息列表内乐观消息的 file part 在 Phase B 改造 `_FileChip` 后才渲染」。
+
+### AT-R4 🟢 `lastMessagePreview` file 兜底（2.4）建议并入 Phase A
+
+**问题**：2.4 在 Phase B。但 Phase A 的 `addOptimisticUserMessage`（2.3）已插入纯附件 file part，`reflectPreviewFrom`(3.2) 紧接调 `lastMessagePreview()` —— Phase A 仍用旧逻辑（file part `text` 为空 → 跳过 → 纯附件乐观消息在会话列表 preview 为空）。
+**建议**：2.4 体量极小，并入 Phase A，使纯附件发送即时在会话列表显示 `[附件] xxx.pdf`。
+
+### AT-R5 🟢 shell 成功路径 `_ctl.clear()` 重复
+
+**问题**：plan 3.2 shell 分支 L346 `_ctl.clear()`，之后 L362（if/else 外成功路径）又 `_ctl.clear()` —— shell 成功时清两次。无害但冗余。
+**建议**：删 L346 的 `_ctl.clear()`，仅保留 `_cmdMode=false`；统一在 L362 成功路径清文本+附件。或反之。择一即可。
+
+### 修复复审（二次）
+
+| 编号 | 优先级 | 状态 | 复核 |
+|------|--------|------|------|
+| AT-R1 | 🟡 | ✅ 已修复 | 设计 L114 + plan 1.3 接口与 impl 均改 `Future<Uint8List> thumbnail(...) async`；设计 L129 call site `await`；plan 1.5 call site `await` 合法（不再触发 `await_only_futures`）。 |
+| AT-R2 | 🟢 | ✅ 已修复 | 设计渲染段 + plan 3.5 加注：惰性解码后回写 `part.previewThumb`（字段可变），后续 build 命中缓存，避免每次 rebuild 重解。 |
+| AT-R3 | 🟢 | ✅ 已修复 | plan 执行顺序 Phase A 措辞改为「compose 区待发预览条含缩略图；消息列表内乐观消息 file part 在 Phase B 改造 `_FileChip` 后才渲染」。 |
+| AT-R4 | 🟢 | ✅ 已修复 | plan 执行顺序：2.4 `lastMessagePreview` 兜底并入 Phase A（纯附件乐观消息会话列表即时显示 `[附件]`）；Phase B 去除 2.4。 |
+| AT-R5 | 🟢 | ✅ 已修复 | 设计 + plan 3.2 `_send` 用 `ok` 标志统一末尾 `if (ok)` 清理，删 shell 分支重复 `_ctl.clear()`；空命令不再提前 return 跳过清理。 |
+
+## 三次评审意见
+
+> 二次评审 AT-R1~R5 已在设计 + 计划双处落实（thumbnail Future 签名、惰性解码缓存回写、Phase A 时序措辞、2.4 并入 Phase A、`ok` 标志去重）。本轮聚焦修订后的残余 impl 级问题。
+
+### AT-R6 🟡 缺 `url_launcher` 依赖（http URL 渲染路径编译报错）
+
+**问题**：设计 L244 / plan 3.5 L439 用 `launchUrl` 打开 http URL 类 file part。但全仓无 `url_launcher`（已核实 `pubspec.yaml` 与 `lib/` 均无引用）。plan 步骤 0 pubspec 块只加 `file_picker/image_picker/flutter_image_compress/mime`。`launchUrl` 是 `url_launcher` 包的顶层函数，未加依赖直接用 → "Undefined name 'launchUrl'" 编译错。
+**建议**：plan 步骤 0 pubspec 补 `url_launcher: ^6.3.0`；3.5 注 `import 'package:url_launcher/url_launcher.dart';`。或退而用 `Clipboard` 复制链接（但体验差，不推荐）。
+
+### AT-R7 🟢 设计 L128 `_shrinkToBase64Limit` 漏 `await`
+
+**问题**：设计 L128 `out = _shrinkToBase64Limit(out, mime, c);`（无 await）。该方法内部循环 `await c.compress(...)` → 必为 `Future<Uint8List>`。无 await 则 `Uint8List = Future<Uint8List>` 编译错。plan 1.5 L153 `out = await _shrinkToBase64Limit(...)` 正确。
+**建议**：设计 L128 补 `await`（`out = await _shrinkToBase64Limit(out, mime, c);`）与 plan 对齐。
+
+### AT-R8 🟢 plan 1.4 `FilePicker` 返回型 nullable 未处理
+
+**问题**：plan 1.4 L131 `return r?.files.map((f) => f.xfile).toList() ?? []`。`file_picker` v8 的 `PlatformFile.xfile` 为 `XFile?`（可空，web/部分平台为 null）→ `.map` 产 `Iterable<XFile?>`，与函数返回 `List<XFile>` 不符 → 编译错。
+**建议**：`r?.files.map((f) => f.xfile).whereType<XFile>().toList() ?? []`（或 `f.xfile!`，但 `whereType` 更安全）。
+
+### AT-R9 🟢 非 shell 分支 `setState` 双调用
+
+**问题**：plan 3.2 L351 `setState(() => _cmdMode = false)` 与末尾 L375 `setState(() { _cmdMode = false; _attachments.clear(); })`。非 shell 成功时 setState 两次、`_cmdMode` 设两次，冗余。
+**建议**：删 L351 的 `setState(_cmdMode=false)`，统一在末尾 `if (ok)` 内设置（shell/prompt 共用，单点）。非 shell 失败时 `_cmdMode` 保持原值（文本非 `!` → 一致）。
+
+### 修复复审（三次）
+
+| 编号 | 优先级 | 状态 | 复核 |
+|------|--------|------|------|
+| AT-R6 | 🟡 | ✅ 已修复 | plan 步骤 0 pubspec 补 `url_launcher: ^6.3.0` + 说明行；plan 3.5 / 设计渲染段注 `import 'package:url_launcher/url_launcher.dart'`；改动总览表更新。 |
+| AT-R7 | 🟢 | ✅ 已修复 | 设计 L128 `out = await _shrinkToBase64Limit(...)`（与 plan 1.5 L153 `await` 对齐）。 |
+| AT-R8 | 🟢 | ✅ 已修复 | plan 1.4 `r?.files.map((f) => f.xfile).whereType<XFile>().toList()`（过滤 `XFile?` 中的 null）。 |
+| AT-R9 | 🟢 | ✅ 已修复 | plan 3.2 删非 shell 分支 `setState(_cmdMode=false)`，统一末尾 `if(ok)` 内设置；非 shell 失败时 `_cmdMode` 保持原值。 |
