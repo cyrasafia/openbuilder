@@ -38,13 +38,31 @@
 - `mime`：按文件名/扩展名推断 mime（`XFile.mimeType` 兜底）。
 - `url_launcher`：`_FileChip` 点击 http URL 类 file part 用 `launchUrl` 打开（AT-R6）。
 
-### AndroidManifest — `<manifest>` 内新增（仅相机）
+### AndroidManifest — `<manifest>` 内新增（CAMERA + url_launcher queries）
 
 ```xml
 <uses-permission android:name="android.permission.CAMERA"/>
+
+<!-- AT-R10：url_launcher 在 Android 11+（API 30+，本工程目标 13+）受 package
+     visibility 限制，launchUrl(http/https) 须声明 VIEW+scheme，否则解析不到浏览器包。
+     合并进现有 <queries>（保留 PROCESS_TEXT）。 -->
+<queries>
+  <intent>
+    <action android:name="android.intent.action.PROCESS_TEXT"/>
+    <data android:mimeType="text/plain"/>
+  </intent>
+  <intent>
+    <action android:name="android.intent.action.VIEW"/>
+    <data android:scheme="https"/>
+  </intent>
+  <intent>
+    <action android:name="android.intent.action.VIEW"/>
+    <data android:scheme="http"/>
+  </intent>
+</queries>
 ```
 
-图片走 Photo Picker、文件走 SAF，**不**加 `READ_MEDIA_*` / `READ_EXTERNAL_STORAGE`（AT-10）。
+图片走 Photo Picker、文件走 SAF，**不**加 `READ_MEDIA_*` / `READ_EXTERNAL_STORAGE`（AT-10）。`<queries>` 仅声明包可见性，非运行时权限。
 
 ### Info.plist — 新增（仅相机）
 
@@ -58,10 +76,12 @@
 **验收**：
 - `flutter pub get` 成功
 - `flutter analyze --fatal-infos` 无新错
-- AndroidManifest 仅多一条 `CAMERA`
+- AndroidManifest 多 `CAMERA` + `<queries>` 含 `VIEW`/`http`/`https`（保留 `PROCESS_TEXT`，AT-R10）
 - Info.plist 多一条 `NSCameraUsageDescription`、无 `NSPhotoLibraryUsageDescription`
 
 ## 步骤 1：附件处理流水线（新建 lib/core/attachments/attachment_pipeline.dart）
+
+**import 清单**（AT-R11）：`dart:typed_data`（`Uint8List`）、`dart:convert`（`base64Encode`/`base64Decode`）、`package:mime/mime.dart`（`lookupMimeType`）、`package:file_picker`（`FilePicker`/`XFile`）、`package:image_picker`（`ImagePicker`/`ImageSource`）、`package:flutter_image_compress`（`FlutterImageCompress`）。
 
 ### 1.1 共享值类
 
@@ -179,7 +199,7 @@ static Future<AttachmentPreview> resolve(XFile f, {ImageCompressor? compressor})
 
 **文件**：`lib/core/session/conversation_store.dart`
 
-> 新增 `import` `dart:typed_data` 与 `../attachments/attachment_pipeline.dart`。
+> 新增 `import` `dart:typed_data`（`DisplayPart.previewThumb`）与 `../attachments/attachment_pipeline.dart`（`AttachmentPreview`）。**无需** `dart:convert` / `mime`——AT-4 已把解码移到渲染层，工厂不解码（AT-R11 纠正评审误判）。
 
 ### 2.1 DisplayPart 扩展（约 :15-32）
 
@@ -286,7 +306,7 @@ Future<void> prompt(
 
 **文件**：`lib/features/conversation/conversation_screen.dart`
 
-> 新增 `import` `dart:typed_data` 与 `../attachments/attachment_pipeline.dart`、`package:image_picker/image_picker.dart`（仅 AttachmentPicker 内部用，screen 经流水线封装）。
+> 新增 `import` `dart:typed_data`（`Uint8List` 渲染）、`dart:convert`（`_FileChip.build` 惰性 `base64Decode`，AT-R11）、`../attachments/attachment_pipeline.dart`、`package:image_picker/image_picker.dart`（仅 AttachmentPicker 内部用，screen 经流水线封装）、`package:url_launcher/url_launcher.dart`（`launchUrl`，AT-R6）。
 
 ### 3.1 _ConversationScreenState 新增字段 + _pickAttachments
 
@@ -440,6 +460,7 @@ class _FileChip extends StatelessWidget {
     // 2) 非图片：Icons.insert_drive_file + 文件名（+ mime/大小）
     // 3) part.fileUrl 为 http URL：显示文件名 + 可点击链接（launchUrl），不缩略
     // AT-R2：惰性解码后回写 part.previewThumb（字段可变），后续 build 命中缓存，避免每次 rebuild 重解
+    // AT-R12：首帧仍同步解码（dart:convert），大图（4MB base64≈3MB 解码）可能掉帧；典型 AI 返回图较小可接受，超大图后续用 compute() 隔离（非阻塞，见设计「不做的事」）
     ...
   }
 }
@@ -540,6 +561,9 @@ flutter test
 | `_shrinkToBase64Limit` 补 await (AT-R7) | 设计 resolve | `out = await _shrinkToBase64Limit(...)`（与 plan 1.5 对齐） |
 | FilePicker xfile 可空 (AT-R8) | 步骤 1.4 | `.whereType<XFile>()` 过滤 `XFile?` 中的 null |
 | 非 shell 双 setState (AT-R9) | 步骤 3.2 | 删非 shell 分支 `setState(_cmdMode=false)`，统一末尾 `if(ok)` |
+| url_launcher Android queries (AT-R10) | 步骤 0 | AndroidManifest `<queries>` 加 `VIEW`+http/https（Android 11+ package visibility） |
+| import 清单补全 (AT-R11) | 步骤 1 / 3 | 步骤1加 `dart:convert`/`mime`/`file_picker`/`image_picker`/`flutter_image_compress`；步骤3加 `dart:convert`+`url_launcher`；步骤2无需（工厂不解码） |
+| 大图首帧 compute() (AT-R12) | 3.5 / 不做的事 | 记后续优化项，非阻塞 |
 
 ## 执行顺序
 

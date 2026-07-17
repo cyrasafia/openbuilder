@@ -176,12 +176,16 @@ class OpencodeClient {
     String sessionId, {
     String? directory,
     required List<Map<String, dynamic>> parts,
+    Duration? sendTimeout,
   }) async {
     await dio.post(
       '/session/$sessionId/prompt_async',
       queryParameters:
           directory != null ? {'directory': directory} : null,
       data: {'parts': parts},
+      options: sendTimeout == null
+          ? null
+          : Options(sendTimeout: sendTimeout),
     );
   }
 

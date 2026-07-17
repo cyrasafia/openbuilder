@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../data/api/opencode_client.dart';
 import '../../../domain/models.dart';
+import '../attachments/attachment_pipeline.dart';
 import '../logging/app_logger.dart';
 
 const _tag = 'Conv';
@@ -20,6 +21,10 @@ class DisplayPart {
   String? toolStatus;
   String? toolOutput;
   Map<String, dynamic>? toolInput;
+  String? fileMime;
+  String? fileUrl;
+  String? filename;
+  Uint8List? previewThumb;
 
   DisplayPart({
     required this.id,
@@ -29,6 +34,10 @@ class DisplayPart {
     this.toolStatus,
     this.toolOutput,
     this.toolInput,
+    this.fileMime,
+    this.fileUrl,
+    this.filename,
+    this.previewThumb,
   });
 
   /// One-line summary of what the tool is doing (e.g. "bash: ls -la").
@@ -104,6 +113,15 @@ class DisplayPart {
             : null,
       );
     }
+    if (p.type == 'file') {
+      return DisplayPart(
+        id: p.id,
+        type: 'file',
+        fileMime: p.raw['mime']?.toString(),
+        fileUrl: p.raw['url']?.toString() ?? '',
+        filename: p.raw['filename']?.toString(),
+      );
+    }
     return DisplayPart(id: p.id, type: p.type, text: p.text ?? '');
   }
 }
@@ -169,9 +187,14 @@ class ConversationStore extends ChangeNotifier {
     for (var i = last.parts.length - 1; i >= 0; i--) {
       final dp = last.parts[i];
       if (_hidden.contains(dp.type)) continue;
-      final pv = dp.type == 'tool'
-          ? dp.toolSummary
-          : dp.text.replaceAll('\n', ' ').trim();
+      String pv;
+      if (dp.type == 'tool') {
+        pv = dp.toolSummary;
+      } else if (dp.type == 'file') {
+        pv = (dp.filename?.isNotEmpty ?? false) ? dp.filename! : '[附件]';
+      } else {
+        pv = dp.text.replaceAll('\n', ' ').trim();
+      }
       if (pv.isNotEmpty) {
         preview = pv;
         break;
@@ -203,17 +226,34 @@ class ConversationStore extends ChangeNotifier {
   /// shows it without waiting for SSE/rest confirmation. Removed when the
   /// authoritative message list arrives (reload) or when a matching user
   /// message.updated event arrives.
-  void addOptimisticUserMessage(String text) {
+  void addOptimisticUserMessage(String text,
+      {List<AttachmentPreview>? attachments}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final msg = DisplayMessage(
       MessageInfo(id: 'optimistic_$now', role: 'user', created: now),
       optimistic: true,
     );
-    msg.parts.add(DisplayPart(
-      id: 'optimistic_part_$now',
-      type: 'text',
-      text: text,
-    ));
+    if (text.isNotEmpty) {
+      msg.parts.add(DisplayPart(
+        id: 'optimistic_part_$now',
+        type: 'text',
+        text: text,
+      ));
+    }
+    if (attachments != null) {
+      var i = 0;
+      for (final a in attachments) {
+        msg.parts.add(DisplayPart(
+          id: 'optimistic_file_${now}_$i',
+          type: 'file',
+          fileMime: a.mime,
+          fileUrl: a.dataUrl,
+          filename: a.filename,
+          previewThumb: a.previewThumb,
+        ));
+        i++;
+      }
+    }
     _messages.add(msg);
     _sort();
     notifyListeners();

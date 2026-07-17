@@ -68,5 +68,7 @@
 	</array>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>用于在 Agent 完成推理或请求授权时发送通知</string>
+	<key>NSCameraUsageDescription</key>
+	<string>用于拍照作为消息附件发送</string>
 </dict>
 </plist>

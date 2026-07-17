@@ -281,7 +281,7 @@ class _FileChip extends StatelessWidget {
 4. **`prompt()` 签名不改主体**：附件构造集中在 `_send()`，`parts` 是 `List<Map>` 透传；仅增可选 `sendTimeout` 形参用于大附件放宽（AT-12）。
 5. **接收侧 file 渲染与乐观侧共用 `DisplayPart` 扩展**：一套字段服务两种来源，渲染 widget 统一。
 6. **改造 `_FileChip` 而非新建**（AT-1）：`_FileChip` 是现有 file-part 渲染器（唯一调用点 conversation_screen.dart:438），本次改造其 `build` 消费新 file 字段，删除"显示 `part.tool ?? part.text`"旧行为。不新增 `_FileAttachmentChip`，避免旧类变死代码。
-7. **picker 拆分**（AT-2 + AT-10）：图片+相机走 `image_picker`（iOS 14+ PHPicker 免相册权限、Android 13+ Photo Picker 免存储权限）；任意文件走 `file_picker`（SAF 免存储权限）。仅相机需 `CAMERA`(Android) + `NSCameraUsageDescription`(iOS)；**不**加 `NSPhotoLibraryUsageDescription`（PHPicker 免权限，AT-10）。
+7. **picker 拆分**（AT-2 + AT-10）：图片+相机走 `image_picker`（iOS 14+ PHPicker 免相册权限、Android 13+ Photo Picker 免存储权限）；任意文件走 `file_picker`（SAF 免存储权限）。仅相机需 `CAMERA`(Android) + `NSCameraUsageDescription`(iOS)；**不**加 `NSPhotoLibraryUsageDescription`（PHPicker 免权限，AT-10）。`url_launcher` 在 Android 11+ 需 `<queries>` 声明 `VIEW`+`scheme=http/https`（AT-R10），iOS 无需额外配置。
 8. **内存：小预览图独立、不全尺寸重复**（AT-6 + AT-8）：`AttachmentPreview` 存 `dataUrl`（发送用，大）+ `previewThumb`（96 边，~10-30KB，预览用），不存全尺寸压缩字节。接收侧 thumb 惰性从 `fileUrl` 解码。
 9. **可测缝**（AT-7）：抽 `ImageCompressor` 接口，默认实现调 `flutter_image_compress`，测试注入 mock；纯单测覆盖压缩循环、`_toDataUrl`、`AttachmentTooLargeException`。
 10. **接收侧惰性解码**（AT-4）：`DisplayPart.from` 不在工厂内同步解码 base64；渲染层惰性 + try/catch。假设服务端回灌 url 若为 data URL 则惰性解码、若为 http URL 则显示链接——两种均安全。
@@ -293,6 +293,7 @@ class _FileChip extends StatelessWidget {
 - 不做 v2 `PromptInput.files` 切换（沿用 v1 `prompt_async` + `parts`）。
 - 不做附件预览的全文/全图编辑（仅图片全屏查看）。
 - 不动态从 `/config` 读取压缩阈值（后续优化项）。
+- 不对大 data URL 首帧解码做 `compute()` 隔离（AT-R12 后续优化项）——典型 AI 返回图较小 + AT-R2 缓存已防重复解码，接受首帧一次性掉帧；超大图后续可用 `compute()` 隔离解码、渲染层先占位再 `setState` 填充。
 
 ## 一次评审意见
 
@@ -463,3 +464,45 @@ class _FileChip extends StatelessWidget {
 | AT-R7 | 🟢 | ✅ 已修复 | 设计 L128 `out = await _shrinkToBase64Limit(...)`（与 plan 1.5 L153 `await` 对齐）。 |
 | AT-R8 | 🟢 | ✅ 已修复 | plan 1.4 `r?.files.map((f) => f.xfile).whereType<XFile>().toList()`（过滤 `XFile?` 中的 null）。 |
 | AT-R9 | 🟢 | ✅ 已修复 | plan 3.2 删非 shell 分支 `setState(_cmdMode=false)`，统一末尾 `if(ok)` 内设置；非 shell 失败时 `_cmdMode` 保持原值。 |
+
+## 四次评审意见
+
+> 三次评审 AT-R6~R9 已在设计 + 计划双处落实（pubspec 加 `url_launcher`、设计 L128 补 `await`、plan 1.4 `whereType<XFile>`、plan 3.2 setState 去重）。本轮聚焦 `url_launcher` 引入后的平台配置与 import 完整性，已逐条核实源码。设计方向已收敛，仅 1 项 🟡 建议落地前补。
+
+### AT-R10 🟡 `url_launcher` 缺 Android `<queries>`（Android 11+ launchUrl 解析不到浏览器）
+
+**核实**：`AndroidManifest.xml` 现有 `<queries>` 仅含 `PROCESS_TEXT`(:46-51)，无 `VIEW`/`https`。plan 步骤 0 AndroidManifest 段只加 `CAMERA`。
+**问题**：url_launcher 6.x 在 Android 11+（API 30+，本工程目标 Android 13+）受 package visibility 限制，`launchUrl(http/https)` 须在 `<queries>` 声明 `<intent action=VIEW data scheme=https>`，否则解析不到浏览器包、返回 false → 设计 L244 / plan 3.5 的「http URL file part 点击 launchUrl 打开」在所有目标设备失效。
+**建议**：plan 步骤 0 AndroidManifest 段补
+```xml
+<queries>
+  <intent><action android:name="android.intent.action.VIEW"/>
+    <data android:scheme="https"/></intent>
+  <intent><action android:name="android.intent.action.VIEW"/>
+    <data android:scheme="http"/></intent>
+</queries>
+```
+（合并进现有 `<queries>`，保留 `PROCESS_TEXT`。）
+
+### AT-R11 🟢 缺 import（plan 2.0 / 3.0 import 清单不全）
+
+**核实**：`conversation_screen.dart:1-11` 无 `dart:convert`。
+**问题**：
+- `_FileChip.build` 内惰性 `base64Decode`（plan 3.5）需 `dart:convert` —— `conversation_screen.dart` 未 import，plan 3.0 import 清单也未列 → 编译报 `base64Decode` 未定义。
+- `attachment_pipeline.dart`（新文件）`base64Encode`/`_toDataUrl` 需 `dart:convert`；`lookupMimeType` 需 `package:mime/mime.dart` —— plan 1.0/2.0 仅提 `dart:typed_data`，漏 `dart:convert` 与 `mime`。
+**建议**：plan 2.0 加 `import 'dart:convert';` + `import 'package:mime/mime.dart';`；plan 3.0 加 `import 'dart:convert';`。
+
+### AT-R12 🟢 大 data URL 在 `build` 内同步 `base64Decode` 首帧掉帧（AT-R4 余波）
+
+**问题**：plan 3.5 `_FileChip.build` 对接收侧大 data URL（可达 4MB base64 ≈ 3MB 解码）惰性 `base64Decode` 是同步（dart:convert），虽 AT-R2 缓存后仅首帧解码，但首帧仍阻塞 UI 线程 → 大图首次渲染掉帧。
+**建议**（可后续优化，非阻塞）：大图用 `compute()` 隔离解码，渲染层先占位再 `setState` 填充；或接受一次性掉帧（典型 AI 返回图较小，cache 已防重复）。仅记一笔，不阻塞落地。
+
+### 修复复审（四次）
+
+| 编号 | 优先级 | 状态 | 复核 |
+|------|--------|------|------|
+| AT-R10 | 🟡 | ✅ 已修复 | plan 步骤 0 AndroidManifest 补 `<queries>` 含 `VIEW`+`http`/`https`（保留 `PROCESS_TEXT`）；设计决策#7 补 url_launcher Android queries；步骤 0 验收更新。 |
+| AT-R11 | 🟢 | ✅ 已修复 | plan 步骤 1 加 import 清单（`dart:convert`/`mime`/`file_picker`/`image_picker`/`flutter_image_compress`）；步骤 3 import 加 `dart:convert`+`url_launcher`；步骤 2 纠正——ConversationStore 无需 `dart:convert`/`mime`（AT-4 工厂不解码）。 |
+| AT-R12 | 🟢 | ✅ 已修复（记笔记） | 设计「不做的事」+ plan 3.5 注：大 data URL 首帧同步解码可接受（典型 AI 图小 + AT-R2 缓存防重复），超大图后续 `compute()` 隔离（非阻塞）。 |
+
+> **收敛判断**：设计 + 计划经四轮迭代，一次评审 12 条 + 二/三/四轮 12 条（AT-R1~R12）均已闭环或仅剩 impl 级小项。AT-R10（Android queries）为唯一建议落地前补的 🟡，余为 import 笔记与可选优化。可进入实现。

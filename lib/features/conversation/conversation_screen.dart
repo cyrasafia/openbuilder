@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:cross_file/cross_file.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
+import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
@@ -22,6 +27,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _scrollController = ScrollController();
   final _ctl = TextEditingController();
   bool _cmdMode = false;
+  final List<AttachmentPreview> _attachments = [];
   List<CommandInfo> _commands = const [];
   bool _cmdLoaded = false;
   bool _cmdLoading = false;
@@ -183,6 +189,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   setState(() => _cmdMode = mode);
                 },
                 onSend: _send,
+                attachments: _attachments,
+                onPickAttachments: _pickAttachments,
+                onRemoveAttachment: _removeAttachment,
               ),
             ],
           );
@@ -224,49 +233,109 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  Future<void> _pickAttachments() async {
+    List<XFile> picked;
+    try {
+      picked = await AttachmentPicker.pick(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('选取失败：$e')));
+      }
+      return;
+    }
+    if (picked.isEmpty) return;
+    final resolved = <AttachmentPreview>[];
+    for (final x in picked) {
+      try {
+        resolved.add(await AttachmentPipeline.resolve(x));
+      } on AttachmentTooLargeException catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(
+                  '「${e.name}」过大（${(e.len / 1048576).toStringAsFixed(1)}MB），未添加')));
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('读取失败：$e')));
+        }
+      }
+    }
+    if (resolved.isNotEmpty) setState(() => _attachments.addAll(resolved));
+  }
+
+  void _removeAttachment(int i) => setState(() => _attachments.removeAt(i));
+
   Future<void> _send() async {
     final text = _ctl.text.trim();
-    if (text.isEmpty) return;
+    final startsShell = text.startsWith('!');
+    if (startsShell && _attachments.isNotEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('shell 命令（!）忽略附件，请去掉 ! 后重发')));
+      }
+      return;
+    }
+    if (text.isEmpty && _attachments.isEmpty) return;
     final conv = serverStore.conversationFor(widget.sessionId);
     final client = serverStore.client;
     if (conv == null || client == null) return;
-    // Ensure SSE is open for this session's directory — we need it to
-    // receive the streaming response.
     serverStore.ensureSseForSession(widget.sessionId);
-    _ctl.clear();
-    setState(() => _cmdMode = false);
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
-    // Show the user message immediately — don't wait for SSE/REST to confirm.
-    if (!text.startsWith('!')) {
-      conv.addOptimisticUserMessage(text);
-      serverStore.reflectPreviewFrom(widget.sessionId);
-    }
+    var ok = false;
     try {
-      if (text.startsWith('!')) {
-        // Shell command: strip the leading `!` and run via POST /shell.
+      if (startsShell) {
         final command = text.substring(1).trim();
-        if (command.isEmpty) return;
-        await client.shell(widget.sessionId,
-            directory: directory, agent: session?.agent, command: command);
+        if (command.isNotEmpty) {
+          await client.shell(widget.sessionId,
+              directory: directory,
+              agent: session?.agent,
+              command: command);
+          conv.setStatus('busy');
+        }
       } else {
+        setState(() => _cmdMode = false);
+        final parts = <Map<String, dynamic>>[];
+        if (text.isNotEmpty) parts.add({'type': 'text', 'text': text});
+        for (final a in _attachments) {
+          parts.add({
+            'type': 'file',
+            'mime': a.mime,
+            'url': a.dataUrl,
+            'filename': a.filename,
+          });
+        }
+        conv.addOptimisticUserMessage(text, attachments: _attachments);
+        serverStore.reflectPreviewFrom(widget.sessionId);
+        final totalLen = parts.fold<int>(
+            0, (s, p) => s + (p['url']?.toString().length ?? 0));
         await client.prompt(
           widget.sessionId,
           directory: directory,
-          parts: [
-            {'type': 'text', 'text': text}
-          ],
+          parts: parts,
+          sendTimeout: totalLen > 2 * 1024 * 1024
+              ? const Duration(seconds: 120)
+              : null,
         );
+        conv.setStatus('busy');
       }
-      conv.setStatus('busy'); // optimistic; SSE will confirm/stream
+      ok = true;
     } catch (e) {
-      // Remove the optimistic message if the send failed.
       conv.removeOptimisticMessages();
       serverStore.reflectPreviewFrom(widget.sessionId);
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('发送失败：$e')));
       }
+    }
+    if (ok && mounted) {
+      _ctl.clear();
+      setState(() {
+        _cmdMode = false;
+        _attachments.clear();
+      });
     }
     _scheduleAutoScroll();
   }
@@ -435,7 +504,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       case 'tool':
         return _ToolChip(part: p);
       case 'file':
-        return _FileChip(part: p);
+        return _FileChip(part: p, user: user);
       default:
         return const SizedBox.shrink();
     }
@@ -687,21 +756,148 @@ class _ToolChip extends StatelessWidget {
 
 class _FileChip extends StatelessWidget {
   final DisplayPart part;
-  const _FileChip({required this.part});
+  final bool user;
+  const _FileChip({required this.part, this.user = false});
+
+  Uint8List? _ensureThumb() {
+    final t = part.previewThumb;
+    if (t != null) return t;
+    final url = part.fileUrl;
+    if (url == null || !url.startsWith('data:')) return null;
+    final mime = part.fileMime ?? '';
+    if (!mime.startsWith('image/')) return null;
+    final comma = url.indexOf(',');
+    if (comma < 0) return null;
+    try {
+      final decoded = base64Decode(url.substring(comma + 1));
+      part.previewThumb = decoded;
+      return decoded;
+    } catch (_) {
+      return null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final thumb = _ensureThumb();
+    final isHttpUrl = part.fileUrl != null &&
+        (part.fileUrl!.startsWith('http://') ||
+            part.fileUrl!.startsWith('https://'));
+    if (thumb != null) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: GestureDetector(
+          onTap: () => _showFullScreen(context, thumb),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.memory(thumb,
+                width: 120, height: 120, fit: BoxFit.cover),
+          ),
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.attach_file,
-              size: 14, color: Theme.of(context).colorScheme.outline),
-          const SizedBox(width: 4),
-          Text(part.tool ?? part.text,
-              style: AppTheme.mono.copyWith(fontSize: 12)),
+          Icon(Icons.insert_drive_file,
+              size: 16, color: Theme.of(context).colorScheme.outline),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              part.filename ?? part.fileUrl ?? '[附件]',
+              style: AppTheme.mono.copyWith(fontSize: 12),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (isHttpUrl) ...[
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () async {
+                final uri = Uri.tryParse(part.fileUrl!);
+                if (uri != null) await launchUrl(uri);
+              },
+              child: Icon(Icons.open_in_new,
+                  size: 14, color: Theme.of(context).colorScheme.primary),
+            ),
+          ],
         ],
+      ),
+    );
+  }
+
+  void _showFullScreen(BuildContext context, Uint8List bytes) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Scaffold(
+          backgroundColor: Colors.black87,
+          body: Center(
+            child: Image.memory(bytes, fit: BoxFit.contain),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AttachmentPreviewBar extends StatelessWidget {
+  final List<AttachmentPreview> attachments;
+  final ValueChanged<int> onRemove;
+  const _AttachmentPreviewBar(
+      {required this.attachments, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 60,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        itemCount: attachments.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (ctx, i) {
+          final a = attachments[i];
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              a.isImage && a.previewThumb != null
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(a.previewThumb!,
+                          width: 48, height: 48, fit: BoxFit.cover),
+                    )
+                  : Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.insert_drive_file, size: 20),
+                    ),
+              Positioned(
+                right: -2,
+                top: -2,
+                child: GestureDetector(
+                  onTap: () => onRemove(i),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      shape: BoxShape.circle,
+                    ),
+                    padding: const EdgeInsets.all(2),
+                    child: const Icon(Icons.close, size: 14),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1079,6 +1275,9 @@ class _BottomBar extends StatelessWidget {
   final Future<void> Function() onAbort;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
+  final List<AttachmentPreview> attachments;
+  final VoidCallback onPickAttachments;
+  final ValueChanged<int> onRemoveAttachment;
 
   const _BottomBar({
     required this.sessionId,
@@ -1088,6 +1287,9 @@ class _BottomBar extends StatelessWidget {
     required this.onAbort,
     required this.onChanged,
     required this.onSend,
+    required this.attachments,
+    required this.onPickAttachments,
+    required this.onRemoveAttachment,
   });
 
   @override
@@ -1106,12 +1308,19 @@ class _BottomBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (attachments.isNotEmpty)
+            _AttachmentPreviewBar(
+              attachments: attachments,
+              onRemove: onRemoveAttachment,
+            ),
           _ComposeBar(
             ctl: ctl,
             busy: busy,
             onAbort: onAbort,
             onChanged: onChanged,
             onSend: onSend,
+            attachments: attachments,
+            onPickAttachments: onPickAttachments,
           ),
           _AgentModelBar(
             sessionId: sessionId,
@@ -1129,12 +1338,16 @@ class _ComposeBar extends StatefulWidget {
   final VoidCallback onSend;
   final bool busy;
   final Future<void> Function() onAbort;
+  final List<AttachmentPreview> attachments;
+  final VoidCallback onPickAttachments;
   const _ComposeBar({
     required this.ctl,
     required this.onChanged,
     required this.onSend,
     required this.busy,
     required this.onAbort,
+    required this.attachments,
+    required this.onPickAttachments,
   });
 
   @override
@@ -1164,11 +1377,19 @@ class _ComposeBarState extends State<_ComposeBar> {
 
   @override
   Widget build(BuildContext context) {
-    final showStop = widget.busy && widget.ctl.text.trim().isEmpty;
+    final showStop = widget.busy &&
+        widget.ctl.text.trim().isEmpty &&
+        widget.attachments.isEmpty;
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 8, top: 8, bottom: 8),
       child: Row(
         children: [
+          IconButton(
+            icon: const Icon(Icons.attach_file),
+            tooltip: '附件',
+            onPressed: widget.onPickAttachments,
+          ),
+          const SizedBox(width: 4),
           Expanded(
             child: TextField(
               controller: widget.ctl,
