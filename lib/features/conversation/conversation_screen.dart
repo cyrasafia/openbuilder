@@ -1716,8 +1716,16 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     });
     try {
       await client.switchAgent(widget.sessionId, agent);
-      await serverStore.refresh();
-      if (mounted) setState(() => _optimisticAgent = null);
+      final ok = await serverStore.refresh();
+      if (mounted) {
+        if (ok) {
+          setState(() => _optimisticAgent = null);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('已切换，刷新会话失败，将自动重试')),
+          );
+        }
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _optimisticAgent = null);
@@ -1884,6 +1892,17 @@ class _AgentModelBarState extends State<_AgentModelBar> {
         final agentName = _optimisticAgent ?? session?.agent ?? '—';
         final modelName = session?.model?.id ?? '—';
 
+        if (_optimisticAgent != null && session?.agent == _optimisticAgent) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted &&
+                _optimisticAgent != null &&
+                serverStore.sessionById(widget.sessionId)?.agent ==
+                    _optimisticAgent) {
+              setState(() => _optimisticAgent = null);
+            }
+          });
+        }
+
         // Find current model's variants for thinking level button.
         final currentModel = _models
             .where((m) => m.id == session?.model?.id)
@@ -1959,7 +1978,7 @@ class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   final GlobalKey _stackKey = GlobalKey();
-  late final List<GlobalKey> _optionKeys;
+  late List<GlobalKey> _optionKeys;
 
   double _left = 0, _width = 0;
   double _fromLeft = 0, _fromWidth = 0;
@@ -1982,7 +2001,10 @@ class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
   @override
   void didUpdateWidget(covariant _AgentCapsuleToggle old) {
     super.didUpdateWidget(old);
-    if (old.currentAgent != widget.currentAgent) {
+    if (!identical(old.agents, widget.agents)) {
+      _optionKeys = List.generate(widget.agents.length, (_) => GlobalKey());
+      WidgetsBinding.instance.addPostFrameCallback((_) => _measure(true));
+    } else if (old.currentAgent != widget.currentAgent) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _measure(false));
     }
   }
@@ -2023,7 +2045,7 @@ class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final t = _ctrl.value;
+    final t = Curves.easeOutCubic.transform(_ctrl.value);
     final curLeft = _fromLeft + (_left - _fromLeft) * t;
     final curWidth = _fromWidth + (_width - _fromWidth) * t;
 

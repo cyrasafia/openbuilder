@@ -310,3 +310,99 @@ catch 块改为 `catch (e)` + `ScaffoldMessenger.showSnackBar`，用户在加载
 
 **AM-CAP-5 — 胶囊宽度膨胀 vs 横向滚动 · 🟢 非阻塞**
 胶囊开关两选项总宽 ≈ 2 × chip 宽，仍在 `SingleChildScrollView` 内，超屏可滚动。
+
+---
+
+## 胶囊平移动画 + 乐观展示回滚复审（commit `3c9783e`）
+
+> 评审对象：`feat: agent 胶囊切换平移动画 + 乐观展示回滚`。
+> 改动：① `_AgentCapsuleToggle` 由 `StatelessWidget` 改 `StatefulWidget` + `SingleTickerProviderStateMixin`，用 `Stack` + `GlobalKey` 测量两选项位置，单个 `Positioned` 高亮在活跃项间用 `AnimationController(200ms)` 滑动；② `_AgentModelBarState` 新增 `_optimisticAgent`，`_switchAgent` 改 `await refresh` + 成功清空 / 失败回滚 + SnackBar。
+> 核验：`dart analyze lib/features/conversation/conversation_screen.dart` → No issues found；`flutter test` → 11/11 通过（`flutter analyze` 全量因分析服务器崩溃退出，与代码无关，环境问题）。
+
+### ⚠️ 设计决策反转：本 commit 推翻 AM-CAP-3
+
+AM-CAP-3 原结论「**无乐观更新**，切换成功后才迁移高亮…避免乐观更新导致的闪烁回弹」被本 commit 显式推翻：现在点击即乐观迁移高亮（`_optimisticAgent` 立即置为新 agent），成功无闪烁、失败回滚。这是有意为之的 UX 升级（即时反馈 + 回滚动画），方向正确。AM-CAP-3 的文字保留作历史记录，以本节为准。
+
+### ✅ 实现正确的部分
+
+| 核对点 | 结论 |
+|------|------|
+| 重入守卫 `_switching` 加入 `_switchAgent` 前置判断（原缺失） | ✅ 防连点双发 POST |
+| 成功路径无闪烁：`_optimisticAgent` 在 `await refresh()` **之后**清空 → 清空时 `session.agent` 已是新值，`ListenableBuilder` 重建两次显示同一值 | ✅ 与 commit 说明一致 |
+| 失败回滚：catch 里 `_optimisticAgent = null` → `currentAgent` 回到 `session.agent`（旧值）→ `didUpdateWidget` 触发 → 高亮滑回旧项 + SnackBar | ✅ |
+| 首帧不闪原点：`_measured=false` 时 `Positioned` 不渲染；首帧后 post-frame 测量并令 `_ctrl.value=1`（直达目标，无滑入） | ✅ |
+| `IgnorePointer` 包裹滑动高亮 → 不拦截下方选项 tap | ✅ |
+| Stack children 顺序：高亮在前（底层）、选项 Row 在后（顶层）→ 文字/图标位于填充之上 | ✅ 视觉分层正确 |
+| `localToGlobal(Offset.zero, ancestor: stackBox)` 正确把选项坐标映射到 Stack 坐标系（`_stackKey` 在 `Stack` 上，选项在 Stack 内的 `Row` 内） | ✅ |
+| `dispose` 顺序 `_ctrl.dispose()` 先于 `super.dispose()` | ✅ |
+| `Semantics(selected/button/enabled)` 保留；激活项 `onTap=null` 不可重 tap | ✅ |
+| 字重合规：`TextStyle(fontSize:12, color:...)` 未显式指定字重 → 默认 w400，落在三档制（w300/w400/w600）内，无 `normal/bold/w500/w700` | ✅ 符合 DESIGN.md |
+
+### 🟡 AM-OPT-1 — `refresh()` 失败被静默吞掉，乐观状态清空后 UI 静默回退且无提示 · 需修
+
+`serverStore.refresh()` → `refreshListAndWorkingSse()` 在 `server_store.dart:504-507` 用 `catch (_) { notifyListeners(); return false; }` **吞掉 REST 异常并返回 bool**，**不抛**。因此 `_switchAgent` 的 try/catch：
+
+```dart
+try {
+  await client.switchAgent(widget.sessionId, agent);   // 仅此行抛 → 走 catch
+  await serverStore.refresh();                          // 返回 bool，REST 失败也不抛
+  if (mounted) setState(() => _optimisticAgent = null); // 即便 refresh=false 也执行
+} catch (e) { ... }                                     // refresh 失败永不进这里
+```
+
+后果：POST `/agent` 已成功（服务器 agent 已切换），但本地 `refresh()` 拉取失败 → `session.agent` 仍为旧值 → `_optimisticAgent` 被清空 → 高亮从乐观新值**静默滑回旧值**，**无 SnackBar**，`_switching` 复位为 false。用户看到「点了又退回去了，没任何报错」，但服务器其实已切换。直到下次 SSE / reconcile（`_reconcile` 定时器）回拉成功才会自愈到正确值。
+
+修复建议：检查 `refresh()` 的 bool 返回值，失败时给提示（且不必回滚乐观态，因为乐观态恰好等于服务器真值）：
+
+```dart
+final switched = await client.switchAgent(widget.sessionId, agent); // 若抛→catch
+final ok = await serverStore.refresh();
+if (mounted) {
+  setState(() => _optimisticAgent = null);
+  if (!ok) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已切换，刷新会话失败，将自动重试')),
+    );
+  }
+}
+```
+
+> 说明：此前草稿里「catch 的 SnackBar 文案误导」一说不成立——catch 只在 `switchAgent` 抛时触发，那时「切换 Agent 失败」文案准确。真正问题在 refresh 失败的**静默**路径，见上。
+
+### 🟡 AM-OPT-2 — `_switchModel` 未同步改造，行为不一致 · 非阻塞（建议后续）
+
+`_switchAgent` 改成了「乐观 + `await refresh` + 重入守卫」，但 `_switchModel` 仍是旧貌：`unawaited(serverStore.refresh())`（火并忘）、无乐观更新、refresh 错误永不捕获、无 `_switching` 重入守卫。model 走 bottom sheet（非内联胶囊），UX 差异可以接受，但「refresh 失败静默」「重入未守卫」与 agent 侧不一致。建议后续对齐（至少加重入守卫 + 检查 refresh bool）。
+
+### 🟢 AM-OPT-3 — 动画为线性，无 easing · 非阻塞
+
+`curLeft/curWidth` 直接用 `_ctrl.value`（默认 `Curves.linear`）。200ms 线性滑动偏机械；改 `Curves.easeInOut` / `easeOutCubic` 更自然。前版 `AnimatedContainer(150ms)` 亦为线性，不算回归。
+
+### 🟢 AM-OPT-4 — `didUpdateWidget` 后存在 ~1 帧文字色/高亮位错配 · 非阻塞
+
+`currentAgent` 变更时：本帧 `build` 用旧 `_left/_fromLeft` 算高亮位（仍在旧处），但选项的激活色（`onPrimaryContainer`）已按新 `currentAgent` 即时翻转 → 文字色已在新项、背景高亮仍在旧项，约 1 帧（~16ms）后 post-frame `_measure(false)` + `forward(from:0)` 启动滑动。视觉可忽略，属常见分段控件动画取舍。
+
+### 🟢 AM-OPT-5 — `_optionKeys` 长度在 `initState` 按 `widget.agents.length` 固化 · 非阻塞
+
+`_optionKeys = List.generate(widget.agents.length, ...)` 仅在 `initState` 建一次。若运行期 `widget.agents` 长度变化 → `_buildOption` 里 `_optionKeys[idx]` 越界；若内容重排 → 高亮位错位直到下次 `currentAgent` 变更。实际 `_agents` 由 `_AgentModelBarState._loadOptions()` 一次性加载且 `_loading` 守卫后才渲染胶囊，列表稳定，不触发。但 `didUpdateWidget` 未在 agents 列表变更时重建 keys / 重测，属脆弱点。
+
+### 🟢 AM-OPT-6 — 布局中途变化（旋转/键盘/字号）不重测 · 非阻塞
+
+动画进行中若布局变化，测量坐标过期，高亮停在旧坐标直到下次 `currentAgent` 变更才重测。无 `LayoutBuilder` / 帧级重测。2-agent 稳定场景下概率低。
+
+### 🟢 AM-OPT-7 — `_measure` 末尾 `setState` 与 `_ctrl.value=1` 触发的 listener setState 同帧重复 · 非阻塞
+
+初始路径 `_ctrl.value = 1` 已触发 listener → setState；末尾 `if (mounted) setState(() {})` 为同帧第二次，Flutter 合并，无害。
+
+### 修复复审
+
+> 评审基线：AM-OPT-1 / AM-OPT-3 / AM-OPT-5 修复后代码。`dart analyze lib` → No issues found；`flutter test` 11/11 通过（`flutter analyze` 全量因分析服务器在含中文路径下崩溃，与代码无关，以 CI 为准）。
+
+| 编号 | 问题 | 修复 | 核对 |
+|------|------|------|------|
+| AM-OPT-1 | refresh 失败静默回退无提示 | `_switchAgent` 检查 `refresh()` 返回值：成功清空乐观态；失败**保留**乐观态（= 服务器真值，POST 已成功）+ SnackBar「已切换，刷新会话失败，将自动重试」；并在 `ListenableBuilder` 加收敛清除——`session.agent == _optimisticAgent` 时 post-frame 清空，覆盖 reconcile 自愈路径 | ✅ POST 成功+刷新失败：高亮留新值不回退 + 提示；POST 失败：catch 回滚 +「切换 Agent 失败」；刷新成功：清空乐观态无闪烁 |
+| AM-OPT-3 | 动画线性偏机械 | `curLeft/curWidth` 改用 `Curves.easeOutCubic.transform(_ctrl.value)` | ✅ 200ms easeOutCubic，滑入更自然 |
+| AM-OPT-5 | `_optionKeys` 长度在 initState 固化，运行期 agents 变更越界 | `_optionKeys` 改 `late`（可重赋值）；`didUpdateWidget` 加 `!identical(old.agents, widget.agents)` 守卫 → 重建 keys + 重测（initial，无动画） | ✅ agents 列表变更时重建 keys 防越界；列表不变时走 currentAgent 变更分支 |
+| AM-OPT-2 | `_switchModel` 未对齐（无重入守卫 / refresh bool） | — | ⏳ 建议后续（model 走 bottom sheet，UX 差异可接受） |
+| AM-OPT-4 | didUpdateWidget 后 1 帧文字色/高亮位错配 | — | 🟢 非阻塞，分段控件常见取舍 |
+| AM-OPT-6 | 布局中途变化（旋转/键盘/字号）不重测 | — | 🟢 非阻塞，2-agent 稳定场景概率低 |
+| AM-OPT-7 | `_measure` 末尾 setState 与 listener 同帧重复 | — | 🟢 无害，Flutter 合并；保留作 `forward` 未触发 notify 时的兜底 |
