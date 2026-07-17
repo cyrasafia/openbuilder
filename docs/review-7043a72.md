@@ -75,7 +75,7 @@
 
 ### 结论
 
-`80c3580` 的**代码修复正确**（FW-1 删死代码回退、FW-2 删 `_previewOf`，`dart analyze` 干净、10/10 通过、`_previewOf` 无残留、working tree 已实测恢复至 fixed 版）。**唯一 open 项为 FW-3 续（🟡 中）**：FW-3 测试实测为**假回归**（discard-port client + unawaited async，buggy 版亦通过，不能拦截）——建议改用 `_MockClient`（`message()` 成功）+ poll 循环重写为真回归。代码可发布；FW-3 测试需补强方能真正守卫该 bug。
+`80c3580` 的**代码修复正确**（FW-1 删死代码回退、FW-2 删 `_previewOf`，`dart analyze` 干净、10/10 通过、`_previewOf` 无残留、working tree 已实测恢复至 fixed 版）。FW-3 续（🟡 中）已在 `173e10c` 修复（`_MockClient` + `messageFn` 成功 + poll 循环，buggy 版实测 FAIL）。无 open 项，代码可发布。
 
 ---
 
