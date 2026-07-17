@@ -295,6 +295,14 @@ class ServerStore extends ChangeNotifier {
       return;
     }
     AppLogger.I.i(_tag, 'connect ${profile.hostDisplay}');
+    // Flush pending cache save for the OUTGOING profile before switching
+    // _profile — _stopSse's flush runs AFTER reassignment and would write
+    // old profile data to the new profile's key (cross-profile leak).
+    if (_cacheSaveTimer != null) {
+      _cacheSaveTimer!.cancel();
+      _cacheSaveTimer = null;
+      await _saveCache();
+    }
     _profile = profile;
     await _teardown();
     _projects = [];
@@ -500,7 +508,7 @@ class ServerStore extends ChangeNotifier {
       _startSse(_kGlobalWatchdog);
     }
     try {
-      if (!_projectsFetched) {
+      if (force || !_projectsFetched) {
         _projects = await client!.projects();
         _projectsFetched = true;
       }
@@ -1115,8 +1123,8 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> _saveCache() async {
-    final p = _profile;
-    if (p == null) return;
+    final profile = _profile;
+    if (profile == null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final j = {
@@ -1126,18 +1134,18 @@ class ServerStore extends ChangeNotifier {
         'status': _statusMap.map((k, v) => MapEntry(k, v.toJson())),
         'lastMessage': _lastMessage,
       };
-      await prefs.setString(_cacheKey(p.id), jsonEncode(j));
+      await prefs.setString(_cacheKey(profile.id), jsonEncode(j));
     } catch (e) {
       AppLogger.I.w(_tag, 'saveCache failed: $e');
     }
   }
 
   Future<void> _loadCache() async {
-    final p = _profile;
-    if (p == null) return;
+    final profile = _profile;
+    if (profile == null) return;
+    final key = _cacheKey(profile.id);
     try {
       final prefs = await SharedPreferences.getInstance();
-      final key = _cacheKey(p.id);
       final raw = prefs.getString(key);
       if (raw == null || raw.isEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
@@ -1179,10 +1187,10 @@ class ServerStore extends ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      AppLogger.I.e(_tag, 'loadCache failed (${_cacheKey(p.id)}): $e');
+      AppLogger.I.e(_tag, 'loadCache failed ($key): $e');
       try {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(_cacheKey(p.id));
+        await prefs.remove(key);
       } catch (_) {}
     }
   }

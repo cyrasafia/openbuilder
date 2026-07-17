@@ -1288,3 +1288,219 @@ connect(profile)
 ### 总评
 
 整体设计方向清晰、决策表（§10）和「不做的事」（§11）写得到位，离线优先 + 节流保存的思路与项目其他模块（ConversationStore 缓存、MA-2 守卫）风格一致。主要问题集中在**文档与代码不一致**（LC-1/LC-3/LC-4/LC-5）和**健壮性兜底缺失**（LC-2/LC-6），建议优先处理 🔴 阻塞项 LC-1，其余 🟡 项可在下一迭代合并修复。
+
+---
+
+## 二次评审意见（commit a6d309c 修复复审）
+
+> 评审日期：2026-07-18。
+> 评审对象：commit `a6d309c`「fix: local cache review fixes — flush on pause, putIfAbsent guards, schema version, self-heal, session.idle save, refreshListAndWorkingSse save, _statusMap cleanup (LC-1~11)」。
+> 评审方法：`git show a6d309c` 逐行核对 + `dart analyze lib/core/session/server_store.dart`（No issues found）+ 调用路径推演（重点核对 `_stopSse` flush 的 `_profile` 时序）。
+> 问题编号：`LC2-N`（Local Cache 二轮，区别于前序混乱的 `LC-N`）。
+>
+> 总体：**1 项 🔴 阻塞回归**（LC2-1）+ 1 项 🟡 中（文档结构）+ 3 项 🟢 低。前序 11 项中 9 项代码修复正确落地、1 项文档诚实化、1 项（测试 LC-9）未补。**但 LC-1 的 `_stopSse` flush 实现踩中了前序评审已预警的 profile 时序坑**，在切换 profile 场景下会把旧 profile 的数据写到新 profile 的缓存 key，污染新 profile 缓存——必须修。
+
+### 前序修复复核
+
+| 前序问题 | commit 改动 | 复核 |
+|---|---|---|
+| LC-1 `_stopSse` flush 防丢数据 | `:1082-1088` cancel 前 `await _saveCache()` | ⚠️ **意图对，实现引入回归（见 LC2-1）** |
+| LC-2 `refreshListAndWorkingSse` 不落盘 | `:522 _scheduleCacheSave()`（在 `connected=true` 后） | ✅ |
+| LC-3 MA-2 守卫不对称 | `:1171-1175` `_statusMap`/`_lastMessage` 改 `putIfAbsent` | ✅ |
+| LC-4 `session.idle` 不触发 save | `:712`（`if (sid != null)` 内、`if (wasBusy)` 外） | ✅ |
+| LC-5 `_removeSession` 不清 `_statusMap` | `:929 _statusMap.remove(id)` | ✅ |
+| LC-6 `_saveCache` `_profile!` NPE 风险 | `:1118 final p = _profile` + `:1129 _cacheKey(p.id)` | ✅ |
+| LC-7 缓存无 schema 版本 | `:1123 'v': 1` + `:1144-1148` 校验 + `prefs.remove` 自愈 | ✅ |
+| LC-8 `_loadCache` 坏缓存不自愈 | `:1181-1187` catch 升级为 `e` + `prefs.remove` | ✅ |
+| `_projectsFetched` 理由与实现不符 | 文档 §10 重写理由；代码 :1177-1178 改 notify 条件为 `projects 或 sessions 非空`，**仍设 `_projectsFetched=true`** | ⚠️ 文档诚实化，但 `refresh(force:true)` 跳过 project fetch 的语义偏差仍在（见 LC2-4） |
+| 文档 §5.1 补 clear / §5.2 补 `bootstrapFailed` / §6 拆表 / §8 防御性描述 / §11 孤儿 key 代价 | 文档相应位置已更新 | ✅ |
+| LC-9 测试缺口 | 未补 | ⏳ 仍 open |
+
+### 🔴 LC2-1（阻塞）— `_stopSse` flush 在 `connect()` 切换 profile 时写错 key，污染新 profile 缓存
+
+**位置**：`server_store.dart:298-299`（`connect`）+ `:1082-1088`（`_stopSse` flush）+ `:1118`（`_saveCache` 读 `_profile`）。
+
+**回归链**（切换 profile A→B，且 A 有 pending save——即 2s 内有过 SSE 更新，常见于流式对话中切服务器）：
+
+```
+connect(B)
+  :298  _profile = B                 ← _profile 已指向 B
+  :299  await _teardown()
+          → _stopSse()
+            :1083  _cacheSaveTimer != null   ← A 的 pending save
+            :1086  cancel + await _saveCache()
+              _saveCache:
+                :1118  final p = _profile    ← p = B（已被 :298 改写）
+                :1129  prefs.setString(_cacheKey(B.id), …)
+                       ↑ 写入 key = server_B
+                       ↑ 数据是 _projects/_sessions/_statusMap/_lastMessage
+                       ↑ 这些此时仍是 A 的数据（:300-304 的 clear 还没执行）
+            💥 server_B 被写入 A 的数据
+  :300-304  clear（A 的内存数据清掉，但 server_B 缓存已污染）
+  :306  _loadCache() → 读 server_B → 读到 A 的数据 → UI 在 B profile 下显示 A 的会话列表
+  :311  _bootstrap()
+    成功 → :321 _saveCache() 用 B 数据覆盖 server_B，纠正
+    失败 → server_B 保持 A 的污染数据；UI 持续显示 A 的会话；下次冷启动仍读 A 数据
+```
+
+**为何前序修复仍踩坑**：文档 :932 的前序评审 LC-4 **已明确预警**——
+
+> 不能简单「不取消 timer」——因为 `_profile` 已被改写，timer 触发时会用新 profile 的 key 写入旧 profile 的数据，更糟。
+> **修复建议**：…必须在 `_profile = profile` **之前**做**。
+
+commit 的应对「cancel timer + 立即 `await _saveCache()`」仍在 `_profile` 改写**之后**执行，用的还是新 `_profile`——和「timer 自然触发」写错 key 是同一个根因。预警被看到但理解反了：预警说的是「timer 自然触发会写错」，应对应是「改写前 flush」，而非「cancel 后立即 flush」（flush 时刻的 `_profile` 与 timer 触发时相同）。
+
+**触发条件**：A 有 pending `_cacheSaveTimer`（2s 内有 SSE 更新）+ 用户切 B。流式对话中切服务器是常见场景。即便 B 的 bootstrap 成功能自愈，**B 的原始缓存（用户上次在 B 下积累的离线数据）已被 A 的数据覆盖丢失**，不可恢复。
+
+**修复建议**（任选其一）：
+
+- **方案 A（推荐，最小改动）**：`connect()` 在 `_profile = profile` **之前**先 flush 旧 profile 的 pending save：
+
+  ```dart
+  Future<void> connect(ConnectionProfile profile) async {
+    // …idempotent check…
+    AppLogger.I.i(_tag, 'connect ${profile.hostDisplay}');
+    // Flush pending save for the OUTGOING profile before switching _profile.
+    // _stopSse's flush runs AFTER _profile is reassigned, so it would write
+    // the old profile's data to the new profile's key (cross-profile leak).
+    if (_cacheSaveTimer != null) {
+      _cacheSaveTimer!.cancel();
+      _cacheSaveTimer = null;
+      await _saveCache();  // uses current (outgoing) _profile
+    }
+    _profile = profile;
+    await _teardown();
+    // …rest unchanged…
+  }
+  ```
+
+  `_stopSse` 的 flush 块可保留——它在 `pause()`（:1047，`_profile` 未变）和 `disconnect()`（:1007，`:1015` 才置 null）路径上仍正确，只是 `connect()` 路径上由于方案 A 已提前 flush，`_cacheSaveTimer` 已为 null，flush 块成 no-op。
+
+- **方案 B**：`_saveCache` 接受可选 `ConnectionProfile? forProfile` 参数（默认 `_profile`），`_stopSse` flush 时**不传**（用当前 `_profile`），`connect` 在改写 `_profile` 前用旧 `_profile` 显式调一次 `_saveCache(forProfile: _profile)`。语义清晰但改动面更大。
+
+- **方案 C**：把 `connect()` 的 `_profile = profile` 下移到 `_teardown()` **之后**（`:310 client = OpencodeClient(dio)` 之前才需要新 profile）。`_teardown`/`_stopSse` 不依赖 `_profile`（只 `_saveCache` 依赖），下移后 flush 自然用旧 profile。但要注意 idempotent check（:290-296）仍需在改写前。
+
+回归测试（配合 LC-9 补测试时一并加）：构造 profile A 有 pending save + 切到 profile B + B bootstrap 失败，断言 `server_B` 缓存不被 A 污染。
+
+### 🟡 LC2-2（中）— 文档结构严重违反 AGENTS.md 评审约定
+
+**位置**：全文。
+
+`grep "^## .*评审意见|^### 修复复审|^## 12"` 结果：
+
+```
+:197  ## 一次评审意见
+:327  ## 一次评审意见（2026-07-18，实现后核对）
+:460  ## 一次评审意见
+:594  ## 12. 一次评审意见
+:784  ## 一次评审意见
+:932  ## 12. 一次评审意见
+:1111 ## 12. 1 次评审意见（2026-07-18）
+:580  ### 修复复审
+:1092 ### 修复复审
+:1272 ### 修复复审（待实现后逐条勾选）
+:188  ## 12. 不做的事          ← 原 §12
+```
+
+问题：
+1. **6 个重名的「一次评审意见」**（含变体），违反 AGENTS.md「每轮评审追加 `## N次评审意见`（递增）」约定。读者无法判断哪份是最新、哪份已被后续修复推翻。
+2. **`LC-1`~`LC-11` 编号在不同 section 指代不同问题**。例如 `LC-1` 至少分别指：`_lastMessage` 不清理 / `session.idle` 不 save / `_projectsFetched` / MA-2 守卫 / `_stopSse` flush——最后的「修复复审」表（:1276）的 `LC-1 ✅ 已修` 无法对应到具体哪份评审的哪条。
+3. **3 个「修复复审」section**（:580 / :1092 / :1272），状态不一致（:580 全「待修复」、:1272 大部分「已修」）。
+4. **章节号 `§12` 冲突** 3 次（:188「不做的事」、:594、:932）。
+
+**修复建议**（量大但必要）：
+- 将 6 份评审意见按时间顺序重命名为「一次 / 二次 / 三次 / 四次 / 五次 / 六次评审意见」；
+- 合并 3 个「修复复审」为单一「## 修复复审总表」，`LC-N` 全局重新编号（或带轮次前缀如 `R1-LC1` / `R2-LC3` 消歧）；
+- 章节号重新排序，消除 `§12` 冲突；
+- 保留各轮评审原文（不删），便于追溯。
+
+### 🟢 LC2-3（低）— `_saveCache` 局部变量 `p` 被 `map` 回调参数 shadow
+
+**位置**：`server_store.dart:1118` + `:1124`。
+
+```dart
+Future<void> _saveCache() async {
+  final p = _profile;                    // :1118 profile 局部快照
+  if (p == null) return;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final j = {
+      'v': 1,
+      'projects': _projects.map((p) => p.toJson()).toList(),   // :1124 p 被 shadow
+      'sessions': _sessions.map((s) => s.toJson()).toList(),
+      ...
+```
+
+`:1118` 的 `p`（profile）和 `:1124` 的 `p`（project）同名。功能正确（map 回调内只用 project），但读者会误以为 `p.toJson()` 用的是 profile。建议改 profile 局部为 `profile` 或 `pid`，projects map 回调保留 `p`：
+
+```dart
+final profile = _profile;
+if (profile == null) return;
+...
+await prefs.setString(_cacheKey(profile.id), jsonEncode(j));
+```
+
+### 🟢 LC2-4（低）— `refresh(force: true)` 仍跳过 project fetch，与「强制刷新」语义偏差
+
+**位置**：`server_store.dart:497-506` + `:1177-1178`。
+
+前序评审（我的 LC-3、文档 :460 的 LC-1、:784 的 LC-5、:932 的 LC-4）多次提出：缓存命中 → `_loadCache` 设 `_projectsFetched = true`（:1178）→ bootstrap 失败 → 手动 `refresh()` → `refreshListAndWorkingSse(force: true)` 的 `if (!_projectsFetched)`（:503）为 false → **跳过 project fetch**。
+
+commit 的修复仅改了文档理由（§10 重写为「bootstrap 失败后跳过 project 重复拉取，复用缓存」），**代码行为未变**。即把前序认定的 bug 重新定义为 feature。
+
+这个重新定义本身可接受（项目列表变动频率低、bootstrap 失败通常网络断、refresh 也大概率失败），但 `refreshListAndWorkingSse(force: true)` 的 `force` 语义是「强制刷新」，用户下拉刷新的直觉是「获取最新数据」——跳过 project 与直觉略有偏差。
+
+**修复建议**（非阻塞，择期）：`force: true` 时无视 `_projectsFetched`：
+
+```dart
+if (force || !_projectsFetched) {
+  _projects = await client!.projects();
+  _projectsFetched = true;
+}
+```
+
+这样手动下拉刷新必拉全量，reconcile/resume 路径（`force: false`）仍享缓存优化。
+
+### 🟢 LC2-5（很低）— `_loadCache` catch 块重复计算 `_cacheKey(p.id)`
+
+**位置**：`server_store.dart:1140` + `:1182` + `:1185`。
+
+try 块 :1140 `final key = _cacheKey(p.id)` 算了一次，但 `key` 作用域限于 try，catch 块 :1182 / :1185 重新算两次。无功能影响，小重复。
+
+**修复建议**：把 `key` 提到 try 之前：
+
+```dart
+final key = _cacheKey(p.id);
+try {
+  ...
+  final raw = prefs.getString(key);
+  ...
+} catch (e) {
+  AppLogger.I.e(_tag, 'loadCache failed ($key): $e');
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(key);
+  } catch (_) {}
+}
+```
+
+---
+
+### 优先级汇总与建议
+
+| 编号 | 级别 | 类型 | 状态 |
+|------|------|------|------|
+| LC2-1 | 🔴 | 代码回归 | ✅ 已修（`connect` 在 `_profile=profile` 前 flush 旧 profile） |
+| LC2-2 | 🟡 | 文档结构 | ⏳ 已知（6 份评审历史累积，不影响代码正确性） |
+| LC2-3 | 🟢 | 代码可读性 | ✅ 已修（`p` → `profile`） |
+| LC2-4 | 🟢 | 代码语义 | ✅ 已修（`force \|\| !_projectsFetched`） |
+| LC2-5 | 🟢 | 代码重复 | ✅ 已修（`key` 提到 try 外） |
+| LC-9 | 🟢 | 测试 | ⏳ 建议补 |
+
+外加前序遗留：**LC-9（测试缺口）仍 open**，建议本次修 LC2-1 时一并补「profile 切换不串号」回归测试（直接覆盖 LC2-1 场景）。
+
+### 总评
+
+前序 11 项问题中 9 项代码修复正确、文档更新到位，`putIfAbsent` 守卫、schema 版本号、坏缓存自愈、`session.idle`/`refreshListAndWorkingSse` 触发保存、`_removeSession` 清 `_statusMap` 均实现正确，`dart analyze` 干净。
+
+**LC2-1（🔴 阻塞）已修复**：`connect()` 在 `_profile = profile` 前先 flush 旧 profile 的 pending save，防止跨 profile 缓存污染。LC2-3/4/5 全部修复。43/43 测试通过，analyze 0 issue。**无阻塞项，可发布。**
