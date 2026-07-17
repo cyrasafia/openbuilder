@@ -519,6 +519,7 @@ class ServerStore extends ChangeNotifier {
       _trimSse();
       _lastFullRefreshAt = DateTime.now();
       connected = true;
+      _scheduleCacheSave();
     } catch (_) {
       // REST failed — return false so manual refresh shows toast.
       notifyListeners();
@@ -708,6 +709,7 @@ class ServerStore extends ChangeNotifier {
           // idle on an already-idle session).
           final wasBusy = _statusMap[sid]?.type == 'busy';
           _statusMap[sid] = const SessionStatusValue('idle');
+          _scheduleCacheSave();
           if (wasBusy) {
             AppLogger.I.i(_tag, 'session.idle $sid');
             final title = sessionById(sid)?.title ?? '会话';
@@ -924,6 +926,7 @@ class ServerStore extends ChangeNotifier {
     _sessions.removeWhere((s) => s.id == id);
     _conversations.remove(id);
     _lastMessage.remove(id);
+    _statusMap.remove(id);
     _trimSse();
     _scheduleCacheSave();
   }
@@ -1077,8 +1080,13 @@ class ServerStore extends ChangeNotifier {
   Future<void> _stopSse() async {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
-    _cacheSaveTimer?.cancel();
-    _cacheSaveTimer = null;
+    // Flush pending cache save before canceling — prevents data loss on
+    // pause/disconnect (up to 2s of SSE updates would be dropped).
+    if (_cacheSaveTimer != null) {
+      _cacheSaveTimer!.cancel();
+      _cacheSaveTimer = null;
+      await _saveCache();
+    }
     for (final sub in _sseSubs.values) {
       await sub.cancel();
     }
@@ -1107,28 +1115,37 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> _saveCache() async {
-    if (_profile == null) return;
+    final p = _profile;
+    if (p == null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final j = {
+        'v': 1,
         'projects': _projects.map((p) => p.toJson()).toList(),
         'sessions': _sessions.map((s) => s.toJson()).toList(),
         'status': _statusMap.map((k, v) => MapEntry(k, v.toJson())),
         'lastMessage': _lastMessage,
       };
-      await prefs.setString(_cacheKey(_profile!.id), jsonEncode(j));
+      await prefs.setString(_cacheKey(p.id), jsonEncode(j));
     } catch (e) {
       AppLogger.I.w(_tag, 'saveCache failed: $e');
     }
   }
 
   Future<void> _loadCache() async {
-    if (_profile == null) return;
+    final p = _profile;
+    if (p == null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_cacheKey(_profile!.id));
+      final key = _cacheKey(p.id);
+      final raw = prefs.getString(key);
       if (raw == null || raw.isEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
+      if (j['v'] != 1) {
+        AppLogger.I.w(_tag, 'cache schema mismatch, dropping');
+        await prefs.remove(key);
+        return;
+      }
       final projects = (j['projects'] as List? ?? [])
           .map((e) => ProjectModel.fromJson((e as Map).cast<String, dynamic>()))
           .toList();
@@ -1146,16 +1163,27 @@ class ServerStore extends ChangeNotifier {
       for (final entry in lmRaw.entries) {
         lastMsg[entry.key] = entry.value.toString();
       }
+      // MA-2 guards: only fill when empty; use putIfAbsent for maps so SSE
+      // real-time values are never overwritten by stale cache (defensive
+      // for future call paths that might load cache after SSE starts).
       if (_projects.isEmpty) _projects = projects;
       if (_sessions.isEmpty) _sessions = sessions;
-      _statusMap.addAll(status);
-      _lastMessage.addAll(lastMsg);
-      if (_sessions.isNotEmpty) {
+      for (final e in status.entries) {
+        _statusMap.putIfAbsent(e.key, () => e.value);
+      }
+      for (final e in lastMsg.entries) {
+        _lastMessage.putIfAbsent(e.key, () => e.value);
+      }
+      if (_projects.isNotEmpty || _sessions.isNotEmpty) {
         _projectsFetched = true;
         notifyListeners();
       }
     } catch (e) {
-      AppLogger.I.w(_tag, 'loadCache failed: $e');
+      AppLogger.I.e(_tag, 'loadCache failed (${_cacheKey(p.id)}): $e');
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_cacheKey(p.id));
+      } catch (_) {}
     }
   }
 }
