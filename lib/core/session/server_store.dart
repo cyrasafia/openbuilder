@@ -856,7 +856,11 @@ class ServerStore extends ChangeNotifier {
     }
     // Fallback only when the conversation couldn't be created (not connected):
     // fetch this message's parts over the network to seed the preview.
-    if (m.role == 'user' || (m.finish != null && m.finish!.isNotEmpty)) {
+    // When conv exists but local is null (e.g. streaming assistant has no
+    // parts yet), keep the current _lastMessage — don't overwrite with the
+    // user message text (causes preview revert at tool-call boundaries).
+    if (conv == null &&
+        (m.role == 'user' || (m.finish != null && m.finish!.isNotEmpty))) {
       try {
         final entry = await client!.message(sid, m.id);
         final preview = _previewOf(entry);
