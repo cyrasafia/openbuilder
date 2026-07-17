@@ -730,17 +730,19 @@ class ServerStore extends ChangeNotifier {
         }
         break;
       case 'message.updated':
+        AppLogger.I.d(_tag, 'message.updated ${ev.properties['info']?['role']} ${ev.properties['info']?['id']}');
         unawaited(_onMessageUpdated(ev.properties));
         return;
       case 'message.part.updated':
         final part = ev.properties['part'];
         final sid = part is Map ? part['sessionID']?.toString() : null;
         final delta = ev.properties['delta']?.toString();
+        final ptype = part is Map ? part['type']?.toString() : null;
+        final mid = part is Map ? part['messageID']?.toString() : null;
         if (sid != null && part is Map) {
           final conv = ensureConversation(sid);
           if (conv != null) {
             conv.onPartUpdated(part.cast(), delta);
-            final ptype = part['type']?.toString();
             // List preview: refresh on every renderable part event (text/
             // reasoning deltas included), coalesced by _notifyPreviewChanged()
             // (120ms). Tool parts already triggered before; now streaming text
@@ -753,6 +755,9 @@ class ServerStore extends ChangeNotifier {
             // preview-bearing part type MUST be added here.
             if (ptype == 'tool' || ptype == 'text' || ptype == 'reasoning') {
               final pv = conv.lastMessagePreview();
+              final lastRole = conv.messages.isNotEmpty ? conv.messages.last.info.role : '?';
+              final lastId = conv.messages.isNotEmpty ? conv.messages.last.info.id : '?';
+              AppLogger.I.d(_tag, 'part.updated sid=$sid mid=$mid type=$ptype pv=$pv _last=($lastRole,$lastId)');
               if (pv != null) {
                 _lastMessage[sid] = pv;
                 _notifyPreviewChanged();
@@ -845,6 +850,9 @@ class ServerStore extends ChangeNotifier {
     // reasoning-only assistant messages). Part events keep the preview live
     // during streaming; this keeps it correct at message boundaries.
     final local = conv?.lastMessagePreview();
+    final lastRole = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.role : '?';
+    final lastId = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.id : '?';
+    AppLogger.I.d(_tag, 'msg.updated sid=$sid role=${m.role} id=${m.id} finish=${m.finish} pv=$local _last=($lastRole,$lastId)');
     if (local != null) {
       _lastMessage[sid] = local;
       _notifyPreviewChanged();

@@ -519,6 +519,7 @@ class ConversationStore extends ChangeNotifier {
       _messages.add(DisplayMessage(info));
     }
     _sort();
+    AppLogger.I.d(_tag, 'onMessageUpdated id=${info.id} role=${info.role} created=${info.created} finish=${info.finish} → last=${_messages.last.info.id}(${_messages.last.info.role})');
     // 消息完成即异步落盘（off-screen conv 也覆盖，因 ensureConversation 会
     // 创建 conv）。非 per-token，频率低。
     if (info.role == 'user' || (info.finish != null && info.finish!.isNotEmpty)) {
@@ -653,6 +654,7 @@ class ConversationStore extends ChangeNotifier {
     ));
     _messages.add(m);
     _sort();
+    AppLogger.I.d(_tag, '_ensureMessage id=$id created=${maxCreated + 1} → last=${_messages.last.info.id}(${_messages.last.info.role})');
     return m;
   }
 
