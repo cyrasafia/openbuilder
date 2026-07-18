@@ -266,6 +266,7 @@ class ServerStore extends ChangeNotifier {
     final conv = ConversationStore(sid, c);
     _conversations[sid] = conv;
     conv.status = statusOf(sid).type;
+    conv.sessionUpdated = sessionById(sid)?.updated;
     // Inject any pending permission/question known from SSE/REST backfill.
     final pending = _pendingPermissions[sid];
     if (pending != null) conv.onPermission(pending);
@@ -301,6 +302,7 @@ class ServerStore extends ChangeNotifier {
     if (existing != null) {
       _conversations.remove(sessionId);
       _conversations[sessionId] = existing; // LRU promote
+      existing.sessionUpdated = sessionById(sessionId)?.updated;
       // Trigger reconcile: three paths (MA-8). reloadIfStale() is guarded by
       // _stale, so it cannot reconcile a never-loaded conv (whose _stale is
       // initially false) — route !loaded through load() instead.

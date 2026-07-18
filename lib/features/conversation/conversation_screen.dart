@@ -34,13 +34,50 @@ class _ConversationScreenState extends State<ConversationScreen> {
   String? _cmdError;
   bool _didForceReload = false;
   int _lastMsgCount = 0;
+  static const _kScrollThreshold = 200.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScroll);
+  }
 
   @override
   void dispose() {
     serverStore.setActiveConversation(null);
+    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _ctl.dispose();
     super.dispose();
+  }
+
+  /// Reversed ListView: visual top = maxScrollExtent. When near the top,
+  /// trigger lazy backward pagination.
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent - _kScrollThreshold) {
+      _maybeLoadEarlier();
+    }
+  }
+
+  void _maybeLoadEarlier() {
+    final conv = serverStore.conversationFor(widget.sessionId);
+    if (conv == null) return;
+    if (!conv.hasMore || conv.loadingEarlier) return;
+    conv.loadOnePage().then((_) {
+      // Chain: if the viewport isn't filled yet (still at top), keep loading.
+      if (!mounted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scrollController.hasClients) return;
+        final pos = _scrollController.position;
+        final c = serverStore.conversationFor(widget.sessionId);
+        if (c == null || !c.hasMore || c.loadingEarlier) return;
+        if (pos.pixels >= pos.maxScrollExtent - _kScrollThreshold) {
+          _maybeLoadEarlier();
+        }
+      });
+    });
   }
 
   @override
@@ -140,11 +177,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
             children: [
               const SizedBox(height: 8),
               if (conv.busy || conv.loading) const _TypingDots(),
-              ...conv.messages.map(_message).toList().reversed,
+              ...conv.renderableMessages.map(_message).toList().reversed,
+              if (conv.loadingEarlier)
+                const _LoadingEarlierRow(),
             ],
           );
-          if (conv.messages.length != _lastMsgCount) {
-            _lastMsgCount = conv.messages.length;
+          final msgCount = conv.renderableMessages.length;
+          if (msgCount != _lastMsgCount) {
+            _lastMsgCount = msgCount;
             _scheduleAutoScroll();
           }
           final showFooter =
@@ -1244,6 +1284,43 @@ class _TypingDots extends StatelessWidget {
             padding: const EdgeInsets.only(right: 4),
             child: _Dot(delay: i * 300),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Loading indicator shown at the visual top of the message list while
+/// fetching an older page (scroll-up lazy pagination).
+class _LoadingEarlierRow extends StatelessWidget {
+  const _LoadingEarlierRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Theme.of(context).colorScheme.onSurface.withAlpha(120),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '加载中',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+                color: Theme.of(context).colorScheme.onSurface.withAlpha(120),
+              ),
+            ),
+          ],
         ),
       ),
     );
