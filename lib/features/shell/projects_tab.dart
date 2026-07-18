@@ -124,14 +124,14 @@ class _ProjItem {
   final String subtitle;
   final ProjectIcon? icon;
   final int count;
-  final int lastUpdated;
+  final int lastActivity;
   final VoidCallback onTap;
   const _ProjItem(
       {required this.name,
       required this.subtitle,
       this.icon,
       required this.count,
-      required this.lastUpdated,
+      required this.lastActivity,
       required this.onTap});
 }
 
@@ -155,7 +155,7 @@ List<_ProjItem> _buildItems(BuildContext context) {
           name: name,
           subtitle: dir.isEmpty ? 'global' : dir,
           count: entry.value.length,
-          lastUpdated: last,
+          lastActivity: last,
           onTap: () => context.push(
               '/project/global?directory=${Uri.encodeQueryComponent(dir)}'),
         ));
@@ -171,11 +171,11 @@ List<_ProjItem> _buildItems(BuildContext context) {
       subtitle: p.worktree,
       icon: p.icon,
       count: sess.length,
-      lastUpdated: last,
+      lastActivity: last,
       onTap: () => context.push('/project/${p.id}'),
     ));
   }
-  items.sort((a, b) => b.lastUpdated.compareTo(a.lastUpdated));
+  items.sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
   return items;
 }
 
