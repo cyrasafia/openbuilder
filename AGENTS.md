@@ -90,7 +90,7 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 - 模型手写 `fromJson`，不用 `freezed` / `json_serializable`
 - API client 手写（`lib/data/api/opencode_client.dart`），不用生成器接入 app
 - commit message 前缀：`feat:` / `fix:` / `ui:` / `docs:` / `perf:`
-- 分支合回 `master` 默认使用 squash merge（保持 master 历史线性、一个功能一个 commit）
+- 分支合回 `main` 默认使用 squash merge（保持 main 历史线性、一个功能一个 commit）
 
 ## 前端样式约定
 
