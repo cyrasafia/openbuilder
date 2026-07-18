@@ -179,7 +179,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             children: [
               const SizedBox(height: 8),
               if (conv.busy || conv.loading) const _TypingDots(),
-              ...conv.renderableMessages.map(_message).toList().reversed,
+              ...conv.renderableMessages.map(_message),
               if (conv.loadingEarlier)
                 const _LoadingEarlierRow()
               else if (conv.loadEarlierError && conv.hasMore)
