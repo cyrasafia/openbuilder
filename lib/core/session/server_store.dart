@@ -58,6 +58,15 @@ class ServerStore extends ChangeNotifier {
   List<SessionModel> _sessions = [];
   final Map<String, SessionStatusValue> _statusMap = {};
   final Map<String, String> _lastMessage = {};
+  /// Monotonic max(`SessionModel.updated`) per project activity key — includes
+  /// sessions that have since been archived. `/session` does not expose
+  /// archived sessions over HTTP, so we capture `updated` while a session is
+  /// still visible and keep it after archive. Without this, archiving the last
+  /// active session in a project would evict it from `_sessions` and sink the
+  /// project to the bottom of the projects tab. Keyed by `projectID`, or
+  /// `'global\u0000$directory'` for the global project's per-directory entries
+  /// (the global project is expanded into one list row per working directory).
+  final Map<String, int> _lastActivityByKey = {};
   bool _projectsFetched = false;
   /// Per-session conversation caches, capped at [_kMaxConversations] with
   /// LRU eviction (oldest accessed evicted on insert). Uses a LinkedHashMap
@@ -107,6 +116,35 @@ class ServerStore extends ChangeNotifier {
       _statusMap[id] ?? const SessionStatusValue('idle');
 
   String? lastMessageOf(String id) => _lastMessage[id];
+
+  /// Max `updated` ever observed for [projectID] across all of its sessions
+  /// (including ones later archived). Returns 0 if never observed. Drives
+  /// project-list sort order so a project doesn't sink when its last active
+  /// session is archived.
+  int lastActivityForProject(String projectID) =>
+      _lastActivityByKey[projectID] ?? 0;
+
+  /// Same as [lastActivityForProject] but keyed by [directory] within the
+  /// global project. Each working directory under `global` is shown as its own
+  /// row in the projects tab, so activity is tracked per-directory.
+  int lastActivityForGlobalDir(String directory) =>
+      _lastActivityByKey['global\u0000$directory'] ?? 0;
+
+  /// Monotonically bump the per-project activity timestamp for [s]. Only ever
+  /// increases — archiving a session doesn't reset the project's recency.
+  /// Called from `_addSessions` (REST bulk fetch) and `_upsertSession` (SSE
+  /// insert/update, including the transition into archived).
+  void _bumpLastActivity(SessionModel s) {
+    if (s.updated <= 0) return;
+    final key = s.projectID == 'global'
+        ? 'global\u0000${s.directory}'
+        : s.projectID;
+    final current = _lastActivityByKey[key] ?? 0;
+    if (s.updated > current) {
+      _lastActivityByKey[key] = s.updated;
+      _scheduleCacheSave();
+    }
+  }
 
   /// Throttled notify for streaming preview updates. The session list rebuilds
   /// on every [notifyListeners], so coalescing the burst of
@@ -309,6 +347,7 @@ class ServerStore extends ChangeNotifier {
     _sessions = [];
     _statusMap.clear();
     _lastMessage.clear();
+    _lastActivityByKey.clear();
     _projectsFetched = false;
     // Load cached data first for instant offline UI, then _bootstrap refreshes.
     await _loadCache();
@@ -482,6 +521,11 @@ class ServerStore extends ChangeNotifier {
 
   void _addSessions(Map<String, SessionModel> out, List<SessionModel> list) {
     for (final s in list) {
+      // Bump before the archived/parent filter: archived and child sessions
+      // (if ever returned by the API) still contribute to the project's
+      // recency, so archiving the last active session doesn't sink the
+      // project in the projects tab.
+      _bumpLastActivity(s);
       if (s.archived != null) continue; // archived
       if (s.parentID != null) continue; // subtask / child session
       out[s.id] = s;
@@ -905,6 +949,10 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _upsertSession(SessionModel s) {
+    // Bump activity even when the session is being archived — `setArchived`
+    // leaves `time.updated` unchanged, so this preserves the project's sort
+    // position after the session disappears from `_sessions`.
+    _bumpLastActivity(s);
     // Drop archived sessions and subtask/child sessions from the active list.
     if (s.archived != null || s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
@@ -1020,6 +1068,7 @@ class ServerStore extends ChangeNotifier {
     _sessions = [];
     _statusMap.clear();
     _lastMessage.clear();
+    _lastActivityByKey.clear();
     _pendingPermissions.clear();
     _pendingQuestions.clear();
     client = null;
@@ -1137,6 +1186,7 @@ class ServerStore extends ChangeNotifier {
         'sessions': _sessions.map((s) => s.toJson()).toList(),
         'status': _statusMap.map((k, v) => MapEntry(k, v.toJson())),
         'lastMessage': _lastMessage,
+        'activity': _lastActivityByKey,
       };
       await prefs.setString(_cacheKey(profile.id), jsonEncode(j));
     } catch (e) {
@@ -1174,6 +1224,19 @@ class ServerStore extends ChangeNotifier {
       final lmRaw = j['lastMessage'] as Map? ?? {};
       for (final entry in lmRaw.entries) {
         lastMsg[entry.key] = entry.value.toString();
+      }
+      // Activity is monotonic-max merged: a stale cache value must not
+      // overwrite a larger value already set by SSE between `_loadCache` calls
+      // or by an in-flight bootstrap. (Defensive — `connect` clears the map
+      // before `_loadCache`, so in practice the merge is a straight fill.)
+      final actRaw = j['activity'] as Map? ?? {};
+      for (final entry in actRaw.entries) {
+        final v = entry.value;
+        final n = v is int ? v : (v is num ? v.toInt() : null);
+        if (n == null) continue;
+        final key = entry.key.toString();
+        final cur = _lastActivityByKey[key] ?? 0;
+        if (n > cur) _lastActivityByKey[key] = n;
       }
       // MA-2 guards: only fill when empty; use putIfAbsent for maps so SSE
       // real-time values are never overwritten by stale cache (defensive

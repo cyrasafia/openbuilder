@@ -147,9 +147,10 @@ List<_ProjItem> _buildItems(BuildContext context) {
       for (final entry in byDir.entries) {
         final dir = entry.key;
         final name = dir.isEmpty ? 'global' : dir.split('/').last;
-        final last = entry.value.isEmpty
-            ? 0
-            : entry.value.map((s) => s.updated).reduce((a, b) => a > b ? a : b);
+        // Sort key comes from the monotonic activity map (includes archived
+        // sessions) so archiving the last session in this directory doesn't
+        // sink the row. Count chip still shows unarchived session count.
+        final last = serverStore.lastActivityForGlobalDir(dir);
         items.add(_ProjItem(
           name: name,
           subtitle: dir.isEmpty ? 'global' : dir,
@@ -162,9 +163,9 @@ List<_ProjItem> _buildItems(BuildContext context) {
       continue;
     }
     final sess = serverStore.sessions.where((s) => s.projectID == p.id).toList();
-    final last = sess.isEmpty
-        ? 0
-        : sess.map((s) => s.updated).reduce((a, b) => a > b ? a : b);
+    // See note above: monotonic activity (includes archived) for sort,
+    // unarchived count for the chip.
+    final last = serverStore.lastActivityForProject(p.id);
     items.add(_ProjItem(
       name: p.displayName,
       subtitle: p.worktree,
