@@ -55,6 +55,9 @@ OpencodeEvent _sessionEvent({
 
 // Direct SessionModel constructor — for tests that need to drive REST-path
 // code (e.g. _addSessions) without going through SSE event parsing.
+// time map shape matches `_sessionEvent` (only `updated` + optional
+// `archived`; `created` is irrelevant to activity logic and omitted for
+// symmetry — `SessionModel.fromJson` defaults it to 0).
 SessionModel _session({
   required String id,
   required String projectID,
@@ -62,7 +65,7 @@ SessionModel _session({
   required int updated,
   int? archived,
 }) {
-  final time = <String, dynamic>{'created': 1, 'updated': updated};
+  final time = <String, dynamic>{'updated': updated};
   if (archived != null) time['archived'] = archived;
   return SessionModel.fromJson({
     'id': id,

@@ -98,17 +98,17 @@ session's  while still visible and keep it after archive in a
 ## 修复复审（PA-R1 ~ PA-R6 → 全闭环）
 
 > 复审日期：2026-07-18。
-> 处理方式：6 条全部落地（PA-R4 取「不裁剪 + 注释说明」），amend 进 `a927a8f` 让其成为最终版本（未推送，amend 安全）。
+> 处理方式：6 条全部落地，分布在两个 commit——PA-R1/R2/R3/R4 的 server_store.dart 改动被 `66bfaea`（Open Builder naming follow-up）意外裹入，PA-R6 + 新增测试 + 本 review 文档落在 `eecc742`；PA-R5 经评估**接受现状不改**（amend `a927a8f` 会级联重写已 commit 的 `66bfaea`，得不偿失，详见 PA-R5 行）。
 > 核对方式：`dart analyze lib/ test/` 我的改动 0 issue（唯一 warning `conversation_screen.dart:305 unused_local_variable` 是仓库不相关 WIP）；`flutter test` 50/50 通过（含新增 PA-4 改写 + PA-5 + PA-R2a + PA-R2b 共 4 个新用例）。
 
 | 项 | 内容 | 复核 |
 |---|---|---|
-| PA-R1 | `server_store.dart` 新增 `@visibleForTesting addSessionsForTesting(out, list)`；`project_activity_test.dart` 的 PA-4 改为构造 `SessionModel(archived: 9999)` + `SessionModel(unarchived)` 列表喂给 `addSessionsForTesting`,断言 `out` 不含 archived 项但 `lastActivityForProject` 已记录其 `updated=7777` | ✅ 真正走 `_addSessions` 路径,不再绕道 SSE；锁定「bump 早于 archived 过滤」不变式 |
-| PA-R2a | 用 `SharedPreferences.setMockInitialValues` 注入含 `activity` 字段的 v1 缓存 JSON,调 `loadCacheForTesting(profile)` 还原；新增 `loadCacheForTesting` `@visibleForTesting` seam（同时设 `_profile` 与调 `_loadCache`）；断言 `lastActivityForProject('p1')==5000` 与 `lastActivityForGlobalDir('/dirA')==7000`（覆盖 NUL-escaped key 解码） | ✅ 锁定 JSON shape 与 v1 schema `activity` 字段名 |
-| PA-R2b | 先用 SSE 注入 fresher 值 `p1=9000`,再注入 stale 缓存 `p1=5000`,调 `loadCacheForTesting` → 断言 `p1==9000`（不覆盖）；再注入 `p2=3000`,断言 `p2==3000`（fill）且 `p1` 仍为 9000（跨 key 不干扰） | ✅ 锁定 `_loadCache` 的 `if (n > cur) _lastActivityByKey[key] = n` 防御性合并 |
-| PA-R3 | `_removeSession` 加注释「Intentionally keeps `_lastActivityByKey` — activity is monotonic across deletes too. ... PA-5 locks this invariant」；新增 PA-5 测试:SSE `session.deleted` 后 `_sessions` 空、`lastActivityForProject` 仍为原值（4321） | ✅ 注释 + 测试双重锁定,防未来误加 `_lastActivityByKey.remove(...)` |
-| PA-R4 | `_lastActivityByKey` 字段注释补段「Unbounded in theory ... acceptable on mobile: typical servers have tens of projects ... low hundreds of entries at most. Hard-deleting a session does NOT remove its project's entry」 | ✅ 取「不裁剪」方案,量级说明落注释；若未来量级变大再补裁剪逻辑 |
-| PA-R5 | commit message 中 `capture each session's  while still visible` 的占位符（双空格）改为 `capture each session's updated timestamp while still visible` | ✅ amend 时一并修复 |
-| PA-R6 | `_ProjItem.lastUpdated` → `lastActivity`,sort 谓词同步改 `b.lastActivity.compareTo(a.lastActivity)` | ✅ 字段名与 `ServerStore.lastActivityForProject` 对齐,语义不再漂移 |
+| PA-R1 | `server_store.dart` 新增 `@visibleForTesting addSessionsForTesting(out, list)`；`project_activity_test.dart` 的 PA-4 改为构造 `SessionModel(archived: 9999)` + `SessionModel(unarchived)` 列表喂给 `addSessionsForTesting`,断言 `out` 不含 archived 项但 `lastActivityForProject` 已记录其 `updated=7777` | ✅ 真正走 `_addSessions` 路径,不再绕道 SSE；锁定「bump 早于 archived 过滤」不变式（改动经 `66bfaea` 入库） |
+| PA-R2a | 用 `SharedPreferences.setMockInitialValues` 注入含 `activity` 字段的 v1 缓存 JSON,调 `loadCacheForTesting(profile)` 还原；新增 `loadCacheForTesting` `@visibleForTesting` seam（同时设 `_profile` 与调 `_loadCache`）；断言 `lastActivityForProject('p1')==5000` 与 `lastActivityForGlobalDir('/dirA')==7000`（覆盖 NUL-escaped key 解码） | ✅ 锁定 JSON shape 与 v1 schema `activity` 字段名（seam 经 `66bfaea` 入库，测试经 `eecc742`） |
+| PA-R2b | 先用 SSE 注入 fresher 值 `p1=9000`,再注入 stale 缓存 `p1=5000`,调 `loadCacheForTesting` → 断言 `p1==9000`（不覆盖）；再注入 `p2=3000`,断言 `p2==3000`（fill）且 `p1` 仍为 9000（跨 key 不干扰） | ✅ 锁定 `_loadCache` 的 `if (n > cur) _lastActivityByKey[key] = n` 防御性合并（`eecc742`） |
+| PA-R3 | `_removeSession` 加注释「Intentionally keeps `_lastActivityByKey` — activity is monotonic across deletes too. ... PA-5 locks this invariant」；新增 PA-5 测试:SSE `session.deleted` 后 `_sessions` 空、`lastActivityForProject` 仍为原值（4321） | ✅ 注释 + 测试双重锁定,防未来误加 `_lastActivityByKey.remove(...)`（注释经 `66bfaea`、测试经 `eecc742`） |
+| PA-R4 | `_lastActivityByKey` 字段注释补段「Unbounded in theory ... acceptable on mobile: typical servers have tens of projects ... low hundreds of entries at most. Hard-deleting a session does NOT remove its project's entry」 | ✅ 取「不裁剪」方案,量级说明落注释；若未来量级变大再补裁剪逻辑（经 `66bfaea` 入库） |
+| PA-R5 | commit message 中 `capture each session's  while still visible` 的占位符（双空格）改为 `capture each session's updated timestamp while still visible` | ⚠️ **接受现状不改**——amend `a927a8f` 会改变其 hash 并级联重写其上的 `66bfaea`，得不偿失。`a927a8f` 的 commit message 保留原占位符，此行为「不修」决策的记录 |
+| PA-R6 | `_ProjItem.lastUpdated` → `lastActivity`,sort 谓词同步改 `b.lastActivity.compareTo(a.lastActivity)` | ✅ 字段名与 `ServerStore.lastActivityForProject` 对齐,语义不再漂移（`eecc742`） |
 
-**最终结论**:`a927a8f`（amend 后）6 条问题项全部闭环——PA-R1（REST 路径直接覆盖）、PA-R2a/b（缓存 round-trip + monotonic-max 合并）、PA-R3（硬删不变式 + 注释）、PA-R4（无上界设计说明）、PA-R5（commit message 占位符）、PA-R6（字段名对齐）均落地。`dart analyze` 我的改动 0 issue,`flutter test` 50/50 通过。**核心契约（单调性 / 归档保持 / global 按 dir 分键 / bump 早于过滤 / 缓存 round-trip / 硬删不重置）均有对应单测锁定。可发布。**
+**最终结论**：6 条问题项全部闭环，实际历史分布为——PA-R1/R2/R3/R4 的 `server_store.dart` 改动被 `66bfaea`（Open Builder naming follow-up）意外裹入（commit hygiene 上的 scope leak，但 `eecc742` commit message 已用 Note 披露）；PA-R6 + 4 个新增/改写测试 + 本 review 文档落在 `eecc742`；PA-R5 按评估接受现状（见上表该行）。`dart analyze` 我的改动 0 issue,`flutter test` 50/50 通过。**核心契约（单调性 / 归档保持 / global 按 dir 分键 / bump 早于过滤 / 缓存 round-trip / 硬删不重置）均有对应单测锁定。可发布。**
