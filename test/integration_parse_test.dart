@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:opencode_mobile/core/connection/connection_profile.dart';
-import 'package:opencode_mobile/core/net/dio_factory.dart';
-import 'package:opencode_mobile/data/api/opencode_client.dart';
+import 'package:open_builder/core/connection/connection_profile.dart';
+import 'package:open_builder/core/net/dio_factory.dart';
+import 'package:open_builder/data/api/opencode_client.dart';
 
 /// Parses real opencode data shapes against the local server (plan-overview.md §8).
 /// Skips silently if the server is unreachable.

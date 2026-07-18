@@ -1,4 +1,4 @@
-package com.opencode.opencode_mobile
+package com.openbuilder.app
 
 import android.content.ContentValues
 import android.os.Build
@@ -12,8 +12,8 @@ import java.io.FileInputStream
 
 class MainActivity : FlutterActivity() {
 
-    private val channel = "com.opencode.mobile/font_weight"
-    private val filesChannel = "com.opencode.mobile/files"
+    private val channel = "com.openbuilder.app/font_weight"
+    private val filesChannel = "com.openbuilder.app/files"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)

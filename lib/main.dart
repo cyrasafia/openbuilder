@@ -58,7 +58,7 @@ class _OpencodeMobileAppState extends State<OpencodeMobileApp>
       builder: (_, mode, _) => ValueListenableBuilder<Locale?>(
         valueListenable: localeMode,
         builder: (_, locale, _) => MaterialApp.router(
-          title: 'opencode',
+          title: 'Open Builder',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.light,
           darkTheme: AppTheme.dark,

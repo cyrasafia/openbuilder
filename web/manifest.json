@@ -1,11 +1,11 @@
 {
-    "name": "opencode_mobile",
-    "short_name": "opencode_mobile",
+    "name": "Open Builder",
+    "short_name": "Open Builder",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "opencode mobile client",
+    "description": "Open Builder — open-source-friendly mobile client for personal AI agents",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

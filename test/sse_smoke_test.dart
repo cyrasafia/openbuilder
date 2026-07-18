@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:opencode_mobile/core/sse/sse_client.dart';
+import 'package:open_builder/core/sse/sse_client.dart';
 
 /// Verifies the SSE IO transport against the local opencode server (plan §8).
 /// Expects at least one event (server.connected) within a few seconds.

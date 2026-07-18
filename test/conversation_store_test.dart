@@ -1,12 +1,12 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:opencode_mobile/core/attachments/attachment_pipeline.dart';
-import 'package:opencode_mobile/core/connection/connection_profile.dart';
-import 'package:opencode_mobile/core/net/dio_factory.dart';
-import 'package:opencode_mobile/core/session/conversation_store.dart';
-import 'package:opencode_mobile/data/api/opencode_client.dart';
-import 'package:opencode_mobile/domain/models.dart';
+import 'package:open_builder/core/attachments/attachment_pipeline.dart';
+import 'package:open_builder/core/connection/connection_profile.dart';
+import 'package:open_builder/core/net/dio_factory.dart';
+import 'package:open_builder/core/session/conversation_store.dart';
+import 'package:open_builder/data/api/opencode_client.dart';
+import 'package:open_builder/domain/models.dart';
 
 // 指向丢弃端口的非空 client；被测逻辑（addOptimisticUserMessage /
 // lastMessagePreview / DisplayPart.from）均不发起网络请求。

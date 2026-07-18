@@ -10,7 +10,7 @@ import 'package:flutter/services.dart';
 /// Flutter text. This class reads the setting via a platform channel and
 /// exposes it as a [FontVariation] that can be applied to variable fonts.
 class SystemFontWeight {
-  static const _channel = MethodChannel('com.opencode.mobile/font_weight');
+  static const _channel = MethodChannel('com.openbuilder.app/font_weight');
 
   /// The system's font weight (100–900), or null if not available.
   /// 400 = normal, 500 = medium, 600 = semibold, 700 = bold.

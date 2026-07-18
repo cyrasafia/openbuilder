@@ -29,7 +29,7 @@ class NotificationService {
     if (!_initialized) await init();
     await _plugin.show(
       0,
-      'opencode',
+      'Open Builder',
       '「$sessionTitle」已完成',
       const NotificationDetails(
         android: AndroidNotificationDetails(

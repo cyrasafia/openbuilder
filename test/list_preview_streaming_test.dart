@@ -1,13 +1,13 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:opencode_mobile/core/connection/connection_profile.dart';
-import 'package:opencode_mobile/core/net/dio_factory.dart';
-import 'package:opencode_mobile/core/session/conversation_store.dart';
-import 'package:opencode_mobile/core/session/server_store.dart';
-import 'package:opencode_mobile/core/sse/sse_client.dart';
-import 'package:opencode_mobile/data/api/opencode_client.dart';
-import 'package:opencode_mobile/domain/models.dart';
+import 'package:open_builder/core/connection/connection_profile.dart';
+import 'package:open_builder/core/net/dio_factory.dart';
+import 'package:open_builder/core/session/conversation_store.dart';
+import 'package:open_builder/core/session/server_store.dart';
+import 'package:open_builder/core/sse/sse_client.dart';
+import 'package:open_builder/data/api/opencode_client.dart';
+import 'package:open_builder/domain/models.dart';
 
 // A non-null [OpencodeClient] pointing at a discard port. The preview logic
 // under test never makes network calls (onPartUpdated / lastMessagePreview /

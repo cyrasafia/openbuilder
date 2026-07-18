@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:opencode_mobile/core/logging/app_logger.dart';
+import 'package:open_builder/core/logging/app_logger.dart';
 
 void main() {
   setUp(AppLogger.resetForTesting);

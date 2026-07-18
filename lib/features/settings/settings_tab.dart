@@ -23,7 +23,7 @@ class SettingsTab extends StatefulWidget {
 }
 
 class _SettingsTabState extends State<SettingsTab> {
-  static const _filesChannel = MethodChannel('com.opencode.mobile/files');
+  static const _filesChannel = MethodChannel('com.openbuilder.app/files');
 
   bool _checking = false;
   HealthInfo? _health;

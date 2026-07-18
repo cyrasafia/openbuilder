@@ -9,7 +9,7 @@
          without a camera (e.g. ChromeOS) aren't filtered out by Google Play. -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
-        android:label="opencode_mobile"
+        android:label="Open Builder"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"

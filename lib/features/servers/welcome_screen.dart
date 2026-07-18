@@ -17,7 +17,7 @@ class WelcomeScreen extends StatelessWidget {
               const Spacer(),
               Icon(Icons.hub, size: 80, color: scheme.primary),
               const SizedBox(height: 20),
-              const Text('opencode',
+              const Text('Open Builder',
                   style: TextStyle(fontSize: 30, fontWeight: FontWeight.w300)),
               const SizedBox(height: 10),
               Text(

@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:cross_file/cross_file.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:opencode_mobile/core/attachments/attachment_pipeline.dart';
+import 'package:open_builder/core/attachments/attachment_pipeline.dart';
 
 class _MockCompressor implements ImageCompressor {
   final List<Uint8List> _compressReturns;
