@@ -138,7 +138,27 @@ class ConversationStore extends ChangeNotifier {
   final String sessionId;
   final OpencodeClient client;
 
-  ConversationStore(this.sessionId, this.client);
+  /// 会话所属 directory，用于 question reply/reject 的路由参数（opencode
+  /// question pending 按 directory 隔离到 instance，不带 directory 会 404）。
+  /// 由 ServerStore.ensureConversation 从 sessionById(sid).directory 注入；
+  /// 若 question.asked 早于 session 加载（SSE 竞态），初始为空，待 session
+  /// 到达后由 ServerStore._upsertSession/_addSessions 经 [setDirectory] 回填。
+  /// 公开但仅应由 [setDirectory] 修改。
+  String directory;
+
+  /// Reply/reject 命中 200 或 404 后触发，让 ServerStore 把该 id 登记进
+  /// _recentlyResolved 集合，防止 backfill 在服务端列表清理前重注入。
+  void Function(String questionId)? onQuestionResolved;
+  void Function(String permissionId)? onPermissionResolved;
+
+  ConversationStore(this.sessionId, this.client, {this.directory = ''});
+
+  /// 回填 directory（仅当当前为空时填充，避免覆盖已注入的有效值）。
+  void setDirectory(String dir) {
+    if (dir.isNotEmpty && directory.isEmpty) {
+      directory = dir;
+    }
+  }
 
   final List<DisplayMessage> _messages = [];
   List<Todo> _todos = [];
@@ -627,7 +647,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> respondPermission(Permission p, String response) async {
-    AppLogger.I.i(_tag, 'respondPermission sid=$sessionId pid=${p.id} resp=$response');
+    AppLogger.I.i(_tag, 'respondPermission sid=$sessionId pid=${p.id} resp=$response dir=$directory');
     try {
       await client.respondPermission(sessionId, p.id, response);
       AppLogger.I.i(_tag, 'respondPermission POST ok pid=${p.id}');
@@ -637,6 +657,7 @@ class ConversationStore extends ChangeNotifier {
       // 404 = already resolved (e.g. accepted on another device) — remove locally.
       if (code != 404) rethrow;
     }
+    onPermissionResolved?.call(p.id);
     onPermissionReplied(p.id);
   }
 
@@ -658,9 +679,14 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> replyQuestion(QuestionRequest q, List<List<String>> answers) async {
-    AppLogger.I.i(_tag, 'replyQuestion sid=$sessionId qid=${q.id} answers=$answers');
+    if (directory.isEmpty) {
+      AppLogger.I.w(_tag, 'replyQuestion aborted: directory not ready qid=${q.id} sid=$sessionId');
+      // 不发请求、不移除卡片；UI catch 弹 SnackBar，待 session 加载后重试。
+      throw StateError('会话信息尚未加载完成，请稍后重试');
+    }
+    AppLogger.I.i(_tag, 'replyQuestion sid=$sessionId qid=${q.id} dir=$directory answers=$answers');
     try {
-      await client.replyQuestion(sessionId, q.id, answers);
+      await client.replyQuestion(q.id, directory, answers);
       AppLogger.I.i(_tag, 'replyQuestion POST ok qid=${q.id}');
     } on DioException catch (e) {
       final code = e.response?.statusCode;
@@ -668,13 +694,18 @@ class ConversationStore extends ChangeNotifier {
       if (code != 404) rethrow;
       AppLogger.I.i(_tag, 'replyQuestion 404 swallowed qid=${q.id}');
     }
+    onQuestionResolved?.call(q.id);
     onQuestionReplied(q.id);
   }
 
   Future<void> rejectQuestion(QuestionRequest q) async {
-    AppLogger.I.i(_tag, 'rejectQuestion sid=$sessionId qid=${q.id}');
+    if (directory.isEmpty) {
+      AppLogger.I.w(_tag, 'rejectQuestion aborted: directory not ready qid=${q.id} sid=$sessionId');
+      throw StateError('会话信息尚未加载完成，请稍后重试');
+    }
+    AppLogger.I.i(_tag, 'rejectQuestion sid=$sessionId qid=${q.id} dir=$directory');
     try {
-      await client.rejectQuestion(sessionId, q.id);
+      await client.rejectQuestion(q.id, directory);
       AppLogger.I.i(_tag, 'rejectQuestion POST ok qid=${q.id}');
     } on DioException catch (e) {
       final code = e.response?.statusCode;
@@ -682,6 +713,7 @@ class ConversationStore extends ChangeNotifier {
       if (code != 404) rethrow;
       AppLogger.I.i(_tag, 'rejectQuestion 404 swallowed qid=${q.id}');
     }
+    onQuestionResolved?.call(q.id);
     onQuestionReplied(q.id);
   }
 

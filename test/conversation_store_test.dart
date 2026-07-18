@@ -128,4 +128,45 @@ void main() {
       expect(conv.lastMessagePreview(), '你: doc.pdf');
     });
   });
+
+  // M-1 覆盖：directory 空边界 + setDirectory 回填语义。
+  group('question reply directory guard (M-1)', () {
+    final q = QuestionRequest(
+        id: 'que_t1', sessionID: 's1', questions: const []);
+
+    test('replyQuestion throws when directory empty and keeps the card', () async {
+      final conv = ConversationStore('s1', _fakeClient()); // directory 默认 ''
+      expect(conv.directory, '');
+      conv.onQuestion(q);
+      expect(conv.questions.length, 1);
+      await expectLater(
+        conv.replyQuestion(q, const [
+          ['a']
+        ]),
+        throwsA(isA<StateError>()),
+      );
+      // 抛错前不移除卡片：用户可重试。
+      expect(conv.questions.length, 1);
+    });
+
+    test('rejectQuestion throws when directory empty and keeps the card', () async {
+      final conv = ConversationStore('s1', _fakeClient());
+      conv.onQuestion(q);
+      await expectLater(conv.rejectQuestion(q), throwsA(isA<StateError>()));
+      expect(conv.questions.length, 1);
+    });
+
+    test('setDirectory fills only when current is empty', () {
+      final conv = ConversationStore('s1', _fakeClient());
+      expect(conv.directory, '');
+      conv.setDirectory('/a');
+      expect(conv.directory, '/a');
+      // 非空时不覆盖（避免回填覆盖已注入的有效值）。
+      conv.setDirectory('/b');
+      expect(conv.directory, '/a');
+      // 空 dir 永不填充。
+      conv.setDirectory('');
+      expect(conv.directory, '/a');
+    });
+  });
 }

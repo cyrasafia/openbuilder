@@ -54,6 +54,16 @@ class ServerStore extends ChangeNotifier {
   /// Pending questions keyed by questionId (fed by SSE + REST backfill).
   final Map<String, QuestionRequest> _pendingQuestions = {};
 
+  /// 近期已解决的 question id → 登记时刻。reply/reject 命中 200 或 404 后
+  /// 由 ConversationStore.onQuestionResolved 登记于此；backfill 重建 pending
+  /// 时跳过未过期项，避免服务端列表清理延迟导致的「提交后又弹回」。
+  /// TTL 过期后若服务端仍返回该卡（说明真没解决）再放出来（关键设计决策 4）。
+  final Map<String, DateTime> _recentlyResolvedQuestions = {};
+
+  /// 近期已解决的 permission id → 登记时刻（同上，覆盖权限卡）。
+  final Map<String, DateTime> _recentlyResolvedPermissions = {};
+  static const _resolvedTtl = Duration(seconds: 60);
+
   List<ProjectModel> _projects = [];
   List<SessionModel> _sessions = [];
   final Map<String, SessionStatusValue> _statusMap = {};
@@ -263,7 +273,10 @@ class ServerStore extends ChangeNotifier {
     if (existing != null) return existing;
     final c = client;
     if (c == null) return null;
-    final conv = ConversationStore(sid, c);
+    final directory = sessionById(sid)?.directory ?? '';
+    final conv = ConversationStore(sid, c, directory: directory);
+    conv.onQuestionResolved = _markQuestionResolved;
+    conv.onPermissionResolved = _markPermissionResolved;
     _conversations[sid] = conv;
     conv.status = statusOf(sid).type;
     // Inject any pending permission/question known from SSE/REST backfill.
@@ -274,6 +287,35 @@ class ServerStore extends ChangeNotifier {
     }
     _evictConversations();
     return conv;
+  }
+
+  /// 回填已有 conv 的 directory（session 到达后补上，解决 question.asked
+  /// 早于 session 加载的 SSE 竞态——否则 reply 会因 directory 空抛错）。
+  void _backfillConversationDirectory(String sid, String directory) {
+    if (directory.isEmpty) return;
+    _conversations[sid]?.setDirectory(directory);
+  }
+
+  void _markQuestionResolved(String qid) {
+    _recentlyResolvedQuestions[qid] = DateTime.now();
+    _pendingQuestions.remove(qid);
+    AppLogger.I.i(_tag, 'markQuestionResolved qid=$qid → guard for ${_resolvedTtl.inSeconds}s');
+  }
+
+  void _markPermissionResolved(String pid) {
+    _recentlyResolvedPermissions[pid] = DateTime.now();
+    _pendingPermissions.removeWhere((_, p) => p.id == pid);
+    AppLogger.I.i(_tag, 'markPermissionResolved pid=$pid → guard for ${_resolvedTtl.inSeconds}s');
+  }
+
+  /// 懒清理过期的 _recentlyResolved 项。TTL 过期后若服务端仍返回该卡，
+  /// 说明真没解决（如登记后又被重新 ask），此时应放回 UI。
+  void _purgeExpiredResolved() {
+    final now = DateTime.now();
+    _recentlyResolvedQuestions.removeWhere(
+        (_, t) => now.difference(t) > _resolvedTtl);
+    _recentlyResolvedPermissions.removeWhere(
+        (_, t) => now.difference(t) > _resolvedTtl);
   }
 
   /// LRU eviction: when over [_kMaxConversations], drop the oldest
@@ -535,6 +577,9 @@ class ServerStore extends ChangeNotifier {
       if (s.archived != null) continue; // archived
       if (s.parentID != null) continue; // subtask / child session
       out[s.id] = s;
+      // REST 批量加载路径也回填 conv directory（SSE 可能先到达创建了空
+      // directory 的 conv，此处补上）。
+      _backfillConversationDirectory(s.id, s.directory);
     }
   }
 
@@ -645,6 +690,7 @@ class ServerStore extends ChangeNotifier {
   Future<void> _backfillPermissions() async {
     final c = client;
     if (c == null) return;
+    _purgeExpiredResolved();
     final prev = Map.of(_pendingPermissions);
     _pendingPermissions.clear();
     // R-Perm-3: fetch per all event directories (includes sandbox worktrees),
@@ -656,6 +702,10 @@ class ServerStore extends ChangeNotifier {
       try {
         final pending = await c.pendingPermissions(dir);
         for (final perm in pending) {
+          if (_recentlyResolvedPermissions.containsKey(perm.id)) {
+            AppLogger.I.i(_tag, 'backfill permission skipped (recently resolved) sid=${perm.sessionID} pid=${perm.id} dir=$dir');
+            continue;
+          }
           _pendingPermissions[perm.sessionID] = perm;
           _conversations[perm.sessionID]?.onPermission(perm);
           AppLogger.I.i(_tag, 'backfill permission re-inject sid=${perm.sessionID} pid=${perm.id} dir=$dir');
@@ -670,6 +720,7 @@ class ServerStore extends ChangeNotifier {
       final session = sessionById(entry.key);
       final dir = session?.directory ?? '';
       if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
+        if (_recentlyResolvedPermissions.containsKey(entry.value.id)) continue;
         _pendingPermissions.putIfAbsent(entry.key, () => entry.value);
       }
     }
@@ -686,6 +737,7 @@ class ServerStore extends ChangeNotifier {
   Future<void> _backfillQuestions() async {
     final c = client;
     if (c == null) return;
+    _purgeExpiredResolved();
     final prev = Map.of(_pendingQuestions);
     _pendingQuestions.clear();
     final dirs = _eventDirectories();
@@ -694,6 +746,10 @@ class ServerStore extends ChangeNotifier {
       try {
         final pending = await c.listQuestions(directory: dir);
         for (final q in pending) {
+          if (_recentlyResolvedQuestions.containsKey(q.id)) {
+            AppLogger.I.i(_tag, 'backfill question skipped (recently resolved) sid=${q.sessionID} qid=${q.id} dir=$dir');
+            continue;
+          }
           _pendingQuestions[q.id] = q;
           _conversations[q.sessionID]?.onQuestion(q);
           AppLogger.I.i(_tag, 'backfill question re-inject sid=${q.sessionID} qid=${q.id} dir=$dir');
@@ -708,6 +764,7 @@ class ServerStore extends ChangeNotifier {
       final session = sessionById(entry.value.sessionID);
       final dir = session?.directory ?? '';
       if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
+        if (_recentlyResolvedQuestions.containsKey(entry.key)) continue;
         _pendingQuestions.putIfAbsent(entry.key, () => entry.value);
       }
     }
@@ -762,6 +819,25 @@ class ServerStore extends ChangeNotifier {
   Future<void> loadCacheForTesting(ConnectionProfile profile) async {
     _profile = profile;
     await _loadCache();
+  }
+
+  /// Test seam: drive `_upsertSession` to populate `_sessions` (needed by
+  /// `_eventDirectories` / `sessionById`) without going through SSE.
+  @visibleForTesting
+  void upsertSessionForTesting(SessionModel s) => _upsertSession(s);
+
+  /// Test seam: drive `_backfillQuestions` directly to verify the
+  /// `_recentlyResolvedQuestions` guard skips recently-resolved ids.
+  @visibleForTesting
+  Future<void> backfillQuestionsForTesting() => _backfillQuestions();
+
+  /// Test seam: simulate TTL expiry by clearing the resolved-guard sets.
+  /// Used to verify the "re-surface if still pending server-side" path
+  /// (关键设计决策 4).
+  @visibleForTesting
+  void expireRecentlyResolvedForTesting() {
+    _recentlyResolvedQuestions.clear();
+    _recentlyResolvedPermissions.clear();
   }
 
   void _onEvent(OpencodeEvent ev) {
@@ -997,6 +1073,9 @@ class ServerStore extends ChangeNotifier {
       _sessions[idx] = s;
     }
     _scheduleCacheSave();
+    // 回填 directory：question.asked 早于 session 加载时，conv 可能已用空
+    // directory 创建；session 到达后补上，让后续 reply/reject 能带上 directory。
+    _backfillConversationDirectory(s.id, s.directory);
     // A new/updated session — only start SSE if it's busy/retry or active.
     if (s.directory.isNotEmpty) {
       final status = _statusMap[s.id];
@@ -1107,6 +1186,8 @@ class ServerStore extends ChangeNotifier {
     _lastActivityByKey.clear();
     _pendingPermissions.clear();
     _pendingQuestions.clear();
+    _recentlyResolvedQuestions.clear();
+    _recentlyResolvedPermissions.clear();
     client = null;
     _profile = null;
     notifyListeners();

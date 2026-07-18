@@ -320,18 +320,28 @@ class OpencodeClient {
     return const [];
   }
 
-  /// `POST /api/session/:sid/question/:id/reply` — reply to a question.
+  /// `POST /question/:id/reply?directory=<dir>` — reply to a question.
+  ///
+  /// opencode 的 question pending 是 per-directory instance 隔离的：HTTP 路由
+  /// 由 `WorkspaceRoutingMiddleware` 按 `directory` query/header 解析到对应
+  /// instance，不带 directory 会落到默认实例(cwd) → 404。这里必须带 directory
+  /// 才能命中卡所在 instance（与 `listQuestions` 的 directory 用法一致）。
   /// [answers] is a list of answer arrays (one per question), each containing
   /// selected option labels.
-  Future<void> replyQuestion(String sessionId, String questionId, List<List<String>> answers) async {
-    await dio.post('/api/session/$sessionId/question/$questionId/reply', data: {
-      'answers': answers,
-    });
+  Future<void> replyQuestion(String questionId, String directory, List<List<String>> answers) async {
+    await dio.post(
+      '/question/$questionId/reply',
+      queryParameters: {'directory': directory},
+      data: {'answers': answers},
+    );
   }
 
-  /// `POST /api/session/:sid/question/:id/reject` — reject a question.
-  Future<void> rejectQuestion(String sessionId, String questionId) async {
-    await dio.post('/api/session/$sessionId/question/$questionId/reject');
+  /// `POST /question/:id/reject?directory=<dir>` — reject a question.
+  Future<void> rejectQuestion(String questionId, String directory) async {
+    await dio.post(
+      '/question/$questionId/reject',
+      queryParameters: {'directory': directory},
+    );
   }
 
   /// `POST /session/:id/revert` — revert the session back to [messageID].
