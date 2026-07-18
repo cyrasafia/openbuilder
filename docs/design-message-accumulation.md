@@ -106,6 +106,8 @@ ConversationStore ensureConversation(String sid) {
 
 ### 4.3 `reconcile()` — 对账合并（取代 clear+replace）
 
+> **⚠️ 已被 [design-incremental-reconcile.md](./design-incremental-reconcile.md) 修订**：本节「全量拉取 `client.messages(sessionId)` + 全量合并」已改为「只拉最新 K 条尾部窗口（`messagesPage(limit)`）+ 分段懒加载」。大会话全量拉取导致网络卡住；改为进会话只拉末页，中间历史缺口由用户上滚时分段衔接。合并算法（upsert + 字段级 part 并集）保留，但新增窗口区间删除（处理 revert）与分段模型（`_segments`）。本节伪代码保留作历史记录，实现以新设计为准。
+
 ```dart
 Future<void> reconcile() async {
   if (_reconciling) return;            // 互斥守卫
