@@ -4,6 +4,17 @@ import 'package:dio/dio.dart';
 
 import '../../domain/models.dart';
 
+/// Paginated message window from `GET /session/:id/message?limit=&before=`.
+///
+/// [entries] are ascending (oldest→newest). [nextCursor] is the opaque
+/// `X-Next-Cursor` header anchoring [entries]'s oldest message; pass it as
+/// `before` to fetch the next older page. Null means no more older history.
+class MessagesPage {
+  final List<MessageEntry> entries;
+  final String? nextCursor;
+  const MessagesPage(this.entries, this.nextCursor);
+}
+
 /// Server health from `GET /global/health`.
 class HealthInfo {
   final bool healthy;
@@ -123,13 +134,37 @@ class OpencodeClient {
         k, SessionStatusValue.fromJson(v is Map ? v.cast() : const {})));
   }
 
-  /// `GET /session/:id/message?limit=`
+  /// `GET /session/:id/message?limit=` — full message list (no pagination).
   Future<List<MessageEntry>> messages(String sessionId, {int? limit}) async {
     final r = await dio.get<dynamic>(
       '/session/$sessionId/message',
       queryParameters: limit == null ? null : {'limit': limit},
     );
     return _getModelsFromData(r.data, MessageEntry.fromJson);
+  }
+
+  /// `GET /session/:id/message?limit=&before=` — paginated window.
+  ///
+  /// Without [before]: returns the latest [limit] messages (ascending). If
+  /// older history exists, [MessagesPage.nextCursor] is non-null (opaque
+  /// cursor anchoring the oldest message of the returned page).
+  ///
+  /// With [before]: returns the next older page (strictly older than the
+  /// cursor anchor). Requires [limit] (server returns 400 otherwise).
+  ///
+  /// Older servers ignoring `limit` return the full list with `nextCursor`
+  /// null — degrades gracefully to a full fetch.
+  Future<MessagesPage> messagesPage(String sessionId,
+      {required int limit, String? before}) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (before != null) params['before'] = before;
+    final r = await dio.get<dynamic>(
+      '/session/$sessionId/message',
+      queryParameters: params,
+    );
+    final cursor = r.headers.value('x-next-cursor');
+    return MessagesPage(
+        _getModelsFromData(r.data, MessageEntry.fromJson), cursor);
   }
 
   /// `GET /session/:id/message/:messageID`

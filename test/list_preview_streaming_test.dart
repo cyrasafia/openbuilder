@@ -374,6 +374,15 @@ class _MockClient extends OpencodeClient {
       messagesFn(sessionId);
 
   @override
+  Future<MessagesPage> messagesPage(String sessionId,
+      {required int limit, String? before}) async {
+    // Delegate to messagesFn with null cursor — simulates a server that
+    // returns the full list (older server / no pagination).
+    final entries = await messagesFn(sessionId);
+    return MessagesPage(entries, null);
+  }
+
+  @override
   Future<MessageEntry> message(String sessionId, String messageId) =>
       messageFn != null
           ? messageFn!(sessionId, messageId)

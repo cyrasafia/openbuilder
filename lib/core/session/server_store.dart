@@ -279,6 +279,7 @@ class ServerStore extends ChangeNotifier {
     conv.onPermissionResolved = _markPermissionResolved;
     _conversations[sid] = conv;
     conv.status = statusOf(sid).type;
+    conv.sessionUpdated = sessionById(sid)?.updated;
     // Inject any pending permission/question known from SSE/REST backfill.
     final pending = _pendingPermissions[sid];
     if (pending != null) conv.onPermission(pending);
@@ -338,11 +339,17 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
+  /// Read-only access without LRU promote. Used by high-frequency callers
+  /// (scroll listeners) to avoid map remove/insert on every event (IR-6).
+  ConversationStore? conversationForRead(String sessionId) =>
+      _conversations[sessionId];
+
   ConversationStore? conversationFor(String sessionId, {bool force = false}) {
     final existing = _conversations[sessionId];
     if (existing != null) {
       _conversations.remove(sessionId);
       _conversations[sessionId] = existing; // LRU promote
+      existing.sessionUpdated = sessionById(sessionId)?.updated;
       // Trigger reconcile: three paths (MA-8). reloadIfStale() is guarded by
       // _stale, so it cannot reconcile a never-loaded conv (whose _stale is
       // initially false) — route !loaded through load() instead.
@@ -616,6 +623,7 @@ class ServerStore extends ChangeNotifier {
         ..addAll(status);
       for (final conv in _conversations.values) {
         conv.setStatus(status[conv.sessionId]?.type ?? 'idle');
+        conv.sessionUpdated = sessionById(conv.sessionId)?.updated;
       }
       // Start SSE for busy/retry sessions + active conversation.
       _startRequiredSse();

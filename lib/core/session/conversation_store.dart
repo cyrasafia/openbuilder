@@ -133,6 +133,19 @@ class DisplayMessage {
   DisplayMessage(this.info, {this.optimistic = false});
 }
 
+/// Metadata for a contiguous message range in `_messages`.
+///
+/// `_segments` is ordered newest→oldest; `segments[0]` is the bottom (reachable)
+/// segment. Adjacent segments have a gap (unloaded messages) between them.
+/// Only `segments[0]` is rendered ([renderableMessages]); `segments[1+]` are
+/// in memory but unreachable until the gap is bridged by upward scrolling.
+class _Segment {
+  String oldestId;
+  int oldestCreated;
+  String? cursor; // anchors oldestId for paging further back; null = history start
+  _Segment({required this.oldestId, required this.oldestCreated, this.cursor});
+}
+
 /// Per-session live state: messages (streaming), todos, permissions.
 class ConversationStore extends ChangeNotifier {
   final String sessionId;
@@ -161,6 +174,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   final List<DisplayMessage> _messages = [];
+  final List<_Segment> _segments = [];
   List<Todo> _todos = [];
   final List<Permission> _permissions = [];
   final List<QuestionRequest> _questions = [];
@@ -169,11 +183,17 @@ class ConversationStore extends ChangeNotifier {
   String? error;
   Map<String, dynamic>? sessionError;
   String status = 'idle';
+  int? sessionUpdated;
+  bool _loadingEarlier = false;
+  bool _loadEarlierError = false;
 
   bool _stale = false;
   bool _reconciling = false;
   DateTime? _lastReloadAt;
   static const _reloadBackoff = Duration(seconds: 10);
+  // Window size for reconcile + backward paging. ~7-12 mobile screens of
+  // messages; balances first-open payload vs scroll-up fill latency.
+  static const _kWindow = 100;
 
   Timer? _loadRetryTimer;
   int _loadRetryAttempt = 0;
@@ -192,6 +212,32 @@ class ConversationStore extends ChangeNotifier {
   List<Permission> get permissions => List.unmodifiable(_permissions);
   List<QuestionRequest> get questions => List.unmodifiable(_questions);
   bool get busy => status == 'busy' || status == 'retry';
+
+  /// Messages for the detail view: only the bottom (reachable) segment,
+  /// newest-first (for the reversed ListView). Messages above an unbridged
+  /// gap ([_segments] 1+) are in memory but not rendered — they become
+  /// reachable only after the gap is bridged by upward scrolling.
+  List<DisplayMessage> get renderableMessages {
+    if (_segments.isEmpty) return _messages.reversed.toList(growable: false);
+    final seg = _segments.first;
+    final result = <DisplayMessage>[];
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      final m = _messages[i];
+      result.add(m);
+      if (m.info.id == seg.oldestId) break;
+    }
+    return result;
+  }
+
+  /// Whether older history can still be loaded (by scrolling up).
+  bool get hasMore => _segments.firstOrNull?.cursor != null;
+
+  /// Whether a backward page load is in progress.
+  bool get loadingEarlier => _loadingEarlier;
+
+  /// Whether the last backward page load failed (IR-R4). Cleared on next
+  /// successful load or when a new attempt starts.
+  bool get loadEarlierError => _loadEarlierError;
 
   /// One-line preview of the last message, aligned with what the detail view
   /// renders. Walks parts last→first, skipping hidden types, and returns the
@@ -331,6 +377,9 @@ class ConversationStore extends ChangeNotifier {
       _scheduleLoadRetry(incrementAttempt: false);
       return;
     }
+    // Cache preheat: instant display if session.updated matches cache.
+    await _maybePreheatCache();
+    if (_disposed) return;
     await reconcile();
     if (_disposed) return;
     if (_stale) {
@@ -357,8 +406,9 @@ class ConversationStore extends ChangeNotifier {
     });
   }
 
-  /// 对账合并：拉 REST 权威历史，与 SSE 累积的 `_messages` 按 id 做 part 级
-  /// 并集合并（不 clear），消除清空竞争。失败回退：`_messages` 空才
+  /// 增量对账：拉最新 K 条尾部窗口（不全量），与本地按 id 合并（upsert）。
+  /// 窗口与底部分段无重叠时形成断档（新 segments[0]，旧的移到 [1+]），
+  /// 由用户上滚时 [loadOnePage] 分段衔接。失败回退：`_messages` 空才
   /// `_loadCache`，否则保 SSE 累积并标 stale。
   Future<void> reconcile() async {
     if (_reconciling) return; // 互斥
@@ -366,8 +416,10 @@ class ConversationStore extends ChangeNotifier {
     _lastReloadAt = DateTime.now();
     AppLogger.I.d(_tag, 'reconcile start $sessionId');
     try {
-      final entries = await client.messages(sessionId);
-      AppLogger.I.d(_tag, 'reconcile fetched ${entries.length} messages $sessionId');
+      final page = await client.messagesPage(sessionId, limit: _kWindow);
+      final entries = page.entries;
+      AppLogger.I.d(_tag,
+          'reconcile fetched ${entries.length} messages $sessionId hasCursor=${page.nextCursor != null}');
       // Infer session status from the last message — terminal finish values
       // ('stop'/'error') mean the session is idle. Preserved from reload so
       // self-healing paths (watchdog reconnect, manual refresh) still correct
@@ -379,31 +431,29 @@ class ConversationStore extends ChangeNotifier {
           setStatus('idle');
         }
       }
-      // 1. 索引：REST 按 id、当前 SSE 累积按 id（跳过 optimistic）
-      final restById = {for (final e in entries) e.info.id: e};
-      final sseById = <String, DisplayMessage>{
-        for (final m in _messages) if (!m.optimistic) m.info.id: m
-      };
-      // 2. REST 定义历史 + 顺序；同时存在则字段级合并 parts
-      final result = <DisplayMessage>[];
-      for (final e in entries) {
-        final sse = sseById[e.info.id];
-        if (sse != null && sse.parts.isNotEmpty) {
-          final merged = DisplayMessage(e.info);
-          merged.parts.addAll(_mergeParts(e.parts, sse.parts));
-          result.add(merged);
-        } else {
-          result.add(_toDisplay(e));
-        }
+      // Check overlap with segments[0] BEFORE upsert (upsert would insert
+      // entries into _messages and make the check trivially true).
+      final overlapped = _entriesOverlapSegment(entries, 0);
+      // Window-range deletion (strict interior): handle revert.
+      _applyWindowDeletion(entries);
+      // Upsert: info=REST authoritative, parts field-level merge.
+      _upsertEntries(entries);
+      // Segment logic
+      if (entries.isEmpty) {
+        // No messages on server — segments unchanged (or stay empty).
+      } else if (_segments.isEmpty || !overlapped) {
+        // First reconcile OR no overlap with existing bottom segment →
+        // entries become new segments[0], old segments shift down (gap forms).
+        final oldest = entries.first.info;
+        _segments.insert(
+            0,
+            _Segment(
+                oldestId: oldest.id,
+                oldestCreated: oldest.created ?? 0,
+                cursor: page.nextCursor));
       }
-      // 3. 追加 SSE-only（订阅后新建、REST 快照还没有的消息）
-      for (final m in _messages) {
-        if (m.optimistic) continue;
-        if (!restById.containsKey(m.info.id)) result.add(m);
-      }
-      _messages
-        ..clear()
-        ..addAll(result);
+      // else: overlapped → merge into existing segments[0], oldest/cursor
+      // unchanged (window extended the newest side only).
       _sort();
       try {
         _todos = await client.todos(sessionId);
@@ -415,23 +465,155 @@ class ConversationStore extends ChangeNotifier {
       unawaited(_saveCache());
     } catch (e) {
       AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
-      // Set error so first-load failure surfaces in the UI ("加载失败");
-      // background reconcile failures on a conv with messages stay hidden
-      // (UI gates on messages.isEmpty) and clear on next success.
       error = '$e';
       _stale = true;
-      // Only restore from cache if we have no data at all — if SSE has been
-      // delivering messages (_messages is non-empty), that data is always more
-      // current than the cache. Overwriting it with stale cache causes data
-      // loss when switching sessions on flaky networks.
       if (_messages.isEmpty) {
         await _loadCache();
       }
-      // 否则保留 SSE 累积，标 stale 下次重试
     } finally {
       _reconciling = false;
     }
     if (!_disposed) notifyListeners();
+  }
+
+  /// 上滚触顶懒加载一页（K 条更早消息）。每次只拉一页；断档多次则
+  /// 多次触发。本页与 segments[1] 重叠时衔接（合并分段），否则更新
+  /// segments[0] 的 oldest + cursor。失败静默（用户可再次上滚重试）。
+  /// Returns true if progress was made (entries loaded or cursor exhausted),
+  /// false on failure or no-op. The caller uses this to stop the lazy-load
+  /// chain on failure (IR-1: prevents request storms when offline).
+  Future<bool> loadOnePage() async {
+    if (_loadingEarlier) return false;
+    if (_segments.isEmpty) return false;
+    final seg = _segments.first;
+    if (seg.cursor == null) return false;
+    _loadingEarlier = true;
+    _loadEarlierError = false;
+    notifyListeners();
+    try {
+      final page =
+          await client.messagesPage(sessionId, limit: _kWindow, before: seg.cursor);
+      final entries = page.entries;
+      AppLogger.I.d(_tag,
+          'loadOnePage fetched ${entries.length} older messages $sessionId hasCursor=${page.nextCursor != null}');
+      if (entries.isEmpty) {
+        seg.cursor = null; // history exhausted
+      } else {
+        _applyWindowDeletion(entries);
+        _upsertEntries(entries);
+        final pageOldestCreated = entries.first.info.created ?? 0;
+        // Bridge loop (IR-R2): a page might span multiple segments if gaps
+        // are small. Merge all overlapped segments into segments[0].
+        var bridged = false;
+        while (_segments.length >= 2 &&
+            _entriesOverlapSegment(entries, 1)) {
+          bridged = true;
+          final seg1 = _segments[1];
+          if (pageOldestCreated < seg1.oldestCreated) {
+            seg
+              ..oldestId = entries.first.info.id
+              ..oldestCreated = pageOldestCreated
+              ..cursor = page.nextCursor;
+          } else {
+            seg
+              ..oldestId = seg1.oldestId
+              ..oldestCreated = seg1.oldestCreated
+              ..cursor = seg1.cursor;
+          }
+          _segments.removeAt(1);
+        }
+        if (bridged) {
+          // Clean up orphan segments fully subsumed by the expanded
+          // segments[0] (IR-R2): their oldestCreated >= seg.oldestCreated
+          // means their entire range is within segments[0].
+          _segments.removeWhere(
+              (s) => s != seg && s.oldestCreated >= seg.oldestCreated);
+        } else {
+          seg
+            ..oldestId = entries.first.info.id
+            ..oldestCreated = pageOldestCreated
+            ..cursor = page.nextCursor;
+        }
+      }
+      _sort();
+      unawaited(_saveCache());
+      return true;
+    } catch (e) {
+      AppLogger.I.e(_tag, 'loadOnePage failed $sessionId: $e');
+      _loadEarlierError = true;
+      return false;
+    } finally {
+      _loadingEarlier = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Upsert REST entries into `_messages` by id. Existing → replace info
+  /// (REST authoritative) + field-level part merge. New → convert + insert.
+  void _upsertEntries(List<MessageEntry> entries) {
+    for (final e in entries) {
+      final existing = _findMessage(e.info.id);
+      if (existing != null) {
+        _messages.remove(existing);
+        final recreated = DisplayMessage(e.info);
+        recreated.parts.addAll(_mergeParts(e.parts, existing.parts));
+        _messages.add(recreated);
+      } else {
+        _messages.add(_toDisplay(e));
+      }
+    }
+  }
+
+  /// Window-range deletion (strict interior): remove local non-optimistic
+  /// messages whose created falls strictly inside the fetched window's
+  /// (oldest, newest) but whose id is not in the window — they were deleted
+  /// server-side (revert). Boundaries excluded to avoid equal-created edges.
+  void _applyWindowDeletion(List<MessageEntry> entries) {
+    if (entries.length < 2) return;
+    final lo = entries.first.info.created;
+    final hi = entries.last.info.created;
+    if (lo == null || hi == null || lo >= hi) return;
+    final ids = {for (final e in entries) e.info.id};
+    _messages.removeWhere((m) =>
+        !m.optimistic &&
+        m.info.created != null &&
+        m.info.created! > lo &&
+        m.info.created! < hi &&
+        !ids.contains(m.info.id));
+  }
+
+  /// Whether any fetched entry id already exists in `_messages` (non-optimistic).
+  /// Used to detect overlap / bridge before upsert inserts the entries.
+  /// Build the set of non-optimistic message ids belonging to the segment
+  /// at [segIndex]. Segments partition `_messages` (sorted ascending): the
+  /// walk from newest→oldest crosses segment boundaries at each segment's
+  /// `oldestId`. Optimistic messages are always in segments[0].
+  Set<String> _segmentIds(int segIndex) {
+    if (segIndex < 0 || segIndex >= _segments.length) return {};
+    final ids = <String>{};
+    var currentSeg = 0;
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      final m = _messages[i];
+      if (!m.optimistic) {
+        if (currentSeg == segIndex) ids.add(m.info.id);
+        if (currentSeg < _segments.length &&
+            m.info.id == _segments[currentSeg].oldestId) {
+          currentSeg++;
+        }
+      }
+    }
+    return ids;
+  }
+
+  /// Whether any fetched entry id exists in the segment at [segIndex].
+  /// Segment-scoped: reconcile checks segments[0], loadOnePage bridge
+  /// checks segments[1] (IR-2).
+  bool _entriesOverlapSegment(List<MessageEntry> entries, int segIndex) {
+    final ids = _segmentIds(segIndex);
+    for (final e in entries) {
+      if (ids.contains(e.info.id)) return true;
+    }
+    return false;
   }
 
   /// 字段级 part 并集。REST 定义顺序 + 字段合并，SSE-only 追加尾。
@@ -493,6 +675,14 @@ class ConversationStore extends ChangeNotifier {
                 })
             .toList(),
         'todos': _todos.map((t) => t.toJson()).toList(),
+        'segments': _segments
+            .map((s) => {
+                  'oldestId': s.oldestId,
+                  'oldestCreated': s.oldestCreated,
+                  'cursor': s.cursor,
+                })
+            .toList(),
+        'cachedSessionUpdated': sessionUpdated,
       };
       await prefs.setString(_cacheKey, jsonEncode(j));
     } catch (_) {}
@@ -506,34 +696,70 @@ class ConversationStore extends ChangeNotifier {
       // MA-2: 若 async gap 期间已有 SSE 累积，不再用陈旧缓存覆盖。
       if (_messages.isNotEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      final msgs = j['messages'] as List? ?? [];
-      _messages.clear();
-      for (final m in msgs) {
-        final m2 = m as Map<String, dynamic>;
-        final info = MessageInfo.fromJson(
-            (m2['info'] as Map).cast<String, dynamic>());
-        final dm = DisplayMessage(info);
-        for (final p in (m2['parts'] as List? ?? [])) {
-          final p2 = p as Map<String, dynamic>;
-          dm.parts.add(DisplayPart(
-            id: p2['id']?.toString() ?? '',
-            type: p2['type']?.toString() ?? 'text',
-            tool: p2['tool']?.toString(),
-            text: p2['text']?.toString() ?? '',
-            toolStatus: p2['toolStatus']?.toString(),
-            toolOutput: p2['toolOutput']?.toString(),
-            toolInput: p2['toolInput'] is Map
-                ? (p2['toolInput'] as Map).cast<String, dynamic>()
-                : null, // MA-5: 补读 toolInput
-          ));
-        }
-        _messages.add(dm);
+      _loadCacheFromJson(j);
+    } catch (_) {}
+  }
+
+  /// Restore `_messages` + `_segments` + `_todos` from a cache JSON map.
+  /// Does NOT check the MA-2 guard (caller is responsible). Used by both
+  /// offline fallback ([_loadCache]) and online preheat ([_maybePreheatCache]).
+  void _loadCacheFromJson(Map<String, dynamic> j) {
+    final msgs = j['messages'] as List? ?? [];
+    _messages.clear();
+    for (final m in msgs) {
+      final m2 = m as Map<String, dynamic>;
+      final info = MessageInfo.fromJson(
+          (m2['info'] as Map).cast<String, dynamic>());
+      final dm = DisplayMessage(info);
+      for (final p in (m2['parts'] as List? ?? [])) {
+        final p2 = p as Map<String, dynamic>;
+        dm.parts.add(DisplayPart(
+          id: p2['id']?.toString() ?? '',
+          type: p2['type']?.toString() ?? 'text',
+          tool: p2['tool']?.toString(),
+          text: p2['text']?.toString() ?? '',
+          toolStatus: p2['toolStatus']?.toString(),
+          toolOutput: p2['toolOutput']?.toString(),
+          toolInput: p2['toolInput'] is Map
+              ? (p2['toolInput'] as Map).cast<String, dynamic>()
+              : null, // MA-5: 补读 toolInput
+        ));
       }
-      final todos = j['todos'] as List? ?? [];
-      _todos = todos
-          .map((t) => Todo.fromJson((t as Map).cast<String, dynamic>()))
-          .toList();
-      if (_messages.isNotEmpty) loaded = true;
+      _messages.add(dm);
+    }
+    final todos = j['todos'] as List? ?? [];
+    _todos = todos
+        .map((t) => Todo.fromJson((t as Map).cast<String, dynamic>()))
+        .toList();
+    final segs = j['segments'] as List? ?? [];
+    _segments.clear();
+    for (final s in segs) {
+      final s2 = s as Map<String, dynamic>;
+      _segments.add(_Segment(
+        oldestId: s2['oldestId']?.toString() ?? '',
+        oldestCreated: (s2['oldestCreated'] as num?)?.toInt() ?? 0,
+        cursor: s2['cursor']?.toString(),
+      ));
+    }
+    if (_messages.isNotEmpty) loaded = true;
+  }
+
+  /// Cache preheat: if `sessionUpdated` matches the cached value (no new
+  /// messages since cache), restore cache instantly before reconcile. Avoids
+  /// the loading spinner on restart when the session is unchanged. The
+  /// subsequent reconcile will overlap-merge (no gap, no flash).
+  Future<void> _maybePreheatCache() async {
+    if (sessionUpdated == null || _messages.isNotEmpty || loaded) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKey);
+      if (raw == null || raw.isEmpty) return;
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      final cached = j['cachedSessionUpdated'];
+      if (cached != null && cached == sessionUpdated) {
+        _loadCacheFromJson(j);
+        if (_messages.isNotEmpty && !_disposed) notifyListeners();
+      }
     } catch (_) {}
   }
 
