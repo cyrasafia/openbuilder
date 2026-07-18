@@ -471,3 +471,13 @@ reverse:true ListView    → children[0] 在视觉底部 → 最旧在底部 ❌
 - 修复正确，回归测试充分，可合入 main。
 - **建议合并前顺手修 IR2-1**（§6.1 示例去 `.reversed`）—— 文档作为权威参考，留着错误示例会持续误导，且本次正是它导致了 bug。IR2-2 可随后清理。
 - 该 bug 是评审流程的教训：渲染类问题需 widget test + 跨节文档交叉核对。后续涉及「getter 语义 + 渲染层调用」的改动，应默认补 widget 顺序测试。
+
+### 修复复审
+
+| 编号 | 优先级 | 问题 | 状态 | 核对说明 |
+|------|--------|------|------|----------|
+| IR2-1 | 🟡 P1 | §6.1 示例仍带 `.reversed`，与文字「直接用」自相矛盾 | ✅ 已修复 | §6.1 示例改为 `...conv.renderableMessages.map(_message)`；文字加粗「**直接用**」并补「不可额外 `.reversed`——双重反转会把最旧消息落到视觉底部」。附带修了 §6.3 children 示例（同一 bug，评审只点了 §6.1 但 §6.3 line 430 也有）。 |
+| IR2-2 | 🟢 P3 | §4.2 伪代码 `_segments.isEmpty` 返回 `const []` 与实现不一致 | ✅ 已修复 | §4.2 伪代码改为 `if (_segments.isEmpty) return _messages.reversed.toList(growable: false);` 并补注释「SSE 先到、reconcile 未完成时，全部消息都可达」，与 `conversation_store.dart:201` 逐字对齐。 |
+
+跨节核对：`design-incremental-reconcile.md` 内不再有 `renderableMessages` + `.reversed` 组合；`plan-load-retry.md` / `design-load-retry.md` 的 `.reversed` 用的是旧 getter `conv.messages`（升序），属另一功能的早期文档，不在本次范围。
+- 该 bug 是评审流程的教训：渲染类问题需 widget test + 跨节文档交叉核对。后续涉及「getter 语义 + 渲染层调用」的改动，应默认补 widget 顺序测试。
