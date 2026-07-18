@@ -1654,3 +1654,54 @@ commit 74e30bb **未新增任何测试文件**（diff 仅 `docs/design-local-cac
 74e30bb 正确修复了 LC2-1 的常见场景（connect 开头 flush）+ LC2-3/4/5。**LC3-1（流式对话切服务器残留）已修复**：`_teardown`/`_stopSse` 加 `flushCache` 参数，`connect` 路径传 `false`（开头已 flush 旧 profile，不二次 flush），`pause`/`disconnect` 保持 `true`。彻底消除 `await` 窗口内 SSE 设新 pending → `_stopSse` 二次 flush 串号的残留窗口。
 
 43/43 现有测试通过（未含 cache 专项测试，LC-9 仍 open），analyze 0 issue。**无阻塞项，可发布。**
+
+---
+
+## 四次评审意见（commit 229d5dc 修复复审）
+
+> 评审日期：2026-07-18。
+> 评审对象：commit `229d5dc`「fix: _teardown(flushCache: false) on connect path — eliminate streaming SSE cross-profile leak (LC3-1)」。
+> 评审方法：`git show 229d5dc` 逐行核对 + 全调用点搜索（`grep "_teardown\(|_stopSse("` 9 处）+ `dart analyze`（0 issue）+ `flutter test`（43/43 通过）+ 残留链重走推演。
+> 问题编号：`LC4-N`。
+>
+> 总体：**LC3-1 彻底修复，无新增问题**。`_teardown`/`_stopSse` 的 `flushCache` 参数方案正确落地，connect 路径上 SSE await 窗口内产生的新 pending 不再触发二次 flush。所有调用点（connect / disconnect / pause）参数传递正确，`_stopSseForDirectory`（LRU 单目录清理）不涉及 cache flush，无需改。遗留仅 LC-9（测试）+ LC3-4（文档结构），均 🟢 非阻塞。**可发布。**
+
+### LC3-1 修复核对
+
+| 项 | 实现 | 复核 |
+|---|---|---|
+| `_teardown({bool flushCache = true})` | `:1005-1014` 透传给 `_stopSse` | ✅ |
+| `_stopSse({bool flushCache = true})` | `:1088`：`_cacheSaveTimer` cancel 总执行，`await _saveCache()` 仅 `flushCache=true` 时执行 | ✅ |
+| `connect()` 路径传 `false` | `:307 await _teardown(flushCache: false)` | ✅ |
+| `disconnect()` 默认 `true` | `:1018 await _teardown()`（`_profile` 在 `:1020` 才置 null，flush 用当前 profile 正确） | ✅ |
+| `pause()` 默认 `true` | `:1058 await _stopSse()`（`_profile` 未变，flush 正确） | ✅ |
+| 注释引用 LC3-1 | `:1092-1095` 说明 connect 传 false 的理由（避免新 `_profile` 写旧数据） | ✅ |
+| 残留链重走 | connect 开头 flush（旧 `_profile`）→ await 窗口内 SSE 设新 pending → `_teardown(flushCache:false)` → `_stopSse` cancel pending 但不 flush → 无串号 | ✅ 彻底消除 |
+
+### 修复引入的 trade-off（可接受）
+
+connect 路径上 `_teardown(flushCache: false)` 会 **cancel 但不 flush** 旧 profile 在 await 窗口内产生的尾部 SSE 更新（最后 ~10ms 的 `message.part.updated`）。即 A 的缓存少了切换瞬间的尾部 token。
+
+- **影响**：A 下次离线打开时，缓存预览滞后最后几条 token；
+- **自愈**：下次 `connect(A)` 的 `_bootstrap` 全量刷新纠正；
+- **必要性**：这是消除 LC3-1 串号的必要代价（若 flush 则写错 key，损失 B 的整个原始缓存，远比丢 A 几条 token 严重）；
+- **结论**：trade-off 合理，作者 `:1092-1095` 注释已说明。
+
+### 无新增问题
+
+- 所有 `_teardown` / `_stopSse` 调用点（9 处）参数传递正确；
+- `_stopSseForDirectory`（`:996-1003`，LRU 单目录清理）只停单个 dir 的 SSE subs/client，不碰 `_cacheSaveTimer`，与 LC3-1 无关，无需改；
+- `dart analyze` 0 issue；43/43 现有测试通过，无回归。
+
+### 遗留项（非阻塞）
+
+| 编号 | 级别 | 状态 |
+|------|------|------|
+| LC-9 cache 专项测试 | 🟢 | ⏳ 仍 open。建议补 LC3-1 回归用例：mock A 高频 `message.part.updated` + 切 B + B bootstrap 失败，断言 `server_B` 不含 A 数据 |
+| LC3-4 文档结构 | 🟢 | noted。6 份重名「一次评审意见」+ 多个「修复复审」表未清理，不影响代码正确性 |
+
+### 最终结论
+
+**LC3-1（🟡 中，唯一未闭环项）已彻底修复**。至此 LC-1~11（一次评审）+ LC2-1/3/4/5（二次）+ LC3-1（三次）全部正确落地。`dart analyze` 0 issue，43/43 现有测试通过。
+
+**无阻塞项，可发布。** 建议后续迭代补 LC-9（cache 专项测试，含 LC3-1 回归用例）与 LC3-4（文档结构整理），两者均不影响正确性。

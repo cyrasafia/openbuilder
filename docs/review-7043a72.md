@@ -117,3 +117,20 @@
 `173e10c` 的 FW-3 续 修复**正确**：重写为真回归（`_MockClient.messageFn` 成功 fetch + poll 循环），实测 buggy 版 FAIL / fixed 版 PASS，原假回归两根因（discard-port + unawaited async）均消；顶部 `## 结论` 已更新为「FW-3 续 fixed、无 open 项」。
 
 **唯一 open 项为 LINT-1（🟡 中）**：FW-3 测试 `(_, __)` 触发 `unnecessary_underscores` info，破坏 `flutter analyze --fatal-infos` CI 门槛——建议 `(_, __)`→`(_, _)`（实验已证 0 issue）。DOC-1（🟢 低）为本 review 文档子结论陈旧，可顺手订正。代码功能可发布；**LINT-1 需修后 CI 方绿**。
+
+---
+
+## 修复复审（`004d4b7` + `a5a256b`：LINT-1 / DOC-1 → 闭环）
+
+> 复审日期：2026-07-17（独立核对）。
+> 复核对象：`004d4b7`（LINT-1：`__`→`_`）+ `a5a256b`（DOC-1：陈旧子结论订正）。
+> 核对方式：代码逐行 + `dart analyze` + `flutter test`。
+
+| 项 | 内容 | 复核 |
+|---|---|---|
+| LINT-1 | `test/list_preview_streaming_test.dart` `messageFn: (_, __)` → `(_, _)`（wildcard `_`，Dart 3.12 支持） | ✅ |
+| `dart analyze`（test） | `No issues found!`（0 info）——`flutter analyze --fatal-infos` CI 门槛恢复绿 | ✅ |
+| DOC-1 | `review-7043a72.md` 80c3580 修复复审子结论由「唯一 open 项为 FW-3 续… 建议改用 _MockClient」订正为「FW-3 续 已在 173e10c 修复… 无 open 项，代码可发布」——与该节标题（fixed）+ 顶部 `## 结论` 一致，自相矛盾消除 | ✅ |
+| `flutter test` | 10/10 通过 | ✅ |
+
+**最终结论**：`review-7043a72.md` 所列问题项全部闭环——FW-1/2（删死代码回退 + `_previewOf`）、FW-3 续（重写真回归：buggy 版实测 FAIL / fixed 版 PASS）、LINT-1（`__`→`_`，CI 门槛恢复绿）、DOC-1（子结论订正）均落地。`dart analyze` 0 issue、`flutter test` 10/10 通过、无 open 项。**`_onMessageUpdated` 回退越权覆写预览（tool-call revert）修复完整，可发布，CI 绿。**

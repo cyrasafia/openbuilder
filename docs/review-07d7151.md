@@ -164,3 +164,51 @@ FormatException: Unterminated string (at character 440)
 | RB-5 | **接受** | 不改 | ⏳ 非本 commit 引入的环境问题（analyzer 在非 ASCII 工程路径下 URI 解码 bug），CI（`actions/checkout` 干净 ASCII 路径）不受影响。需本机跑 analyze 时把工程放到纯 ASCII 路径。 |
 
 **结论**：RB-2 / RB-3 已修复（代码 1 处 + 文档 5 处 + frontmatter 1 处），RB-1 / RB-4 / RB-5 按上述决策接受。产品名收敛闭环，无遗留。
+
+---
+
+## 二次评审（重审）
+
+> 重审基线：跟进 commit `66bfaea refactor: Open Builder naming follow-up — app class + docs sync (review-07d7151 RB-2/RB-3)`。
+> 独立验证（非作者自填）：`rg` 全仓扫描 + `flutter test` 重跑。
+
+### 修复核对
+
+| 编号 | 验证手段 | 结果 |
+|------|----------|------|
+| RB-2 | `rg -n 'OpenBuilderApp' lib/main.dart` 命中 `:21,24,25,28,31` 五行（覆盖 `runApp` 调用 / class 名 / `const` ctor / `State<OpenBuilderApp>` / `createState` 返回类型 / `_OpenBuilderAppState extends State<OpenBuilderApp>`）；`rg 'OpencodeMobileApp'` 排除 `docs/review-*.md` 后**零残留** | ✅ |
+| RB-3 | `rg 'opencode Mobile\|OpencodeMobileApp\|opencode_mobile'` 排除 `docs/review-*.md` 后**零残留**；5 文档顶部标题 + `DESIGN.md` frontmatter `name: open-builder-typography` 全改；`opencode 服务器` / `opencode 原生` 等后端服务描述未误伤 | ✅ |
+| 历史评审保留 | `docs/review-app-logging.md:97` 仍出现 `OpencodeMobileApp`（描述当时「转 StatefulWidget + WidgetsBindingObserver」的修复快照），**正确保留**未改 | ✅ |
+| 测试 | `flutter test` **50/50 通过**（比首次评审多 3 个 = `eecc742` 的 PA-R1/PA-R2a/PA-R2b，与本次重命名无关） | ✅ |
+| RB-1 / RB-4 / RB-5 | 接受决策无变化（无存量用户 + 已落地 commit + 环境问题） | ⏳ 接受 |
+
+### 🟢 R2-1（P3/低，新发现）— `66bfaea` 把非命名改动混入了命名 commit
+
+**位置**：commit `66bfaea` 的 `lib/core/session/server_store.dart` diff（+30 行）
+
+commit message 标题与正文只声明修 RB-2 / RB-3（命名相关），但 diff 实际包含：
+
+- `_lastActivityByKey` 字段新增「Unbounded in theory ...」注释 6 行
+- 新增 `@visibleForTesting void addSessionsForTesting(...)` 9 行
+- 新增 `@visibleForTesting Future<void> loadCacheForTesting(...)` 9 行
+- `_removeSession` 新增「Intentionally keeps `_lastActivityByKey`」注释 5 行
+
+这些属于 **review-a927a8f 的 PA-R1 / PA-R2 / PA-R3 / PA-R4 修复**（test seam + 注释），与「Open Builder naming follow-up」无关。
+
+**可观察后果**：
+
+- 单独 checkout `66bfaea` 时，引入两个 `@visibleForTesting` 方法但**无对应测试调用**（测试在下一个 commit `eecc742` 才加）→ 该 commit 处会触发 `flutter analyze` 的 `unused_element` 警告（CI `analyze --fatal-infos` 会 fail）。
+- 在 `eecc742` 之后测试用上，问题消失。**当前 HEAD 无影响**，仅在 git bisect / 单 commit checkout 时暴露。
+- 作者在 `eecc742` message 中已自陈：「the 3 server_store.dart hunks ... were already committed under 66bfaea by a wider Open Builder naming follow-up commit」——意识到混入但未拆分。
+
+**严重性**：🟢 低 —— (a) 当前 HEAD 已无问题；(b) bisect 命中该 commit 时退一步即可绕过；(c) 作者已说明。但违反「一 commit 一事」的卫生原则，重审如实记录。
+
+**修复建议**：接受现状（不 rebase 已落地历史）。后续提交时，commit message 应覆盖 diff 全部改动主题，或将无关改动拆到独立 commit。
+
+### 二次评审结论
+
+- **RB-2 / RB-3**：修复完整，全仓扫描与测试双重验证通过。
+- **RB-1 / RB-4 / RB-5**：按既定决策接受，无新证据要求推翻。
+- **R2-1（新）**：commit 卫生问题（命名 commit 混入 PA-R 修复），当前 HEAD 无实际影响，接受现状。
+
+**07d7151 + 跟进 66bfaea 整体可放行**。Open Builder 重命名闭环。
