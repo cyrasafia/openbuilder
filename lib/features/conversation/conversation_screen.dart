@@ -62,16 +62,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   void _maybeLoadEarlier() {
-    final conv = serverStore.conversationFor(widget.sessionId);
+    final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv == null) return;
     if (!conv.hasMore || conv.loadingEarlier) return;
-    conv.loadOnePage().then((_) {
+    conv.loadOnePage().then((madeProgress) {
+      // IR-1: stop the chain on failure (no progress) to prevent request
+      // storms when offline. The user can retry by scrolling away and back.
+      if (!mounted || !madeProgress) return;
       // Chain: if the viewport isn't filled yet (still at top), keep loading.
-      if (!mounted) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_scrollController.hasClients) return;
         final pos = _scrollController.position;
-        final c = serverStore.conversationFor(widget.sessionId);
+        final c = serverStore.conversationForRead(widget.sessionId);
         if (c == null || !c.hasMore || c.loadingEarlier) return;
         if (pos.pixels >= pos.maxScrollExtent - _kScrollThreshold) {
           _maybeLoadEarlier();
@@ -179,7 +181,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
               if (conv.busy || conv.loading) const _TypingDots(),
               ...conv.renderableMessages.map(_message).toList().reversed,
               if (conv.loadingEarlier)
-                const _LoadingEarlierRow(),
+                const _LoadingEarlierRow()
+              else if (conv.loadEarlierError && conv.hasMore)
+                _LoadEarlierErrorRow(onRetry: _maybeLoadEarlier),
             ],
           );
           final msgCount = conv.renderableMessages.length;
@@ -1297,6 +1301,7 @@ class _LoadingEarlierRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Center(
@@ -1308,7 +1313,7 @@ class _LoadingEarlierRow extends StatelessWidget {
               height: 14,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: Theme.of(context).colorScheme.onSurface.withAlpha(120),
+                color: color,
               ),
             ),
             const SizedBox(width: 8),
@@ -1317,10 +1322,39 @@ class _LoadingEarlierRow extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w400,
-                color: Theme.of(context).colorScheme.onSurface.withAlpha(120),
+                color: color,
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Error hint shown at the visual top when a backward page load failed
+/// (IR-R4). Tapping or scrolling retries (scrolling triggers _onScroll →
+/// _maybeLoadEarlier; loadOnePage clears the error flag on entry).
+class _LoadEarlierErrorRow extends StatelessWidget {
+  final VoidCallback? onRetry;
+  const _LoadEarlierErrorRow({this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onRetry,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Center(
+          child: Text(
+            '加载失败，点按或上滑重试',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
       ),
     );

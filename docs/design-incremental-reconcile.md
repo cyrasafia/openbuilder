@@ -160,23 +160,25 @@ Future<void> reconcile() async {
         setStatus('idle');
       }
     }
+    // 分段级重叠判断（BEFORE upsert）：仅检查 segments[0]（IR-2）
+    final overlapped = _entriesOverlapSegment(entries, 0);
     // 窗口区间删除（严格内部）：处理 revert。本地非 optimistic 消息 created
     // 严格落在 (entries.first.created, entries.last.created) 内但不在窗口 → 删除
     _applyWindowDeletion(entries);
     // 合并：upsert 窗口条目（info 取 REST 权威，parts 字段级并集）
     _upsertEntries(entries);
-    // 判断与 segments[0] 是否重叠
-    if (_overlapsBottomSegment(entries)) {
-      // 重叠：合并进 segments[0]（newest 延伸）；oldest/cursor 不变
-      // （窗口是最新 K 条，重叠意味着 new messages ≤ K，分段只是向下长）
-    } else {
-      // 无重叠：窗口作为新 segments[0]，旧的移到 [1+]，断档形成
+    // 分段逻辑
+    if (entries.isEmpty) {
+      // 服务端无消息 — 分段不变
+    } else if (_segments.isEmpty || !overlapped) {
+      // 首次 OR 与 segments[0] 无重叠 → 窗口作新 segments[0]，旧的移到 [1+]，断档形成
       _segments.insert(0, _Segment(
         oldestId: entries.first.info.id,
         oldestCreated: entries.first.info.created ?? 0,
         cursor: page.nextCursor,
       ));
     }
+    // else: overlapped → 合并进 segments[0]（newest 延伸）；oldest/cursor 不变
     try { _todos = await client.todos(sessionId); } catch (_) {}
     loaded = true; error = null; _stale = false; loading = false;
     unawaited(_saveCache());
@@ -191,45 +193,64 @@ Future<void> reconcile() async {
 ```
 
 - **不急切回填**：无论是否有断档，reconcile 只拉一页最新窗口。断档留给上滚懒加载。
-- **重叠判断**：窗口任一条目 id 出现在当前 `segments[0]` 的消息范围内 → 重叠。
+- **分段级重叠判断**（IR-2）：`_entriesOverlapSegment(entries, 0)` 仅检查 `segments[0]` 的消息 id 集合，不扫描 `segments[1+]`。避免 revert/重排导致窗口覆盖旧分段 id 时误判重叠。
 - **窗口区间删除**：严格内部 `(oldest.created, newest.created)`，避开边界（防等 created 边界误删）。
 
 ### 5.2 `loadOnePage()` — 上滚触顶懒加载一页
 
 ```dart
-Future<void> loadOnePage() async {
-  if (_loadingEarlier) return;
-  final seg = _segments.firstOrNull;
-  if (seg == null || seg.cursor == null) return; // 无更多历史
+/// 返回 true = 有进展（加载了条目或 cursor 到头）；false = 失败或无操作。
+/// 调用方用此返回值在失败时停止链式加载（IR-1：防请求风暴）。
+Future<bool> loadOnePage() async {
+  if (_loadingEarlier) return false;
+  if (_segments.isEmpty) return false;
+  final seg = _segments.first;
+  if (seg.cursor == null) return false;
   _loadingEarlier = true;
+  _loadEarlierError = false;  // IR-R4：新尝试开始时清错误标志
   notifyListeners();
   try {
     final page = await client.messagesPage(sessionId, limit: _kWindow, before: seg.cursor);
     final entries = page.entries;
     if (entries.isEmpty) {
-      // 无更多：cursor 到头
-      seg.cursor = null;
+      seg.cursor = null; // 历史穷尽
     } else {
       _applyWindowDeletion(entries);
       _upsertEntries(entries);
-      // 更新 segments[0] 的 oldest + cursor
-      seg
-        ..oldestId = entries.first.info.id
-        ..oldestCreated = entries.first.info.created ?? 0
-        ..cursor = page.nextCursor; // null = 到历史起点
-      // 衔接检测：本页是否与 segments[1]（更早分段）重叠？
-      if (_segments.length >= 2 && _pageOverlapsSegment(entries, _segments[1])) {
-        // 合并：segments[1] 并入 segments[0]，移除 segments[1]
-        _segments[0].oldestId = _segments[1].oldestId;
-        _segments[0].oldestCreated = _segments[1].oldestCreated;
-        _segments[0].cursor = _segments[1].cursor; // 继承更早分段的 cursor
+      final pageOldestCreated = entries.first.info.created ?? 0;
+      // 分段级衔接循环（IR-2/IR-R2）：一页可能跨多个断档（gap 小时），
+      // 循环合并所有 overlapped 分段；每轮 segments[2] 递补为新 segments[1]。
+      var bridged = false;
+      while (_segments.length >= 2 && _entriesOverlapSegment(entries, 1)) {
+        bridged = true;
+        final seg1 = _segments[1];
+        if (pageOldestCreated < seg1.oldestCreated) {
+          // 本页越过 segments[1] — 用本页 oldest + cursor
+          seg..oldestId = entries.first.info.id
+             ..oldestCreated = pageOldestCreated
+             ..cursor = page.nextCursor;
+        } else {
+          // 本页在 segments[1] 范围内 — 继承 segments[1] 的 oldest + cursor
+          seg..oldestId = seg1.oldestId..oldestCreated = seg1.oldestCreated..cursor = seg1.cursor;
+        }
         _segments.removeAt(1);
+      }
+      if (bridged) {
+        // 孤儿清理（IR-R2）：oldestCreated >= seg.oldestCreated 的分段
+        // 其范围已被扩展后的 segments[0] 完全吞并，移除。
+        _segments.removeWhere((s) => s != seg && s.oldestCreated >= seg.oldestCreated);
+      } else {
+        seg..oldestId = entries.first.info.id
+           ..oldestCreated = pageOldestCreated
+           ..cursor = page.nextCursor;
       }
     }
     _sort();
     unawaited(_saveCache());
+    return true;
   } catch (_) {
-    // 静默失败，保留现有内容，用户可再次上滚重试
+    _loadEarlierError = true;  // IR-R4：UI 显示「加载失败，上滑重试」
+    return false; // IR-1: 失败返回 false，调用方停止链式
   } finally {
     _loadingEarlier = false;
     if (!_disposed) notifyListeners();
@@ -237,12 +258,13 @@ Future<void> loadOnePage() async {
 }
 
 /// 链式拉页：不足一屏时连续加载直到填满视口 / 衔接 / 历史穷尽。
-/// 由 UI 层在 loadOnePage 完成后 postFrame 复查触顶条件再触发。
+/// 由 UI 层在 loadOnePage 完成后检查返回值，仅 madeProgress=true 时
+/// postFrame 复查触顶条件再触发（IR-1：失败时不链式）。
 ```
 
 - **每次只拉一页**（K=100 条）。用户控制节奏。
-- **衔接检测**：本页任一 id 在 `segments[1]` 的消息范围内 → 衔接，合并分段。
-- **失败静默**：不弹错误（上滚重试即可），不破坏现有内容。
+- **分段级衔接循环**（IR-2/IR-R2）：`while` 循环逐轮合并所有 overlapped 分段；`removeWhere` 清理被吞并的孤儿分段（多断档跨页场景）。
+- **失败返回 false + 置 `loadEarlierError`**（IR-1/IR-R4）：调用方停止链式；UI 显示错误提示；用户下次滚动/点击重试。
 
 ### 5.3 合并辅助方法
 
@@ -264,6 +286,23 @@ Future<void> loadOnePage() async {
 ///   m.info.created! > lo && m.info.created! < hi &&  // 严格内部
 ///   !ids.contains(m.info.id)
 /// );
+
+/// 分段级 id 集合（IR-2）：
+/// Set<String> _segmentIds(int segIndex) {
+///   // 从 _messages 末尾（最新）向前走，遇到 segments[i].oldestId 即切换分段。
+///   // optimistic 消息总属于 segments[0]。
+///   var currentSeg = 0;
+///   for (i = _messages.length-1; i >= 0; i--) {
+///     if (!m.optimistic && currentSeg == segIndex) ids.add(m.info.id);
+///     if (m.info.id == _segments[currentSeg].oldestId) currentSeg++;
+///   }
+/// }
+///
+/// bool _entriesOverlapSegment(List<MessageEntry> entries, int segIndex) {
+///   final ids = _segmentIds(segIndex);
+///   for (final e in entries) if (ids.contains(e.info.id)) return true;
+///   return false;
+/// }
 ```
 
 ### 5.4 SSE 交互（不变）
@@ -278,7 +317,7 @@ Future<void> loadOnePage() async {
 
 ```dart
 /// ConversationStore 新增字段
-String? sessionUpdated;  // 由 ServerStore 写入：sessionById(sid)?.updated
+int? sessionUpdated;  // 由 ServerStore 写入：sessionById(sid)?.updated
 
 /// _saveCache 新增字段
 {
@@ -380,9 +419,9 @@ void _maybeLoadEarlier() {
 - `_kScrollThreshold = 200`（px）。
 - `dispose` 移除 listener。
 
-### 6.3 顶部加载指示
+### 6.3 顶部加载指示与失败提示
 
-反向 ListView children 末尾（视觉顶部）加 `_LoadingRow`：
+反向 ListView children 末尾（视觉顶部）加 `_LoadingEarlierRow` / `_LoadEarlierErrorRow`：
 
 ```dart
 children: [
@@ -390,13 +429,16 @@ children: [
   if (conv.busy || conv.loading) const _TypingDots(),
   ...conv.renderableMessages.map(_message).toList().reversed,
   if (conv.loadingEarlier)
-    const _LoadingRow(), // 居中 spinner + '加载中'（w400）
+    const _LoadingEarlierRow() // 居中 spinner + '加载中'（w400）
+  else if (conv.loadEarlierError && conv.hasMore)
+    _LoadEarlierErrorRow(onRetry: _maybeLoadEarlier), // IR-R4：失败提示
   // 历史穷尽时不显示任何文字
 ]
 ```
 
-- `_LoadingRow`：`Center(Padding(CircularProgressIndicator(strokeWidth: 2) + SizedBox(8) + Text('加载中', style: TextStyle(fontWeight: w400))))`，遵循 [DESIGN.md](../DESIGN.md) 三档字重。
-- 拉取中持续显示；完成后该行消失或被新内容推到新顶部（若仍有 hasMore）。
+- `_LoadingEarlierRow`：`Center(CircularProgressIndicator(strokeWidth: 2) + Text('加载中', w400))`，遵循 [DESIGN.md](../DESIGN.md) 三档字重。拉取中持续显示；完成后该行消失或被新内容推到新顶部（若仍有 hasMore）。
+- `_LoadEarlierErrorRow`（IR-R4）：`loadOnePage` 失败时 `ConversationStore` 置 `loadEarlierError = true`（成功/新尝试开始时清零）。显示条件 `!loadingEarlier && loadEarlierError && hasMore`——失败且仍有可加载内容时提示「加载失败，点按或上滑重试」（`onSurfaceVariant` + w400）。**重试机制**：点按（`GestureDetector(onTap: onRetry)`）或继续上滑（`_onScroll` → `_maybeLoadEarlier`）都会触发 `loadOnePage`，其开头将 `loadEarlierError` 清零。
+- `loadEarlierError` getter：`ConversationStore` 暴露，供 UI 读取（与 `loadingEarlier` 互斥显示——加载中显示 spinner，失败显示提示）。
 
 ---
 

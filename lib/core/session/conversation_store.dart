@@ -165,11 +165,14 @@ class ConversationStore extends ChangeNotifier {
   String status = 'idle';
   int? sessionUpdated;
   bool _loadingEarlier = false;
+  bool _loadEarlierError = false;
 
   bool _stale = false;
   bool _reconciling = false;
   DateTime? _lastReloadAt;
   static const _reloadBackoff = Duration(seconds: 10);
+  // Window size for reconcile + backward paging. ~7-12 mobile screens of
+  // messages; balances first-open payload vs scroll-up fill latency.
   static const _kWindow = 100;
 
   Timer? _loadRetryTimer;
@@ -211,6 +214,10 @@ class ConversationStore extends ChangeNotifier {
 
   /// Whether a backward page load is in progress.
   bool get loadingEarlier => _loadingEarlier;
+
+  /// Whether the last backward page load failed (IR-R4). Cleared on next
+  /// successful load or when a new attempt starts.
+  bool get loadEarlierError => _loadEarlierError;
 
   /// One-line preview of the last message, aligned with what the detail view
   /// renders. Walks parts last→first, skipping hidden types, and returns the
@@ -404,9 +411,9 @@ class ConversationStore extends ChangeNotifier {
           setStatus('idle');
         }
       }
-      // Check overlap BEFORE upsert (upsert would insert entries into _messages
-      // and make the overlap check trivially true).
-      final overlapped = _entriesOverlapLocal(entries);
+      // Check overlap with segments[0] BEFORE upsert (upsert would insert
+      // entries into _messages and make the check trivially true).
+      final overlapped = _entriesOverlapSegment(entries, 0);
       // Window-range deletion (strict interior): handle revert.
       _applyWindowDeletion(entries);
       // Upsert: info=REST authoritative, parts field-level merge.
@@ -452,12 +459,16 @@ class ConversationStore extends ChangeNotifier {
   /// 上滚触顶懒加载一页（K 条更早消息）。每次只拉一页；断档多次则
   /// 多次触发。本页与 segments[1] 重叠时衔接（合并分段），否则更新
   /// segments[0] 的 oldest + cursor。失败静默（用户可再次上滚重试）。
-  Future<void> loadOnePage() async {
-    if (_loadingEarlier) return;
-    if (_segments.isEmpty) return;
+  /// Returns true if progress was made (entries loaded or cursor exhausted),
+  /// false on failure or no-op. The caller uses this to stop the lazy-load
+  /// chain on failure (IR-1: prevents request storms when offline).
+  Future<bool> loadOnePage() async {
+    if (_loadingEarlier) return false;
+    if (_segments.isEmpty) return false;
     final seg = _segments.first;
-    if (seg.cursor == null) return;
+    if (seg.cursor == null) return false;
     _loadingEarlier = true;
+    _loadEarlierError = false;
     notifyListeners();
     try {
       final page =
@@ -468,40 +479,49 @@ class ConversationStore extends ChangeNotifier {
       if (entries.isEmpty) {
         seg.cursor = null; // history exhausted
       } else {
-        // Check bridge BEFORE upsert.
-        final bridged =
-            _segments.length >= 2 && _entriesOverlapLocal(entries);
         _applyWindowDeletion(entries);
         _upsertEntries(entries);
-        if (bridged) {
-          // Merge segments[1] into segments[0].
+        final pageOldestCreated = entries.first.info.created ?? 0;
+        // Bridge loop (IR-R2): a page might span multiple segments if gaps
+        // are small. Merge all overlapped segments into segments[0].
+        var bridged = false;
+        while (_segments.length >= 2 &&
+            _entriesOverlapSegment(entries, 1)) {
+          bridged = true;
           final seg1 = _segments[1];
-          final pageOldestCreated = entries.first.info.created ?? 0;
           if (pageOldestCreated < seg1.oldestCreated) {
-            // Page extends past segments[1] — page's oldest + cursor win.
             seg
               ..oldestId = entries.first.info.id
               ..oldestCreated = pageOldestCreated
               ..cursor = page.nextCursor;
           } else {
-            // Page within segments[1]'s range — segments[1]'s oldest + cursor.
             seg
               ..oldestId = seg1.oldestId
               ..oldestCreated = seg1.oldestCreated
               ..cursor = seg1.cursor;
           }
           _segments.removeAt(1);
+        }
+        if (bridged) {
+          // Clean up orphan segments fully subsumed by the expanded
+          // segments[0] (IR-R2): their oldestCreated >= seg.oldestCreated
+          // means their entire range is within segments[0].
+          _segments.removeWhere(
+              (s) => s != seg && s.oldestCreated >= seg.oldestCreated);
         } else {
           seg
             ..oldestId = entries.first.info.id
-            ..oldestCreated = entries.first.info.created ?? 0
+            ..oldestCreated = pageOldestCreated
             ..cursor = page.nextCursor;
         }
       }
       _sort();
       unawaited(_saveCache());
+      return true;
     } catch (e) {
       AppLogger.I.e(_tag, 'loadOnePage failed $sessionId: $e');
+      _loadEarlierError = true;
+      return false;
     } finally {
       _loadingEarlier = false;
       if (!_disposed) notifyListeners();
@@ -544,10 +564,34 @@ class ConversationStore extends ChangeNotifier {
 
   /// Whether any fetched entry id already exists in `_messages` (non-optimistic).
   /// Used to detect overlap / bridge before upsert inserts the entries.
-  bool _entriesOverlapLocal(List<MessageEntry> entries) {
+  /// Build the set of non-optimistic message ids belonging to the segment
+  /// at [segIndex]. Segments partition `_messages` (sorted ascending): the
+  /// walk from newest→oldest crosses segment boundaries at each segment's
+  /// `oldestId`. Optimistic messages are always in segments[0].
+  Set<String> _segmentIds(int segIndex) {
+    if (segIndex < 0 || segIndex >= _segments.length) return {};
+    final ids = <String>{};
+    var currentSeg = 0;
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      final m = _messages[i];
+      if (!m.optimistic) {
+        if (currentSeg == segIndex) ids.add(m.info.id);
+        if (currentSeg < _segments.length &&
+            m.info.id == _segments[currentSeg].oldestId) {
+          currentSeg++;
+        }
+      }
+    }
+    return ids;
+  }
+
+  /// Whether any fetched entry id exists in the segment at [segIndex].
+  /// Segment-scoped: reconcile checks segments[0], loadOnePage bridge
+  /// checks segments[1] (IR-2).
+  bool _entriesOverlapSegment(List<MessageEntry> entries, int segIndex) {
+    final ids = _segmentIds(segIndex);
     for (final e in entries) {
-      final existing = _findMessage(e.info.id);
-      if (existing != null && !existing.optimistic) return true;
+      if (ids.contains(e.info.id)) return true;
     }
     return false;
   }
