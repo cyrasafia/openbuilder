@@ -616,20 +616,26 @@ class ConversationStore extends ChangeNotifier {
     } else {
       _permissions[idx] = p;
     }
+    AppLogger.I.i(_tag, 'onPermission pid=${p.id} sid=${p.sessionID} op=${idx == -1 ? "add" : "replace"} → count=${_permissions.length}');
     notifyListeners();
   }
 
   void onPermissionReplied(String permissionId) {
+    AppLogger.I.i(_tag, 'onPermissionReplied pid=$permissionId → removed, count was=${_permissions.length}');
     _permissions.removeWhere((p) => p.id == permissionId);
     notifyListeners();
   }
 
   Future<void> respondPermission(Permission p, String response) async {
+    AppLogger.I.i(_tag, 'respondPermission sid=$sessionId pid=${p.id} resp=$response');
     try {
       await client.respondPermission(sessionId, p.id, response);
+      AppLogger.I.i(_tag, 'respondPermission POST ok pid=${p.id}');
     } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      AppLogger.I.e(_tag, 'respondPermission POST err pid=${p.id} status=$code body=${e.response?.data}');
       // 404 = already resolved (e.g. accepted on another device) — remove locally.
-      if (e.response?.statusCode != 404) rethrow;
+      if (code != 404) rethrow;
     }
     onPermissionReplied(p.id);
   }
@@ -641,28 +647,40 @@ class ConversationStore extends ChangeNotifier {
     } else {
       _questions[idx] = q;
     }
+    AppLogger.I.i(_tag, 'onQuestion qid=${q.id} sid=${q.sessionID} op=${idx == -1 ? "add" : "replace"} → count=${_questions.length}');
     notifyListeners();
   }
 
   void onQuestionReplied(String questionId) {
+    AppLogger.I.i(_tag, 'onQuestionReplied qid=$questionId → removed, count was=${_questions.length}');
     _questions.removeWhere((q) => q.id == questionId);
     notifyListeners();
   }
 
   Future<void> replyQuestion(QuestionRequest q, List<List<String>> answers) async {
+    AppLogger.I.i(_tag, 'replyQuestion sid=$sessionId qid=${q.id} answers=$answers');
     try {
-      await client.replyQuestion(q.id, answers);
+      await client.replyQuestion(sessionId, q.id, answers);
+      AppLogger.I.i(_tag, 'replyQuestion POST ok qid=${q.id}');
     } on DioException catch (e) {
-      if (e.response?.statusCode != 404) rethrow;
+      final code = e.response?.statusCode;
+      AppLogger.I.e(_tag, 'replyQuestion POST err qid=${q.id} status=$code body=${e.response?.data}');
+      if (code != 404) rethrow;
+      AppLogger.I.i(_tag, 'replyQuestion 404 swallowed qid=${q.id}');
     }
     onQuestionReplied(q.id);
   }
 
   Future<void> rejectQuestion(QuestionRequest q) async {
+    AppLogger.I.i(_tag, 'rejectQuestion sid=$sessionId qid=${q.id}');
     try {
-      await client.rejectQuestion(q.id);
+      await client.rejectQuestion(sessionId, q.id);
+      AppLogger.I.i(_tag, 'rejectQuestion POST ok qid=${q.id}');
     } on DioException catch (e) {
-      if (e.response?.statusCode != 404) rethrow;
+      final code = e.response?.statusCode;
+      AppLogger.I.e(_tag, 'rejectQuestion POST err qid=${q.id} status=$code body=${e.response?.data}');
+      if (code != 404) rethrow;
+      AppLogger.I.i(_tag, 'rejectQuestion 404 swallowed qid=${q.id}');
     }
     onQuestionReplied(q.id);
   }

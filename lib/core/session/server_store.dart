@@ -658,6 +658,7 @@ class ServerStore extends ChangeNotifier {
         for (final perm in pending) {
           _pendingPermissions[perm.sessionID] = perm;
           _conversations[perm.sessionID]?.onPermission(perm);
+          AppLogger.I.i(_tag, 'backfill permission re-inject sid=${perm.sessionID} pid=${perm.id} dir=$dir');
         }
       } catch (_) {
         failedDirs.add(dir);
@@ -695,6 +696,7 @@ class ServerStore extends ChangeNotifier {
         for (final q in pending) {
           _pendingQuestions[q.id] = q;
           _conversations[q.sessionID]?.onQuestion(q);
+          AppLogger.I.i(_tag, 'backfill question re-inject sid=${q.sessionID} qid=${q.id} dir=$dir');
         }
       } catch (_) {
         failedDirs.add(dir);
@@ -873,6 +875,7 @@ class ServerStore extends ChangeNotifier {
         final p = Permission.fromJson(ev.properties);
         _pendingPermissions[p.sessionID] = p;
         _conversations[p.sessionID]?.onPermission(p);
+        AppLogger.I.i(_tag, 'SSE permission.asked sid=${p.sessionID} pid=${p.id}');
         final title = sessionById(p.sessionID)?.title ?? '会话';
         unawaited(
             NotificationService.notifyPermission(title, p.title).catchError((_) {}));
@@ -884,6 +887,7 @@ class ServerStore extends ChangeNotifier {
         // (additionalProperties:false — there is no "permissionID" key).
         final pid = ev.properties['requestID']?.toString() ??
             ev.properties['permissionID']?.toString();
+        AppLogger.I.i(_tag, 'SSE permission.replied sid=$sid pid=$pid');
         if (sid != null && pid != null) {
           _pendingPermissions.removeWhere((_, p) => p.id == pid);
           _conversations[sid]?.onPermissionReplied(pid);
@@ -894,6 +898,7 @@ class ServerStore extends ChangeNotifier {
         final qr = QuestionRequest.fromJson(ev.properties);
         _pendingQuestions[qr.id] = qr;
         _conversations[qr.sessionID]?.onQuestion(qr);
+        AppLogger.I.i(_tag, 'SSE question.asked sid=${qr.sessionID} qid=${qr.id}');
         final title = sessionById(qr.sessionID)?.title ?? '会话';
         unawaited(NotificationService.notifyQuestion(title, qr.questions.firstOrNull?.header ?? '问题').catchError((_) {}));
         break;
@@ -907,6 +912,7 @@ class ServerStore extends ChangeNotifier {
             ev.properties['id']?.toString();
         final existing = qid != null ? _pendingQuestions[qid] : null;
         final sid = ev.properties['sessionID']?.toString() ?? existing?.sessionID;
+        AppLogger.I.i(_tag, 'SSE ${ev.type} sid=$sid qid=$qid');
         if (qid != null) {
           _pendingQuestions.remove(qid);
         }

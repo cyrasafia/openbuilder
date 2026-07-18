@@ -320,18 +320,18 @@ class OpencodeClient {
     return const [];
   }
 
-  /// `POST /question/:id/reply` — reply to a question.
+  /// `POST /api/session/:sid/question/:id/reply` — reply to a question.
   /// [answers] is a list of answer arrays (one per question), each containing
   /// selected option labels.
-  Future<void> replyQuestion(String questionId, List<List<String>> answers) async {
-    await dio.post('/question/$questionId/reply', data: {
+  Future<void> replyQuestion(String sessionId, String questionId, List<List<String>> answers) async {
+    await dio.post('/api/session/$sessionId/question/$questionId/reply', data: {
       'answers': answers,
     });
   }
 
-  /// `POST /question/:id/reject` — reject a question.
-  Future<void> rejectQuestion(String questionId) async {
-    await dio.post('/question/$questionId/reject');
+  /// `POST /api/session/:sid/question/:id/reject` — reject a question.
+  Future<void> rejectQuestion(String sessionId, String questionId) async {
+    await dio.post('/api/session/$sessionId/question/$questionId/reject');
   }
 
   /// `POST /session/:id/revert` — revert the session back to [messageID].

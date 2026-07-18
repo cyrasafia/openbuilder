@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
+import '../../core/logging/app_logger.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
@@ -955,10 +956,12 @@ class _PermissionCardState extends State<_PermissionCard> {
   bool _replying = false;
 
   Future<void> _respond(String response) async {
+    AppLogger.I.i('Card', '_respond pid=${widget.permission.id} resp=$response');
     setState(() => _replying = true);
     try {
       await widget.store.respondPermission(widget.permission, response);
     } catch (e) {
+      AppLogger.I.e('Card', '_respond FAILED pid=${widget.permission.id} resp=$response err=$e');
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('回复失败：$e')));
@@ -1071,10 +1074,12 @@ class _QuestionCardState extends State<_QuestionCard> {
     for (var i = 0; i < widget.question.questions.length; i++) {
       answers.add((_selected[i] ?? const {}).toList());
     }
+    AppLogger.I.i('Card', '_reply qid=${widget.question.id} sid=${widget.question.sessionID} answers=$answers');
     setState(() => _replying = true);
     try {
       await widget.store.replyQuestion(widget.question, answers);
     } catch (e) {
+      AppLogger.I.e('Card', '_reply FAILED qid=${widget.question.id} answers=$answers err=$e');
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('回复失败：$e')));
@@ -1085,10 +1090,12 @@ class _QuestionCardState extends State<_QuestionCard> {
   }
 
   Future<void> _reject() async {
+    AppLogger.I.i('Card', '_reject qid=${widget.question.id} sid=${widget.question.sessionID}');
     setState(() => _replying = true);
     try {
       await widget.store.rejectQuestion(widget.question);
     } catch (e) {
+      AppLogger.I.e('Card', '_reject FAILED qid=${widget.question.id} err=$e');
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('拒绝失败：$e')));
