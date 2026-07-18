@@ -81,11 +81,7 @@ flutter test                     # 含 widget + parse + smoke（smoke 需本地 
 
 ### JDK 要求
 
-- Android 构建需 **Java 17**（`compileOptions` 设 `VERSION_17`）
-- 系统默认 Java 26（CachyOS 滚动更新）不兼容 Android `jlink`
-- `scripts/build.sh` 已自动设 `JAVA_HOME=~/development/jdk21`
-- 手动构建时：`JAVA_HOME=/home/cyrasafia/development/jdk21 flutter build apk --release`
-- 或在 `android/gradle.properties` 加 `org.gradle.java.home=/usr/lib/jvm/java-17-openjdk`（需先 `sudo pacman -S jdk17-openjdk`）
+Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scripts/build.sh` 已自动设 `JAVA_HOME=~/development/jdk21`；手动构建需同样前置 `JAVA_HOME`。
 
 ## 代码约定
 
@@ -94,26 +90,11 @@ flutter test                     # 含 widget + parse + smoke（smoke 需本地 
 - 模型手写 `fromJson`，不用 `freezed` / `json_serializable`
 - API client 手写（`lib/data/api/opencode_client.dart`），不用生成器接入 app
 - commit message 前缀：`feat:` / `fix:` / `ui:` / `docs:` / `perf:`
+- 分支合回 `master` 默认使用 squash merge（保持 master 历史线性、一个功能一个 commit）
 
 ## 前端样式约定
 
-> 前端样式与字重系统的权威参考：根目录 [`DESIGN.md`](DESIGN.md)。改 UI / 文字样式前必读，新增样式须在三档内对齐。
-
-**字重三档制（全局约束）**：`FontWeight.` 常量只允许 `w300` / `w400` / `w600`，禁止 `normal`、`w500`、`bold`、`w700`。
-
-| 常量 | 字重 | 名称 | 语义 |
-|------|------|------|------|
-| `w300` | 300 | Light | 仅大号 hero 标题（页顶展示） |
-| `w400` | 400 | Regular | 正文、标签、次级信息（默认） |
-| `w600` | 600 | Semi Bold | 强调、标题、AppBar 标题、Markdown 加粗（最重一档） |
-
-要点：
-- 层级靠「字号 + 三档字重」组合表达，不堆砌中间字重；需更强强调从 Regular 跳到 Semi Bold，不经过 Medium (500)。
-- 最重一档固定 Semi Bold (600)，移动端窄屏不用 Bold (700) 避免小字笔画黏连。
-- Light 仅限大号 hero，不用在小号文字 / 正文。
-- 命名用数值常量（`w300`/`w400`/`w600`），不用 `normal`/`bold` 语义别名。
-- 字体族：正文用系统字体（小米/HyperOS 上为 MiSans 变体字体）；等宽用 `monospace` + 回退栈 `DejaVu Sans Mono → Menlo → Courier New`。
-- 系统字重联动：小米/HyperOS 上 `FontVariation('wght', n)` 会跟随系统滑块覆盖渲染，属预期行为；非小米或读取失败时由三档常量决定，三档常量同时作语义标注与 fallback。
+权威参考：根目录 [`DESIGN.md`](DESIGN.md)，改 UI / 文字样式前必读。核心约束：字重只允许 `w300` / `w400` / `w600` 三档，禁止 `normal`、`w500`、`bold`、`w700`。
 
 ## 文档命名约定（docs/）
 
