@@ -111,7 +111,8 @@ class _Segment {
 ```dart
 /// 供详情页渲染的消息（仅底部可达分段）。
 List<DisplayMessage> get renderableMessages {
-  if (_segments.isEmpty) return const [];
+  // SSE 先到、reconcile 未完成时，全部消息都可达。
+  if (_segments.isEmpty) return _messages.reversed.toList(growable: false);
   final seg = _segments.first;
   // 从 _messages 末尾（最新）向前取，直到碰到 seg.oldestId（含）
   final result = <DisplayMessage>[];
@@ -380,10 +381,10 @@ Future<MessagesPage> messagesPage(String sessionId, {required int limit, String?
 
 ```dart
 // 原：...conv.messages.map(_message).toList().reversed,
-// 新：...conv.renderableMessages.map(_message).toList().reversed,
+// 新：...conv.renderableMessages.map(_message),
 ```
 
-- `renderableMessages` 返回最新在前（供 reversed ListView 直接用）。
+- `renderableMessages` 返回最新在前（供 reversed ListView **直接用**，不可额外 `.reversed`——否则双重反转会把最旧消息落到视觉底部）。
 - auto-scroll 计数 `_lastMsgCount` 改用 `renderableMessages.length`。
 - loading / error 空态判断仍用 `conv.messages.isEmpty`（全空才算无数据）。
 
@@ -427,7 +428,7 @@ void _maybeLoadEarlier() {
 children: [
   const SizedBox(height: 8),
   if (conv.busy || conv.loading) const _TypingDots(),
-  ...conv.renderableMessages.map(_message).toList().reversed,
+  ...conv.renderableMessages.map(_message),
   if (conv.loadingEarlier)
     const _LoadingEarlierRow() // 居中 spinner + '加载中'（w400）
   else if (conv.loadEarlierError && conv.hasMore)

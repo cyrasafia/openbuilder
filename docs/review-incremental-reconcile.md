@@ -366,3 +366,153 @@ if (bridged) {
 | IR-R5 | 🟡 P1 | 设计文档 §5.2 未同步 while 循环 | ✅ 已修复 | §5.2 伪代码更新为 while 循环 + removeWhere 孤儿清理版本；补充 `_loadEarlierError = false`（入口清零）与 `_loadEarlierError = true`（catch 置位）；要点条目同步描述循环合并 + 孤儿清理 + 错误标志。 |
 | IR-R6 | 🟢 P3 | _LoadEarlierErrorRow 注释「Tapping retries」与实现不符 | ✅ 已修复 | 采用修复建议 1：加 `GestureDetector(onTap: onRetry, behavior: opaque)` + `onRetry` 回调（ListView 传 `_maybeLoadEarlier`），点按重试真实生效；文案改「加载失败，点按或上滑重试」，注释与实现一致。 |
 | IR-R7 | 🟢 P3 | 设计文档 §6 未补充错误提示行 | ✅ 已修复 | §6.3 改标题为「顶部加载指示与失败提示」，补 `_LoadEarlierErrorRow` 的文案、样式（onSurfaceVariant + w400）、显示条件（`!loadingEarlier && loadEarlierError && hasMore`）、`loadEarlierError` getter、点按/上滑双重试机制与清零时机。 |
+
+---
+
+## 五次评审复审意见（独立核对）
+
+> 评审方式：核对已提交的 `2af129d`（fix: review follow-ups IR-1~IR-9, IR-R1~IR-R7）相对 `421bb34` 的完整 diff。
+> 结论：**全部闭环，批准合并**。三轮迭代（IR-1~9 → IR-R1~R4 → IR-R5~R7）共 15 项问题全部解决，无新增问题。
+
+### 逐项独立核对
+
+| 编号 | 状态 | 核对说明（独立验证） |
+|------|------|----------|
+| IR-R5 | ✅ 已修复 | 设计文档 §5.2 伪代码（`design-incremental-reconcile.md:200-243`）现为 while 循环 + `removeWhere` 孤儿清理版本，与 `conversation_store.dart:486-507` 实现逐行对齐；同步补 `_loadEarlierError` 置位/清零时机。文档与实现一致（IR-4 回归闭环）。 |
+| IR-R6 | ✅ 已修复 | `conversation_screen.dart:1341` 包 `GestureDetector(onTap: onRetry, behavior: HitTestBehavior.opaque)`（整行可点），`onRetry` 回调由 ListView 传 `_maybeLoadEarlier`（`:184`）；文案「加载失败，点按或上滑重试」与类注释「Tapping or scrolling retries」一致。点按重试真实生效：`loadOnePage` 开头 `_loadEarlierError=false` 清零 → error row 消失。修复未引入新问题。 |
+| IR-R7 | ✅ 已修复 | §6.3（`design-incremental-reconcile.md:346`）标题改「顶部加载指示与失败提示」，补 `_LoadEarlierErrorRow` 的文案/样式/显示条件/`loadEarlierError` getter/双重试机制。与实现一致。 |
+
+### 无新增问题
+
+- IR-R6 的 `GestureDetector` + `behavior: opaque` + nullable `onRetry` 组合正确；点按失败会重新置 `loadEarlierError=true`，error row 保持显示，可反复重试。
+- 设计文档与实现在 §5.1/§5.2/§5.3/§5.5/§6.3 全部对齐。
+- 测试覆盖：12 个 store 层用例（含 degradation / storm / preheat-fail / old-schema / multi-gap cross-page / loadEarlierError flag），回归充分。
+
+### 最终批准
+
+- **IR-1（阻塞，请求风暴）**：根治，链式失败即停 + 失败提示 + 点按/滚动重试。
+- **IR-2（分段级判断）**：逻辑正确，覆盖单断档与多断档跨页（while + removeWhere）。
+- **设计文档、实现、测试三方一致**（IR-4 / IR-R5 / IR-R7）。
+- 无遗留功能问题，无阻塞/中等问题。**批准合并到 main**（建议按项目约定 squash merge，保持一个功能一个 commit）。
+
+> 说明：合并后 `docs/review-incremental-reconcile.md` 随本分支一并进入 main，作为本次改动的完整评审记录（一次 → 五次，含迭代追加）。
+
+---
+
+## 六次评审意见（合并后新增 commit `d48d9d7`）
+
+> 评审对象：`d48d9d7 fix: 详情页消息双重反转——删掉 renderableMessages 上多余的 .reversed`（在 `2af129d` 合入 main 之后新增）。
+> 背景：五次评审批准合并（`dca3f98`）后，实机使用发现大会话详情页底部显示的是中段消息而非真正末条，定位到双重反转渲染 bug。
+> 结论：**修复正确且必要**；新发现 1 项文档不一致（IR2-1）；同时是前五轮评审的**遗漏反思**。
+
+### ✅ 修复核对：双重反转 bug
+
+**根因**：`renderableMessages` getter 按「newest-first」返回（从 `_messages` 末尾向前取，设计文档 §4.2 明确「供 reversed ListView 直接用」），但 `conversation_screen.dart` 的 ListView children 还保留着为旧 getter（`conv.messages` 升序）准备的 `.reversed`：
+
+```
+renderableMessages      = [最新, ..., 最旧]   // newest-first
+.map().toList().reversed = [最旧, ..., 最新]   // 再反转一次
+reverse:true ListView    → children[0] 在视觉底部 → 最旧在底部 ❌
+```
+
+修复（`conversation_screen.dart:182`）：删掉 `.toList().reversed`，改为 `...conv.renderableMessages.map(_message)`。现在 children = [SizedBox, TypingDots?, 最新, …, 最旧, loadingRow]，reverse:true → 最新落在视觉底部 ✅。
+
+**回归测试**（`test/detail_message_order_test.dart`，86 行）设计良好：
+1. store 契约：插入 m1..m5（created 升序），断言 `renderableMessages.first='m5'`（最新）、`.last='m1'`（最旧）。
+2. widget 契约：`['newest','mid','oldest']` 放入 `reverse:true` ListView，断言 `newestRect.bottom > oldestRect.bottom`（最新在视觉底部）。
+
+> 注：测试用的是独立 Mock ListView 而非真实 `_ConversationScreen`，属「契约测试」—— 若未来有人改 screen 的 ListView 构造（如去掉 `reverse:true`），此测试不会失败。契约层保护已足够，非阻塞。
+
+### 🟡 IR2-1（P1，新）— 设计文档 §6.1 未同步修正（IR-4 回归）
+
+**位置**：`design-incremental-reconcile.md` §6.1
+
+**问题**：`d48d9d7` 修了实现但**漏改文档**。§6.1 当前仍写：
+
+```dart
+// 新：...conv.renderableMessages.map(_message).toList().reversed,   ← 仍带 .reversed
+```
+
+而紧随其后的文字说明却是「`renderableMessages` 返回最新在前（供 reversed ListView **直接用**）」—— **代码示例与文字说明自相矛盾**。这正是导致原 bug 的根因：实现照搬了 §6.1 的错误示例（带 `.reversed`），而 §4.2/§6.1 文字都说「直接用」。
+
+**影响**：若后续有人照 §6.1 示例改代码（例如重构 ListView），会重新引入双重反转。文档作为「权威参考」（AGENTS.md 约定）此处会误导。
+
+**修复建议**：§6.1 示例改为去掉 `.toList().reversed`：
+```dart
+// 新：...conv.renderableMessages.map(_message),   // newest-first 直接喂给 reverse ListView
+```
+并补一行说明「不可额外 `.reversed`——`renderableMessages` 已是 newest-first，双重反转会把最旧消息落到视觉底部」。
+
+### 🟢 IR2-2（P3，附带）— 设计文档 §4.2 伪代码与实现 `_segments.isEmpty` 分支不一致
+
+**位置**：`design-incremental-reconcile.md` §4.2 伪代码
+
+**问题**：§4.2 伪代码首行 `if (_segments.isEmpty) return const [];`（返回空），但实现（`conversation_store.dart:198`）是 `if (_segments.isEmpty) return _messages.reversed.toList(growable: false);`（返回全部，处理 SSE 先到、reconcile 未完成的情况）。实现版本更合理（SSE 累积的消息应可渲染），文档伪代码是早期草稿未同步。
+
+**影响**：非功能问题，仅文档准确性。属既有遗留（非本 commit 引入），但既然在核对文档一致性，一并记录。
+
+**修复建议**：§4.2 伪代码首行改为 `if (_segments.isEmpty) return _messages.reversed.toList();` 并补注释「SSE 先到、reconcile 未完成时，全部消息都可达」。
+
+### 遗漏反思（前五轮为何没发现）
+
+| 环节 | 问题 |
+|------|------|
+| 代码核对 | 多次看过 `renderableMessages`（newest-first）和 ListView 的 `.reversed` 用法，但**未推演双重反转的最终视觉位置**，停留在「getter 返回值对不对」层面。 |
+| 文档核对 | 信任了 §6.1 的代码示例，**未察觉 §4.2（「直接用」）与 §6.1（带 `.reversed`）的矛盾**。IR-4「文档与实现一致」只验了 5.1/5.2/5.3 等核心算法节，漏看 §6.1 的渲染示例。 |
+| 测试建议 | IR-5 建议补的测试全是 store 层单测；**未要求 widget test 验证渲染顺序**。store 断言 `renderableMessages` 顺序正确，但屏幕是否「直接用」无法在 store 层覆盖。 |
+
+**教训**：
+1. 渲染顺序 / 视觉位置类 bug 必须 widget test 覆盖（验证 ListView + reverse 的实际几何位置），契约层断言不够。
+2. 文档一致性核对不能只看「被改的节」，同一文档内**跨节引用**（§4.2 定义 vs §6.1 使用）也要交叉验证。
+3. 「getter 返回值正确」≠「调用方用对了」—— 评审应顺着数据流走到最终视觉输出。
+
+### 总结
+
+- 修复正确，回归测试充分，可合入 main。
+- **建议合并前顺手修 IR2-1**（§6.1 示例去 `.reversed`）—— 文档作为权威参考，留着错误示例会持续误导，且本次正是它导致了 bug。IR2-2 可随后清理。
+- 该 bug 是评审流程的教训：渲染类问题需 widget test + 跨节文档交叉核对。后续涉及「getter 语义 + 渲染层调用」的改动，应默认补 widget 顺序测试。
+
+### 修复复审
+
+| 编号 | 优先级 | 问题 | 状态 | 核对说明 |
+|------|--------|------|------|----------|
+| IR2-1 | 🟡 P1 | §6.1 示例仍带 `.reversed`，与文字「直接用」自相矛盾 | ✅ 已修复 | §6.1 示例改为 `...conv.renderableMessages.map(_message)`；文字加粗「**直接用**」并补「不可额外 `.reversed`——双重反转会把最旧消息落到视觉底部」。附带修了 §6.3 children 示例（同一 bug，评审只点了 §6.1 但 §6.3 line 430 也有）。 |
+| IR2-2 | 🟢 P3 | §4.2 伪代码 `_segments.isEmpty` 返回 `const []` 与实现不一致 | ✅ 已修复 | §4.2 伪代码改为 `if (_segments.isEmpty) return _messages.reversed.toList(growable: false);` 并补注释「SSE 先到、reconcile 未完成时，全部消息都可达」，与 `conversation_store.dart:201` 逐字对齐。 |
+
+跨节核对：`design-incremental-reconcile.md` 内不再有 `renderableMessages` + `.reversed` 组合；`plan-load-retry.md` / `design-load-retry.md` 的 `.reversed` 用的是旧 getter `conv.messages`（升序），属另一功能的早期文档，不在本次范围。
+- 该 bug 是评审流程的教训：渲染类问题需 widget test + 跨节文档交叉核对。后续涉及「getter 语义 + 渲染层调用」的改动，应默认补 widget 顺序测试。
+
+---
+
+## 七次评审意见（IR2-1 / IR2-2 修复复审）
+
+> 评审对象：`b2227fd docs: 六次评审 IR2-1/IR2-2 — 设计文档同步双重反转修复`。
+> 结论：**两项全部闭环，批准合并**。
+
+### 逐项独立核对
+
+| 编号 | 状态 | 核对说明（独立验证） |
+|------|------|----------|
+| IR2-1 | ✅ 已修复 | 全仓库 grep `renderableMessages` + `.reversed` 的**代码组合**已为零 —— 剩余匹配全是叙述性警告文字（「不可额外 `.reversed`」「NO extra `.reversed`」）。§6.1（design doc:387）与 §6.3（:431）两处示例都已改为 `...conv.renderableMessages.map(_message)`。文字说明加粗「**直接用**」+ 双重反转警告，消除自相矛盾。实现方还主动修了评审未点到的 §6.3（同一 bug），跨节清理到位。 |
+| IR2-2 | ✅ 已修复 | §4.2 伪代码（design doc:115）`if (_segments.isEmpty) return _messages.reversed.toList(growable: false);` 与实现（`conversation_store.dart:201`）**逐字对齐**；补注释「SSE 先到、reconcile 未完成时，全部消息都可达」。 |
+
+### 无新增功能问题
+
+- 设计文档 §4.2 / §6.1 / §6.3 与实现 `conversation_store.dart:201` / `conversation_screen.dart:182` 完全一致。
+- `test/detail_message_order_test.dart` 的 store 契约 + widget 几何位置双断言覆盖双重反转回归。
+- 实现方自评中提到的「`plan-load-retry.md` / `design-load-retry.md` 的 `.reversed` 用旧 getter `conv.messages`（升序），属另一功能」—— 经核对，那些是 load-retry 功能的早期文档，`conv.messages`（升序）+ `.reversed` + reverse ListView 是**正确**的三段式（升序 → 反转降序 → reverse ListView 底部=最新），与本次 bug 无关，无需处理。
+
+### 🟢 IR2-3（P3，文档 artifact）— review 文档末尾重复行
+
+**位置**：`review-incremental-reconcile.md:483`
+
+**问题**：`b2227fd` 追加「修复复审」表格时，末尾多带了一行 `- 该 bug 是评审流程的教训...`，与 `:473`（六次评审总结的末行）重复。纯编辑 artifact，无信息增量。
+
+**修复建议**：删除 `:483` 的重复行。非阻塞，可随后清理。
+
+### 最终批准
+
+- IR2-1（双重反转根因 —— 文档错误示例）已闭环：代码（`d48d9d7`）+ 文档（`b2227fd`）+ 测试三方一致。
+- IR2-2（§4.2 伪代码与实现一致）已闭环。
+- 无遗留功能问题，无阻塞/中等问题。
+- **批准合并到 main**（`d48d9d7` + `9ef8516` + `b2227fd`，建议 squash 为一个 follow-up commit）。IR2-3 可在合并时顺手清理（删一行），或合入后再修。
