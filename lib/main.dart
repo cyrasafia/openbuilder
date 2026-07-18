@@ -18,17 +18,17 @@ void main() async {
   await NotificationService.init();
   await SystemFontWeight.init();
   await initSettings();
-  runApp(const OpencodeMobileApp());
+  runApp(const OpenBuilderApp());
 }
 
-class OpencodeMobileApp extends StatefulWidget {
-  const OpencodeMobileApp({super.key});
+class OpenBuilderApp extends StatefulWidget {
+  const OpenBuilderApp({super.key});
 
   @override
-  State<OpencodeMobileApp> createState() => _OpencodeMobileAppState();
+  State<OpenBuilderApp> createState() => _OpenBuilderAppState();
 }
 
-class _OpencodeMobileAppState extends State<OpencodeMobileApp>
+class _OpenBuilderAppState extends State<OpenBuilderApp>
     with WidgetsBindingObserver {
   @override
   void initState() {

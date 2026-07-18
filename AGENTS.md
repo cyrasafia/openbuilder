@@ -1,10 +1,10 @@
-# AGENTS.md — opencode Mobile 项目约定
+# AGENTS.md — Open Builder 项目约定
 
 > 供 AI agent 和新人快速了解项目结构、构建方式与文档约定。
 
 ## 项目概要
 
-opencode Mobile — 远程 opencode 服务器的 Flutter 瘦客户端（Android + iOS）。只读为主 + 轻交互：查看任务进度 / 下指令 / 看 diff 与文件。协议为 opencode 原生 HTTP + SSE（OpenAPI 3.1）。
+Open Builder — 远程 opencode 服务器的 Flutter 瘦客户端（Android + iOS）。只读为主 + 轻交互：查看任务进度 / 下指令 / 看 diff 与文件。协议为 opencode 原生 HTTP + SSE（OpenAPI 3.1）。
 
 技术栈：Flutter + go_router + dio + ChangeNotifier（无 Riverpod / freezed / json_serializable）。手写 Dart API client，手写 fromJson 模型。
 

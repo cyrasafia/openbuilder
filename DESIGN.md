@@ -1,8 +1,8 @@
 ---
 version: 1
-name: opencode-mobile-typography
+name: open-builder-typography
 description: |
-  opencode Mobile 的字重系统收敛为三档:Light (300)、Regular (400)、Semi Bold (600)。
+  Open Builder 的字重系统收敛为三档:Light (300)、Regular (400)、Semi Bold (600)。
   全局禁止使用其余字重。三档构成完整的层级表达——大号标题用 Light 营造留白重心,正文与次级
   信息用 Regular 保持平稳,强调与加粗统一收口到 Semi Bold 作为最重一档。移动端窄屏下不加粗到 700,
   以避免小号文字笔画黏连、保证可读性与一致的视觉节奏。
@@ -41,7 +41,7 @@ typography:
 
 ## 概述
 
-opencode Mobile 是移动端瘦客户端,以只读浏览 + 轻交互为主。屏幕窄、字号普遍偏小,字重对层级的影响被放大:一档多余的 Medium (500) 会让次级标签与正文争抢注意力,而 Bold (700) 在小号文字上会造成笔画黏连。因此字重系统做减法,全局只保留三档,通过「字号 + 三档字重」的组合来表达全部层级。
+Open Builder 是移动端瘦客户端,以只读浏览 + 轻交互为主。屏幕窄、字号普遍偏小,字重对层级的影响被放大:一档多余的 Medium (500) 会让次级标签与正文争抢注意力,而 Bold (700) 在小号文字上会造成笔画黏连。因此字重系统做减法,全局只保留三档,通过「字号 + 三档字重」的组合来表达全部层级。
 
 ## 字重标度
 

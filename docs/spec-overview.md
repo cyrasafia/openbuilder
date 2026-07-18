@@ -1,4 +1,4 @@
-# opencode Mobile — 设计规格文档 (v0.1)
+# Open Builder — 设计规格文档 (v0.1)
 
 > 远程 opencode 服务器的瘦客户端。只读为主 + 轻交互，覆盖「查看任务进度 / 下简单指令 / 看 diff 与文档」，支持 git worktree 并行任务。
 

@@ -66,6 +66,12 @@ class ServerStore extends ChangeNotifier {
   /// project to the bottom of the projects tab. Keyed by `projectID`, or
   /// `'global\u0000$directory'` for the global project's per-directory entries
   /// (the global project is expanded into one list row per working directory).
+  ///
+  /// Unbounded in theory (one entry per projectID / per global directory ever
+  /// seen), but acceptable on mobile: typical servers have tens of projects
+  /// and a handful of global directories, so the map stays in the low hundreds
+  /// of entries at most. Hard-deleting a session does NOT remove its project's
+  /// entry (see `_removeSession`) — monotonicity holds across deletes too.
   final Map<String, int> _lastActivityByKey = {};
   bool _projectsFetched = false;
   /// Per-session conversation caches, capped at [_kMaxConversations] with
@@ -737,6 +743,25 @@ class ServerStore extends ChangeNotifier {
   @visibleForTesting
   void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);
 
+  /// Test seam for the REST bulk-fetch path [addSessionsForTesting] merges a
+  /// list of sessions into a per-id map exactly as `_fetchAllSessions` does,
+  /// bumping `_lastActivityByKey` before the archived/parent filter. Used by
+  /// PA-4 to lock that ordering invariant on the REST path (not just SSE).
+  @visibleForTesting
+  void addSessionsForTesting(Map<String, SessionModel> out, List<SessionModel> list) =>
+      _addSessions(out, list);
+
+  /// Test seam for the cache round-trip path. Sets `_profile` (required by
+  /// `_loadCache` to compute the storage key) and loads cache. Used by PA-R2
+  /// to assert that an `activity` blob in SharedPreferences is restored, and
+  /// that a stale cached value does NOT overwrite a fresher in-memory value
+  /// (the monotonic-max merge in `_loadCache`).
+  @visibleForTesting
+  Future<void> loadCacheForTesting(ConnectionProfile profile) async {
+    _profile = profile;
+    await _loadCache();
+  }
+
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
       case 'server.connected':
@@ -983,6 +1008,11 @@ class ServerStore extends ChangeNotifier {
     _conversations.remove(id);
     _lastMessage.remove(id);
     _statusMap.remove(id);
+    // Intentionally keeps `_lastActivityByKey` — activity is monotonic across
+    // deletes too. Removing the entry here would sink the project if its last
+    // observed session is hard-deleted (PA-5 locks this invariant). The entry
+    // is stale only in the sense of "session no longer exists server-side",
+    // which doesn't affect sort correctness for the remaining sessions.
     _trimSse();
     _scheduleCacheSave();
   }
