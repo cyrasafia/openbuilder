@@ -8,8 +8,8 @@
 #     - N    = Android versionCode (must be >= 1), +1/build
 #
 # This script bumps C and N by 1, writes them back to pubspec.yaml, then runs
-# flutter build apk --release. To bump the business version (A.B) and reset
-# C/N to 0/1, pass: ./scripts/build.sh --bump-business 0.2
+# flutter build apk --release. To bump the business version (A.B), reset C to
+# 0, and keep N increasing, pass: ./scripts/build.sh --bump-business 0.2
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -32,7 +32,7 @@ IFS='.' read -r major minor patch <<<"$base"
 if [[ -n "$bump_business" ]]; then
   IFS='.' read -r major minor <<<"$bump_business"
   patch=0
-  code=1
+  code=$((cur_code + 1))
 else
   patch=$((patch + 1))
   code=$((cur_code + 1))
