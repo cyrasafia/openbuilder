@@ -33,6 +33,13 @@ class ServerStore extends ChangeNotifier {
   Timer? _reconcileTimer;
   Timer? _previewNotifyTimer;
   Timer? _cacheSaveTimer;
+  Timer? _healthProbeTimer;
+  // Health probe interval while the watchdog SSE is reconnecting. Each tick
+  // is one cheap GET /global/health; on success all clients are kicked out
+  // of backoff. 5s bounds recovery detection (vs the 30s backoff ceiling)
+  // while staying negligible for battery/traffic during long outages.
+  @visibleForTesting
+  static Duration healthProbeInterval = const Duration(seconds: 5);
   DateTime? _lastPreviewNotifyAt;
   static const _previewNotifyInterval = Duration(milliseconds: 120);
   ConnectionProfile? _profile;
@@ -736,6 +743,15 @@ class ServerStore extends ChangeNotifier {
       if (wasConnected && !s.connected) {
         _watchdogFailed = true;
       }
+      // While the watchdog is reconnecting (network/server down), probe
+      // /global/health every 5s — a successful probe proves reachability
+      // long before the exponential backoff (up to 30s) would fire, so we
+      // kick all clients out of their sleep immediately.
+      if (s.reconnecting) {
+        _startHealthProbe();
+      } else if (s.connected) {
+        _stopHealthProbe();
+      }
     }
     // Only watchdog's reconnecting → connected triggers a reconcile.
     if (dir == _kGlobalWatchdog && s.reconnecting) {
@@ -747,12 +763,51 @@ class ServerStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Periodically probe `GET /global/health` while any SSE reconnect is
+  /// pending. On the first healthy response, kick every client out of its
+  /// backoff sleep and stop probing (the reconnect then proceeds at once).
+  void _startHealthProbe() {
+    if (_healthProbeTimer != null) return;
+    _healthProbeTimer =
+        Timer.periodic(healthProbeInterval, (_) => _probeOnce());
+  }
+
+  Future<void> _probeOnce() async {
+    final c = client;
+    if (c == null) return;
+    try {
+      final h = await c.health();
+      if (!h.healthy) return;
+      AppLogger.I.i(_tag, 'health probe: server reachable, kicking SSE reconnect');
+      for (final sse in _sseByDir.values) {
+        sse.reconnectNow();
+      }
+      _stopHealthProbe();
+    } catch (_) {
+      // Still down — wait for the next tick.
+    }
+  }
+
+  void _stopHealthProbe() {
+    _healthProbeTimer?.cancel();
+    _healthProbeTimer = null;
+  }
+
   /// Test seam to drive SSE events directly into [_onEvent] (which is library-
   /// private). Lets tests assert the `message.part.updated` case's
   /// `break`->`return` (LPS-1) throttle behavior through the real event route
   /// (including the switch's trailing :811 notify).
   @visibleForTesting
   void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);
+
+  /// Test seam to drive SSE lifecycle states into [_onSseState]. Used by
+  /// health-probe tests to simulate watchdog reconnecting/connected.
+  @visibleForTesting
+  void onSseStateForTesting(String dir, SseState s) => _onSseState(dir, s);
+
+  /// Test seam exposing the global watchdog key for state-drive tests.
+  @visibleForTesting
+  static const String globalWatchdogKeyForTesting = _kGlobalWatchdog;
 
   /// Test seam for the REST bulk-fetch path [addSessionsForTesting] merges a
   /// list of sessions into a per-id map exactly as `_fetchAllSessions` does,
@@ -1121,6 +1176,7 @@ class ServerStore extends ChangeNotifier {
   void dispose() {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
+    _stopHealthProbe();
     _previewNotifyTimer?.cancel();
     _previewNotifyTimer = null;
     _cacheSaveTimer?.cancel();
@@ -1186,6 +1242,7 @@ class ServerStore extends ChangeNotifier {
   Future<void> _stopSse({bool flushCache = true}) async {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
+    _stopHealthProbe();
     // Flush pending cache save before canceling — prevents data loss on
     // pause/disconnect (up to 2s of SSE updates would be dropped).
     // connect() passes flushCache: false because it already flushed the
