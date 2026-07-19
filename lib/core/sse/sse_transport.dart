@@ -11,8 +11,22 @@ import 'package:dio/dio.dart';
 /// [overallTimeout] bounds the connect attempt (connection + response
 /// headers). A server that accepts TCP but never sends response headers
 /// (e.g., overloaded) would otherwise hang until the caller's heartbeat
-/// backstop. On timeout, the abandoned request's eventual error is handled
-/// by the pre-registered catchError — not orphaned.
+/// backstop.
+///
+/// **Dual-timeout interaction (critical, do NOT remove `SseClient._connectTimer`)**:
+/// `SseClient._connectTimer` and this `.timeout()` share the same duration.
+/// `SseClient._connectTimer` is created FIRST (in `_connect()`, before the
+/// transport call), so it consistently fires first: it cancels the stream
+/// subscription, and the async* generator's `await responseFuture.timeout(...)`
+/// is interrupted by the async* cancellation machinery, which DISCARDS the
+/// TimeoutException this `.timeout()` would otherwise emit. If
+/// `SseClient._connectTimer` were removed, this TimeoutException would
+/// propagate through the async* generator's error channel into the zone
+/// (which flutter_test flags as an unhandled error even when onError catches
+/// it). So `_connectTimer` is load-bearing, not redundant.
+///
+/// On timeout, the abandoned request's eventual error is handled by the
+/// pre-registered catchError — not orphaned.
 Stream<String> eventDataStream(Uri uri, Map<String, String> headers,
     {Duration overallTimeout = const Duration(seconds: 15)}) async* {
   final dio = Dio(BaseOptions(
@@ -29,10 +43,12 @@ Stream<String> eventDataStream(Uri uri, Map<String, String> headers,
   try {
     resp = await responseFuture.timeout(overallTimeout);
   } on TimeoutException {
-    // Convert the timeout to a normal stream close — the caller's onDone
-    // drives the reconnect, same as a server-initiated close. This avoids
-    // the TimeoutException escaping through the async* generator's error
-    // channel into the zone (which the test framework flags as unhandled).
+    // Defensive dead code: in practice SseClient._connectTimer fires first
+    // and cancels this generator before the transport timer runs (see the
+    // dual-timeout note in the doc comment above), so this branch is never
+    // reached. Kept as a safety net: if the ordering ever flips, converting
+    // the timeout to a normal stream close (onDone → reconnect) avoids the
+    // TimeoutException escaping through the async* error channel into the zone.
     return;
   }
   if (resp.data is! ResponseBody) {

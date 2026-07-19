@@ -55,6 +55,12 @@ class SseClient {
   bool _kickReconnect = false;
   DateTime _lastEventAt = DateTime.now();
   Timer? _heartbeatTimer;
+  // Load-bearing, NOT redundant with the transport's `.timeout()`: created
+  // before the transport call, so it consistently fires first and cancels the
+  // async* generator, causing the generator's cancellation machinery to
+  // DISCARD the transport's TimeoutException. Removing it lets that
+  // TimeoutException escape through the async* error channel into the zone
+  // (flutter_test flags it as unhandled). See sse_transport.dart doc comment.
   Timer? _connectTimer;
   static const _heartbeatTimeout = Duration(seconds: 60);
 
