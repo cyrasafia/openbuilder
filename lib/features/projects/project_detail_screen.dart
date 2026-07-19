@@ -40,9 +40,23 @@ class ProjectDetailScreen extends StatelessWidget {
             : (directory!.isEmpty ? 'global' : directory!.split('/').last);
         final scopedWorktree =
             directory ?? (project?.worktree ?? '');
+        final textScaler = MediaQuery.textScalerOf(context);
+        final scaledTitleHeight = textScaler.scale(16) * 1.2 +
+            textScaler.scale(11) * 1.2 * 2 +
+            4;
+        final toolbarHeight =
+            scaledTitleHeight + 16 < 76 ? 76.0 : scaledTitleHeight + 16;
 
         return Scaffold(
-          appBar: AppBar(title: Text(scopedTitle)),
+          appBar: AppBar(
+            toolbarHeight: toolbarHeight,
+            title: _ProjectAppBarTitle(
+              name: scopedTitle,
+              icon: project?.icon,
+              worktree: scopedWorktree,
+              sessionCount: sessions.length,
+            ),
+          ),
           floatingActionButton: (project != null && project.id != 'global')
               ? FloatingActionButton.extended(
                   icon: const Icon(Icons.create_new_folder_outlined),
@@ -53,11 +67,6 @@ class ProjectDetailScreen extends StatelessWidget {
               : null,
           body: ListView(
             children: [
-              _Header(
-                  name: scopedTitle,
-                  worktree: scopedWorktree,
-                  sessionCount: sessions.length),
-              const Divider(height: 1),
               if (sessions.isEmpty)
                 const Padding(
                   padding: EdgeInsets.all(32),
@@ -268,44 +277,48 @@ class ProjectDetailScreen extends StatelessWidget {
   }
 }
 
-class _Header extends StatelessWidget {
+class _ProjectAppBarTitle extends StatelessWidget {
   final String name;
+  final ProjectIcon? icon;
   final String worktree;
   final int sessionCount;
-  const _Header(
+  const _ProjectAppBarTitle(
       {required this.name,
+      required this.icon,
       required this.worktree,
       required this.sessionCount});
 
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.outline;
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          ProjectAvatar(name: name, size: 52),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(name,
-                    style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 4),
-                Text(worktree,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppTheme.mono.copyWith(fontSize: 12, color: muted)),
-                const SizedBox(height: 6),
-                Text('$sessionCount 个未存档会话',
-                    style: TextStyle(fontSize: 12, color: muted)),
-              ],
-            ),
+    return Row(
+      children: [
+        ProjectAvatar(name: name, icon: icon, size: 42),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(worktree,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTheme.mono.copyWith(fontSize: 11, color: muted)),
+              const SizedBox(height: 2),
+              Text('$sessionCount 个未存档会话',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: muted)),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
