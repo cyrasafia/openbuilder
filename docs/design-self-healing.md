@@ -2,6 +2,28 @@
 
 > 目标：SSE 断开重连后，详情页自动补齐漏掉的消息，无需手动操作。
 
+## 文档导航
+
+本文档是**会话级自愈的整体设计（umbrella）**。自愈涉及「手段」与「底层机制」两层，分散在以下文档中：
+
+**手段（本设计下的子能力）**：
+
+| 文档 | 职责 |
+|------|------|
+| [design-sse-reconnect-recovery.md](./design-sse-reconnect-recovery.md) | **后台恢复 + 断网恢复**的传输层加速（reconnectNow kick + health probe + lost-kick 修复） |
+| [design-incremental-reconcile.md](./design-incremental-reconcile.md) | **数据对账**的效率优化（增量窗口 + 分段懒加载，取代全量 reconcile） |
+| [design-load-retry.md](./design-load-retry.md) | **首次加载**的退避重试（独立于 SSE 重连） |
+
+**底层机制**：
+
+| 文档 | 职责 |
+|------|------|
+| [design-on-demand-sse.md](./design-on-demand-sse.md) | 按需 **SSE 连接池**（watchdog + 目录 + LRU），重连的基础设施 |
+| [design-message-accumulation.md](./design-message-accumulation.md) | **消息累积**：SSE 事件落地为 DisplayMessage，对账的输入 |
+| [design-local-cache.md](./design-local-cache.md) | 离线**缓存**兜底（杀进程 / 断网时的最后防线） |
+
+---
+
 ## 核心原则
 
 **REST 是 source of truth，SSE 是实时优化。** 断网恢复后用 REST 补齐差异，而非依赖 SSE 重传。
@@ -86,7 +108,7 @@ SSE 重连后（自愈）：
       → stale && !_reloading && 超过退避 → reload()
       → 退避窗口内 → skip（不触发 REST，防被动轮询）
 
-  后台 → 前台 resume（SSE 传输层，详见 design-background-resume-reconnect.md）：
+  后台 → 前台 resume（SSE 传输层，详见 design-sse-reconnect-recovery.md）：
     Android Doze 维护窗口会在后台养大 SSE 重连退避（最坏 30s 稳态）；
     resume() 开头对所有 client 调 reconnectNow()（可中断退避 + _backoff=1 重置），
     ~200ms 内重连，不再等退避。
