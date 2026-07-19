@@ -20,6 +20,9 @@ const _tag = 'Server';
 /// preview, plus lazy per-session [ConversationStore] caches. Fed by one SSE
 /// subscription to `/event` (specs §5, frontend §2.2).
 class ServerStore extends ChangeNotifier {
+  @visibleForTesting
+  static Duration sseStopTimeout = const Duration(seconds: 2);
+
   OpencodeClient? client;
   /// One SSE subscription per directory + watchdog. opencode's `/event` stream
   /// is scoped to a `directory` (no directory ⇒ only `server.connected` /
@@ -34,6 +37,8 @@ class ServerStore extends ChangeNotifier {
   Timer? _previewNotifyTimer;
   Timer? _cacheSaveTimer;
   Timer? _healthProbeTimer;
+  Future<void>? _pauseOperation;
+  bool _foreground = true;
   int _healthProbeGeneration = 0;
   // Health probe interval while the watchdog SSE is reconnecting. Each tick
   // is one cheap GET /global/health; on success all clients are kicked out
@@ -959,6 +964,17 @@ class ServerStore extends ChangeNotifier {
     _recentlyResolvedPermissions.clear();
   }
 
+  @visibleForTesting
+  void installSseForTesting(String directory, SseClient sse) {
+    _sseByDir[directory] = sse;
+  }
+
+  @visibleForTesting
+  bool hasSseForTesting(String directory) => _sseByDir.containsKey(directory);
+
+  @visibleForTesting
+  Future<void> stopSseForTesting() => _stopSse(flushCache: false);
+
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
       case 'server.connected':
@@ -1338,14 +1354,21 @@ class ServerStore extends ChangeNotifier {
   /// Called when the app goes to background: stop SSE to save battery.
   /// Cached data (sessions, conversations) is retained for instant resume.
   /// All conversations are marked stale since we lose live SSE updates.
-  Future<void> pause() async {
-    if (!connected || _profile == null) return;
+  Future<void> pause() {
+    if (!connected || _profile == null) return Future.value();
+    _foreground = false;
     AppLogger.I.i(_tag, 'pause');
     for (final conv in _conversations.values) {
       conv.markStale();
       conv.cancelLoadRetry();
     }
-    await _stopSse();
+    final activePause = _pauseOperation;
+    if (activePause != null) return activePause;
+    final operation = _stopSse();
+    _pauseOperation = operation;
+    return operation.whenComplete(() {
+      if (identical(_pauseOperation, operation)) _pauseOperation = null;
+    });
   }
 
   /// Called when the app returns to foreground. Decision logic:
@@ -1354,7 +1377,14 @@ class ServerStore extends ChangeNotifier {
   /// - Has watchdog and recent refresh → just backfill permissions.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
+    _foreground = true;
     AppLogger.I.i(_tag, 'resume');
+
+    final activePause = _pauseOperation;
+    if (activePause != null) await activePause;
+    if (!_foreground || !connected || client == null || _profile == null) {
+      return;
+    }
 
     // Wake all SSE clients sleeping in reconnect backoff (earned under
     // background/Doze suspended-network conditions). The app is now in the
@@ -1388,6 +1418,20 @@ class ServerStore extends ChangeNotifier {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
     _stopHealthProbe();
+    final eventSubs = _sseSubs.values.toList();
+    final stateSubs = _sseStateSubs.values.toList();
+    final clients = _sseByDir.values.toList();
+    _sseSubs.clear();
+    _sseStateSubs.clear();
+    _sseByDir.clear();
+    _sseRequired.clear();
+    _watchdogConnected = false;
+    _watchdogFailed = false;
+    final stops = <Future<void>>[
+      ...eventSubs.map((sub) => sub.cancel()),
+      ...stateSubs.map((sub) => sub.cancel()),
+      ...clients.map((sse) => sse.stop()),
+    ];
     // Flush pending cache save before canceling — prevents data loss on
     // pause/disconnect (up to 2s of SSE updates would be dropped).
     // connect() passes flushCache: false because it already flushed the
@@ -1399,21 +1443,11 @@ class ServerStore extends ChangeNotifier {
       _cacheSaveTimer = null;
       if (flushCache) await _saveCache();
     }
-    for (final sub in _sseSubs.values) {
-      await sub.cancel();
+    try {
+      await Future.wait(stops).timeout(sseStopTimeout);
+    } on TimeoutException {
+      AppLogger.I.w(_tag, 'SSE stop timed out; detached clients left stopping');
     }
-    _sseSubs.clear();
-    for (final sub in _sseStateSubs.values) {
-      await sub.cancel();
-    }
-    _sseStateSubs.clear();
-    for (final c in _sseByDir.values) {
-      await c.stop();
-    }
-    _sseByDir.clear();
-    _sseRequired.clear();
-    _watchdogConnected = false;
-    _watchdogFailed = false;
   }
 
   // ── Local cache (offline-first: instant UI on app open) ──

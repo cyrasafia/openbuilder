@@ -16,6 +16,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   Timer? _pauseTimer;
+  bool _foreground = true;
 
   @override
   void initState() {
@@ -36,17 +37,19 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     switch (state) {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
+        _foreground = false;
         // Defer SSE teardown by 30s — if the user returns quickly (e.g. quick
         // app switch / notification peek) we avoid a full reconnect cycle.
         _pauseTimer?.cancel();
         _pauseTimer = Timer(const Duration(seconds: 30), () {
-          serverStore.pause();
+          if (!_foreground) unawaited(serverStore.pause());
         });
         break;
       case AppLifecycleState.resumed:
+        _foreground = true;
         _pauseTimer?.cancel();
         _pauseTimer = null;
-        serverStore.resume();
+        unawaited(serverStore.resume());
         break;
       default:
         break;
