@@ -194,6 +194,21 @@ class SessionStatusValue {
   Map<String, dynamic> toJson() => {'type': type};
 }
 
+enum AgentRunState { working, retrying, idle, paused }
+
+enum AgentPauseReason { permission, choice }
+
+class AgentIndicatorState {
+  final AgentRunState state;
+  final AgentPauseReason? pauseReason;
+  final int pendingCount;
+
+  const AgentIndicatorState(this.state,
+      {this.pauseReason, this.pendingCount = 0})
+      : assert((state == AgentRunState.paused && pauseReason != null && pendingCount >= 1) ||
+            (state != AgentRunState.paused && pauseReason == null && pendingCount == 0));
+}
+
 class MessageInfo {
   final String id;
   final String role; // user | assistant

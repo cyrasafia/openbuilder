@@ -199,6 +199,26 @@ class ServerStore extends ChangeNotifier {
   bool hasPendingQuestion(String sessionId) =>
       _pendingQuestions.values.any((q) => q.sessionID == sessionId);
 
+  AgentIndicatorState agentIndicatorStateOf(String sessionId) {
+    final permissionCount = _pendingPermissions.containsKey(sessionId) ? 1 : 0;
+    final questionCount = _pendingQuestions.values
+        .where((q) => q.sessionID == sessionId)
+        .length;
+    final pendingCount = permissionCount + questionCount;
+    if (pendingCount > 0) {
+      return AgentIndicatorState(AgentRunState.paused,
+          pauseReason: permissionCount > 0
+              ? AgentPauseReason.permission
+              : AgentPauseReason.choice,
+          pendingCount: pendingCount);
+    }
+    return switch (statusOf(sessionId).type) {
+      'busy' => const AgentIndicatorState(AgentRunState.working),
+      'retry' => const AgentIndicatorState(AgentRunState.retrying),
+      _ => const AgentIndicatorState(AgentRunState.idle),
+    };
+  }
+
   ProjectModel? projectOf(String id) {
     for (final p in _projects) {
       if (p.id == id) return p;
@@ -211,6 +231,15 @@ class ServerStore extends ChangeNotifier {
       if (s.id == id) return s;
     }
     return null;
+  }
+
+  Future<SessionModel> createSession(String directory) async {
+    final activeClient = client;
+    if (activeClient == null) throw StateError('未连接服务器');
+    final session = await activeClient.createSession(directory);
+    _upsertSession(session);
+    notifyListeners();
+    return session;
   }
 
   String projectDisplayOf(SessionModel s) {

@@ -75,6 +75,13 @@ class OpencodeClient {
     return SessionModel.fromJson(_asMap(r.data));
   }
 
+  /// `POST /session?directory=<dir>` — create a session in one directory.
+  Future<SessionModel> createSession(String directory) async {
+    final r = await dio.post<dynamic>('/session',
+        queryParameters: {'directory': directory}, data: const {});
+    return SessionModel.fromJson(_asMap(r.data));
+  }
+
   /// `GET /experimental/worktree?directory=<dir>` — all worktree directories
   /// for a project (sandbox worktrees beyond the project's main worktree).
   Future<List<String>> worktrees(String directory) async {

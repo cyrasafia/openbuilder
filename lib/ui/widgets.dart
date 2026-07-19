@@ -110,94 +110,218 @@ class ProjectAvatar extends StatelessWidget {
       n.isEmpty ? '?' : n.trim().characters.first.toString().toUpperCase();
 }
 
-enum _Status { idle, busy, retry }
-
-class StatusDot extends StatelessWidget {
-  final String type; // idle | busy | retry
-  final double size;
-  const StatusDot({super.key, required this.type, this.size = 9});
+class AgentStatusIndicator extends StatelessWidget {
+  final AgentIndicatorState state;
+  const AgentStatusIndicator({super.key, required this.state});
 
   @override
   Widget build(BuildContext context) {
-    final s = _map(type);
-    const busy = Color(0xFF4ADE80);
-    const retry = Color(0xFFF0883E);
-    const idle = Color(0xFF8B949E);
-    final color = s == _Status.busy
-        ? busy
-        : s == _Status.retry
-            ? retry
-            : idle;
-    if (s == _Status.busy || s == _Status.retry) {
-      return _Pulse(color: color, size: size);
-    }
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    final paused = state.state == AgentRunState.paused;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final workingColor = dark
+        ? const Color(0xFF4ADE80)
+        : const Color(0xFF15803D);
+    final retryColor = dark
+        ? const Color(0xFFFB923C)
+        : const Color(0xFFC2410C);
+    final pausedColor = dark
+        ? const Color(0xFFFBBF24)
+        : const Color(0xFF92400E);
+    final (color, background, label, icon) = switch (state.state) {
+      AgentRunState.working => (
+          workingColor,
+          workingColor.withAlpha(31),
+          '运行中',
+          _WorkingGlyph(key: const ValueKey('working'), color: workingColor),
+        ),
+      AgentRunState.retrying => (
+          retryColor,
+          retryColor.withAlpha(31),
+          '重试中',
+          const _RetryGlyph(key: ValueKey('retrying')),
+        ),
+      AgentRunState.idle => (
+          Theme.of(context).colorScheme.outline,
+          Theme.of(context).colorScheme.surfaceContainerHighest,
+          '空闲',
+          const Icon(Icons.circle, key: ValueKey('idle'), size: 8),
+        ),
+      AgentRunState.paused => (
+          pausedColor,
+          pausedColor.withAlpha(31),
+          state.pauseReason == AgentPauseReason.permission
+              ? '需要授权'
+              : '需要选择',
+          Icon(
+            state.pauseReason == AgentPauseReason.permission
+                ? Icons.warning_amber_rounded
+                : Icons.help_outline,
+            key: ValueKey(state.pauseReason),
+            size: 13,
+          ),
+        ),
+    };
+    final text = state.pendingCount > 1 ? '$label · ${state.pendingCount}' : label;
+    return Semantics(
+      label: 'Agent $label${state.pendingCount > 1 ? '，共 ${state.pendingCount} 项待处理' : ''}',
+      excludeSemantics: true,
+      child: RepaintBoundary(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          height: 24,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: background,
+            borderRadius: BorderRadius.circular(12),
+            border: paused ? Border.all(color: color) : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconTheme(
+                data: IconThemeData(color: color, size: 13),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 120),
+                  child: icon,
+                ),
+              ),
+              const SizedBox(width: 5),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 120),
+                child: Text(text,
+                    key: ValueKey(text),
+                    style: TextStyle(
+                        color: color,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
-
-  _Status _map(String t) {
-    switch (t) {
-      case 'busy':
-        return _Status.busy;
-      case 'retry':
-        return _Status.retry;
-      default:
-        return _Status.idle;
-    }
-  }
 }
 
-class _Pulse extends StatefulWidget {
+class _WorkingGlyph extends StatefulWidget {
   final Color color;
-  final double size;
-  const _Pulse({required this.color, required this.size});
+  const _WorkingGlyph({super.key, required this.color});
 
   @override
-  State<_Pulse> createState() => _PulseState();
+  State<_WorkingGlyph> createState() => _WorkingGlyphState();
 }
 
-class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
-  late final AnimationController _c;
+class _WorkingGlyphState extends State<_WorkingGlyph>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
 
   @override
   void initState() {
     super.initState();
-    _c = AnimationController(
+    _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.stop();
+    } else if (!_controller.isAnimating) {
+      _controller.repeat(reverse: true);
+    }
   }
 
   @override
   void dispose() {
-    _c.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _c,
+      animation: _controller,
       builder: (_, _) {
-        final a = 0.4 + 0.6 * _c.value;
-        return Container(
-          width: widget.size,
-          height: widget.size,
-          decoration: BoxDecoration(
-            color: widget.color.withAlpha((255 * a).round()),
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: widget.color.withAlpha((120 * a).round()),
-                blurRadius: 5,
+        final value = MediaQuery.disableAnimationsOf(context)
+            ? 0.5
+            : Curves.easeInOut.transform(_controller.value);
+        return SizedBox.square(
+          dimension: 13,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Transform.scale(
+                scale: 0.75 + value * 0.4,
+                child: Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: widget.color.withAlpha((51 + value * 89).round()),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  shape: BoxShape.circle,
+                ),
               ),
             ],
           ),
         );
       },
+    );
+  }
+}
+
+class _RetryGlyph extends StatefulWidget {
+  const _RetryGlyph({super.key});
+
+  @override
+  State<_RetryGlyph> createState() => _RetryGlyphState();
+}
+
+class _RetryGlyphState extends State<_RetryGlyph>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.stop();
+    } else if (!_controller.isAnimating) {
+      _controller.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _controller,
+      child: const Icon(Icons.autorenew, size: 13),
     );
   }
 }

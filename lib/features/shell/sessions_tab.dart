@@ -95,12 +95,8 @@ class _SessionsTabState extends State<SessionsTab> {
                   worktreeLabel: serverStore.worktreeDisplayOf(s),
                   projectName: serverStore.projectDisplayOf(s),
                   project: serverStore.projectOf(s.projectID),
-                  status: serverStore.statusOf(s.id).type,
+                  agentState: serverStore.agentIndicatorStateOf(s.id),
                   preview: serverStore.lastMessageOf(s.id),
-                  hasPermission:
-                      serverStore.hasPendingPermission(s.id),
-                  hasQuestion:
-                      serverStore.hasPendingQuestion(s.id),
                   sseConnected:
                       serverStore.isSessionSseConnected(s.id),
                   onTap: () => context.push('/session/${s.id}'),
@@ -120,10 +116,8 @@ class _SessionTile extends StatelessWidget {
   final String worktreeLabel;
   final String projectName;
   final ProjectModel? project;
-  final String status;
+  final AgentIndicatorState agentState;
   final String? preview;
-  final bool hasPermission;
-  final bool hasQuestion;
   final bool sseConnected;
   final VoidCallback onTap;
 
@@ -133,10 +127,8 @@ class _SessionTile extends StatelessWidget {
     required this.worktreeLabel,
     required this.projectName,
     required this.project,
-    required this.status,
+    required this.agentState,
     required this.preview,
-    this.hasPermission = false,
-    this.hasQuestion = false,
     this.sseConnected = true,
     required this.onTap,
   });
@@ -173,16 +165,6 @@ class _SessionTile extends StatelessWidget {
                   fontWeight: FontWeight.w600, fontSize: 15),
             ),
           ),
-          if (hasPermission) ...[
-            Icon(Icons.shield_outlined,
-                size: 15, color: Theme.of(context).colorScheme.error),
-            const SizedBox(width: 4),
-          ],
-          if (hasQuestion) ...[
-            Icon(Icons.help_outline,
-                size: 15, color: Theme.of(context).colorScheme.tertiary),
-            const SizedBox(width: 4),
-          ],
           const SizedBox(width: 8),
           Text(relTime(session.updated),
               style: TextStyle(fontSize: 11.5, color: muted)),
@@ -194,7 +176,7 @@ class _SessionTile extends StatelessWidget {
           const SizedBox(height: 4),
           Row(
             children: [
-              StatusDot(type: status),
+              AgentStatusIndicator(state: agentState),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
@@ -237,4 +219,3 @@ class _SessionTile extends StatelessWidget {
     );
   }
 }
-

@@ -60,10 +60,9 @@ class ProjectDetailScreen extends StatelessWidget {
           ),
           floatingActionButton: (project != null && project.id != 'global')
               ? FloatingActionButton.extended(
-                  icon: const Icon(Icons.create_new_folder_outlined),
-                  label: const Text('新建工作区'),
-                  onPressed: () => _showCreateWorktreeDialog(
-                      context, project.worktree),
+                  icon: const Icon(Icons.add_comment_outlined),
+                  label: const Text('新建会话'),
+                  onPressed: () => _startCreateSession(context, project),
                 )
               : null,
           body: ListView(
@@ -86,7 +85,69 @@ class ProjectDetailScreen extends StatelessWidget {
     );
   }
 
-  void _showCreateWorktreeDialog(BuildContext context, String projectDir) {
+  Future<void> _startCreateSession(
+      BuildContext context, ProjectModel project) async {
+    if (project.vcs == null || project.vcs!.isEmpty) {
+      await _createSession(context, project.worktree);
+      return;
+    }
+    final directory = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.7),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              ListTile(
+                title: const Text('选择工作区'),
+                titleTextStyle: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              ...[project.worktree, ...project.sandboxes].map((dir) => ListTile(
+                    leading: const Icon(Icons.call_split),
+                    title: Text(dir.split('/').last),
+                    subtitle: Text(dir,
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: () => Navigator.pop(ctx, dir),
+                  )),
+              ListTile(
+                leading: const Icon(Icons.create_new_folder_outlined),
+                title: const Text('新建工作区'),
+                onTap: () => Navigator.pop(ctx, ''),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!context.mounted || directory == null) return;
+    if (directory.isEmpty) {
+      _showCreateWorktreeDialog(context, project.worktree,
+          createSessionAfterward: true);
+      return;
+    }
+    await _createSession(context, directory);
+  }
+
+  Future<void> _createSession(BuildContext context, String directory) async {
+    try {
+      final session = await serverStore.createSession(directory);
+      if (context.mounted) context.push('/session/${session.id}');
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('创建失败：$e')));
+      }
+    }
+  }
+
+  void _showCreateWorktreeDialog(BuildContext context, String projectDir,
+      {bool createSessionAfterward = false}) {
     final nameCtl = TextEditingController();
     final cmdCtl = TextEditingController();
     bool creating = false;
@@ -143,13 +204,14 @@ class ProjectDetailScreen extends StatelessWidget {
                                   ? null
                                   : cmdCtl.text.trim());
                           if (ctx.mounted) Navigator.pop(ctx);
-                          // Refresh to pick up the new worktree + its sessions.
-                          unawaited(serverStore.refresh());
-                          if (ctx.mounted) {
+                          if (context.mounted && createSessionAfterward) {
+                            await _createSession(context, result.directory);
+                          } else if (context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                                 content: Text(
                                     '已创建：${result.name} (${result.branch ?? "?"})')));
                           }
+                          unawaited(serverStore.refresh());
                         } catch (e) {
                           if (ctx.mounted) {
                             setSt(() => creating = false);
@@ -227,7 +289,7 @@ class ProjectDetailScreen extends StatelessWidget {
       out.add(_SectionHeader(name: entry.key, count: entry.value.length));
       out.addAll(entry.value.map((s) => _SessionRow(
             session: s,
-            status: serverStore.statusOf(s.id).type,
+            agentState: serverStore.agentIndicatorStateOf(s.id),
             preview: serverStore.lastMessageOf(s.id),
             onTap: () => context.push('/session/${s.id}'),
           )));
@@ -273,7 +335,7 @@ class ProjectDetailScreen extends StatelessWidget {
       }
       out.addAll(entry.value.map((s) => _SessionRow(
             session: s,
-            status: serverStore.statusOf(s.id).type,
+            agentState: serverStore.agentIndicatorStateOf(s.id),
             preview: serverStore.lastMessageOf(s.id),
             onTap: () => context.push('/session/${s.id}'),
           )));
@@ -374,12 +436,12 @@ class _SectionHeader extends StatelessWidget {
 
 class _SessionRow extends StatelessWidget {
   final SessionModel session;
-  final String status;
+  final AgentIndicatorState agentState;
   final String? preview;
   final VoidCallback onTap;
   const _SessionRow(
       {required this.session,
-      required this.status,
+      required this.agentState,
       required this.preview,
       required this.onTap});
 
@@ -391,7 +453,7 @@ class _SessionRow extends StatelessWidget {
       dense: true,
       title: Row(
         children: [
-          StatusDot(type: status),
+          AgentStatusIndicator(state: agentState),
           const SizedBox(width: 8),
           Expanded(
             child: Text(session.title,
