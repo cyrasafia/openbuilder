@@ -480,4 +480,38 @@ reverse:true ListView    → children[0] 在视觉底部 → 最旧在底部 ❌
 | IR2-2 | 🟢 P3 | §4.2 伪代码 `_segments.isEmpty` 返回 `const []` 与实现不一致 | ✅ 已修复 | §4.2 伪代码改为 `if (_segments.isEmpty) return _messages.reversed.toList(growable: false);` 并补注释「SSE 先到、reconcile 未完成时，全部消息都可达」，与 `conversation_store.dart:201` 逐字对齐。 |
 
 跨节核对：`design-incremental-reconcile.md` 内不再有 `renderableMessages` + `.reversed` 组合；`plan-load-retry.md` / `design-load-retry.md` 的 `.reversed` 用的是旧 getter `conv.messages`（升序），属另一功能的早期文档，不在本次范围。
-- 该 bug 是评审流程的教训：渲染类问题需 widget test + 跨节文档交叉核对。后续涉及「getter 语义 + 渲染层调用」的改动，应默认补 widget 顺序测试。
+
+---
+
+## 七次评审意见（IR2-1 / IR2-2 修复复审）
+
+> 评审对象：`b2227fd docs: 六次评审 IR2-1/IR2-2 — 设计文档同步双重反转修复`。
+> 结论：**两项全部闭环，批准合并**。
+
+### 逐项独立核对
+
+| 编号 | 状态 | 核对说明（独立验证） |
+|------|------|----------|
+| IR2-1 | ✅ 已修复 | 全仓库 grep `renderableMessages` + `.reversed` 的**代码组合**已为零 —— 剩余匹配全是叙述性警告文字（「不可额外 `.reversed`」「NO extra `.reversed`」）。§6.1（design doc:387）与 §6.3（:431）两处示例都已改为 `...conv.renderableMessages.map(_message)`。文字说明加粗「**直接用**」+ 双重反转警告，消除自相矛盾。实现方还主动修了评审未点到的 §6.3（同一 bug），跨节清理到位。 |
+| IR2-2 | ✅ 已修复 | §4.2 伪代码（design doc:115）`if (_segments.isEmpty) return _messages.reversed.toList(growable: false);` 与实现（`conversation_store.dart:201`）**逐字对齐**；补注释「SSE 先到、reconcile 未完成时，全部消息都可达」。 |
+
+### 无新增功能问题
+
+- 设计文档 §4.2 / §6.1 / §6.3 与实现 `conversation_store.dart:201` / `conversation_screen.dart:182` 完全一致。
+- `test/detail_message_order_test.dart` 的 store 契约 + widget 几何位置双断言覆盖双重反转回归。
+- 实现方自评中提到的「`plan-load-retry.md` / `design-load-retry.md` 的 `.reversed` 用旧 getter `conv.messages`（升序），属另一功能」—— 经核对，那些是 load-retry 功能的早期文档，`conv.messages`（升序）+ `.reversed` + reverse ListView 是**正确**的三段式（升序 → 反转降序 → reverse ListView 底部=最新），与本次 bug 无关，无需处理。
+
+### 🟢 IR2-3（P3，文档 artifact）— review 文档末尾重复行
+
+**位置**：`review-incremental-reconcile.md:483`
+
+**问题**：`b2227fd` 追加「修复复审」表格时，末尾多带了一行 `- 该 bug 是评审流程的教训...`，与 `:473`（六次评审总结的末行）重复。纯编辑 artifact，无信息增量。
+
+**修复建议**：删除 `:483` 的重复行。非阻塞，可随后清理。
+
+### 最终批准
+
+- IR2-1（双重反转根因 —— 文档错误示例）已闭环：代码（`d48d9d7`）+ 文档（`b2227fd`）+ 测试三方一致。
+- IR2-2（§4.2 伪代码与实现一致）已闭环。
+- 无遗留功能问题，无阻塞/中等问题。
+- **批准合并到 main**（`d48d9d7` + `9ef8516` + `b2227fd`，建议 squash 为一个 follow-up commit）。IR2-3 可在合并时顺手清理（删一行），或合入后再修。
