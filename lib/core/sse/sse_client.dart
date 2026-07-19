@@ -144,11 +144,18 @@ class SseClient {
   /// Wake from backoff sleep and reconnect immediately, resetting the backoff
   /// that was earned under suspended-network conditions (e.g., Android Doze
   /// while backgrounded). Called by ServerStore on app resume / SSE start.
-  /// No-op when connected or not pending.
+  ///
+  /// Both effects are UNCONDITIONAL: if the kick lands while a connect
+  /// attempt is in flight (_reconnectPending == false), the flag survives
+  /// into the NEXT _scheduleReconnect (whose sleep loop exits at its first
+  /// 200ms poll), so a lost kick still reconnects with zero added delay and
+  /// the reset caps that cycle at 1s — closing the lost-kick window.
   void reconnectNow() {
-    if (_stopped || !_reconnectPending) return;
-    AppLogger.I.i(_tag, 'reconnect now (kicked) ${uri.path}');
+    if (_stopped) return;
     _backoff = 1;
+    if (_reconnectPending) {
+      AppLogger.I.i(_tag, 'reconnect now (kicked) ${uri.path}');
+    }
     _kickReconnect = true;
   }
 

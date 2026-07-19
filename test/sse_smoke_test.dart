@@ -54,4 +54,31 @@ void main() {
     await sub.cancel();
     await client.stop();
   }, timeout: const Timeout(Duration(seconds: 10)));
+
+  test('reconnectNow before first failure persists into first reconnect cycle',
+      () async {
+    // Kick landing while NOT pending (e.g., mid-connect) must still take
+    // effect: the flag survives into the first _scheduleReconnect, whose
+    // sleep loop exits immediately instead of sleeping the full backoff.
+    final client = SseClient(uri: Uri.parse('http://127.0.0.1:9/event'));
+    final attemptTimes = <int, DateTime>{};
+    final sub = client.state.listen((s) {
+      if (s.reconnecting) attemptTimes[s.attempt] = DateTime.now();
+    });
+    final t0 = DateTime.now();
+    client.start();
+    // Synchronous kick: lands before the first drop is scheduled
+    // (_reconnectPending == false). With the lost-kick fix, the flag
+    // persists; without it, this call would be a complete no-op.
+    client.reconnectNow();
+    await Future.delayed(const Duration(milliseconds: 800));
+    expect(attemptTimes.containsKey(2), isTrue,
+        reason: 'kick flag should persist into the first reconnect cycle');
+    final delta = attemptTimes[2]!.difference(t0).inMilliseconds;
+    expect(delta, lessThan(1000),
+        reason:
+            'first cycle should be immediate (flag skipped the 1s backoff), got ${delta}ms');
+    await sub.cancel();
+    await client.stop();
+  }, timeout: const Timeout(Duration(seconds: 10)));
 }

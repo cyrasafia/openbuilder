@@ -322,3 +322,54 @@ Future<void> _probeOnce() async {
 | 目录 SSE 单独掉线也探测/强踢 | watchdog 健康时目录掉线是罕见边缘，自身退避 + watchdog reconcile 已够；强踢有重试风暴风险（每次 reconnecting 事件都重置退避 = ~1.2s 死循环重试） |
 | 探测自身退避（5s→10s→…） | 健康检查极小，5s 恒定间隔足够稀疏；再退避徒增检出延迟 |
 | 首个 tick 立即探测（不等 5s） | 短断网由 client 自身 1→2→4s 退避覆盖，探测价值只在长断网；立即 tick 省不了什么 |
+
+---
+
+## 11. 追加修复：丢 kick 窗口（lost-kick window）
+
+> 追加原因：实测日志（2026-07-19 09:45）显示「两次后台恢复，一快一慢」。分析确认根因是 `reconnectNow()` 的 pending 守卫在特定时序下丢弃 kick。
+
+### 11.1 问题
+
+初版 `reconnectNow()`：
+
+```dart
+void reconnectNow() {
+  if (_stopped || !_reconnectPending) return;  // ← 非 pending 直接丢弃
+  _backoff = 1;
+  _kickReconnect = true;
+}
+```
+
+若 resume/探测的 kick 落在 client **正在 `_connect()` 途中**（`_reconnectPending == false`——例如后台 Doze 窗口刚触发一次连接、连接挂起中，transport `connectTimeout` 最长 15s 放大该窗口），则：
+1. kick 被守卫丢弃（`_backoff` 未重置、`_kickReconnect` 未置位）；
+2. 这次连接失败后 `_onDrop` → `_scheduleReconnect` 用的是**未重置的、Doze 养大的退避**（可达 30s）；
+3. resume 的 kick 已发完，之后无人再唤醒 → 用户等满退避。
+
+「一快一慢」正对应两种时序：第一次 client 恰好在 pending 睡眠中（kick 生效，~0.9s）；第二次落在连接途中（kick 丢失，最坏 15s connectTimeout + 30s 退避）。
+
+### 11.2 修复：无条件标志 + 无条件退避重置
+
+```dart
+void reconnectNow() {
+  if (_stopped) return;
+  _backoff = 1;                       // 无条件：随后的失败周期从 1s 起步
+  if (_reconnectPending) {
+    AppLogger.I.i(_tag, 'reconnect now (kicked) ${uri.path}');
+  }
+  _kickReconnect = true;              // 无条件：标志跨越连接途中窗口
+}
+```
+
+- kick 落在 pending 睡眠中：与初版一致，~200ms 内醒。
+- kick 落在 `_connect()` 途中：标志存活到**下一个** `_scheduleReconnect`，其睡眠循环首个 200ms 轮询即退出 → **零附加延迟**立即重试；且退避已重置为 1s。
+- kick 落在健康连接上：标志滞留无害——下次掉线时首个重试周期即时（0 而非 1s），属可接受偏差。
+- 所有交错时序均良性（Dart 单线程，无真竞争）。
+
+### 11.3 残余窗口（已知，可接受）
+
+kick 不能中断**在途的** `_connect()` 本身——挂起的连接要等 transport `connectTimeout`（15s）失败后才走快速重试。仅在「后台 Doze 触发的连接恰在 resume 时挂起」时显现，真黑洞网络才打满 15s，属罕见残余；不为此在 transport 加连接取消（会误杀健康连接，需额外状态区分 mid-connect 与 healthy，收益不匹配）。
+
+### 11.4 测试
+
+`test/sse_smoke_test.dart` 新增「reconnectNow before first failure persists into first reconnect cycle」：`start()` 后**同步** kick（落在首次失败调度之前，非 pending）→ 断言 attempt 2 在 <1s 内出现。旧实现（非 pending 即丢弃）下该 kick 完全无效，attempt 2 需 ~1s，测试可区分。
