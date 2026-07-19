@@ -34,6 +34,7 @@ class ServerStore extends ChangeNotifier {
   Timer? _previewNotifyTimer;
   Timer? _cacheSaveTimer;
   Timer? _healthProbeTimer;
+  int _healthProbeGeneration = 0;
   // Health probe interval while the watchdog SSE is reconnecting. Each tick
   // is one cheap GET /global/health; on success all clients are kicked out
   // of backoff. 5s bounds recovery detection (vs the 30s backoff ceiling)
@@ -832,26 +833,37 @@ class ServerStore extends ChangeNotifier {
   /// backoff sleep and stop probing (the reconnect then proceeds at once).
   void _startHealthProbe() {
     if (_healthProbeTimer != null) return;
-    AppLogger.I.i(_tag, 'health probe started (interval ${healthProbeInterval.inSeconds}s)');
+    final generation = ++_healthProbeGeneration;
+    AppLogger.I.i(
+        _tag,
+        'health probe started '
+        '(interval ${healthProbeInterval.inSeconds}s)');
     _healthProbeTimer =
-        Timer.periodic(healthProbeInterval, (_) => _probeOnce());
+        Timer.periodic(healthProbeInterval, (_) => _probeOnce(generation));
   }
 
-  Future<void> _probeOnce() async {
+  Future<void> _probeOnce(int generation) async {
     final c = client;
     if (c == null) return;
     try {
       final h = await c.health();
+      if (generation != _healthProbeGeneration || _healthProbeTimer == null) {
+        return;
+      }
       if (!h.healthy) {
         AppLogger.I.d(_tag, 'health probe: server unhealthy');
         return;
       }
-      AppLogger.I.i(_tag, 'health probe: server reachable, kicking SSE reconnect');
+      AppLogger.I.i(
+          _tag, 'health probe: server reachable, kicking SSE reconnect');
       for (final sse in _sseByDir.values) {
         sse.reconnectNow();
       }
       _stopHealthProbe();
     } catch (e) {
+      if (generation != _healthProbeGeneration || _healthProbeTimer == null) {
+        return;
+      }
       AppLogger.I.d(_tag, 'health probe failed: ${e.runtimeType}');
     }
   }
@@ -860,6 +872,7 @@ class ServerStore extends ChangeNotifier {
     if (_healthProbeTimer == null) return;
     _healthProbeTimer!.cancel();
     _healthProbeTimer = null;
+    _healthProbeGeneration++;
     AppLogger.I.i(_tag, 'health probe stopped');
   }
 
@@ -1096,7 +1109,10 @@ class ServerStore extends ChangeNotifier {
     final local = conv?.lastMessagePreview();
     final lastRole = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.role : '?';
     final lastId = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.id : '?';
-    AppLogger.I.d(_tag, 'message.updated.parsed sid=$sid role=${m.role} id=${m.id} finish=${m.finish} pv=$local _last=($lastRole,$lastId)');
+    AppLogger.I.d(
+        _tag,
+        'message.updated.parsed sid=$sid role=${m.role} id=${m.id} '
+        'finish=${m.finish} _last=($lastRole,$lastId)');
     if (local != null) {
       _lastMessage[sid] = local;
       _notifyPreviewChanged();
@@ -1310,14 +1326,6 @@ class ServerStore extends ChangeNotifier {
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
     AppLogger.I.i(_tag, 'resume');
-
-    // Wake all SSE clients sleeping in reconnect backoff (earned under
-    // background/Doze suspended-network conditions). The app is now in the
-    // foreground with the network available — reconnect immediately instead
-    // of waiting out the exponential sleep (up to 30s).
-    for (final c in _sseByDir.values) {
-      c.reconnectNow();
-    }
 
     // Wake all SSE clients sleeping in reconnect backoff (earned under
     // background/Doze suspended-network conditions). The app is now in the

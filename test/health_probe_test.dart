@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/session/server_store.dart';
@@ -58,10 +60,32 @@ void main() {
     final client = _ProbeMockClient(healthy: false);
     final store = ServerStore()..client = client;
     // Simulate a directory SSE going reconnecting (not the watchdog).
-    store.onSseStateForTesting('/some/dir', const SseState(reconnecting: true, attempt: 1));
+    store.onSseStateForTesting(
+        '/some/dir', const SseState(reconnecting: true, attempt: 1));
     await Future.delayed(const Duration(milliseconds: 450));
     expect(client.healthCalls, greaterThanOrEqualTo(1),
-        reason: 'probe should start when a directory SSE goes reconnecting, not just the watchdog');
+        reason:
+            'probe should start when a directory SSE goes reconnecting, not just the watchdog');
+    store.dispose();
+  });
+
+  test('stale healthy response does not stop a newer probe cycle', () async {
+    final client = _DelayedProbeMockClient();
+    final store = ServerStore()..client = client;
+    store.onSseStateForTesting(ServerStore.globalWatchdogKeyForTesting,
+        const SseState(reconnecting: true, attempt: 1));
+    await Future.delayed(const Duration(milliseconds: 250));
+    expect(client.healthCalls, 1);
+
+    store.onSseStateForTesting(ServerStore.globalWatchdogKeyForTesting,
+        const SseState(connected: true));
+    store.onSseStateForTesting(
+        '/some/dir', const SseState(reconnecting: true, attempt: 1));
+    client.firstResponse.complete(HealthInfo(healthy: true, version: 'test'));
+
+    await Future.delayed(const Duration(milliseconds: 500));
+    expect(client.healthCalls, greaterThanOrEqualTo(2),
+        reason: 'an old healthy response must not stop the new probe timer');
     store.dispose();
   });
 }
@@ -77,6 +101,20 @@ class _ProbeMockClient extends OpencodeClient {
     healthCalls++;
     if (!healthy) throw Exception('server down');
     return HealthInfo(healthy: true, version: 'test');
+  }
+}
+
+class _DelayedProbeMockClient extends OpencodeClient {
+  int healthCalls = 0;
+  final firstResponse = Completer<HealthInfo>();
+
+  _DelayedProbeMockClient() : super(_noopDio());
+
+  @override
+  Future<HealthInfo> health() {
+    healthCalls++;
+    if (healthCalls == 1) return firstResponse.future;
+    return Future<HealthInfo>.error(Exception('server down'));
   }
 }
 
