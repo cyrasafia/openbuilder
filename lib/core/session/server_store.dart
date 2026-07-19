@@ -410,8 +410,11 @@ class ServerStore extends ChangeNotifier {
 
   void _startSse(String dir, {bool required = false}) {
     if (_sseByDir.containsKey(dir)) {
-      // Upgrade to required if needed (don't downgrade).
+      // Upgrade to required if needed (don't downgrade). Also wake the
+      // client if it's sleeping in reconnect backoff (e.g., resume after
+      // background Doze) — no reason to wait out the exponential sleep.
       _sseRequired[dir] = required || (_sseRequired[dir] ?? false);
+      _sseByDir[dir]!.reconnectNow();
       return;
     }
     final base = Uri.parse('${_profile!.baseUrl}/event');
@@ -1151,6 +1154,14 @@ class ServerStore extends ChangeNotifier {
   /// - Has watchdog and recent refresh → just backfill permissions.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
+
+    // Wake all SSE clients sleeping in reconnect backoff (earned under
+    // background/Doze suspended-network conditions). The app is now in the
+    // foreground with the network available — reconnect immediately instead
+    // of waiting out the exponential sleep (up to 30s).
+    for (final c in _sseByDir.values) {
+      c.reconnectNow();
+    }
 
     // No watchdog: SSE was torn down (pause timer fired). Full refresh.
     if (!_sseByDir.containsKey(_kGlobalWatchdog)) {
