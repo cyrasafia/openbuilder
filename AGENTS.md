@@ -121,10 +121,13 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `spec-overview.md` | 整体架构、技术栈、领域模型、端点映射 |
 | `design-frontend.md` | 前端页面、组件、交互设计 |
 | `plan-overview.md` | 分阶段执行计划（Phase 0-3） |
-| `design-self-healing.md` | 断网自愈五层机制 |
+| `design-self-healing.md` | 断网自愈整体设计（umbrella，含文档导航） |
+| `design-sse-reconnect-recovery.md` | 后台恢复 + 断网恢复的 SSE 重连加速（reconnectNow kick + health probe） |
+| `design-incremental-reconcile.md` | 增量对账 + 分段懒加载（取代全量 reconcile） |
 | `design-message-accumulation.md` | SSE 消息累积 + reconcile 对账 |
 | `design-load-retry.md` | 首次加载退避重试 + 加载动效 |
 | `design-on-demand-sse.md` | 按需 SSE 连接池 |
+| `design-local-cache.md` | 离线缓存兜底 |
 | `design-optimistic-messages.md` | 乐观消息插入 |
 | `design-session-status.md` | 会话状态同步 |
 | `design-agent-model-switch.md` | Agent/Model 切换 |

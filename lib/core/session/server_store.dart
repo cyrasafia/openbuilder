@@ -33,6 +33,13 @@ class ServerStore extends ChangeNotifier {
   Timer? _reconcileTimer;
   Timer? _previewNotifyTimer;
   Timer? _cacheSaveTimer;
+  Timer? _healthProbeTimer;
+  // Health probe interval while the watchdog SSE is reconnecting. Each tick
+  // is one cheap GET /global/health; on success all clients are kicked out
+  // of backoff. 5s bounds recovery detection (vs the 30s backoff ceiling)
+  // while staying negligible for battery/traffic during long outages.
+  @visibleForTesting
+  static Duration healthProbeInterval = const Duration(seconds: 5);
   DateTime? _lastPreviewNotifyAt;
   static const _previewNotifyInterval = Duration(milliseconds: 120);
   ConnectionProfile? _profile;
@@ -463,7 +470,10 @@ class ServerStore extends ChangeNotifier {
     final uri = dir == _kGlobalWatchdog
         ? base // bare /event — global watchdog
         : base.replace(queryParameters: {'directory': dir});
-    final c = SseClient(uri: uri, headers: _sseHeaders);
+    final label = dir == _kGlobalWatchdog
+        ? 'watchdog'
+        : (dir.split('/').lastOrNull ?? dir);
+    final c = SseClient(uri: uri, headers: _sseHeaders, label: label);
     _sseByDir[dir] = c;
     _sseSubs[dir] =
         c.events.listen(_onEvent); // SSE errors handled by _onSseState reconnect
@@ -796,6 +806,17 @@ class ServerStore extends ChangeNotifier {
         _watchdogFailed = true;
       }
     }
+    // While ANY SSE client is reconnecting (watchdog or directory — the
+    // server might be unreachable), probe /global/health every 5s. A
+    // successful probe proves reachability long before the exponential
+    // backoff (up to 30s) would fire, so we kick all clients out of their
+    // sleep immediately. Only the watchdog's connected state stops the
+    // probe (authoritative reachability signal).
+    if (s.reconnecting) {
+      _startHealthProbe();
+    } else if (dir == _kGlobalWatchdog && s.connected) {
+      _stopHealthProbe();
+    }
     // Only watchdog's reconnecting → connected triggers a reconcile.
     if (dir == _kGlobalWatchdog && s.reconnecting) {
       _needsStaleMarking = true;
@@ -806,12 +827,57 @@ class ServerStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Periodically probe `GET /global/health` while any SSE reconnect is
+  /// pending. On the first healthy response, kick every client out of its
+  /// backoff sleep and stop probing (the reconnect then proceeds at once).
+  void _startHealthProbe() {
+    if (_healthProbeTimer != null) return;
+    AppLogger.I.i(_tag, 'health probe started (interval ${healthProbeInterval.inSeconds}s)');
+    _healthProbeTimer =
+        Timer.periodic(healthProbeInterval, (_) => _probeOnce());
+  }
+
+  Future<void> _probeOnce() async {
+    final c = client;
+    if (c == null) return;
+    try {
+      final h = await c.health();
+      if (!h.healthy) {
+        AppLogger.I.d(_tag, 'health probe: server unhealthy');
+        return;
+      }
+      AppLogger.I.i(_tag, 'health probe: server reachable, kicking SSE reconnect');
+      for (final sse in _sseByDir.values) {
+        sse.reconnectNow();
+      }
+      _stopHealthProbe();
+    } catch (e) {
+      AppLogger.I.d(_tag, 'health probe failed: ${e.runtimeType}');
+    }
+  }
+
+  void _stopHealthProbe() {
+    if (_healthProbeTimer == null) return;
+    _healthProbeTimer!.cancel();
+    _healthProbeTimer = null;
+    AppLogger.I.i(_tag, 'health probe stopped');
+  }
+
   /// Test seam to drive SSE events directly into [_onEvent] (which is library-
   /// private). Lets tests assert the `message.part.updated` case's
   /// `break`->`return` (LPS-1) throttle behavior through the real event route
   /// (including the switch's trailing :811 notify).
   @visibleForTesting
   void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);
+
+  /// Test seam to drive SSE lifecycle states into [_onSseState]. Used by
+  /// health-probe tests to simulate watchdog reconnecting/connected.
+  @visibleForTesting
+  void onSseStateForTesting(String dir, SseState s) => _onSseState(dir, s);
+
+  /// Test seam exposing the global watchdog key for state-drive tests.
+  @visibleForTesting
+  static const String globalWatchdogKeyForTesting = _kGlobalWatchdog;
 
   /// Test seam for the REST bulk-fetch path [addSessionsForTesting] merges a
   /// list of sessions into a per-id map exactly as `_fetchAllSessions` does,
@@ -1208,6 +1274,7 @@ class ServerStore extends ChangeNotifier {
   void dispose() {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
+    _stopHealthProbe();
     _previewNotifyTimer?.cancel();
     _previewNotifyTimer = null;
     _cacheSaveTimer?.cancel();
@@ -1228,6 +1295,7 @@ class ServerStore extends ChangeNotifier {
   /// All conversations are marked stale since we lose live SSE updates.
   Future<void> pause() async {
     if (!connected || _profile == null) return;
+    AppLogger.I.i(_tag, 'pause');
     for (final conv in _conversations.values) {
       conv.markStale();
       conv.cancelLoadRetry();
@@ -1241,6 +1309,15 @@ class ServerStore extends ChangeNotifier {
   /// - Has watchdog and recent refresh → just backfill permissions.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
+    AppLogger.I.i(_tag, 'resume');
+
+    // Wake all SSE clients sleeping in reconnect backoff (earned under
+    // background/Doze suspended-network conditions). The app is now in the
+    // foreground with the network available — reconnect immediately instead
+    // of waiting out the exponential sleep (up to 30s).
+    for (final c in _sseByDir.values) {
+      c.reconnectNow();
+    }
 
     // Wake all SSE clients sleeping in reconnect backoff (earned under
     // background/Doze suspended-network conditions). The app is now in the
@@ -1273,6 +1350,7 @@ class ServerStore extends ChangeNotifier {
   Future<void> _stopSse({bool flushCache = true}) async {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
+    _stopHealthProbe();
     // Flush pending cache save before canceling — prevents data loss on
     // pause/disconnect (up to 2s of SSE updates would be dropped).
     // connect() passes flushCache: false because it already flushed the
