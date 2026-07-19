@@ -7,9 +7,9 @@
 #     - C    = build number (patch part of versionName), starts at 0, +1/build
 #     - N    = Android versionCode (must be >= 1), +1/build
 #
-# This script bumps C and N by 1, writes them back to pubspec.yaml, then runs
-# flutter build apk --release. To bump the business version (A.B), reset C to
-# 0, and keep N increasing, pass: ./scripts/build.sh --bump-business 0.2
+# This script builds with C and N bumped by 1 and keeps the new version only
+# after a successful build. To bump the business version (A.B), reset C to 0,
+# and keep N increasing, pass: ./scripts/build.sh --bump-business 0.2
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -38,10 +38,8 @@ else
   code=$((cur_code + 1))
 fi
 
-new_ver="${major}.${minor}.${patch}+${code}"
-
-# Write back.
-perl -i -pe "s{^version: .*\$}{version: ${new_ver}}" "$PUBSPEC"
+new_name="${major}.${minor}.${patch}"
+new_ver="${new_name}+${code}"
 echo "Building version ${new_ver}"
 
 # Env.
@@ -51,4 +49,5 @@ export ANDROID_HOME="$ANDROID_SDK_ROOT"
 export JAVA_HOME="${JAVA_HOME:-$HOME/development/jdk21}"
 export PATH="$JAVA_HOME/bin:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
 
-flutter build apk --release
+flutter build apk --release --build-name="$new_name" --build-number="$code"
+perl -i -pe "s{^version: .*\$}{version: ${new_ver}}" "$PUBSPEC"
