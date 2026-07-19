@@ -7,6 +7,7 @@ import '../../app_state.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import 'worktree_order.dart';
 
 class ProjectDetailScreen extends StatelessWidget {
   final String projectId;
@@ -75,7 +76,8 @@ class ProjectDetailScreen extends StatelessWidget {
               else if (project?.id == 'global' && directory == null)
                 ..._groupedGlobal(context, sessions)
               else
-                ..._groupedByWorktree(context, sessions, scopedWorktree),
+                ..._groupedByWorktree(context, sessions, scopedWorktree,
+                    project?.sandboxes ?? const []),
               const SizedBox(height: 16),
             ],
           ),
@@ -235,21 +237,24 @@ class ProjectDetailScreen extends StatelessWidget {
 
   /// Section sessions by worktree (directory). Section headers are shown only
   /// when the project spans more than one worktree, so single-worktree
-  /// projects keep a flat list. Groups are ordered by their most recent
-  /// activity (busiest worktree first); within a group, sessions keep the
+  /// projects keep a flat list. The main worktree is pinned first, followed by
+  /// sandboxes in server creation order; within a group, sessions keep the
   /// global recency order.
   List<Widget> _groupedByWorktree(
-      BuildContext context, List<SessionModel> all, String projectWorktree) {
+      BuildContext context,
+      List<SessionModel> all,
+      String projectWorktree,
+      List<String> sandboxes) {
     final byDir = <String, List<SessionModel>>{};
     for (final s in all) {
       byDir.putIfAbsent(s.directory, () => []).add(s);
     }
+    final sandboxOrder = <String, int>{
+      for (var i = 0; i < sandboxes.length; i++) sandboxes[i]: i,
+    };
     final groups = byDir.entries.toList()
-      ..sort((a, b) {
-        final at = a.value.map((s) => s.updated).reduce((x, y) => x > y ? x : y);
-        final bt = b.value.map((s) => s.updated).reduce((x, y) => x > y ? x : y);
-        return bt.compareTo(at);
-      });
+      ..sort((a, b) => compareWorktreePaths(a.key, b.key,
+          mainWorktree: projectWorktree, sandboxOrder: sandboxOrder));
     final out = <Widget>[];
     for (final entry in groups) {
       if (byDir.length > 1) {
