@@ -32,12 +32,12 @@ IFS='.' read -r major minor patch <<<"$base"
 if [[ -n "$bump_business" ]]; then
   IFS='.' read -r major minor <<<"$bump_business"
   patch=0
-  cur_code=0
+  code=1
+else
+  patch=$((patch + 1))
+  code=$((cur_code + 1))
 fi
 
-# Increment build number.
-patch=$((patch + 1))
-code=$((cur_code + 1))
 new_ver="${major}.${minor}.${patch}+${code}"
 
 # Write back.
