@@ -480,7 +480,6 @@ reverse:true ListView    → children[0] 在视觉底部 → 最旧在底部 ❌
 | IR2-2 | 🟢 P3 | §4.2 伪代码 `_segments.isEmpty` 返回 `const []` 与实现不一致 | ✅ 已修复 | §4.2 伪代码改为 `if (_segments.isEmpty) return _messages.reversed.toList(growable: false);` 并补注释「SSE 先到、reconcile 未完成时，全部消息都可达」，与 `conversation_store.dart:201` 逐字对齐。 |
 
 跨节核对：`design-incremental-reconcile.md` 内不再有 `renderableMessages` + `.reversed` 组合；`plan-load-retry.md` / `design-load-retry.md` 的 `.reversed` 用的是旧 getter `conv.messages`（升序），属另一功能的早期文档，不在本次范围。
-- 该 bug 是评审流程的教训：渲染类问题需 widget test + 跨节文档交叉核对。后续涉及「getter 语义 + 渲染层调用」的改动，应默认补 widget 顺序测试。
 
 ---
 

@@ -75,16 +75,21 @@ SSE 重连后（自愈）：
       ├─ 活跃会话 busy：conv.markStale()，推迟到 session.idle 事件时 reload
       └─ 非活跃会话：仅真实断线后 markStale()，下次进入 reloadIfStale()
 
-用户进入一个 stale 会话（主动，force=true）：
-  conversation_screen.build()（首次）→ _didForceReload=false → conversationFor(id, force:true)
-    → conv.reload()（强制，无视退避）→ _didForceReload=true
-  后续 rebuild（打字 setState 等）→ _didForceReload=true → skip force，默认 force=false
-  UI 先展示旧数据（无白屏），reload 完成后 notifyListeners → 更新
+  用户进入一个 stale 会话（主动，force=true）：
+    conversation_screen.build()（首次）→ _didForceReload=false → conversationFor(id, force:true)
+      → conv.reload()（强制，无视退避）→ _didForceReload=true
+    后续 rebuild（打字 setState 等）→ _didForceReload=true → skip force，默认 force=false
+    UI 先展示旧数据（无白屏），reload 完成后 notifyListeners → 更新
 
-列表重建触发 stale 访问（被动，force=false）：
-  conversationFor(id) → conv.reloadIfStale()
-    → stale && !_reloading && 超过退避 → reload()
-    → 退避窗口内 → skip（不触发 REST，防被动轮询）
+  列表重建触发 stale 访问（被动，force=false）：
+    conversationFor(id) → conv.reloadIfStale()
+      → stale && !_reloading && 超过退避 → reload()
+      → 退避窗口内 → skip（不触发 REST，防被动轮询）
+
+  后台 → 前台 resume（SSE 传输层，详见 design-background-resume-reconnect.md）：
+    Android Doze 维护窗口会在后台养大 SSE 重连退避（最坏 30s 稳态）；
+    resume() 开头对所有 client 调 reconnectNow()（可中断退避 + _backoff=1 重置），
+    ~200ms 内重连，不再等退避。
 ```
 
 ## 场景验证

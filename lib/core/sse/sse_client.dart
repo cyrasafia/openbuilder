@@ -49,6 +49,7 @@ class SseClient {
   int _backoff = 1;
   int _reconnectAttempt = 0;
   bool _reconnectPending = false;
+  bool _kickReconnect = false;
   DateTime _lastEventAt = DateTime.now();
   Timer? _heartbeatTimer;
   static const _heartbeatTimeout = Duration(seconds: 60);
@@ -126,11 +127,29 @@ class SseClient {
     _reconnectAttempt++;
     AppLogger.I.i(_tag, 'reconnect attempt $_reconnectAttempt ${uri.path}');
     _emit(SseState(reconnecting: true, attempt: _reconnectAttempt));
-    await Future.delayed(Duration(seconds: _backoff));
+    final waitSeconds = _backoff;
     _backoff = (_backoff * 2).clamp(1, 30);
+    // Interruptible backoff: reconnectNow() (e.g., app resume) breaks the
+    // sleep early. 200ms poll granularity keeps kick latency negligible.
+    final deadline = DateTime.now().add(Duration(seconds: waitSeconds));
+    while (DateTime.now().isBefore(deadline) && !_stopped && !_kickReconnect) {
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+    _kickReconnect = false;
     _reconnectPending = false;
     if (_stopped) return;
     _connect();
+  }
+
+  /// Wake from backoff sleep and reconnect immediately, resetting the backoff
+  /// that was earned under suspended-network conditions (e.g., Android Doze
+  /// while backgrounded). Called by ServerStore on app resume / SSE start.
+  /// No-op when connected or not pending.
+  void reconnectNow() {
+    if (_stopped || !_reconnectPending) return;
+    AppLogger.I.i(_tag, 'reconnect now (kicked) ${uri.path}');
+    _backoff = 1;
+    _kickReconnect = true;
   }
 
   void _onData(String data) {
