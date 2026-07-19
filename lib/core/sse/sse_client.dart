@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import '../logging/app_logger.dart';
 import 'sse_transport.dart' if (dart.library.html) 'sse_transport_web.dart'
     as transport;
@@ -54,7 +55,15 @@ class SseClient {
   bool _kickReconnect = false;
   DateTime _lastEventAt = DateTime.now();
   Timer? _heartbeatTimer;
+  Timer? _connectTimer;
   static const _heartbeatTimeout = Duration(seconds: 60);
+
+  /// Overall timeout for one connect attempt (connection + response headers).
+  /// Bounds the previously-unbounded header-wait phase — a server that accepts
+  /// TCP but never sends response headers (e.g., overloaded) would otherwise
+  /// hang until the 60s heartbeat backstop. See design-sse-reconnect-recovery.md §12.
+  @visibleForTesting
+  static Duration overallTimeout = const Duration(seconds: 15);
 
   SseClient({required this.uri, this.headers = const {}, String? label})
       : label = label ?? uri.path;
@@ -84,6 +93,8 @@ class SseClient {
   Future<void> stop() async {
     _stopped = true;
     _connected = false;
+    _connectTimer?.cancel();
+    _connectTimer = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     AppLogger.I.i(_tag, 'stop $label');
@@ -99,12 +110,24 @@ class SseClient {
       'Accept': 'text/event-stream',
     };
     _startHeartbeatTimer();
+    _connectTimer?.cancel();
+    _connectTimer = Timer(overallTimeout, _onConnectTimeout);
     AppLogger.I.d(_tag, 'connect start $label');
-    _sub = transport.eventDataStream(uri, h).listen(
+    _sub = transport
+        .eventDataStream(uri, h, overallTimeout: overallTimeout)
+        .listen(
           _onData,
           onError: (Object e) => _onDrop('error: ${e.runtimeType}'),
           onDone: () => _onDrop('server closed'),
         );
+  }
+
+  void _onConnectTimeout() {
+    if (_stopped || _connected) return;
+    AppLogger.I.w(_tag, 'connect timeout (${overallTimeout.inSeconds}s) $label');
+    _sub?.cancel();
+    _sub = null;
+    _onDrop('connect timeout');
   }
 
   void _startHeartbeatTimer() {
@@ -124,6 +147,8 @@ class SseClient {
   void _onDrop([String? reason]) {
     if (_stopped || _reconnectPending) return;
     _connected = false;
+    _connectTimer?.cancel();
+    _connectTimer = null;
     final r = reason != null ? ' ($reason)' : '';
     AppLogger.I.w(_tag, 'dropped $label$r');
     unawaited(_scheduleReconnect());
@@ -173,6 +198,8 @@ class SseClient {
     _heartbeatTimer = Timer(_heartbeatTimeout, _onHeartbeatTimeout);
     if (!_connected) {
       _connected = true;
+      _connectTimer?.cancel();
+      _connectTimer = null;
       AppLogger.I.i(_tag, 'connected $label');
     }
     try {

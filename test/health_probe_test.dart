@@ -52,6 +52,18 @@ void main() {
         reason: 'probe stopped before its first tick when watchdog connects');
     store.dispose();
   });
+
+  // B: directory SSE (not just watchdog) reconnecting also triggers probe.
+  test('probe starts on directory SSE reconnecting (B: any client)', () async {
+    final client = _ProbeMockClient(healthy: false);
+    final store = ServerStore()..client = client;
+    // Simulate a directory SSE going reconnecting (not the watchdog).
+    store.onSseStateForTesting('/some/dir', const SseState(reconnecting: true, attempt: 1));
+    await Future.delayed(const Duration(milliseconds: 450));
+    expect(client.healthCalls, greaterThanOrEqualTo(1),
+        reason: 'probe should start when a directory SSE goes reconnecting, not just the watchdog');
+    store.dispose();
+  });
 }
 
 /// Mock client whose /global/health outcome is controllable.

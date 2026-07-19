@@ -7,13 +7,34 @@ import 'package:dio/dio.dart';
 ///
 /// Native (dart:io) transport using a streamed dio response. The caller
 /// reconnects on done/error (see `SseClient`).
-Stream<String> eventDataStream(Uri uri, Map<String, String> headers) async* {
+///
+/// [overallTimeout] bounds the connect attempt (connection + response
+/// headers). A server that accepts TCP but never sends response headers
+/// (e.g., overloaded) would otherwise hang until the caller's heartbeat
+/// backstop. On timeout, the abandoned request's eventual error is handled
+/// by the pre-registered catchError — not orphaned.
+Stream<String> eventDataStream(Uri uri, Map<String, String> headers,
+    {Duration overallTimeout = const Duration(seconds: 15)}) async* {
   final dio = Dio(BaseOptions(
     responseType: ResponseType.stream,
     headers: headers,
     connectTimeout: const Duration(seconds: 15),
   ));
-  final resp = await dio.getUri<dynamic>(uri);
+  // Pre-register an error handler so the abandoned request's eventual error
+  // (after the timeout fires) is handled, not orphaned as a zone error.
+  final responseFuture = dio.getUri<dynamic>(uri);
+  responseFuture.catchError((Object e) => Response<dynamic>(
+      requestOptions: RequestOptions(path: uri.toString())));
+  final Response<dynamic> resp;
+  try {
+    resp = await responseFuture.timeout(overallTimeout);
+  } on TimeoutException {
+    // Convert the timeout to a normal stream close — the caller's onDone
+    // drives the reconnect, same as a server-initiated close. This avoids
+    // the TimeoutException escaping through the async* generator's error
+    // channel into the zone (which the test framework flags as unhandled).
+    return;
+  }
   if (resp.data is! ResponseBody) {
     throw StateError('Expected a streamed response');
   }

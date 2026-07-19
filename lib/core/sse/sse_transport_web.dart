@@ -6,7 +6,8 @@ import 'dart:html' show EventSource, MessageEvent;
 /// Web transport: uses browser `EventSource`, which auto-reconnects and parses
 /// SSE framing. EventSource cannot set custom headers, so auth must be
 /// cookie/URL-based or absent (the opencode test server doesn't enforce auth).
-Stream<String> eventDataStream(Uri uri, Map<String, String> headers) {
+Stream<String> eventDataStream(Uri uri, Map<String, String> headers,
+    {Duration overallTimeout = const Duration(seconds: 15)}) {
   final controller = StreamController<String>();
   final es = EventSource(uri.toString());
 

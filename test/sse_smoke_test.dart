@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
@@ -81,4 +82,41 @@ void main() {
     await sub.cancel();
     await client.stop();
   }, timeout: const Timeout(Duration(seconds: 10)));
+
+  // A (P1): a server that accepts TCP but never sends response headers must
+  // time out (sseOverallTimeout) and retry — not hang until the 60s heartbeat.
+  test('hung server (no response headers) times out and reconnects', () async {
+    final savedTimeout = SseClient.overallTimeout;
+    SseClient.overallTimeout = const Duration(seconds: 2);
+
+    // Raw TCP server: accepts connections but never responds (simulates an
+    // overloaded server that accepts the socket but can't process the request).
+    final server =
+        await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((socket) => socket.drain<void>());
+
+    final client = SseClient(
+      uri: Uri.parse('http://127.0.0.1:${server.port}/event'),
+      label: 'test-hang',
+    );
+    final attempts = <int>[];
+    final sub = client.state.listen((s) {
+      if (s.reconnecting) attempts.add(s.attempt);
+    });
+    client.start();
+    // With 2s timeout: connect hangs → 2s timeout → drop → attempt 1 (1s) →
+    // connect hangs → 2s timeout → drop → attempt 2. Total ~7s for 2 attempts.
+    await Future.delayed(const Duration(seconds: 8));
+    expect(attempts.length, greaterThanOrEqualTo(2),
+        reason: 'hung connects should time out and keep retrying, not hang for 60s heartbeat');
+
+    SseClient.overallTimeout = savedTimeout;
+    await sub.cancel();
+    await client.stop();
+    await server.close();
+    // Let any in-flight transport timeouts settle within the test zone
+    // (stop() cancels _sub but the underlying HTTP request lingers; without
+    // this delay the 2s timeout fires as an unhandled post-test error).
+    await Future.delayed(const Duration(seconds: 3));
+  }, timeout: const Timeout(Duration(seconds: 20)));
 }

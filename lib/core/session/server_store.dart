@@ -746,15 +746,17 @@ class ServerStore extends ChangeNotifier {
       if (wasConnected && !s.connected) {
         _watchdogFailed = true;
       }
-      // While the watchdog is reconnecting (network/server down), probe
-      // /global/health every 5s — a successful probe proves reachability
-      // long before the exponential backoff (up to 30s) would fire, so we
-      // kick all clients out of their sleep immediately.
-      if (s.reconnecting) {
-        _startHealthProbe();
-      } else if (s.connected) {
-        _stopHealthProbe();
-      }
+    }
+    // While ANY SSE client is reconnecting (watchdog or directory — the
+    // server might be unreachable), probe /global/health every 5s. A
+    // successful probe proves reachability long before the exponential
+    // backoff (up to 30s) would fire, so we kick all clients out of their
+    // sleep immediately. Only the watchdog's connected state stops the
+    // probe (authoritative reachability signal).
+    if (s.reconnecting) {
+      _startHealthProbe();
+    } else if (dir == _kGlobalWatchdog && s.connected) {
+      _stopHealthProbe();
     }
     // Only watchdog's reconnecting → connected triggers a reconcile.
     if (dir == _kGlobalWatchdog && s.reconnecting) {

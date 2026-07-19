@@ -449,3 +449,33 @@ kick 不能中断**在途的** `_connect()` 本身。原判断「等 transport `
 ### 12.5 §11.3 修订声明
 
 §11.3「残余窗口（已知，可接受）」中关于「transport `connectTimeout`（15s）失败后走快速重试」的表述**不准确**——`connectTimeout` 只管建连阶段，响应头等待无上限（无 `receiveTimeout`）。实际兜底是 60s 心跳超时（~62s 恢复），非 15s。该残余窗口经 11:39 实测确认不罕见，升级为 P1 待修（见 12.4-A）。
+
+---
+
+## 13. 实现记录（A + B，2026-07-19）
+
+### 13.1 A：传输层显式总超时（P1）
+
+**实现**：`sse_transport.dart` 的 `eventDataStream` 新增 `overallTimeout` 参数（默认 15s），`SseClient.overallTimeout`（`@visibleForTesting` 静态字段）传入。对 `dio.getUri` 调用 `.timeout(overallTimeout)` 包住连接 + 响应头等待。
+
+**关键技术细节**：
+1. **超时 → 流关闭（非流错误）**：`on TimeoutException` 捕获后 `return`（关闭流），由调用方 `onDone: () => _onDrop('server closed')` 驱动重连。若让 TimeoutException 作为流错误传播，其 zone 链会穿过 async* 生成器进入测试 zone，被 flutter_test 标记为未处理错误（尽管 onError 捕获了它）。
+2. **预注册 catchError 吞掉被放弃请求的最终错误**：`responseFuture.catchError(...)` 在 `.timeout()` 之前注册，确保 `.timeout()` 触发后被放弃的 dio 请求最终出错（如服务端关闭）时不会成为 zone 孤立错误。
+3. **不用 CancelToken**：cancelToken.cancel() 产生的 DioException 会通过 dio 的 `response_stream_handler` 的 `whenComplete` 回调逃逸到 zone（无法从外部拦截）。放弃 + catchError 是更干净的方案。
+
+**效果**：挂起连接（服务端接受 TCP 但不发响应头）恢复时间从 ~62s（60s 心跳兜底）→ ~15s（显式超时），恢复后 kick 保证立即重试。
+
+**测试**：`test/sse_smoke_test.dart` 新增「hung server (no response headers) times out and reconnects」：裸 `ServerSocket` 接受 TCP 但不回 HTTP 响应（模拟过载服务端），`SseClient.overallTimeout` 缩到 2s，断言 8s 内出现 ≥2 次 reconnect attempt（旧实现需等 60s 心跳，8s 内 0 次）。
+
+### 13.2 B：探测覆盖范围放宽（P2）
+
+**实现**：`_onSseState` 中 `_startHealthProbe()` 的触发条件从 `dir == _kGlobalWatchdog && s.reconnecting` 放宽为 `s.reconnecting`（任何 client，包括目录 SSE）。`_stopHealthProbe()` 仍由 watchdog connected 触发（权威可达性信号）。
+
+**设计权衡**：§10.6 曾拒绝「目录 SSE 掉线也探测」，理由是强踢风暴风险。但探测的 kick 由 **health() 成功门控**（只有服务端可达才 kick），不是无条件强踢。目录 SSE 掉线时探测启动，若服务端可达（watchdog 健康）则 kick 立即重连；若服务端不可达则探测持续失败、等下一 tick。无风暴风险。
+
+**测试**：`test/health_probe_test.dart` 新增「probe starts on directory SSE reconnecting」：模拟 `/some/dir` 目录 SSE reconnecting → 断言 health() 被调用（旧实现仅 watchdog 触发，目录 SSE 不会启动探测）。
+
+### 13.3 验证
+
+- `flutter analyze`：0 issue（仅预存 `ok` warning）。
+- `flutter test`：74/74 全绿（新增 A/B 各 1 用例 + 全部既有用例）。
