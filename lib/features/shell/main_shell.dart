@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
+import '../../core/logging/app_logger.dart';
 
 class MainShell extends StatefulWidget {
   final StatefulNavigationShell shell;
@@ -31,6 +32,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    AppLogger.I.i('Lifecycle', state.name);
     switch (state) {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:

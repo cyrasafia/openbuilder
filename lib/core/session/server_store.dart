@@ -428,7 +428,10 @@ class ServerStore extends ChangeNotifier {
     final uri = dir == _kGlobalWatchdog
         ? base // bare /event — global watchdog
         : base.replace(queryParameters: {'directory': dir});
-    final c = SseClient(uri: uri, headers: _sseHeaders);
+    final label = dir == _kGlobalWatchdog
+        ? 'watchdog'
+        : (dir.split('/').lastOrNull ?? dir);
+    final c = SseClient(uri: uri, headers: _sseHeaders, label: label);
     _sseByDir[dir] = c;
     _sseSubs[dir] =
         c.events.listen(_onEvent); // SSE errors handled by _onSseState reconnect
@@ -768,6 +771,7 @@ class ServerStore extends ChangeNotifier {
   /// backoff sleep and stop probing (the reconnect then proceeds at once).
   void _startHealthProbe() {
     if (_healthProbeTimer != null) return;
+    AppLogger.I.i(_tag, 'health probe started (interval ${healthProbeInterval.inSeconds}s)');
     _healthProbeTimer =
         Timer.periodic(healthProbeInterval, (_) => _probeOnce());
   }
@@ -777,20 +781,25 @@ class ServerStore extends ChangeNotifier {
     if (c == null) return;
     try {
       final h = await c.health();
-      if (!h.healthy) return;
+      if (!h.healthy) {
+        AppLogger.I.d(_tag, 'health probe: server unhealthy');
+        return;
+      }
       AppLogger.I.i(_tag, 'health probe: server reachable, kicking SSE reconnect');
       for (final sse in _sseByDir.values) {
         sse.reconnectNow();
       }
       _stopHealthProbe();
-    } catch (_) {
-      // Still down — wait for the next tick.
+    } catch (e) {
+      AppLogger.I.d(_tag, 'health probe failed: ${e.runtimeType}');
     }
   }
 
   void _stopHealthProbe() {
-    _healthProbeTimer?.cancel();
+    if (_healthProbeTimer == null) return;
+    _healthProbeTimer!.cancel();
     _healthProbeTimer = null;
+    AppLogger.I.i(_tag, 'health probe stopped');
   }
 
   /// Test seam to drive SSE events directly into [_onEvent] (which is library-
@@ -1197,6 +1206,7 @@ class ServerStore extends ChangeNotifier {
   /// All conversations are marked stale since we lose live SSE updates.
   Future<void> pause() async {
     if (!connected || _profile == null) return;
+    AppLogger.I.i(_tag, 'pause');
     for (final conv in _conversations.values) {
       conv.markStale();
       conv.cancelLoadRetry();
@@ -1210,6 +1220,7 @@ class ServerStore extends ChangeNotifier {
   /// - Has watchdog and recent refresh → just backfill permissions.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
+    AppLogger.I.i(_tag, 'resume');
 
     // Wake all SSE clients sleeping in reconnect backoff (earned under
     // background/Doze suspended-network conditions). The app is now in the

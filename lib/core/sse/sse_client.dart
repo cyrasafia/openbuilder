@@ -40,12 +40,14 @@ class SseState {
 class SseClient {
   final Uri uri;
   final Map<String, String> headers;
+  final String label;
 
   StreamSubscription<String>? _sub;
   final _controller = StreamController<OpencodeEvent>.broadcast();
   final _stateCtl = StreamController<SseState>.broadcast();
   String? _lastId;
   bool _stopped = true;
+  bool _connected = false;
   int _backoff = 1;
   int _reconnectAttempt = 0;
   bool _reconnectPending = false;
@@ -54,7 +56,8 @@ class SseClient {
   Timer? _heartbeatTimer;
   static const _heartbeatTimeout = Duration(seconds: 60);
 
-  SseClient({required this.uri, this.headers = const {}});
+  SseClient({required this.uri, this.headers = const {}, String? label})
+      : label = label ?? uri.path;
 
   Stream<OpencodeEvent> get events => _controller.stream;
   /// Lifecycle changes (connected / reconnecting + attempt), for UI banners.
@@ -74,15 +77,16 @@ class SseClient {
   void start() {
     if (!_stopped) return;
     _stopped = false;
-    AppLogger.I.i(_tag, 'start ${uri.path}');
+    AppLogger.I.i(_tag, 'start $label');
     _connect();
   }
 
   Future<void> stop() async {
     _stopped = true;
+    _connected = false;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
-    AppLogger.I.i(_tag, 'stop ${uri.path}');
+    AppLogger.I.i(_tag, 'stop $label');
     await _sub?.cancel();
     _sub = null;
   }
@@ -95,10 +99,11 @@ class SseClient {
       'Accept': 'text/event-stream',
     };
     _startHeartbeatTimer();
+    AppLogger.I.d(_tag, 'connect start $label');
     _sub = transport.eventDataStream(uri, h).listen(
           _onData,
-          onError: (_) => _onDrop(),
-          onDone: () => _onDrop(),
+          onError: (Object e) => _onDrop('error: ${e.runtimeType}'),
+          onDone: () => _onDrop('server closed'),
         );
   }
 
@@ -109,23 +114,25 @@ class SseClient {
 
   void _onHeartbeatTimeout() {
     if (_stopped) return;
-    AppLogger.I.w(_tag, 'heartbeat timeout (no data for ${_heartbeatTimeout.inSeconds}s) ${uri.path}');
+    AppLogger.I.w(_tag, 'heartbeat timeout (no data for ${_heartbeatTimeout.inSeconds}s) $label');
     _sub?.cancel();
-    _onDrop();
+    _onDrop('heartbeat');
   }
 
   /// Transport dropped (error/done). Schedule one reconnect, guarding against
   /// duplicate scheduling while a backoff is already pending.
-  void _onDrop() {
+  void _onDrop([String? reason]) {
     if (_stopped || _reconnectPending) return;
-    AppLogger.I.w(_tag, 'dropped ${uri.path}');
+    _connected = false;
+    final r = reason != null ? ' ($reason)' : '';
+    AppLogger.I.w(_tag, 'dropped $label$r');
     unawaited(_scheduleReconnect());
   }
 
   Future<void> _scheduleReconnect() async {
     _reconnectPending = true;
     _reconnectAttempt++;
-    AppLogger.I.i(_tag, 'reconnect attempt $_reconnectAttempt ${uri.path}');
+    AppLogger.I.i(_tag, 'reconnect attempt $_reconnectAttempt $label');
     _emit(SseState(reconnecting: true, attempt: _reconnectAttempt));
     final waitSeconds = _backoff;
     _backoff = (_backoff * 2).clamp(1, 30);
@@ -154,7 +161,7 @@ class SseClient {
     if (_stopped) return;
     _backoff = 1;
     if (_reconnectPending) {
-      AppLogger.I.i(_tag, 'reconnect now (kicked) ${uri.path}');
+      AppLogger.I.i(_tag, 'reconnect now (kicked) $label');
     }
     _kickReconnect = true;
   }
@@ -164,6 +171,10 @@ class SseClient {
     _backoff = 1; // healthy
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer(_heartbeatTimeout, _onHeartbeatTimeout);
+    if (!_connected) {
+      _connected = true;
+      AppLogger.I.i(_tag, 'connected $label');
+    }
     try {
       final j = jsonDecode(data) as Map<String, dynamic>;
       final ev = OpencodeEvent.fromJson(j);
