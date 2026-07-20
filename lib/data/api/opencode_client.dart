@@ -317,6 +317,23 @@ class OpencodeClient {
     return const [];
   }
 
+  /// `GET /api/provider?location[directory]=<dir>` — list providers.
+  Future<List<ProviderInfo>> listProviders({String? directory}) async {
+    final params = <String, dynamic>{};
+    if (directory != null && directory.isNotEmpty) {
+      params['location[directory]'] = directory;
+    }
+    final r = await dio.get<dynamic>('/api/provider', queryParameters: params);
+    final d = r.data is Map ? (r.data as Map) : {};
+    final data = d['data'];
+    if (data is List) {
+      return data
+          .map((e) => ProviderInfo.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+    }
+    return const [];
+  }
+
   /// `GET /api/model?location[directory]=<dir>` — list available models.
   Future<List<ModelInfo>> listModels({String? directory}) async {
     final params = <String, dynamic>{};

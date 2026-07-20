@@ -624,6 +624,23 @@ class ModelVariant {
       ModelVariant(id: (j['id'] ?? '').toString());
 }
 
+class ProviderInfo {
+  final String id;
+  final String name;
+  final bool disabled;
+  const ProviderInfo({
+    required this.id,
+    required this.name,
+    this.disabled = false,
+  });
+
+  factory ProviderInfo.fromJson(Map<String, dynamic> j) => ProviderInfo(
+    id: (j['id'] ?? '').toString(),
+    name: (j['name'] ?? '').toString(),
+    disabled: j['disabled'] == true,
+  );
+}
+
 class ModelInfo {
   final String id;
   final String providerID;

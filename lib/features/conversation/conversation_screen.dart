@@ -1806,11 +1806,18 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       final results = await Future.wait([
         client.listAgents(directory: widget.directory),
         client.listModels(directory: widget.directory),
+        client.listProviders(directory: widget.directory),
       ]);
+      final models = results[1] as List<ModelInfo>;
+      final providers = results[2] as List<ProviderInfo>;
+      final disabledProviderIDs =
+          providers.where((p) => p.disabled).map((p) => p.id).toSet();
       if (mounted) {
         setState(() {
           _agents = results[0] as List<AgentInfo>;
-          _models = results[1] as List<ModelInfo>;
+          _models = models
+              .where((m) => !disabledProviderIDs.contains(m.providerID))
+              .toList();
           _loading = false;
         });
       }
