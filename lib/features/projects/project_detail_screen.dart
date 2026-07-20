@@ -42,8 +42,11 @@ class ProjectDetailScreen extends StatelessWidget {
         final scopedWorktree =
             directory ?? (project?.worktree ?? '');
         final textScaler = MediaQuery.textScalerOf(context);
+        final wsEnabled =
+            project != null && serverStore.workspaceEnabled(project.id);
+        final subLines = 2 + (wsEnabled ? 1 : 0);
         final scaledTitleHeight = textScaler.scale(16) * 1.2 +
-            textScaler.scale(11) * 1.2 * 2 +
+            textScaler.scale(11) * 1.2 * subLines +
             4;
         final toolbarHeight =
             scaledTitleHeight + 16 < 76 ? 76.0 : scaledTitleHeight + 16;
@@ -56,7 +59,28 @@ class ProjectDetailScreen extends StatelessWidget {
               icon: project?.icon,
               worktree: scopedWorktree,
               sessionCount: sessions.length,
+              workspaceEnabled: wsEnabled,
             ),
+            actions: [
+              if (project != null && project.id != 'global')
+                PopupMenuButton<String>(
+                  onSelected: (v) {
+                    if (v == 'toggle_workspace') {
+                      final next =
+                          !serverStore.workspaceEnabled(project.id);
+                      serverStore.setWorkspaceEnabled(project.id, next);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'toggle_workspace',
+                      child: Text(serverStore.workspaceEnabled(project.id)
+                          ? '关闭工作区'
+                          : '开启工作区'),
+                    ),
+                  ],
+                ),
+            ],
           ),
           floatingActionButton: (project != null && project.id != 'global')
               ? FloatingActionButton.extended(
@@ -349,11 +373,13 @@ class _ProjectAppBarTitle extends StatelessWidget {
   final ProjectIcon? icon;
   final String worktree;
   final int sessionCount;
+  final bool workspaceEnabled;
   const _ProjectAppBarTitle(
       {required this.name,
       required this.icon,
       required this.worktree,
-      required this.sessionCount});
+      required this.sessionCount,
+      required this.workspaceEnabled});
 
   @override
   Widget build(BuildContext context) {
@@ -382,6 +408,13 @@ class _ProjectAppBarTitle extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 11, color: muted)),
+              if (workspaceEnabled) ...[
+                const SizedBox(height: 2),
+                Text('工作区：开启',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: muted)),
+              ],
             ],
           ),
         ),

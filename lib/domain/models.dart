@@ -120,6 +120,7 @@ class SessionModel {
   final int updated;
   final int? archived;
   final String? parentID;
+  final String? workspaceID;
   final double cost;
   final Tokens tokens;
   final String? agent;
@@ -134,6 +135,7 @@ class SessionModel {
     required this.updated,
     this.archived,
     this.parentID,
+    this.workspaceID,
     this.cost = 0,
     this.tokens = const Tokens(),
     this.agent,
@@ -151,6 +153,7 @@ class SessionModel {
       updated: _i(time['updated']),
       archived: time['archived'] == null ? null : _i(time['archived']),
       parentID: j['parentID']?.toString(),
+      workspaceID: j['workspaceID']?.toString(),
       cost: _d(j['cost']),
       tokens: j['tokens'] is Map
           ? Tokens.fromJson(j['tokens'] as Map<String, dynamic>)
@@ -176,6 +179,7 @@ class SessionModel {
           if (archived != null) 'archived': archived,
         },
         if (parentID != null) 'parentID': parentID,
+        if (workspaceID != null) 'workspaceID': workspaceID,
         'cost': cost,
         'tokens': tokens.toJson(),
         if (agent != null) 'agent': agent,

@@ -96,6 +96,7 @@ class ServerStore extends ChangeNotifier {
   /// of entries at most. Hard-deleting a session does NOT remove its project's
   /// entry (see `_removeSession`) — monotonicity holds across deletes too.
   final Map<String, int> _lastActivityByKey = {};
+  final Map<String, bool> _workspaceEnabled = {};
   bool _projectsFetched = false;
   /// Per-session conversation caches, capped at [_kMaxConversations] with
   /// LRU eviction (oldest accessed evicted on insert). Uses a LinkedHashMap
@@ -236,6 +237,34 @@ class ServerStore extends ChangeNotifier {
       if (s.id == id) return s;
     }
     return null;
+  }
+
+  bool workspaceEnabled(String projectId) {
+    if (projectId == 'global') return false;
+    return _workspaceEnabled[projectId] ?? false;
+  }
+
+  void setWorkspaceEnabled(String projectId, bool enabled) {
+    if (projectId == 'global') return;
+    if (_workspaceEnabled[projectId] == enabled) return;
+    _workspaceEnabled[projectId] = enabled;
+    notifyListeners();
+    _scheduleCacheSave();
+  }
+
+  void _inferWorkspaceForNewProjects() {
+    final hasWorkspaceSession = <String>{};
+    for (final s in _sessions) {
+      final ws = s.workspaceID;
+      if (ws != null && ws.isNotEmpty) {
+        hasWorkspaceSession.add(s.projectID);
+      }
+    }
+    for (final p in _projects) {
+      if (p.id == 'global') continue;
+      if (_workspaceEnabled.containsKey(p.id)) continue;
+      _workspaceEnabled[p.id] = hasWorkspaceSession.contains(p.id);
+    }
   }
 
   Future<SessionModel> createSession(String directory) async {
@@ -445,6 +474,7 @@ class ServerStore extends ChangeNotifier {
     _statusMap.clear();
     _lastMessage.clear();
     _lastActivityByKey.clear();
+    _workspaceEnabled.clear();
     _projectsFetched = false;
     // Load cached data first for instant offline UI, then _bootstrap refreshes.
     await _loadCache();
@@ -533,6 +563,7 @@ class ServerStore extends ChangeNotifier {
       _statusMap
         ..clear()
         ..addAll(status);
+      _inferWorkspaceForNewProjects();
       return true;
     } catch (_) {
       return false;
@@ -669,6 +700,7 @@ class ServerStore extends ChangeNotifier {
       _statusMap
         ..clear()
         ..addAll(status);
+      _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
         conv.setStatus(status[conv.sessionId]?.type ?? 'idle');
         conv.sessionUpdated = sessionById(conv.sessionId)?.updated;
@@ -1322,6 +1354,7 @@ class ServerStore extends ChangeNotifier {
     _statusMap.clear();
     _lastMessage.clear();
     _lastActivityByKey.clear();
+    _workspaceEnabled.clear();
     _pendingPermissions.clear();
     _pendingQuestions.clear();
     _recentlyResolvedQuestions.clear();
@@ -1472,6 +1505,7 @@ class ServerStore extends ChangeNotifier {
         'status': _statusMap.map((k, v) => MapEntry(k, v.toJson())),
         'lastMessage': _lastMessage,
         'activity': _lastActivityByKey,
+        'workspaceEnabled': _workspaceEnabled,
       };
       await prefs.setString(_cacheKey(profile.id), jsonEncode(j));
     } catch (e) {
@@ -1533,6 +1567,11 @@ class ServerStore extends ChangeNotifier {
       }
       for (final e in lastMsg.entries) {
         _lastMessage.putIfAbsent(e.key, () => e.value);
+      }
+      final wsRaw = j['workspaceEnabled'] as Map? ?? {};
+      for (final entry in wsRaw.entries) {
+        _workspaceEnabled.putIfAbsent(
+            entry.key.toString(), () => entry.value == true);
       }
       if (_projects.isNotEmpty || _sessions.isNotEmpty) {
         _projectsFetched = true;
