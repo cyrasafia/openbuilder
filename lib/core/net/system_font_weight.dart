@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' show FontVariation;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Reads the system font weight setting (Android only).
@@ -24,7 +25,7 @@ class SystemFontWeight {
   /// Read the system font weight. Call once at startup (e.g. in main()).
   /// On non-Android platforms or if the setting is unavailable, this is a no-op.
   static Future<void> init() async {
-    if (!Platform.isAndroid) return;
+    if (kIsWeb || !Platform.isAndroid) return;
     try {
       final result = await _channel.invokeMethod<int>('getFontWeight');
       _weight = result;

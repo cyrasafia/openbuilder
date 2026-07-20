@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 /// Lightweight local-notification service for foreground alerts when the
@@ -8,6 +9,7 @@ class NotificationService {
 
   static Future<void> init() async {
     if (_initialized) return;
+    if (kIsWeb) return;
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosInit = DarwinInitializationSettings();
     await _plugin.initialize(
@@ -27,6 +29,7 @@ class NotificationService {
   /// Notify that an agent run completed (session went busy → idle).
   static Future<void> notifyRunComplete(String sessionTitle) async {
     if (!_initialized) await init();
+    if (!_initialized) return;
     await _plugin.show(
       0,
       'Open Builder',
@@ -47,6 +50,7 @@ class NotificationService {
   static Future<void> notifyPermission(
       String sessionTitle, String permTitle) async {
     if (!_initialized) await init();
+    if (!_initialized) return;
     await _plugin.show(
       1,
       '需要授权',
@@ -67,6 +71,7 @@ class NotificationService {
   static Future<void> notifyQuestion(
       String sessionTitle, String header) async {
     if (!_initialized) await init();
+    if (!_initialized) return;
     await _plugin.show(
       2,
       '需要回答',

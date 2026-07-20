@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -276,7 +277,7 @@ class _SettingsTabState extends State<SettingsTab> {
       return;
     }
     if (!mounted) return;
-    if (Platform.isAndroid) {
+    if (!kIsWeb && Platform.isAndroid) {
       await _showShareSheet(file);
     } else {
       await _share(file);
@@ -327,7 +328,7 @@ class _SettingsTabState extends State<SettingsTab> {
   Future<void> _saveToLocal(File file) async {
     final name = file.uri.pathSegments.last;
     try {
-      if (Platform.isAndroid) {
+      if (!kIsWeb && Platform.isAndroid) {
         try {
           await _filesChannel.invokeMethod<String>('saveToDownloads', {
             'srcPath': file.path,

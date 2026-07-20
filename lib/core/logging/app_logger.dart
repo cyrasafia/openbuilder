@@ -37,6 +37,7 @@ class AppLogger {
   static const _retentionDays = 7;
 
   Future<void> init() async {
+    if (kIsWeb) return;
     final appDir = await getApplicationDocumentsDirectory();
     _dir = Directory('${appDir.path}/logs');
     await _dir!.create(recursive: true);
