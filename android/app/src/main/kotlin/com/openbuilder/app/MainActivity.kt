@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -98,8 +99,14 @@ class MainActivity : FlutterActivity() {
                 "font_weight",
                 -1
             )
-            if (weight in 100..900) return weight
-        } catch (_: Exception) {}
+            if (weight in 100..900) {
+                Log.d(TAG, "method1 Settings.System font_weight = $weight")
+                return weight
+            }
+            Log.d(TAG, "method1 Settings.System font_weight = $weight (out of range)")
+        } catch (e: Exception) {
+            Log.d(TAG, "method1 Settings.System font_weight threw: ${e.message}")
+        }
 
         // Method 2: Read from Typeface.DEFAULT weight field (Android 12+).
         // Use javaClass directly (not superclass) to access Typeface's own
@@ -109,9 +116,20 @@ class MainActivity : FlutterActivity() {
             val field = typeface.javaClass.getDeclaredField("weight")
             field.isAccessible = true
             val w = field.getInt(typeface)
-            if (w in 100..900) return w
-        } catch (_: Exception) {}
+            if (w in 100..900) {
+                Log.d(TAG, "method2 Typeface.DEFAULT.weight = $w")
+                return w
+            }
+            Log.d(TAG, "method2 Typeface.DEFAULT.weight = $w (out of range)")
+        } catch (e: Exception) {
+            Log.d(TAG, "method2 Typeface.DEFAULT.weight threw: ${e.message}")
+        }
 
+        Log.d(TAG, "no system font weight found → null")
         return null
+    }
+
+    companion object {
+        private const val TAG = "OpenBuilder/FontWeight"
     }
 }

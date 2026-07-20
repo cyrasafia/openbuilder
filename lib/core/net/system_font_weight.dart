@@ -4,6 +4,8 @@ import 'dart:ui' show FontVariation;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../logging/app_logger.dart';
+
 /// Reads the system font weight setting (Android only).
 ///
 /// Flutter's Skia text rendering bypasses Android's font system, so system
@@ -25,12 +27,18 @@ class SystemFontWeight {
   /// Read the system font weight. Call once at startup (e.g. in main()).
   /// On non-Android platforms or if the setting is unavailable, this is a no-op.
   static Future<void> init() async {
-    if (kIsWeb || !Platform.isAndroid) return;
+    if (kIsWeb || !Platform.isAndroid) {
+      AppLogger.I
+          .i('FontWeight', 'init skipped: kIsWeb=$kIsWeb, android=${Platform.isAndroid}');
+      return;
+    }
     try {
       final result = await _channel.invokeMethod<int>('getFontWeight');
       _weight = result;
-    } catch (_) {
-      // Not available (non-Xiaomi, older Android, etc.)
+      AppLogger.I.i('FontWeight',
+          'system weight read = $result (variations will ${result == null ? "NOT" : ""} be applied)');
+    } catch (e) {
+      AppLogger.I.w('FontWeight', 'init failed: $e');
     }
   }
 }

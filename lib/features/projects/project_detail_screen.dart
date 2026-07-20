@@ -445,7 +445,7 @@ class _ProjectCard extends StatelessWidget {
                           Text(
                             name,
                             style: const TextStyle(
-                              fontSize: 20,
+                              fontSize: 18,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -490,6 +490,7 @@ class _ProjectCard extends StatelessWidget {
 
   Widget _topBar(BuildContext context) {
     final hasMenu = onToggleWorkspace != null || onEdit != null;
+    final scheme = Theme.of(context).colorScheme;
     return Row(
       children: [
         IconButton(
@@ -511,23 +512,39 @@ class _ProjectCard extends StatelessWidget {
             },
             itemBuilder: (_) => [
               if (onEdit != null)
-                const PopupMenuItem(
+                PopupMenuItem(
                   value: 'edit',
-                  child: ListTile(
-                    leading: Icon(Icons.edit_outlined),
-                    title: Text('编辑项目'),
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.edit_outlined, size: 20),
+                      const SizedBox(width: 12),
+                      Text(
+                        '编辑项目',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w400,
+                          color: scheme.onSurface,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               if (onToggleWorkspace != null)
                 PopupMenuItem(
                   value: 'toggle_workspace',
-                  child: ListTile(
-                    leading: const Icon(Icons.workspaces_outline),
-                    title: Text(workspaceEnabled ? '关闭工作区' : '开启工作区'),
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.workspaces_outline, size: 20),
+                      const SizedBox(width: 12),
+                      Text(
+                        workspaceEnabled ? '关闭工作区' : '开启工作区',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w400,
+                          color: scheme.onSurface,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
             ],
