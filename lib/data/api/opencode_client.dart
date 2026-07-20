@@ -219,14 +219,17 @@ class OpencodeClient {
   Future<void> prompt(
     String sessionId, {
     String? directory,
+    String? agent,
     required List<Map<String, dynamic>> parts,
     Duration? sendTimeout,
   }) async {
+    final body = <String, dynamic>{'parts': parts};
+    if (agent != null) body['agent'] = agent;
     await dio.post(
       '/session/$sessionId/prompt_async',
       queryParameters:
           directory != null ? {'directory': directory} : null,
-      data: {'parts': parts},
+      data: body,
       options: sendTimeout == null
           ? null
           : Options(sendTimeout: sendTimeout),

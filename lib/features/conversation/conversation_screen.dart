@@ -373,6 +373,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await client.prompt(
           widget.sessionId,
           directory: directory,
+          agent: session?.agent,
           parts: parts,
           sendTimeout: totalLen > 2 * 1024 * 1024
               ? const Duration(seconds: 120)
