@@ -52,6 +52,34 @@ class OpencodeClient {
     return ProjectModel.fromJson(_asMap(r.data));
   }
 
+  /// `PATCH /project/{projectID}` — update project name / icon / commands.
+  ///
+  /// [name] is sent only when non-null. When [updateIcon] is true the full
+  /// icon object is serialized with all three keys present — explicit JSON
+  /// `null` for [iconOverride]/[iconColor] clears them, which is correct under
+  /// both merge-patch (RFC 7396: null = delete) and replace semantics.
+  /// [iconUrl] is the server-managed repo URL, passed through unchanged.
+  Future<ProjectModel> updateProject(
+    String projectId, {
+    String? name,
+    bool updateIcon = false,
+    String? iconUrl,
+    String? iconOverride,
+    String? iconColor,
+  }) async {
+    final body = <String, dynamic>{};
+    if (name != null) body['name'] = name;
+    if (updateIcon) {
+      body['icon'] = <String, dynamic>{
+        'url': iconUrl,
+        'override': iconOverride,
+        'color': iconColor,
+      };
+    }
+    final r = await dio.patch<dynamic>('/project/$projectId', data: body);
+    return ProjectModel.fromJson(_asMap(r.data));
+  }
+
   /// `GET /session` (global, unarchived by default)
   Future<List<SessionModel>> sessions() async =>
       _getModels('/session', SessionModel.fromJson);

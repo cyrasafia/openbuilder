@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../app_state.dart';
 import '../../domain/models.dart';
@@ -46,46 +48,52 @@ class ProjectDetailScreen extends StatelessWidget {
             ? (project?.displayName ?? 'global')
             : (directory!.isEmpty ? 'global' : directory!.split('/').last);
         final scopedWorktree = directory ?? (project?.worktree ?? '');
-        final textScaler = MediaQuery.textScalerOf(context);
         final p = project;
         final wsCapable = p?.workspaceCapable ?? false;
         final wsEnabled = wsCapable && serverStore.workspaceEnabled(p!.id);
-        final subLines = 2 + (wsEnabled ? 1 : 0);
-        final scaledTitleHeight =
-            textScaler.scale(16) * 1.2 + textScaler.scale(11) * 1.2 * subLines + 4;
-        final toolbarHeight = scaledTitleHeight + 16 < 76
-            ? 76.0
-            : scaledTitleHeight + 16;
+        final canEdit = p != null && p.id != 'global';
 
         return Scaffold(
-          appBar: AppBar(
-            toolbarHeight: toolbarHeight,
-            title: _ProjectAppBarTitle(
-              name: scopedTitle,
-              icon: project?.icon,
-              worktree: scopedWorktree,
-              sessionCount: sessions.length,
-              workspaceEnabled: wsEnabled,
-            ),
-            actions: [
-              if (wsCapable)
-                PopupMenuButton<String>(
-                  onSelected: (v) {
-                    if (v == 'toggle_workspace') {
-                      final next =
-                          !serverStore.workspaceEnabled(p!.id);
-                      serverStore.setWorkspaceEnabled(p.id, next);
-                    }
-                  },
-                  itemBuilder: (_) => [
-                    PopupMenuItem(
-                      value: 'toggle_workspace',
-                      child: Text(serverStore.workspaceEnabled(p!.id)
-                          ? '关闭工作区'
-                          : '开启工作区'),
-                    ),
+          body: Column(
+            children: [
+              _ProjectCard(
+                name: scopedTitle,
+                icon: project?.icon,
+                worktree: scopedWorktree,
+                sessionCount: sessions.length,
+                workspaceCapable: wsCapable,
+                workspaceEnabled: wsEnabled,
+                canEdit: canEdit,
+                onBack: () => Navigator.maybeOf(context)?.maybePop(),
+                onToggleWorkspace: wsCapable
+                    ? () => serverStore.setWorkspaceEnabled(
+                          p!.id,
+                          !serverStore.workspaceEnabled(p.id),
+                        )
+                    : null,
+                onEdit: canEdit ? () => _showEditProject(context, p) : null,
+              ),
+              Expanded(
+                child: ListView(
+                  children: [
+                    if (sessions.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Center(child: Text('无活跃会话')),
+                      )
+                    else if (project?.id == 'global' && directory == null)
+                      ..._groupedGlobal(context, sessions)
+                    else
+                      ..._groupedByWorktree(
+                        context,
+                        sessions,
+                        scopedWorktree,
+                        project?.sandboxes ?? const [],
+                      ),
+                    const SizedBox(height: 16),
                   ],
                 ),
+              ),
             ],
           ),
           floatingActionButton: (project != null && project.id != 'global')
@@ -95,25 +103,6 @@ class ProjectDetailScreen extends StatelessWidget {
                   onPressed: () => _startCreateSession(context, project),
                 )
               : null,
-          body: ListView(
-            children: [
-              if (sessions.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(32),
-                  child: Center(child: Text('无活跃会话')),
-                )
-              else if (project?.id == 'global' && directory == null)
-                ..._groupedGlobal(context, sessions)
-              else
-                ..._groupedByWorktree(
-                  context,
-                  sessions,
-                  scopedWorktree,
-                  project?.sandboxes ?? const [],
-                ),
-              const SizedBox(height: 16),
-            ],
-          ),
         );
       },
     );
@@ -304,6 +293,15 @@ class ProjectDetailScreen extends StatelessWidget {
     );
   }
 
+  void _showEditProject(BuildContext context, ProjectModel project) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => _ProjectEditSheet(project: project),
+    );
+  }
+
   List<Widget> _groupedGlobal(BuildContext context, List<SessionModel> all) {
     final byDir = <String, List<SessionModel>>{};
     for (final s in all) {
@@ -388,66 +386,182 @@ class ProjectDetailScreen extends StatelessWidget {
   }
 }
 
-class _ProjectAppBarTitle extends StatelessWidget {
+class _ProjectCard extends StatelessWidget {
   final String name;
   final ProjectIcon? icon;
   final String worktree;
   final int sessionCount;
+  final bool workspaceCapable;
   final bool workspaceEnabled;
-  const _ProjectAppBarTitle({
+  final bool canEdit;
+  final VoidCallback onBack;
+  final VoidCallback? onToggleWorkspace;
+  final VoidCallback? onEdit;
+
+  const _ProjectCard({
     required this.name,
     required this.icon,
     required this.worktree,
     required this.sessionCount,
+    required this.workspaceCapable,
     required this.workspaceEnabled,
+    required this.canEdit,
+    required this.onBack,
+    this.onToggleWorkspace,
+    this.onEdit,
   });
 
   @override
   Widget build(BuildContext context) {
-    final muted = Theme.of(context).colorScheme.outline;
-    return Row(
-      children: [
-        ProjectAvatar(name: name, icon: icon, size: 42),
-        const SizedBox(width: 12),
-        Expanded(
+    final scheme = Theme.of(context).colorScheme;
+    final muted = scheme.outline;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(
+          bottom: BorderSide(color: scheme.outlineVariant.withAlpha(90)),
+        ),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 8),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
+              _topBar(context),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ProjectAvatar(name: name, icon: icon, size: 56),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            name,
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            worktree,
+                            style: AppTheme.mono.copyWith(
+                              fontSize: 12,
+                              color: muted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                worktree,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppTheme.mono.copyWith(fontSize: 11, color: muted),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    _StatChip(
+                      icon: Icons.chat_bubble_outline,
+                      label: '$sessionCount 个会话',
+                    ),
+                    if (workspaceEnabled)
+                      const _StatChip(
+                        icon: Icons.call_split,
+                        label: '工作区已开启',
+                      ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                '$sessionCount 个未存档会话',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11, color: muted),
-              ),
-              if (workspaceEnabled) ...[
-                const SizedBox(height: 2),
-                Text('工作区：开启',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11, color: muted)),
-              ],
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _topBar(BuildContext context) {
+    final hasMenu = onToggleWorkspace != null || onEdit != null;
+    return Row(
+      children: [
+        IconButton(
+          icon: const Icon(Icons.arrow_back),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
+          onPressed: onBack,
+        ),
+        const Spacer(),
+        if (hasMenu)
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) {
+              switch (v) {
+                case 'edit':
+                  onEdit?.call();
+                case 'toggle_workspace':
+                  onToggleWorkspace?.call();
+              }
+            },
+            itemBuilder: (_) => [
+              if (onEdit != null)
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: ListTile(
+                    leading: Icon(Icons.edit_outlined),
+                    title: Text('编辑项目'),
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                  ),
+                ),
+              if (onToggleWorkspace != null)
+                PopupMenuItem(
+                  value: 'toggle_workspace',
+                  child: ListTile(
+                    leading: const Icon(Icons.workspaces_outline),
+                    title: Text(workspaceEnabled ? '关闭工作区' : '开启工作区'),
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                  ),
+                ),
+            ],
+          ),
       ],
+    );
+  }
+}
+
+class _StatChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _StatChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: scheme.outline),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: TextStyle(fontSize: 12, color: scheme.onSurface),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -563,6 +677,238 @@ class _SessionRow extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: muted),
               ),
             ),
+    );
+  }
+}
+
+const _iconColorKeys = <String>[
+  'green',
+  'blue',
+  'orange',
+  'purple',
+  'pink',
+  'yellow',
+  'cyan',
+  'red',
+];
+
+/// Bottom sheet for editing a project's name and icon (image override / color).
+class _ProjectEditSheet extends StatefulWidget {
+  final ProjectModel project;
+  const _ProjectEditSheet({required this.project});
+
+  @override
+  State<_ProjectEditSheet> createState() => _ProjectEditSheetState();
+}
+
+class _ProjectEditSheetState extends State<_ProjectEditSheet> {
+  late final TextEditingController _nameCtrl;
+  String? _override;
+  String? _color;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.project.displayName);
+    _override = widget.project.icon?.override;
+    _color = widget.project.icon?.color;
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  ProjectIcon get _previewIcon => ProjectIcon(
+        url: widget.project.icon?.url,
+        override: _override,
+        color: _color,
+      );
+
+  Future<void> _pickImage() async {
+    try {
+      final x = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 256,
+        maxHeight: 256,
+        imageQuality: 80,
+      );
+      if (x == null) return;
+      final bytes = await x.readAsBytes();
+      final mime = x.mimeType ?? 'image/png';
+      if (!mounted) return;
+      setState(() {
+        _override = 'data:$mime;base64,${base64Encode(bytes)}';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('选择图片失败：$e')),
+      );
+    }
+  }
+
+  Future<void> _save() async {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('项目名称不能为空')),
+      );
+      return;
+    }
+    setState(() => _saving = true);
+    final original = widget.project;
+    final iconChanged = _override != original.icon?.override ||
+        _color != original.icon?.color;
+    final nameChanged = name != original.displayName;
+
+    try {
+      await serverStore.updateProject(
+        original.id,
+        name: nameChanged ? name : null,
+        updateIcon: iconChanged,
+        iconUrl: original.icon?.url,
+        iconOverride: _override,
+        iconColor: _color,
+      );
+      if (mounted) Navigator.of(context).maybePop();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存失败：$e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        16,
+        8,
+        16,
+        16 + MediaQuery.viewInsetsOf(context).bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            '编辑项目',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: scheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              ProjectAvatar(
+                name: _nameCtrl.text.isEmpty
+                    ? widget.project.displayName
+                    : _nameCtrl.text,
+                icon: _previewIcon,
+                size: 56,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final key in _iconColorKeys)
+                          GestureDetector(
+                            onTap: () => setState(() {
+                              _color = _color == key ? null : key;
+                              _override = null;
+                            }),
+                            child: Container(
+                              width: 28,
+                              height: 28,
+                              decoration: BoxDecoration(
+                                color: namedColor(key),
+                                shape: BoxShape.circle,
+                                border: _color == key
+                                    ? Border.all(
+                                        color: scheme.onSurface,
+                                        width: 2.5,
+                                      )
+                                    : null,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        TextButton.icon(
+                          onPressed: _pickImage,
+                          icon: const Icon(Icons.image_outlined, size: 18),
+                          label: const Text('选择图片'),
+                        ),
+                        if (_override != null)
+                          TextButton.icon(
+                            onPressed: () =>
+                                setState(() => _override = null),
+                            icon: const Icon(Icons.restart_alt, size: 18),
+                            label: const Text('移除图片'),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _nameCtrl,
+            decoration: const InputDecoration(
+              labelText: '项目名称',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.label_outline),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: _saving
+                    ? null
+                    : () => Navigator.of(context).maybePop(),
+                child: const Text('取消'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: _saving ? null : _save,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check),
+                label: const Text('保存'),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

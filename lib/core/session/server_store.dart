@@ -252,6 +252,39 @@ class ServerStore extends ChangeNotifier {
     _scheduleCacheSave();
   }
 
+  /// `PATCH /project/{projectId}` — update name / icon. Replaces the cached
+  /// project with the server-returned value and notifies listeners. When
+  /// [updateIcon] is true, [iconOverride]/[iconColor] are serialized with
+  /// explicit nulls (null = clear), so removals take effect.
+  Future<ProjectModel> updateProject(
+    String projectId, {
+    String? name,
+    bool updateIcon = false,
+    String? iconUrl,
+    String? iconOverride,
+    String? iconColor,
+  }) async {
+    final activeClient = client;
+    if (activeClient == null) throw StateError('未连接服务器');
+    final updated = await activeClient.updateProject(
+      projectId,
+      name: name,
+      updateIcon: updateIcon,
+      iconUrl: iconUrl,
+      iconOverride: iconOverride,
+      iconColor: iconColor,
+    );
+    final idx = _projects.indexWhere((p) => p.id == projectId);
+    if (idx >= 0) {
+      _projects[idx] = updated;
+    } else {
+      _projects.add(updated);
+    }
+    _scheduleCacheSave();
+    notifyListeners();
+    return updated;
+  }
+
   void _inferWorkspaceForNewProjects() {
     final hasWorkspaceSession = <String>{};
     for (final s in _sessions) {
