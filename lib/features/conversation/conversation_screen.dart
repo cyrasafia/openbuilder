@@ -345,7 +345,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _cmdMode = false;
       _attachments.clear();
     });
-    var ok = false;
     try {
       if (startsShell) {
         final command = text.substring(1).trim();
@@ -381,7 +380,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
         );
         conv.setStatus('busy');
       }
-      ok = true;
     } catch (e) {
       conv.removeOptimisticMessages();
       serverStore.reflectPreviewFrom(widget.sessionId);
