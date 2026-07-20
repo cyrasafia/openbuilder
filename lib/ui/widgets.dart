@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../domain/models.dart';
@@ -347,6 +348,7 @@ class SseStatusDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (kReleaseMode) return const SizedBox.shrink();
     // Disconnected: don't show.
     if (!connected && !reconnecting) return const SizedBox.shrink();
 
