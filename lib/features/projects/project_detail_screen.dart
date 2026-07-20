@@ -128,6 +128,8 @@ class ProjectDetailScreen extends StatelessWidget {
       await _createSession(context, project.worktree);
       return;
     }
+    final workspaces =
+        project.sandboxes.isNotEmpty ? project.sandboxes : [project.worktree];
     final directory = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -146,7 +148,7 @@ class ProjectDetailScreen extends StatelessWidget {
                   ctx,
                 ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
-              ...[project.worktree, ...project.sandboxes].map(
+              ...workspaces.map(
                 (dir) => ListTile(
                   leading: const Icon(Icons.call_split),
                   title: Text(dir.split('/').last),
