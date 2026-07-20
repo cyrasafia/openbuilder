@@ -94,10 +94,12 @@ class OpencodeClient {
   }
 
   /// `POST /experimental/worktree?directory=<dir>` — create a worktree.
-  /// Body: `{name, startCommand?}` → returns `{name, branch?, directory}`.
+  /// Body: `{name?, startCommand?}` → returns `{name, branch?, directory}`.
+  /// If [name] is omitted, the server generates a random adjective-noun slug.
   Future<WorktreeResult> createWorktree(String directory,
-      {required String name, String? startCommand}) async {
-    final body = <String, dynamic>{'name': name};
+      {String? name, String? startCommand}) async {
+    final body = <String, dynamic>{};
+    if (name != null && name.isNotEmpty) body['name'] = name;
     if (startCommand != null && startCommand.isNotEmpty) {
       body['startCommand'] = startCommand;
     }

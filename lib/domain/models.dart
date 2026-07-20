@@ -6,6 +6,7 @@ class ProjectModel {
   final String? vcs;
   final String? name;
   final ProjectIcon? icon;
+  final ProjectCommands? commands;
   final List<String> sandboxes;
   final int created;
 
@@ -15,24 +16,35 @@ class ProjectModel {
     this.vcs,
     this.name,
     this.icon,
+    this.commands,
     this.sandboxes = const [],
     this.created = 0,
   });
 
   factory ProjectModel.fromJson(Map<String, dynamic> j) => ProjectModel(
-        id: (j['id'] ?? '').toString(),
-        worktree: (j['worktree'] ?? '').toString(),
-        vcs: j['vcs']?.toString(),
-        name: j['name']?.toString(),
-        icon: j['icon'] is Map ? ProjectIcon.fromJson(j['icon']) : null,
-        sandboxes: (j['sandboxes'] as List? ?? [])
-            .map((e) => e.toString())
-            .toList(growable: false),
-        created: _i(j['time'] is Map ? (j['time'] as Map)['created'] : 0),
-      );
+    id: (j['id'] ?? '').toString(),
+    worktree: (j['worktree'] ?? '').toString(),
+    vcs: j['vcs']?.toString(),
+    name: j['name']?.toString(),
+    icon: j['icon'] is Map ? ProjectIcon.fromJson(j['icon']) : null,
+    commands: j['commands'] is Map
+        ? ProjectCommands.fromJson(
+            (j['commands'] as Map).cast<String, dynamic>(),
+          )
+        : null,
+    sandboxes: (j['sandboxes'] as List? ?? [])
+        .map((e) => e.toString())
+        .toList(growable: false),
+    created: _i(j['time'] is Map ? (j['time'] as Map)['created'] : 0),
+  );
 
   String get worktreeName =>
       worktree.isEmpty || worktree == '/' ? 'global' : worktree.split('/').last;
+
+  bool get workspacesEnabled => commands != null;
+
+  bool get workspaceCapable =>
+      id != 'global' && vcs != null && vcs!.isNotEmpty;
 
   String get displayName {
     final n = name;
@@ -41,14 +53,26 @@ class ProjectModel {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'worktree': worktree,
-        if (vcs != null) 'vcs': vcs,
-        if (name != null) 'name': name,
-        if (icon != null) 'icon': icon!.toJson(),
-        'sandboxes': sandboxes,
-        'time': {'created': created},
-      };
+    'id': id,
+    'worktree': worktree,
+    if (vcs != null) 'vcs': vcs,
+    if (name != null) 'name': name,
+    if (icon != null) 'icon': icon!.toJson(),
+    if (commands != null) 'commands': commands!.toJson(),
+    'sandboxes': sandboxes,
+    'time': {'created': created},
+  };
+}
+
+class ProjectCommands {
+  final String? start;
+
+  const ProjectCommands({this.start});
+
+  factory ProjectCommands.fromJson(Map<String, dynamic> j) =>
+      ProjectCommands(start: j['start']?.toString());
+
+  Map<String, dynamic> toJson() => {if (start != null) 'start': start};
 }
 
 class ProjectIcon {
@@ -58,16 +82,16 @@ class ProjectIcon {
   const ProjectIcon({this.url, this.override, this.color});
 
   factory ProjectIcon.fromJson(Map<String, dynamic> j) => ProjectIcon(
-        url: j['url']?.toString(),
-        override: j['override']?.toString(),
-        color: j['color']?.toString(),
-      );
+    url: j['url']?.toString(),
+    override: j['override']?.toString(),
+    color: j['color']?.toString(),
+  );
 
   Map<String, dynamic> toJson() => {
-        if (url != null) 'url': url,
-        if (override != null) 'override': override,
-        if (color != null) 'color': color,
-      };
+    if (url != null) 'url': url,
+    if (override != null) 'override': override,
+    if (color != null) 'color': color,
+  };
 
   /// Best image source (data URL or http URL); null → fallback to monogram.
   String? get image => override ?? url;
@@ -78,17 +102,13 @@ class CommandInfo {
   final String name;
   final String description;
   final String? agent;
-  const CommandInfo({
-    required this.name,
-    this.description = '',
-    this.agent,
-  });
+  const CommandInfo({required this.name, this.description = '', this.agent});
 
   factory CommandInfo.fromJson(Map<String, dynamic> j) => CommandInfo(
-        name: (j['name'] ?? '').toString(),
-        description: (j['description'] ?? '').toString(),
-        agent: j['agent']?.toString(),
-      );
+    name: (j['name'] ?? '').toString(),
+    description: (j['description'] ?? '').toString(),
+    agent: j['agent']?.toString(),
+  );
 
   String get slash => name.startsWith('/') ? name : '/$name';
 }
@@ -102,13 +122,16 @@ class Tokens {
   int get total => input + output;
 
   factory Tokens.fromJson(Map<String, dynamic> j) => Tokens(
-        input: _i(j['input']),
-        output: _i(j['output']),
-        reasoning: _i(j['reasoning']),
-      );
+    input: _i(j['input']),
+    output: _i(j['output']),
+    reasoning: _i(j['reasoning']),
+  );
 
-  Map<String, dynamic> toJson() =>
-      {'input': input, 'output': output, 'reasoning': reasoning};
+  Map<String, dynamic> toJson() => {
+    'input': input,
+    'output': output,
+    'reasoning': reasoning,
+  };
 }
 
 class SessionModel {
@@ -207,10 +230,18 @@ class AgentIndicatorState {
   final AgentPauseReason? pauseReason;
   final int pendingCount;
 
-  const AgentIndicatorState(this.state,
-      {this.pauseReason, this.pendingCount = 0})
-      : assert((state == AgentRunState.paused && pauseReason != null && pendingCount >= 1) ||
-            (state != AgentRunState.paused && pauseReason == null && pendingCount == 0));
+  const AgentIndicatorState(
+    this.state, {
+    this.pauseReason,
+    this.pendingCount = 0,
+  }) : assert(
+         (state == AgentRunState.paused &&
+                 pauseReason != null &&
+                 pendingCount >= 1) ||
+             (state != AgentRunState.paused &&
+                 pauseReason == null &&
+                 pendingCount == 0),
+       );
 }
 
 class MessageInfo {
@@ -237,31 +268,32 @@ class MessageInfo {
   });
 
   factory MessageInfo.fromJson(Map<String, dynamic> j) => MessageInfo(
-        id: (j['id'] ?? '').toString(),
-        role: (j['role'] ?? 'assistant').toString(),
-        sessionID: j['sessionID']?.toString(),
-        created: j['time'] is Map ? _i((j['time'] as Map)['created']) : null,
-        completed:
-            j['time'] is Map ? _i((j['time'] as Map)['completed']) : null,
-        cost: _d(j['cost']),
-        modelID: j['modelID']?.toString(),
-        finish: j['finish']?.toString(),
-        error: j['error'] is Map ? (j['error'] as Map).cast<String, dynamic>() : null,
-      );
+    id: (j['id'] ?? '').toString(),
+    role: (j['role'] ?? 'assistant').toString(),
+    sessionID: j['sessionID']?.toString(),
+    created: j['time'] is Map ? _i((j['time'] as Map)['created']) : null,
+    completed: j['time'] is Map ? _i((j['time'] as Map)['completed']) : null,
+    cost: _d(j['cost']),
+    modelID: j['modelID']?.toString(),
+    finish: j['finish']?.toString(),
+    error: j['error'] is Map
+        ? (j['error'] as Map).cast<String, dynamic>()
+        : null,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'role': role,
-        'sessionID': sessionID,
-        'time': {
-          if (created != null) 'created': created,
-          if (completed != null) 'completed': completed,
-        },
-        'cost': cost,
-        'modelID': modelID,
-        'finish': finish,
-        'error': error,
-      };
+    'id': id,
+    'role': role,
+    'sessionID': sessionID,
+    'time': {
+      if (created != null) 'created': created,
+      if (completed != null) 'completed': completed,
+    },
+    'cost': cost,
+    'modelID': modelID,
+    'finish': finish,
+    'error': error,
+  };
 }
 
 /// Loose part wrapper over raw JSON. Types: text, reasoning, tool,
@@ -275,8 +307,9 @@ class MessagePart {
   String get id => (raw['id'] ?? '').toString();
   String? get text => _str('text');
   String? get tool => _str('tool');
-  Map<String, dynamic>? get state =>
-      raw['state'] is Map ? (raw['state'] as Map).cast<String, dynamic>() : null;
+  Map<String, dynamic>? get state => raw['state'] is Map
+      ? (raw['state'] as Map).cast<String, dynamic>()
+      : null;
   String? get stateStatus => state?['status']?.toString();
   String? get stateTitle => state?['title']?.toString();
   String? get stateOutput => state?['output']?.toString();
@@ -307,12 +340,13 @@ class MessageEntry {
   const MessageEntry({required this.info, required this.parts});
 
   factory MessageEntry.fromJson(Map<String, dynamic> j) => MessageEntry(
-        info: MessageInfo.fromJson(
-            (j['info'] as Map?)?.cast<String, dynamic>() ?? const {}),
-        parts: ((j['parts'] as List?) ?? [])
-            .map((e) => MessagePart((e as Map).cast<String, dynamic>()))
-            .toList(growable: false),
-      );
+    info: MessageInfo.fromJson(
+      (j['info'] as Map?)?.cast<String, dynamic>() ?? const {},
+    ),
+    parts: ((j['parts'] as List?) ?? [])
+        .map((e) => MessagePart((e as Map).cast<String, dynamic>()))
+        .toList(growable: false),
+  );
 }
 
 class Todo {
@@ -320,21 +354,30 @@ class Todo {
   final String content;
   final String status; // pending | in_progress | completed | cancelled
   final String priority;
-  const Todo({this.id, required this.content, required this.status, this.priority = 'medium'});
+  const Todo({
+    this.id,
+    required this.content,
+    required this.status,
+    this.priority = 'medium',
+  });
 
   factory Todo.fromJson(Map<String, dynamic> j) => Todo(
-        id: j['id']?.toString(),
-        content: (j['content'] ?? '').toString(),
-        status: (j['status'] ?? 'pending').toString(),
-        priority: (j['priority'] ?? 'medium').toString(),
-      );
+    id: j['id']?.toString(),
+    content: (j['content'] ?? '').toString(),
+    status: (j['status'] ?? 'pending').toString(),
+    priority: (j['priority'] ?? 'medium').toString(),
+  );
 
   bool get done => status == 'completed' || status == 'cancelled';
   bool get active => status == 'in_progress';
   bool get cancelled => status == 'cancelled';
 
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'content': content, 'status': status, 'priority': priority};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'content': content,
+    'status': status,
+    'priority': priority,
+  };
 }
 
 /// Result of `POST /experimental/worktree` — a newly created worktree.
@@ -342,14 +385,17 @@ class WorktreeResult {
   final String name;
   final String? branch;
   final String directory;
-  const WorktreeResult(
-      {required this.name, this.branch, required this.directory});
+  const WorktreeResult({
+    required this.name,
+    this.branch,
+    required this.directory,
+  });
 
   factory WorktreeResult.fromJson(Map<String, dynamic> j) => WorktreeResult(
-        name: (j['name'] ?? '').toString(),
-        branch: j['branch']?.toString(),
-        directory: (j['directory'] ?? '').toString(),
-      );
+    name: (j['name'] ?? '').toString(),
+    branch: j['branch']?.toString(),
+    directory: (j['directory'] ?? '').toString(),
+  );
 }
 
 class Permission {
@@ -427,12 +473,12 @@ class FileNode {
   });
 
   factory FileNode.fromJson(Map<String, dynamic> j) => FileNode(
-        name: (j['name'] ?? '').toString(),
-        path: (j['path'] ?? '').toString(),
-        absolute: (j['absolute'] ?? '').toString(),
-        type: (j['type'] ?? 'file').toString(),
-        ignored: j['ignored'] == true,
-      );
+    name: (j['name'] ?? '').toString(),
+    path: (j['path'] ?? '').toString(),
+    absolute: (j['absolute'] ?? '').toString(),
+    type: (j['type'] ?? 'file').toString(),
+    ignored: j['ignored'] == true,
+  );
 
   bool get isDir => type == 'directory';
 }
@@ -441,17 +487,13 @@ class FileContent {
   final String type; // text | binary
   final String content;
   final String? mimeType;
-  const FileContent({
-    required this.type,
-    required this.content,
-    this.mimeType,
-  });
+  const FileContent({required this.type, required this.content, this.mimeType});
 
   factory FileContent.fromJson(Map<String, dynamic> j) => FileContent(
-        type: (j['type'] ?? 'text').toString(),
-        content: (j['content'] ?? '').toString(),
-        mimeType: j['mimeType']?.toString(),
-      );
+    type: (j['type'] ?? 'text').toString(),
+    content: (j['content'] ?? '').toString(),
+    mimeType: j['mimeType']?.toString(),
+  );
 }
 
 class FileDiff {
@@ -469,12 +511,12 @@ class FileDiff {
   });
 
   factory FileDiff.fromJson(Map<String, dynamic> j) => FileDiff(
-        file: (j['file'] ?? '').toString(),
-        patch: (j['patch'] ?? '').toString(),
-        additions: _i(j['additions']),
-        deletions: _i(j['deletions']),
-        status: (j['status'] ?? 'modified').toString(),
-      );
+    file: (j['file'] ?? '').toString(),
+    patch: (j['patch'] ?? '').toString(),
+    additions: _i(j['additions']),
+    deletions: _i(j['deletions']),
+    status: (j['status'] ?? 'modified').toString(),
+  );
 
   String get fileName => file.split('/').last;
 }
@@ -499,8 +541,9 @@ List<DiffLine> parseUnifiedDiff(String patch) {
   for (final raw in lines) {
     if (raw.startsWith('@@')) {
       // @@ -l,s +l,s @@
-      final m = RegExp(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@')
-          .firstMatch(raw);
+      final m = RegExp(
+        r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@',
+      ).firstMatch(raw);
       if (m != null) {
         oldNo = int.tryParse(m.group(1)!) ?? 0;
         newNo = int.tryParse(m.group(2)!) ?? 0;
@@ -538,13 +581,16 @@ class ModelRef {
   const ModelRef({required this.id, required this.providerID, this.variant});
 
   factory ModelRef.fromJson(Map<String, dynamic> j) => ModelRef(
-        id: (j['id'] ?? '').toString(),
-        providerID: (j['providerID'] ?? '').toString(),
-        variant: j['variant']?.toString(),
-      );
+    id: (j['id'] ?? '').toString(),
+    providerID: (j['providerID'] ?? '').toString(),
+    variant: j['variant']?.toString(),
+  );
 
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'providerID': providerID, if (variant != null) 'variant': variant};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'providerID': providerID,
+    if (variant != null) 'variant': variant,
+  };
 
   @override
   String toString() => '$providerID/$id';
@@ -563,11 +609,11 @@ class AgentInfo {
   });
 
   factory AgentInfo.fromJson(Map<String, dynamic> j) => AgentInfo(
-        name: (j['name'] ?? j['id'] ?? '').toString(),
-        description: j['description']?.toString(),
-        mode: (j['mode'] ?? 'primary').toString(),
-        hidden: j['hidden'] == true,
-      );
+    name: (j['name'] ?? j['id'] ?? '').toString(),
+    description: j['description']?.toString(),
+    mode: (j['mode'] ?? 'primary').toString(),
+    hidden: j['hidden'] == true,
+  );
 }
 
 class ModelVariant {
@@ -595,18 +641,20 @@ class ModelInfo {
   });
 
   factory ModelInfo.fromJson(Map<String, dynamic> j) => ModelInfo(
-        id: (j['id'] ?? '').toString(),
-        providerID: (j['providerID'] ?? '').toString(),
-        name: (j['name'] ?? j['id'] ?? '').toString(),
-        enabled: j['enabled'] != false,
-        status: (j['status'] ?? 'active').toString(),
-        variants: j['variants'] is List
-            ? (j['variants'] as List)
-                .map((e) => ModelVariant.fromJson(
-                    (e as Map).cast<String, dynamic>()))
-                .toList()
-            : const [],
-      );
+    id: (j['id'] ?? '').toString(),
+    providerID: (j['providerID'] ?? '').toString(),
+    name: (j['name'] ?? j['id'] ?? '').toString(),
+    enabled: j['enabled'] != false,
+    status: (j['status'] ?? 'active').toString(),
+    variants: j['variants'] is List
+        ? (j['variants'] as List)
+              .map(
+                (e) =>
+                    ModelVariant.fromJson((e as Map).cast<String, dynamic>()),
+              )
+              .toList()
+        : const [],
+  );
 }
 
 // ── Question types ──
@@ -617,9 +665,9 @@ class QuestionOption {
   const QuestionOption({required this.label, required this.description});
 
   factory QuestionOption.fromJson(Map<String, dynamic> j) => QuestionOption(
-        label: (j['label'] ?? '').toString(),
-        description: (j['description'] ?? '').toString(),
-      );
+    label: (j['label'] ?? '').toString(),
+    description: (j['description'] ?? '').toString(),
+  );
 }
 
 class QuestionInfo {
@@ -637,16 +685,19 @@ class QuestionInfo {
   });
 
   factory QuestionInfo.fromJson(Map<String, dynamic> j) => QuestionInfo(
-        question: (j['question'] ?? '').toString(),
-        header: (j['header'] ?? '').toString(),
-        options: j['options'] is List
-            ? (j['options'] as List)
-                .map((e) => QuestionOption.fromJson((e as Map).cast<String, dynamic>()))
-                .toList()
-            : const [],
-        multiple: j['multiple'] == true,
-        custom: j['custom'] == true,
-      );
+    question: (j['question'] ?? '').toString(),
+    header: (j['header'] ?? '').toString(),
+    options: j['options'] is List
+        ? (j['options'] as List)
+              .map(
+                (e) =>
+                    QuestionOption.fromJson((e as Map).cast<String, dynamic>()),
+              )
+              .toList()
+        : const [],
+    multiple: j['multiple'] == true,
+    custom: j['custom'] == true,
+  );
 }
 
 /// A pending question request: `{id, sessionID, questions[], tool?}`.
@@ -661,12 +712,15 @@ class QuestionRequest {
   });
 
   factory QuestionRequest.fromJson(Map<String, dynamic> j) => QuestionRequest(
-        id: (j['id'] ?? '').toString(),
-        sessionID: (j['sessionID'] ?? '').toString(),
-        questions: j['questions'] is List
-            ? (j['questions'] as List)
-                .map((e) => QuestionInfo.fromJson((e as Map).cast<String, dynamic>()))
-                .toList()
-            : const [],
-      );
+    id: (j['id'] ?? '').toString(),
+    sessionID: (j['sessionID'] ?? '').toString(),
+    questions: j['questions'] is List
+        ? (j['questions'] as List)
+              .map(
+                (e) =>
+                    QuestionInfo.fromJson((e as Map).cast<String, dynamic>()),
+              )
+              .toList()
+        : const [],
+  );
 }
