@@ -160,7 +160,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ],
       ),
       body: ListenableBuilder(
-        listenable: conv,
+        listenable: Listenable.merge([conv, showThinking]),
         builder: (context, _) {
           if (conv.loading && !conv.loaded && conv.messages.isEmpty) {
             return const Center(child: CircularProgressIndicator());
@@ -580,6 +580,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
         );
       case 'reasoning':
+        if (!showThinking.value) return const SizedBox.shrink();
         return _Reasoning(text: p.text);
       case 'tool':
         return _ToolChip(part: p);

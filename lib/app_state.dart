@@ -10,6 +10,7 @@ final ServerStore serverStore = ServerStore();
 final ModelHideStore modelHideStore = ModelHideStore();
 final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 final ValueNotifier<Locale?> localeMode = ValueNotifier(null);
+final ValueNotifier<bool> showThinking = ValueNotifier(false);
 
 /// Load persisted theme/locale preferences and wire up change listeners to
 /// auto-save. Call once after [connectionStore] is loaded, before [runApp].
@@ -23,6 +24,10 @@ Future<void> initSettings() async {
   if (localeStr != null) {
     localeMode.value = Locale(localeStr);
   }
+  final showThinkingVal = prefs.getBool('showThinking');
+  if (showThinkingVal != null) {
+    showThinking.value = showThinkingVal;
+  }
   themeMode.addListener(() => prefs.setInt('themeMode', themeMode.value.index));
   localeMode.addListener(() {
     final l = localeMode.value;
@@ -32,6 +37,7 @@ Future<void> initSettings() async {
       prefs.remove('locale');
     }
   });
+  showThinking.addListener(() => prefs.setBool('showThinking', showThinking.value));
 }
 
 /// Bind the active server in [connectionStore] to [serverStore] (connect on

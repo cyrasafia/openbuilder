@@ -200,6 +200,15 @@ class _SettingsTabState extends State<SettingsTab> {
                     ],
                   ),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.psychology_outlined),
+                  title: const Text('展示思考过程'),
+                  subtitle: const Text('在会话详情页显示推理内容'),
+                  trailing: Switch(
+                    value: showThinking.value,
+                    onChanged: (v) => setState(() => showThinking.value = v),
+                  ),
+                ),
               ]),
               _section('日志', [
                 ListTile(
