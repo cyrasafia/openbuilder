@@ -11,7 +11,6 @@ import 'package:share_plus/share_plus.dart';
 import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
-import '../../core/net/system_font_weight.dart';
 import '../../data/api/opencode_client.dart';
 import '../../ui/theme.dart';
 
@@ -225,13 +224,6 @@ class _SettingsTabState extends State<SettingsTab> {
                   trailing: Text(_appVersion.isEmpty
                       ? '…'
                       : _appVersion),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.text_fields),
-                  title: const Text('系统字重（调试）'),
-                  trailing: Text(SystemFontWeight.weight == null
-                      ? '未读取'
-                      : '${SystemFontWeight.weight}'),
                 ),
               ]),
               const SizedBox(height: 24),
