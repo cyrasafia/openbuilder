@@ -205,6 +205,107 @@ class AgentStatusIndicator extends StatelessWidget {
   }
 }
 
+/// Status name for [state], used as tooltip by the compact indicators below.
+String _agentStatusLabel(AgentIndicatorState state) => switch (state.state) {
+      AgentRunState.working => '运行中',
+      AgentRunState.retrying => '重试中',
+      AgentRunState.idle => '空闲',
+      AgentRunState.paused => state.pauseReason == AgentPauseReason.permission
+          ? '需要授权'
+          : '需要选择',
+    };
+
+/// Foreground accent color for an agent status, mirroring the palette used by
+/// [AgentStatusIndicator]. Single source of truth for the compact indicators.
+Color _agentAccentColor(AgentRunState state, BuildContext context) {
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  return switch (state) {
+    AgentRunState.working =>
+      dark ? const Color(0xFF4ADE80) : const Color(0xFF15803D),
+    AgentRunState.retrying =>
+      dark ? const Color(0xFFFB923C) : const Color(0xFFC2410C),
+    AgentRunState.paused =>
+      dark ? const Color(0xFFFBBF24) : const Color(0xFF92400E),
+    AgentRunState.idle => Theme.of(context).colorScheme.outline,
+  };
+}
+
+/// Compact, icon-only agent status indicator: the same glyph used by
+/// [AgentStatusIndicator] but without the pill or label. A [Tooltip] carries
+/// the status name. Used where horizontal space is limited (e.g. one glyph per
+/// session in the project list).
+class AgentStatusGlyph extends StatelessWidget {
+  final AgentIndicatorState state;
+  final double size;
+  const AgentStatusGlyph({super.key, required this.state, this.size = 16});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _agentAccentColor(state.state, context);
+    final glyph = switch (state.state) {
+      AgentRunState.working => _WorkingGlyph(color: color),
+      AgentRunState.retrying => const _RetryGlyph(),
+      AgentRunState.paused => Icon(
+          state.pauseReason == AgentPauseReason.permission
+              ? Icons.warning_amber_rounded
+              : Icons.help_outline,
+          size: 13),
+      AgentRunState.idle => const Icon(Icons.circle, size: 8),
+    };
+    return Tooltip(
+      message: _agentStatusLabel(state),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: IconTheme(
+          data: IconThemeData(color: color, size: 13),
+          child: Center(child: glyph),
+        ),
+      ),
+    );
+  }
+}
+
+/// A compact status + count badge: the status glyph followed by the session
+/// count, with no status label. Shown when a project has too many sessions to
+/// display per-session glyphs.
+class AgentStatusCountChip extends StatelessWidget {
+  final AgentIndicatorState state;
+  final int count;
+  const AgentStatusCountChip(
+      {super.key, required this.state, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _agentAccentColor(state.state, context);
+    final background = state.state == AgentRunState.idle
+        ? Theme.of(context).colorScheme.surfaceContainerHighest
+        : color.withAlpha(31);
+    return Tooltip(
+      message: '$count ${_agentStatusLabel(state)}',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AgentStatusGlyph(state: state, size: 13),
+            const SizedBox(width: 3),
+            Text('$count',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: color,
+                    fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _WorkingGlyph extends StatefulWidget {
   final Color color;
   const _WorkingGlyph({super.key, required this.color});

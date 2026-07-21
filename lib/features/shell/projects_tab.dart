@@ -97,11 +97,7 @@ class _ProjectsTabState extends State<ProjectsTab> {
                         ),
                       ]),
                       const SizedBox(height: 6),
-                      Wrap(spacing: 6, runSpacing: 4, children: [
-                        _MetaChip(
-                            icon: Icons.chat_bubble_outline,
-                            label: '${it.count} 会话'),
-                      ]),
+                      _SessionStatusSummary(states: it.states),
                     ],
                   ),
                   trailing: Icon(Icons.chevron_right,
@@ -123,14 +119,14 @@ class _ProjItem {
   final String name;
   final String subtitle;
   final ProjectIcon? icon;
-  final int count;
+  final List<AgentIndicatorState> states;
   final int lastActivity;
   final VoidCallback onTap;
   const _ProjItem(
       {required this.name,
       required this.subtitle,
       this.icon,
-      required this.count,
+      required this.states,
       required this.lastActivity,
       required this.onTap});
 }
@@ -149,12 +145,12 @@ List<_ProjItem> _buildItems(BuildContext context) {
         final name = dir.isEmpty ? 'global' : dir.split('/').last;
         // Sort key comes from the monotonic activity map (includes archived
         // sessions) so archiving the last session in this directory doesn't
-        // sink the row. Count chip still shows unarchived session count.
+        // sink the row.
         final last = serverStore.lastActivityForGlobalDir(dir);
         items.add(_ProjItem(
           name: name,
           subtitle: dir.isEmpty ? 'global' : dir,
-          count: entry.value.length,
+          states: _statesFor(entry.value),
           lastActivity: last,
           onTap: () => context.push(
               '/project/global?directory=${Uri.encodeQueryComponent(dir)}'),
@@ -162,15 +158,14 @@ List<_ProjItem> _buildItems(BuildContext context) {
       }
       continue;
     }
-    final sess = serverStore.sessions.where((s) => s.projectID == p.id).toList();
-    // See note above: monotonic activity (includes archived) for sort,
-    // unarchived count for the chip.
+    final sess = serverStore.sessions.where((s) => s.projectID == p.id);
+    // See note above: monotonic activity (includes archived) for sort.
     final last = serverStore.lastActivityForProject(p.id);
     items.add(_ProjItem(
       name: p.displayName,
       subtitle: p.worktree,
       icon: p.icon,
-      count: sess.length,
+      states: _statesFor(sess),
       lastActivity: last,
       onTap: () => context.push('/project/${p.id}'),
     ));
@@ -179,29 +174,78 @@ List<_ProjItem> _buildItems(BuildContext context) {
   return items;
 }
 
-class _MetaChip extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  const _MetaChip({required this.icon, required this.label});
+/// Ordered per-session agent states for [sessions], sorted most-recently-
+/// updated first (matching the project detail list) and mapped through the
+/// store's indicator logic so the project list reflects live status.
+List<AgentIndicatorState> _statesFor(Iterable<SessionModel> sessions) {
+  final list = sessions.toList()
+    ..sort((a, b) => b.updated.compareTo(a.updated));
+  return list.map((s) => serverStore.agentIndicatorStateOf(s.id)).toList();
+}
+
+// Status display order for the collapsed (>4 sessions) summary:
+// 空闲 > 运行中 > 暂停 > 重试.
+const _statusOrder = <AgentRunState>[
+  AgentRunState.idle,
+  AgentRunState.working,
+  AgentRunState.paused,
+  AgentRunState.retrying,
+];
+
+/// Renders a project's session-status summary in place of the old session
+/// count. With at most 4 unarchived sessions it shows one icon-only glyph per
+/// session (in list order); beyond that it collapses into a count-per-status
+/// badge row (icon + count only, statuses with zero sessions omitted).
+class _SessionStatusSummary extends StatelessWidget {
+  final List<AgentIndicatorState> states;
+  const _SessionStatusSummary({required this.states});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+    if (states.isEmpty) return const SizedBox.shrink();
+    if (states.length <= 4) {
+      return Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Icon(icon, size: 12, color: Theme.of(context).colorScheme.outline),
-          const SizedBox(width: 3),
-          Text(label,
-              style: TextStyle(
-                  fontSize: 11, color: Theme.of(context).colorScheme.outline)),
+          for (final s in states) AgentStatusGlyph(state: s),
         ],
-      ),
+      );
+    }
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: _statusCountChips(states),
     );
   }
+}
+
+/// Count-per-status badges ordered by [_statusOrder], skipping any status with
+/// no sessions. Paused sessions needing permission take precedence over those
+/// needing a choice when picking the representative icon.
+List<Widget> _statusCountChips(List<AgentIndicatorState> states) {
+  final count = <AgentRunState, int>{};
+  var pausedPermission = false;
+  for (final s in states) {
+    count[s.state] = (count[s.state] ?? 0) + 1;
+    if (s.state == AgentRunState.paused &&
+        s.pauseReason == AgentPauseReason.permission) {
+      pausedPermission = true;
+    }
+  }
+  return [
+    for (final st in _statusOrder)
+      if (count[st] != null)
+        AgentStatusCountChip(
+          state: st == AgentRunState.paused
+              ? AgentIndicatorState(AgentRunState.paused,
+                  pauseReason: pausedPermission
+                      ? AgentPauseReason.permission
+                      : AgentPauseReason.choice)
+              : AgentIndicatorState(st),
+          count: count[st]!,
+        ),
+  ];
 }
