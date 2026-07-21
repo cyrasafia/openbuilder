@@ -345,39 +345,46 @@ class OpencodeClient {
     return const [];
   }
 
-  /// `GET /api/provider?location[directory]=<dir>` — list providers.
-  Future<List<ProviderInfo>> listProviders({String? directory}) async {
+  /// `GET /config/providers?directory=<dir>` — all connected (authenticated)
+  /// providers and their models. Returns models flattened across providers.
+  ///
+  /// Unlike `GET /api/model` (which only surfaces the active `opencode` Zen
+  /// catalog), this endpoint lists every configured provider (zai, deepseek,
+  /// ollama-cloud, ...) and is the canonical source for switchable models.
+  ///
+  /// The provider objects contain a plaintext API `key`; it is intentionally
+  /// not read here — only each model entry is parsed.
+  Future<List<ModelInfo>> listConfigProviders({String? directory}) async {
     final params = <String, dynamic>{};
     if (directory != null && directory.isNotEmpty) {
-      params['location[directory]'] = directory;
+      params['directory'] = directory;
     }
-    final r = await dio.get<dynamic>('/api/provider', queryParameters: params);
+    final r = await dio.get<dynamic>(
+      '/config/providers',
+      queryParameters: params,
+    );
     final d = r.data is Map ? (r.data as Map) : {};
-    final data = d['data'];
-    if (data is List) {
-      return data
-          .map((e) => ProviderInfo.fromJson((e as Map).cast<String, dynamic>()))
-          .toList();
+    final providers = d['providers'];
+    final out = <ModelInfo>[];
+    if (providers is List) {
+      for (final p in providers) {
+        if (p is! Map) continue;
+        final models = p['models'];
+        if (models is Map) {
+          for (final v in models.values) {
+            if (v is Map) {
+              out.add(ModelInfo.fromJson(v.cast<String, dynamic>()));
+            }
+          }
+        }
+      }
     }
-    return const [];
-  }
-
-  /// `GET /api/model?location[directory]=<dir>` — list available models.
-  Future<List<ModelInfo>> listModels({String? directory}) async {
-    final params = <String, dynamic>{};
-    if (directory != null && directory.isNotEmpty) {
-      params['location[directory]'] = directory;
-    }
-    final r = await dio.get<dynamic>('/api/model', queryParameters: params);
-    final d = r.data is Map ? (r.data as Map) : {};
-    final data = d['data'];
-    if (data is List) {
-      return data
-          .map((e) => ModelInfo.fromJson((e as Map).cast<String, dynamic>()))
-          .where((m) => m.enabled && m.status == 'active')
-          .toList();
-    }
-    return const [];
+    // Defensive: keep the enabled+active gate that the old /api/model path
+    // applied. /config/providers exposes only connected providers, but a
+    // provider may still advertise deprecated models; the OpenAPI contract
+    // does not guarantee every entry is active. ModelInfo tolerates missing
+    // enabled/status (defaults true / 'active').
+    return out.where((m) => m.enabled && m.status == 'active').toList();
   }
 
   /// `POST /api/session/:id/agent` — switch the session's agent.

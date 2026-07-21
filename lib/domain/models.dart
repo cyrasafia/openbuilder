@@ -624,23 +624,6 @@ class ModelVariant {
       ModelVariant(id: (j['id'] ?? '').toString());
 }
 
-class ProviderInfo {
-  final String id;
-  final String name;
-  final bool disabled;
-  const ProviderInfo({
-    required this.id,
-    required this.name,
-    this.disabled = false,
-  });
-
-  factory ProviderInfo.fromJson(Map<String, dynamic> j) => ProviderInfo(
-    id: (j['id'] ?? '').toString(),
-    name: (j['name'] ?? '').toString(),
-    disabled: j['disabled'] == true,
-  );
-}
-
 class ModelInfo {
   final String id;
   final String providerID;
@@ -657,21 +640,27 @@ class ModelInfo {
     this.variants = const [],
   });
 
-  factory ModelInfo.fromJson(Map<String, dynamic> j) => ModelInfo(
-    id: (j['id'] ?? '').toString(),
-    providerID: (j['providerID'] ?? '').toString(),
-    name: (j['name'] ?? j['id'] ?? '').toString(),
-    enabled: j['enabled'] != false,
-    status: (j['status'] ?? 'active').toString(),
-    variants: j['variants'] is List
-        ? (j['variants'] as List)
-              .map(
-                (e) =>
-                    ModelVariant.fromJson((e as Map).cast<String, dynamic>()),
-              )
-              .toList()
-        : const [],
-  );
+  factory ModelInfo.fromJson(Map<String, dynamic> j) {
+    List<ModelVariant> variants;
+    final raw = j['variants'];
+    if (raw is List) {
+      variants = raw
+          .map((e) => ModelVariant.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+    } else if (raw is Map) {
+      variants = raw.keys.map((k) => ModelVariant(id: k.toString())).toList();
+    } else {
+      variants = const [];
+    }
+    return ModelInfo(
+      id: (j['id'] ?? '').toString(),
+      providerID: (j['providerID'] ?? '').toString(),
+      name: (j['name'] ?? j['id'] ?? '').toString(),
+      enabled: j['enabled'] != false,
+      status: (j['status'] ?? 'active').toString(),
+      variants: variants,
+    );
+  }
 }
 
 // ── Question types ──

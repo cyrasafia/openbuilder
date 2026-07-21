@@ -1805,19 +1805,12 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     try {
       final results = await Future.wait([
         client.listAgents(directory: widget.directory),
-        client.listModels(directory: widget.directory),
-        client.listProviders(directory: widget.directory),
+        client.listConfigProviders(directory: widget.directory),
       ]);
-      final models = results[1] as List<ModelInfo>;
-      final providers = results[2] as List<ProviderInfo>;
-      final disabledProviderIDs =
-          providers.where((p) => p.disabled).map((p) => p.id).toSet();
       if (mounted) {
         setState(() {
           _agents = results[0] as List<AgentInfo>;
-          _models = models
-              .where((m) => !disabledProviderIDs.contains(m.providerID))
-              .toList();
+          _models = results[1] as List<ModelInfo>;
           _loading = false;
         });
       }
@@ -1929,7 +1922,8 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                     title: Text(m.name),
                     subtitle: Text('${m.providerID}/${m.id}',
                         style: AppTheme.mono.copyWith(fontSize: 11)),
-                    trailing: session?.model?.id == m.id
+                    trailing: (session?.model?.id == m.id &&
+                            session?.model?.providerID == m.providerID)
                         ? const Icon(Icons.check, size: 18)
                         : null,
                     onTap: () {
@@ -1943,7 +1937,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     );
   }
 
-  void _showVariantSheet(List<ModelVariant> variants) {
+  void _showVariantSheet(ModelInfo model, List<ModelVariant> variants) {
     final session = serverStore.sessionById(widget.sessionId);
     showModalBottomSheet(
       context: context,
@@ -1958,12 +1952,8 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                   ? const Icon(Icons.check, size: 18)
                   : null,
               onTap: () {
-                final m = _models.firstWhere(
-                  (m) => m.id == session?.model?.id,
-                  orElse: () => _models.first,
-                );
                 Navigator.pop(ctx);
-                _switchModel(m);
+                _switchModel(model);
               },
             ),
             ...variants.map((v) => ListTile(
@@ -1973,12 +1963,8 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                       ? const Icon(Icons.check, size: 18)
                       : null,
                   onTap: () {
-                    final m = _models.firstWhere(
-                      (m) => m.id == session?.model?.id,
-                      orElse: () => _models.first,
-                    );
                     Navigator.pop(ctx);
-                    _switchModel(m, v);
+                    _switchModel(model, v);
                   },
                 )),
           ],
@@ -2027,8 +2013,13 @@ class _AgentModelBarState extends State<_AgentModelBar> {
         }
 
         // Find current model's variants for thinking level button.
+        // Match both providerID and id: model ids repeat across providers
+        // (e.g. deepseek-v4-flash exists under both `deepseek` and
+        // `ollama-cloud`), so id-only matching would pick the wrong entry.
         final currentModel = _models
-            .where((m) => m.id == session?.model?.id)
+            .where((m) =>
+                m.id == session?.model?.id &&
+                m.providerID == session?.model?.providerID)
             .toList();
         final hasVariants =
             currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
@@ -2067,7 +2058,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                   _Chip(
                     icon: Icons.psychology_outlined,
                     label: session?.model?.variant ?? '默认',
-                    onTap: _switching ? null : () => _showVariantSheet(currentModel.first.variants),
+                    onTap: _switching ? null : () => _showVariantSheet(currentModel.first, currentModel.first.variants),
                     muted: muted,
                   ),
                 ],

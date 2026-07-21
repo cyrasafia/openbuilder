@@ -406,3 +406,80 @@ if (mounted) {
 | AM-OPT-4 | didUpdateWidget 后 1 帧文字色/高亮位错配 | — | 🟢 非阻塞，分段控件常见取舍 |
 | AM-OPT-6 | 布局中途变化（旋转/键盘/字号）不重测 | — | 🟢 非阻塞，2-agent 稳定场景概率低 |
 | AM-OPT-7 | `_measure` 末尾 setState 与 listener 同帧重复 | — | 🟢 无害，Flutter 合并；保留作 `forward` 未触发 notify 时的兜底 |
+
+---
+
+## N 次评审意见 — 模型列表数据源由 `/api/model` 改为 `/config/providers`
+
+> 触发问题：会话详情页切换模型时仅展示 `opencode` 一家的模型，未展示 zai / deepseek / ollama-cloud / alibaba-token-plan-cn / kimi-for-coding 等已连接 provider 的模型。经 OpenAPI 契约 + 实测 `:15120` 定位，根因在数据源端点选错，非客户端过滤逻辑。
+
+### LR-1 🔴 模型列表数据源端点选错，导致只拿到 opencode 一家 · 已修复
+
+**契约差异（`opencode_openapi.json`）：**
+
+| 端点 | operationId | 契约描述 | `:15120` 实测 |
+|------|-------------|----------|---------------|
+| `GET /api/model` | `v2.model.list` | Retrieve **available** models | 仅 `opencode` 22 个（6 active / 16 deprecated），**0 个**其他 provider |
+| `GET /api/provider` | `v2.provider.list` | Retrieve **active** AI providers | 仅 `opencode` 一家 |
+| `GET /config/providers` | `config.providers` | all **configured** AI providers and their default models | **6 家全到**：zai-coding-plan / deepseek / ollama-cloud / alibaba-token-plan-cn / kimi-for-coding / opencode，含各自 models |
+| `GET /provider` | `provider.list` | **all** providers…available **and connected** | `all`=167 目录、`connected`=6 个 ID |
+
+CLI（`opencode models`）列出的 opencode 模型正好 6 个（与 `/config/providers` 一致，而非 `/api/model` 的 22 个），证明 CLI/TUI/web 走的是 `/config/providers`（或 `/provider`）这条线。客户端原先用 v2 精简端点 `/api/model`+`/api/provider`，自然只覆盖 opencode。
+
+**修复：** `_AgentModelBar._loadOptions` 改用 `GET /config/providers?directory=<dir>`，拍平各 provider 的 `models` map 为 `List<ModelInfo>`。`opencode_client.dart` 新增 `listConfigProviders`，删除 dead `listModels`/`listProviders`。
+
+### LR-2 🔴 `Provider` 对象含明文 API `key`，需解析期丢弃 · 已修复
+
+`/config/providers` 的 `Provider` schema 含 `key`（明文 API 密钥）。`listConfigProviders` 仅遍历 `providers[].models` 解析每个 model value，**不访问 `p['key']`**——解析期即丢弃，从根本上避免误展示/误落盘/误打日志。
+
+### LR-3 🟡 `ModelInfo.fromJson` 的 `variants` 仅按 List 解析，丢失 dict 形式 · 已修复
+
+live `:15120`（v1.18.3）的 `/config/providers` model 值比 pin 的 spec（v1.17.18）`Model` schema 字段更全：实际带 `status`/`variants`/`limit` 等。其中 `variants` 是 **dict**（形如 `{"high":{"reasoningEffort":"high"},"max":{"reasoningEffort":"max"}}`），非 List。原 `ModelInfo.fromJson` 判 `j['variants'] is List` 为 false → 走默认 `const []`，会丢掉 19 个模型的 thinking 等级。
+
+**修复：** `ModelInfo.fromJson` 改为：`variants` 是 List 时维持原逻辑；是 Map 时取 keys 作为 `ModelVariant(id)`；否则空。这样 thinking chip 对 19 个带 variants 的模型恢复可用。
+
+### LR-4 🟡 模型 id 跨 provider 重复，id-only 匹配会选错 · 已修复
+
+实测 `deepseek-v4-flash` / `deepseek-v4-pro` 同时存在于 `deepseek` 与 `ollama-cloud` 两家。原 `_showModelSheet` 勾选判定（`session?.model?.id == m.id`）与 `currentModel` 查找（`m.id == session?.model?.id`）仅按 id 匹配，多 provider 下会命中第一条而选错 provider，导致 variant chip 取错。
+
+**修复：** 两处均改为 `(providerID, id)` 双字段匹配。
+
+### LR-5 🟢 删除 dead code `ProviderInfo` / `listModels` / `listProviders` · 已修复
+
+经 grep 确认 `ModelInfo`/`ProviderInfo`/`listModels`/`listProviders` 仅 `_AgentModelBar` 使用，无测试引用。切换数据源后 `ProviderInfo` 类与两个旧方法成 dead code，已删除（`ModelInfo` 仍复用、`ModelVariant`/`ModelRef` 保留）。`flutter analyze --fatal-infos` 0 issue。
+
+### LR-6 🟢 原 `disabledProviderIDs` 过滤层移除 · 已修复
+
+原 `_loadOptions` 第二层过滤（剔除 `provider.disabled` 的 provider）依赖 `/api/provider` 的 `disabled` 字段。`/config/providers` 只返回已连接（已认证）provider，不存在 disabled 概念，该过滤层无意义，已随端点切换一并移除。第一层 `enabled && status=='active'` 过滤原在 `listModels` 内、随方法删除而消失；`/config/providers` 返回的 55 个模型全 `active`，无需再过滤。
+
+### 修复复审
+
+> 评审基线：LR-1 ~ LR-6 修复后代码。`flutter analyze --fatal-infos` → No issues found；`flutter test` 88/88 通过。
+
+| 编号 | 问题 | 修复 | 核对 |
+|------|------|------|------|
+| LR-1 | 数据源端点选错，只拿 opencode | `_loadOptions` 改 `listConfigProviders`（`GET /config/providers`） | ✅ 模型 sheet 应出现 6 家共 55 个模型，与 CLI 一致 |
+| LR-2 | 明文 API key 泄露风险 | `listConfigProviders` 不读 `p['key']` | ✅ key 不进任何 Dart 对象，解析期丢弃 |
+| LR-3 | `variants` dict 形式被丢 | `ModelInfo.fromJson` 支持 Map（keys→id）+ List 双形式 | ✅ 19 个带 variants 模型的 thinking chip 恢复 |
+| LR-4 | 跨 provider 重名 id 误匹配 | `_showModelSheet` 勾选 + `currentModel` 查找改 `(providerID, id)` 双字段 | ✅ deepseek-v4-flash 等不再误选 provider |
+| LR-5 | dead code `ProviderInfo`/`listModels`/`listProviders` | 删除 | ✅ grep 无残留，analyze 0 issue |
+| LR-6 | `disabledProviderIDs` 过滤层冗余 | 随端点切换移除 | ✅ `/config/providers` 全 active，无需过滤 |
+
+### 二次复审（代码评审反馈）
+
+| 编号 | 问题 | 修复 | 核对 |
+|------|------|------|------|
+| LR-R1 🔴 | `_showVariantSheet` 仍 id-only `firstWhere` 查模型，跨 provider 重名（如 `ollama-cloud/deepseek-v4-flash`）会误取 `deepseek` 那条，切换 thinking 等级时静默翻转 provider | `_showVariantSheet` 改为接收调用方已解析好的 `ModelInfo`（`currentModel.first`），不再在 sheet 内 re-lookup；调用点 `:2069` 传入 `currentModel.first` + 其 `.variants` | ✅ 消除 re-lookup，variant 切换不再误改 provider |
+| LR-R2 🟡 | `enabled && status=='active'` 过滤随 `listModels` 删除而消失，仅凭 live 实测「全 active」无契约保证；deprecated 模型可能漏进 sheet | `listConfigProviders` 末尾保留防御性 `.where((m) => m.enabled && m.status == 'active')`；`ModelInfo.fromJson` 对缺失字段走默认（true/active），与旧 `/api/model` 行为一致 | ✅ 契约不保证时仍有兜底，行为与旧路径等价 |
+
+### 关键设计决策
+
+- **为何选 `/config/providers` 而非 `/provider`**：`/config/providers` 只返回已连接 provider + 各自 models + default 映射，干净且与 CLI 行为一致；`/provider` 的 `all` 含 167 家目录（多数未认证、不可用），`connected` 仅给 ID 字符串需交叉引用 `all`，噪音大。
+- **为何不复用 `/api/model` 取 variants**：`/api/model` 根本不返回 connected provider 的模型（0 个），无 variants 可取；`/config/providers` 的 live 响应已自带 `variants`（dict），单端点即可覆盖列表 + thinking 等级，无需双端点合并。
+- **`key` 处理选择**：解析期丢弃（不读入 Dart 对象），优于「读入但禁止展示」——从源头杜绝误用，无需在各 UI/日志/缓存路径处处设防。
+
+### 不做的事
+
+- 不动 `_switchModel` 的 `unawaited(refresh())` / 无重入守卫（沿用 AM-OPT-2 的 ⏳ 后续决议，本次仅改数据源）。
+- 不引入 models 跨会话缓存（仍为 `_AgentModelBarState` 本地状态，每次挂载重拉，与原设计一致）。
+- 不对 55 个模型做分组/排序（维持服务端返回顺序；如需按 provider 分组展示属后续 UX 优化）。
