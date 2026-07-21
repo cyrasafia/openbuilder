@@ -15,6 +15,7 @@ import 'features/settings/settings_tab.dart';
 import 'features/shell/main_shell.dart';
 import 'features/shell/projects_tab.dart';
 import 'features/shell/sessions_tab.dart';
+import 'features/shell/swipeable_shell_container.dart';
 
 GoRouter buildRouter(ConnectionStore store) {
   return GoRouter(
@@ -93,8 +94,13 @@ GoRouter buildRouter(ConnectionStore store) {
         path: '/models',
         builder: (_, _) => const ModelManagementScreen(),
       ),
-      StatefulShellRoute.indexedStack(
+      StatefulShellRoute(
         builder: (_, _, shell) => MainShell(shell: shell),
+        navigatorContainerBuilder: (_, navigationShell, children) =>
+            SwipeableShellContainer(
+              navigationShell: navigationShell,
+              children: children,
+            ),
         branches: [
           StatefulShellBranch(
             routes: [
