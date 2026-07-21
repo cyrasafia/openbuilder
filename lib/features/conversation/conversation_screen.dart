@@ -447,10 +447,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Widget _errorBanner(Map<String, dynamic> error, {VoidCallback? onDismiss}) {
     final name = (error['name'] ?? 'Error').toString();
-    final data = error['data'];
-    final message = data is Map
-        ? (data['message'] ?? data.toString()).toString()
-        : data?.toString() ?? '';
+    final message = _extractErrorMessage(error) ?? '';
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -480,6 +477,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ],
       ),
     );
+  }
+
+  String? _extractErrorMessage(Map<String, dynamic> error) {
+    final data = error['data'];
+    if (data is Map) {
+      final msg = data['message']?.toString();
+      if (msg != null && msg.isNotEmpty) return msg;
+      final err = data['error']?.toString();
+      if (err != null && err.isNotEmpty) return err;
+      // Only dump data if it contains at least one meaningful value.
+      if (data.values.any((v) => v != null && v.toString().isNotEmpty)) {
+        return data.toString();
+      }
+    } else if (data is String && data.isNotEmpty) {
+      return data;
+    }
+    for (final key in ['message', 'error', 'msg', 'detail']) {
+      final v = error[key]?.toString();
+      if (v != null && v.isNotEmpty) return v;
+    }
+    // Only dump the raw map if it contains unexpected fields beyond name/data.
+    if (error.keys.any((k) => k != 'name' && k != 'data')) {
+      return error.toString();
+    }
+    return null;
   }
 
   void _scheduleAutoScroll() {
@@ -785,6 +807,8 @@ class _ToolChip extends StatelessWidget {
       _ => (Icons.hourglass_top, const Color(0xFF8B949E)),
     };
     final summary = part.toolSummary;
+    final error = part.toolError;
+    final showError = part.toolStatus == 'error' && error != null && error.isNotEmpty;
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -792,20 +816,37 @@ class _ToolChip extends StatelessWidget {
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 15, color: color),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              summary,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: AppTheme.mono.copyWith(
-                  fontSize: 12, fontWeight: FontWeight.w400),
-            ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 15, color: color),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  summary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTheme.mono.copyWith(
+                      fontSize: 12, fontWeight: FontWeight.w400),
+                ),
+              ),
+            ],
           ),
+          if (showError) ...[
+            const SizedBox(height: 6),
+            Text(
+              error,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFFF85149),
+                height: 1.4,
+              ),
+            ),
+          ],
         ],
       ),
     );

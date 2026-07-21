@@ -20,6 +20,7 @@ class DisplayPart {
   String text;
   String? toolStatus;
   String? toolOutput;
+  String? toolError;
   Map<String, dynamic>? toolInput;
   String? fileMime;
   String? fileUrl;
@@ -33,6 +34,7 @@ class DisplayPart {
     this.text = '',
     this.toolStatus,
     this.toolOutput,
+    this.toolError,
     this.toolInput,
     this.fileMime,
     this.fileUrl,
@@ -108,6 +110,7 @@ class DisplayPart {
         tool: p.tool,
         toolStatus: p.stateStatus,
         toolOutput: p.stateOutput,
+        toolError: _extractToolError(p.state?['error']),
         toolInput: p.state?['input'] is Map
             ? (p.state!['input'] as Map).cast<String, dynamic>()
             : null,
@@ -124,6 +127,21 @@ class DisplayPart {
     }
     return DisplayPart(id: p.id, type: p.type, text: p.text ?? '');
   }
+}
+
+String? _extractToolError(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is String) return raw.isNotEmpty ? raw : null;
+  if (raw is Map) {
+    final msg = raw['message']?.toString();
+    if (msg != null && msg.isNotEmpty) return msg;
+    final err = raw['error']?.toString();
+    if (err != null && err.isNotEmpty) return err;
+    final detail = raw.toString();
+    return detail.isNotEmpty && detail != '{}' ? detail : null;
+  }
+  final s = raw.toString();
+  return s.isNotEmpty && s != 'null' ? s : null;
 }
 
 class DisplayMessage {
@@ -633,6 +651,7 @@ class ConversationStore extends ChangeNotifier {
         if (sp.text.length > merged.text.length) merged.text = sp.text;
         if (sp.toolStatus != null) merged.toolStatus = sp.toolStatus;
         if (sp.toolOutput != null) merged.toolOutput = sp.toolOutput;
+        if (sp.toolError != null) merged.toolError = sp.toolError;
         if (sp.toolInput != null) merged.toolInput = sp.toolInput;
         result.add(merged);
       } else {
@@ -669,6 +688,7 @@ class ConversationStore extends ChangeNotifier {
                             'text': p.text,
                             'toolStatus': p.toolStatus,
                             'toolOutput': p.toolOutput,
+                            'toolError': p.toolError,
                             'toolInput': p.toolInput, // MA-5: 补存
                           })
                       .toList(),
@@ -720,6 +740,7 @@ class ConversationStore extends ChangeNotifier {
           text: p2['text']?.toString() ?? '',
           toolStatus: p2['toolStatus']?.toString(),
           toolOutput: p2['toolOutput']?.toString(),
+          toolError: p2['toolError']?.toString(),
           toolInput: p2['toolInput'] is Map
               ? (p2['toolInput'] as Map).cast<String, dynamic>()
               : null, // MA-5: 补读 toolInput
@@ -834,6 +855,8 @@ class ConversationStore extends ChangeNotifier {
         if (p.tool != null) dp.tool = p.tool;
         if (p.stateStatus != null) dp.toolStatus = p.stateStatus;
         if (p.stateOutput != null) dp.toolOutput = p.stateOutput;
+        final toolError = _extractToolError(p.state?['error']);
+        if (toolError != null) dp.toolError = toolError;
         if (p.state?['input'] is Map) {
           dp.toolInput = (p.state!['input'] as Map).cast<String, dynamic>();
         }
@@ -977,4 +1000,10 @@ class ConversationStore extends ChangeNotifier {
   void _sort() {
     _messages.sort((a, b) => (a.info.created ?? 0).compareTo(b.info.created ?? 0));
   }
+
+  @visibleForTesting
+  Future<void> saveCacheForTest() async => _saveCache();
+
+  @visibleForTesting
+  Future<void> loadCacheForTest() async => _loadCache();
 }

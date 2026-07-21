@@ -276,9 +276,7 @@ class MessageInfo {
     cost: _d(j['cost']),
     modelID: j['modelID']?.toString(),
     finish: j['finish']?.toString(),
-    error: j['error'] is Map
-        ? (j['error'] as Map).cast<String, dynamic>()
-        : null,
+    error: _parseMessageError(j['error']),
   );
 
   Map<String, dynamic> toJson() => {
@@ -456,6 +454,12 @@ double _d(dynamic v) {
   if (v is num) return v.toDouble();
   if (v is String) return double.tryParse(v) ?? 0;
   return 0;
+}
+
+Map<String, dynamic>? _parseMessageError(dynamic v) {
+  if (v is Map) return v.cast<String, dynamic>();
+  if (v is String && v.isNotEmpty) return {'message': v};
+  return null;
 }
 
 class FileNode {

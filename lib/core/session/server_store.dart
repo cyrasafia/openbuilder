@@ -1093,10 +1093,17 @@ class ServerStore extends ChangeNotifier {
       case 'session.error':
         final sid = ev.properties['sessionID']?.toString();
         final err = ev.properties['error'];
-        if (sid != null && err is Map) {
-          AppLogger.I.e(_tag, 'session.error $sid $err');
-          ensureConversation(sid)
-              ?.onSessionError(err.cast<String, dynamic>());
+        if (sid != null) {
+          final Map<String, dynamic> errorMap;
+          if (err is Map) {
+            errorMap = err.cast<String, dynamic>();
+          } else if (err is String && err.isNotEmpty) {
+            errorMap = {'message': err};
+          } else {
+            break;
+          }
+          AppLogger.I.e(_tag, 'session.error $sid $errorMap');
+          ensureConversation(sid)?.onSessionError(errorMap);
         }
         break;
       case 'message.updated':

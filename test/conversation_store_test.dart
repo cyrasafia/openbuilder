@@ -7,6 +7,7 @@ import 'package:open_builder/core/net/dio_factory.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // 指向丢弃端口的非空 client；被测逻辑（addOptimisticUserMessage /
 // lastMessagePreview / DisplayPart.from）均不发起网络请求。
@@ -19,6 +20,9 @@ OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
     )));
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
   group('DisplayPart.from file branch (AT-4: 工厂不解码)', () {
     test('extracts mime/url/filename, previewThumb null', () {
       final dp = DisplayPart.from(MessagePart({
@@ -126,6 +130,118 @@ void main() {
             dataUrl: 'data:application/pdf;base64,YQ=='),
       ]);
       expect(conv.lastMessagePreview(), '你: doc.pdf');
+    });
+  });
+
+  // Error display coverage: tool part state.error extraction + persistence.
+  group('tool part error extraction', () {
+    test('extracts string error from state.error', () {
+      final dp = DisplayPart.from(MessagePart({
+        'id': 'p1',
+        'type': 'tool',
+        'tool': 'bash',
+        'state': {
+          'status': 'error',
+          'input': {'command': 'ls'},
+          'error': 'permission denied',
+        },
+      }));
+      expect(dp.toolStatus, 'error');
+      expect(dp.toolError, 'permission denied');
+    });
+
+    test('extracts message from structured error object', () {
+      final dp = DisplayPart.from(MessagePart({
+        'id': 'p2',
+        'type': 'tool',
+        'tool': 'bash',
+        'state': {
+          'status': 'error',
+          'input': {'command': 'ls'},
+          'error': {'type': 'unknown', 'message': 'exec failed'},
+        },
+      }));
+      expect(dp.toolError, 'exec failed');
+    });
+
+    test('toolError null when state.error missing', () {
+      final dp = DisplayPart.from(MessagePart({
+        'id': 'p3',
+        'type': 'tool',
+        'tool': 'bash',
+        'state': {
+          'status': 'running',
+          'input': {'command': 'ls'},
+        },
+      }));
+      expect(dp.toolError, isNull);
+    });
+
+    test('onPartUpdated carries error from SSE', () {
+      final conv = ConversationStore('s6', _fakeClient());
+      conv.onPartUpdated({
+        'id': 'p4',
+        'messageID': 'm1',
+        'type': 'tool',
+        'tool': 'bash',
+        'state': {
+          'status': 'error',
+          'input': {'command': 'ls'},
+          'error': 'network unreachable',
+        },
+      }, null);
+      expect(conv.messages.length, 1);
+      final part = conv.messages.single.parts.single;
+      expect(part.toolStatus, 'error');
+      expect(part.toolError, 'network unreachable');
+    });
+
+    test('onPartUpdated does not clear toolError when later state omits error', () {
+      final conv = ConversationStore('s6', _fakeClient());
+      conv.onPartUpdated({
+        'id': 'p4',
+        'messageID': 'm1',
+        'type': 'tool',
+        'tool': 'bash',
+        'state': {
+          'status': 'error',
+          'input': {'command': 'ls'},
+          'error': 'network unreachable',
+        },
+      }, null);
+      // A later update that repeats status but omits error should not wipe the text.
+      conv.onPartUpdated({
+        'id': 'p4',
+        'messageID': 'm1',
+        'type': 'tool',
+        'tool': 'bash',
+        'state': {
+          'status': 'error',
+          'input': {'command': 'ls'},
+        },
+      }, null);
+      expect(conv.messages.single.parts.single.toolError, 'network unreachable');
+    });
+
+    test('cache round-trip preserves toolError', () async {
+      final conv = ConversationStore('s7', _fakeClient());
+      conv.onPartUpdated({
+        'id': 'p5',
+        'messageID': 'm2',
+        'type': 'tool',
+        'tool': 'bash',
+        'state': {
+          'status': 'error',
+          'input': {'command': 'ls'},
+          'error': 'disk full',
+        },
+      }, null);
+      await conv.saveCacheForTest();
+
+      final restored = ConversationStore('s7', _fakeClient());
+      await restored.loadCacheForTest();
+      expect(restored.messages.length, 1);
+      expect(restored.messages.single.parts.single.toolError, 'disk full');
     });
   });
 
