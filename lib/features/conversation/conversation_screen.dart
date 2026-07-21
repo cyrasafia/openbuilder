@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cross_file/cross_file.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -27,6 +27,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _scrollController = ScrollController();
   final _ctl = TextEditingController();
   bool _cmdMode = false;
+  bool _shellMode = false;
   final List<AttachmentPreview> _attachments = [];
   List<CommandInfo> _commands = const [];
   bool _cmdLoaded = false;
@@ -223,14 +224,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 busy: conv.busy,
                 onAbort: () => _abort(directory),
                 onChanged: (t) {
+                  if (_shellMode) {
+                    if (t.isEmpty) {
+                      setState(() => _shellMode = false);
+                    }
+                    return;
+                  }
                   final mode = t.startsWith('/') && !t.contains(' ');
                   if (mode && !_cmdLoaded && !_cmdLoading) {
                     _loadCommands();
+                  }
+                  if (t == '!') {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (_ctl.text == '!') {
+                        _ctl.clear();
+                        setState(() => _shellMode = true);
+                      }
+                    });
                   }
                   setState(() => _cmdMode = mode);
                 },
                 onSend: _send,
                 attachments: _attachments,
+                shellMode: _shellMode,
+                onExitShellMode: () => setState(() => _shellMode = false),
                 onPickAttachments: _pickAttachments,
                 onRemoveAttachment: _removeAttachment,
               ),
@@ -321,7 +338,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Future<void> _send() async {
     final text = _ctl.text.trim();
-    final startsShell = text.startsWith('!');
+    final startsShell = text.startsWith('!') || _shellMode;
     if (startsShell && _attachments.isNotEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -337,16 +354,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
     final attachments = List<AttachmentPreview>.from(_attachments);
+    final shellModeWas = _shellMode;
+    final displayText = _shellMode ? '!$text' : text;
     _ctl.clear();
     setState(() {
       _cmdMode = false;
+      _shellMode = false;
       _attachments.clear();
     });
     try {
       if (startsShell) {
-        final command = text.substring(1).trim();
+        final command = shellModeWas ? text : text.substring(1).trim();
         if (command.isNotEmpty) {
-          conv.addOptimisticUserMessage(text);
+          conv.addOptimisticUserMessage(displayText);
           serverStore.reflectPreviewFrom(widget.sessionId);
           await client.shell(widget.sessionId,
               directory: directory,
@@ -385,9 +405,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       conv.removeOptimisticMessages();
       serverStore.reflectPreviewFrom(widget.sessionId);
       if (hadOptimistic) {
-        _ctl.text = text;
+        _ctl.text = shellModeWas ? text : displayText;
         setState(() {
-          _cmdMode = startsShell;
+          _shellMode = shellModeWas;
+          _cmdMode = false;
           _attachments
             ..clear()
             ..addAll(attachments);
@@ -1544,6 +1565,8 @@ class _BottomBar extends StatelessWidget {
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
   final List<AttachmentPreview> attachments;
+  final bool shellMode;
+  final VoidCallback onExitShellMode;
   final VoidCallback onPickAttachments;
   final ValueChanged<int> onRemoveAttachment;
 
@@ -1556,6 +1579,8 @@ class _BottomBar extends StatelessWidget {
     required this.onChanged,
     required this.onSend,
     required this.attachments,
+    required this.shellMode,
+    required this.onExitShellMode,
     required this.onPickAttachments,
     required this.onRemoveAttachment,
   });
@@ -1588,6 +1613,8 @@ class _BottomBar extends StatelessWidget {
             onChanged: onChanged,
             onSend: onSend,
             attachments: attachments,
+            shellMode: shellMode,
+            onExitShellMode: onExitShellMode,
             onPickAttachments: onPickAttachments,
           ),
           _AgentModelBar(
@@ -1607,6 +1634,8 @@ class _ComposeBar extends StatefulWidget {
   final bool busy;
   final Future<void> Function() onAbort;
   final List<AttachmentPreview> attachments;
+  final bool shellMode;
+  final VoidCallback onExitShellMode;
   final VoidCallback onPickAttachments;
   const _ComposeBar({
     required this.ctl,
@@ -1615,6 +1644,8 @@ class _ComposeBar extends StatefulWidget {
     required this.busy,
     required this.onAbort,
     required this.attachments,
+    required this.shellMode,
+    required this.onExitShellMode,
     required this.onPickAttachments,
   });
 
@@ -1624,6 +1655,13 @@ class _ComposeBar extends StatefulWidget {
 
 class _ComposeBarState extends State<_ComposeBar> {
   bool _aborting = false;
+  final _kbFocus = FocusNode();
+
+  @override
+  void dispose() {
+    _kbFocus.dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(_ComposeBar oldWidget) {
@@ -1653,31 +1691,44 @@ class _ComposeBarState extends State<_ComposeBar> {
       child: Row(
         children: [
           Expanded(
-            child: TextField(
-              controller: widget.ctl,
-              onChanged: widget.onChanged,
-              onSubmitted: (_) => widget.onSend(),
-              minLines: 1,
-              maxLines: 4,
-              decoration: InputDecoration(
-                hintText: '/ 命令　! shell　发指令…',
-                isDense: true,
-                prefixIcon: IconButton(
-                  icon: const Icon(Icons.add),
-                  tooltip: '附件',
-                  onPressed: widget.onPickAttachments,
+            child: KeyboardListener(
+              focusNode: _kbFocus,
+              onKeyEvent: (e) {
+                if (widget.shellMode &&
+                    widget.ctl.text.isEmpty &&
+                    e is KeyDownEvent &&
+                    e.logicalKey == LogicalKeyboardKey.backspace) {
+                  widget.onExitShellMode();
+                }
+              },
+              child: TextField(
+                controller: widget.ctl,
+                onChanged: widget.onChanged,
+                onSubmitted: (_) => widget.onSend(),
+                minLines: 1,
+                maxLines: 4,
+                decoration: InputDecoration(
+                  hintText: widget.shellMode ? 'shell 命令…' : '/ 命令　! shell　发指令…',
+                  isDense: true,
+                  prefixIcon: IconButton(
+                    icon: Icon(widget.shellMode ? Icons.error_outline : Icons.add),
+                    tooltip: widget.shellMode ? 'shell 模式' : '附件',
+                    onPressed: widget.shellMode
+                        ? widget.onExitShellMode
+                        : widget.onPickAttachments,
+                  ),
+                  prefixIconColor:
+                      Theme.of(context).colorScheme.onSurfaceVariant,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    borderSide: BorderSide.none,
+                  ),
+                  fillColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
+                  filled: true,
                 ),
-                prefixIconColor:
-                    Theme.of(context).colorScheme.onSurfaceVariant,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  borderSide: BorderSide.none,
-                ),
-                fillColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest,
-                filled: true,
               ),
             ),
           ),
