@@ -1780,7 +1780,7 @@ class _ComposeBarState extends State<_ComposeBar> {
                   hintText: widget.shellMode ? 'shell 命令…' : '/ 命令　! shell　发指令…',
                   isDense: true,
                   prefixIcon: IconButton(
-                    icon: Icon(widget.shellMode ? Icons.error_outline : Icons.add),
+                    icon: Icon(widget.shellMode ? Icons.priority_high : Icons.add),
                     tooltip: widget.shellMode ? 'shell 模式' : '附件',
                     onPressed: widget.shellMode
                         ? widget.onExitShellMode
