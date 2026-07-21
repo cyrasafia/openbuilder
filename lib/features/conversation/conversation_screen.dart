@@ -15,6 +15,13 @@ import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+/// Max height of a footer card's scrollable content, as a fraction of the
+/// screen height. Each card bounds its own scroll region with a
+/// [ConstrainedBox] using this factor; the card must NOT rely on the footer's
+/// flex allocation, because a vertical [Column] gives its non-flex children an
+/// unbounded main-axis constraint, which would defeat [SingleChildScrollView].
+const double _kFooterCardContentHeightFactor = 0.3;
+
 class ConversationScreen extends StatefulWidget {
   final String sessionId;
   const ConversationScreen({super.key, required this.sessionId});
@@ -657,7 +664,11 @@ class _TodoCard extends StatelessWidget {
             ]),
           ),
           if (!collapsed)
-            Flexible(
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight:
+                    MediaQuery.of(context).size.height * _kFooterCardContentHeightFactor,
+              ),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -765,9 +776,6 @@ class _FooterPanelState extends State<_FooterPanel> {
         border: Border(
           top: BorderSide(color: Theme.of(context).dividerColor),
         ),
-      ),
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.4,
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -1132,7 +1140,11 @@ class _PermissionCardState extends State<_PermissionCard> {
                   style: AppTheme.mono.copyWith(fontSize: 12.5)),
             )
           else
-            Flexible(
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight:
+                    MediaQuery.of(context).size.height * _kFooterCardContentHeightFactor,
+              ),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -1300,7 +1312,11 @@ class _QuestionCardState extends State<_QuestionCard> {
             ]),
           ),
           if (!_collapsed)
-            Flexible(
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight:
+                    MediaQuery.of(context).size.height * _kFooterCardContentHeightFactor,
+              ),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
