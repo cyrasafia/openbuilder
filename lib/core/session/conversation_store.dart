@@ -819,7 +819,23 @@ class ConversationStore extends ChangeNotifier {
     final existing = _findMessage(info.id);
     if (existing != null) {
       _messages.remove(existing);
-      final recreated = DisplayMessage(info);
+      // Preserve retry error from existing message if the new info lacks one.
+      // A retry part may arrive before message.updated, setting the error;
+      // the subsequent message.updated would otherwise overwrite it to null.
+      final resolvedInfo = (info.error == null && existing.info.error != null)
+          ? MessageInfo(
+              id: info.id,
+              role: info.role,
+              sessionID: info.sessionID,
+              created: info.created,
+              completed: info.completed,
+              cost: info.cost,
+              modelID: info.modelID,
+              finish: info.finish,
+              error: existing.info.error,
+            )
+          : info;
+      final recreated = DisplayMessage(resolvedInfo);
       recreated.parts.addAll(existing.parts);
       _messages.add(recreated);
     } else {
@@ -840,6 +856,32 @@ class ConversationStore extends ChangeNotifier {
     final mid = p.raw['messageID']?.toString();
     if (mid == null) return;
     final msg = _findMessage(mid) ?? _ensureMessage(mid);
+    // Retry parts carry the API error but are hidden from the parts list.
+    // Propagate the error to the parent message so the UI can display it.
+    if (p.type == 'retry') {
+      final retryError = p.raw['error'];
+      if (retryError is Map && retryError.isNotEmpty && msg.info.error == null) {
+        final old = msg.info;
+        final newInfo = MessageInfo(
+          id: old.id,
+          role: old.role,
+          sessionID: old.sessionID,
+          created: old.created,
+          completed: old.completed,
+          cost: old.cost,
+          modelID: old.modelID,
+          finish: old.finish,
+          error: retryError.cast<String, dynamic>(),
+        );
+        _messages.remove(msg);
+        final newMsg = DisplayMessage(newInfo, optimistic: msg.optimistic);
+        newMsg.parts.addAll(msg.parts);
+        _messages.add(newMsg);
+        _sort();
+        notifyListeners();
+      }
+      return;
+    }
     DisplayPart dp;
     final idx = msg.parts.indexWhere((x) => x.id == p.id);
     if (idx == -1) {

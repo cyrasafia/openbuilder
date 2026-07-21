@@ -285,4 +285,123 @@ void main() {
       expect(conv.directory, '/a');
     });
   });
+
+  group('retry part error propagation', () {
+    test('retry part propagates error to parent message info.error', () {
+      final conv = ConversationStore('s8', _fakeClient());
+      // Simulate a message updated (assistant message, no error yet).
+      conv.onMessageUpdated(MessageInfo(
+        id: 'msg_r1',
+        role: 'assistant',
+        sessionID: 's8',
+        created: 1000,
+      ));
+      expect(conv.messages.single.info.error, isNull);
+
+      // Simulate a retry part arriving with an APIError.
+      conv.onPartUpdated({
+        'id': 'prt_retry1',
+        'messageID': 'msg_r1',
+        'sessionID': 's8',
+        'type': 'retry',
+        'attempt': 1,
+        'error': {
+          'name': 'APIError',
+          'data': {
+            'message': 'Weekly/Monthly Limit Exhausted',
+            'isRetryable': true,
+          },
+        },
+        'time': {'created': 1001},
+      }, null);
+
+      // The retry part is hidden, so no parts added.
+      expect(conv.messages.single.parts, isEmpty);
+      // But the error is propagated to the message's info.error.
+      final err = conv.messages.single.info.error;
+      expect(err, isNotNull);
+      expect(err!['name'], 'APIError');
+      expect(err['data']['message'], 'Weekly/Monthly Limit Exhausted');
+    });
+
+    test('retry part does not overwrite existing message error', () {
+      final conv = ConversationStore('s9', _fakeClient());
+      conv.onMessageUpdated(MessageInfo(
+        id: 'msg_r2',
+        role: 'assistant',
+        sessionID: 's9',
+        created: 2000,
+        error: {'name': 'ProviderAuthError', 'data': {'message': 'auth failed', 'providerID': 'openrouter'}},
+      ));
+      expect(conv.messages.single.info.error, isNotNull);
+
+      conv.onPartUpdated({
+        'id': 'prt_retry2',
+        'messageID': 'msg_r2',
+        'sessionID': 's9',
+        'type': 'retry',
+        'attempt': 1,
+        'error': {'name': 'APIError', 'data': {'message': 'rate limit', 'isRetryable': true}},
+        'time': {'created': 2001},
+      }, null);
+
+      // Original error preserved; retry error not overwritten.
+      expect(conv.messages.single.info.error!['name'], 'ProviderAuthError');
+    });
+
+    test('empty retry error does not propagate', () {
+      final conv = ConversationStore('s10', _fakeClient());
+      conv.onMessageUpdated(MessageInfo(
+        id: 'msg_r3',
+        role: 'assistant',
+        sessionID: 's10',
+        created: 3000,
+      ));
+
+      conv.onPartUpdated({
+        'id': 'prt_retry3',
+        'messageID': 'msg_r3',
+        'sessionID': 's10',
+        'type': 'retry',
+        'attempt': 1,
+        'error': <String, dynamic>{},
+        'time': {'created': 3001},
+      }, null);
+
+      expect(conv.messages.single.info.error, isNull);
+    });
+
+    test('message.updated preserves retry error when new info lacks error', () {
+      final conv = ConversationStore('s11', _fakeClient());
+      // 1. message.updated arrives first (no error).
+      conv.onMessageUpdated(MessageInfo(
+        id: 'msg_r4',
+        role: 'assistant',
+        sessionID: 's11',
+        created: 4000,
+      ));
+      // 2. Retry part arrives, sets error on message.
+      conv.onPartUpdated({
+        'id': 'prt_retry4',
+        'messageID': 'msg_r4',
+        'sessionID': 's11',
+        'type': 'retry',
+        'attempt': 1,
+        'error': {'name': 'APIError', 'data': {'message': 'rate limit', 'isRetryable': true}},
+        'time': {'created': 4001},
+      }, null);
+      expect(conv.messages.single.info.error, isNotNull);
+
+      // 3. Another message.updated arrives WITHOUT error (e.g., status bump).
+      conv.onMessageUpdated(MessageInfo(
+        id: 'msg_r4',
+        role: 'assistant',
+        sessionID: 's11',
+        created: 4000,
+        finish: 'error',
+      ));
+      // Retry error is preserved, not overwritten to null.
+      expect(conv.messages.single.info.error!['name'], 'APIError');
+    });
+  });
 }
