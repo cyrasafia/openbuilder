@@ -634,6 +634,7 @@ class _TodoCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
@@ -650,26 +651,35 @@ class _TodoCard extends StatelessWidget {
                       color: Theme.of(context).colorScheme.outline)),
               if (onToggle != null) ...[
                 const SizedBox(width: 6),
-                Icon(collapsed ? Icons.expand_more : Icons.expand_less,
+                Icon(collapsed ? Icons.expand_less : Icons.expand_more,
                     size: 18, color: Theme.of(context).colorScheme.outline),
               ],
             ]),
           ),
-          if (!collapsed) ...[
-            const SizedBox(height: 10),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: pct,
-                minHeight: 5,
-                backgroundColor: const Color(0xFF23272E),
-                valueColor: AlwaysStoppedAnimation(
-                    Theme.of(context).colorScheme.primary),
+          if (!collapsed)
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 10),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: pct,
+                        minHeight: 5,
+                        backgroundColor: const Color(0xFF23272E),
+                        valueColor: AlwaysStoppedAnimation(
+                            Theme.of(context).colorScheme.primary),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ...todos.map(_todoRow),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(height: 12),
-            ...todos.map(_todoRow),
-          ],
         ],
       ),
     );
@@ -742,7 +752,7 @@ class _FooterPanelState extends State<_FooterPanel> {
         queueTotal: totalPending,
       ));
     }
-    if (widget.todos.isNotEmpty) {
+    if (widget.todos.isNotEmpty && totalPending == 0) {
       children.add(_TodoCard(
         todos: widget.todos,
         collapsed: !_todoExpanded,
@@ -759,10 +769,11 @@ class _FooterPanelState extends State<_FooterPanel> {
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.4,
       ),
-      child: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(children: children),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: children,
         ),
       ),
     );
@@ -1062,6 +1073,7 @@ class _PermissionCard extends StatefulWidget {
 
 class _PermissionCardState extends State<_PermissionCard> {
   bool _replying = false;
+  bool _collapsed = false;
 
   Future<void> _respond(String response) async {
     setState(() => _replying = true);
@@ -1089,54 +1101,79 @@ class _PermissionCardState extends State<_PermissionCard> {
             color: Theme.of(context).colorScheme.primary.withAlpha(120)),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            Icon(Icons.shield_outlined,
-                size: 16, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: 6),
-            const Text('权限请求',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-            if (widget.queueTotal > 1) ...[
+          InkWell(
+            onTap: () => setState(() => _collapsed = !_collapsed),
+            child: Row(children: [
+              Icon(Icons.shield_outlined,
+                  size: 16, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 6),
+              const Text('权限请求',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
               const Spacer(),
-              Text('1/${widget.queueTotal} 待处理',
-                  style: TextStyle(
-                      fontSize: 11.5,
-                      color: Theme.of(context).colorScheme.outline)),
-            ],
-          ]),
-          const SizedBox(height: 8),
-          Text(widget.permission.title,
-              style: AppTheme.mono.copyWith(fontSize: 12.5)),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              FilledButton.tonal(
-                style: FilledButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    backgroundColor: Colors.red.withAlpha(25)),
-                onPressed: _replying ? null : () => _respond('reject'),
-                child: const Text('拒绝'),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.tonal(
-                onPressed: _replying ? null : () => _respond('always'),
-                child: const Text('始终允许'),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: _replying ? null : () => _respond('once'),
-                child: _replying
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('允许一次'),
-              ),
-            ],
+              if (widget.queueTotal > 1)
+                Text('1/${widget.queueTotal} 待处理',
+                    style: TextStyle(
+                        fontSize: 11.5,
+                        color: Theme.of(context).colorScheme.outline)),
+              const SizedBox(width: 6),
+              Icon(_collapsed ? Icons.expand_less : Icons.expand_more,
+                  size: 18, color: Theme.of(context).colorScheme.outline),
+            ]),
           ),
+          if (_collapsed)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(widget.permission.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTheme.mono.copyWith(fontSize: 12.5)),
+            )
+          else
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 8),
+                    Text(widget.permission.title,
+                        style: AppTheme.mono.copyWith(fontSize: 12.5)),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        FilledButton.tonal(
+                          style: FilledButton.styleFrom(
+                              foregroundColor: Colors.red,
+                              backgroundColor: Colors.red.withAlpha(25)),
+                          onPressed: _replying ? null : () => _respond('reject'),
+                          child: const Text('拒绝'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.tonal(
+                          onPressed: _replying ? null : () => _respond('always'),
+                          child: const Text('始终允许'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          onPressed: _replying ? null : () => _respond('once'),
+                          child: _replying
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Text('允许一次'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1161,6 +1198,8 @@ class _QuestionCard extends StatefulWidget {
 class _QuestionCardState extends State<_QuestionCard> {
   final Map<int, Set<String>> _selected = {};
   bool _replying = false;
+  int _step = 0;
+  bool _collapsed = false;
 
   void _toggle(int qIdx, String label) {
     final q = widget.question.questions[qIdx];
@@ -1207,17 +1246,22 @@ class _QuestionCardState extends State<_QuestionCard> {
     }
   }
 
-  /// At least one option selected for every question.
-  bool get _canSubmit {
-    for (var i = 0; i < widget.question.questions.length; i++) {
-      if ((_selected[i] ?? const {}).isEmpty) return false;
+  bool get _stepAnswered =>
+      (_selected[_step] ?? const {}).isNotEmpty;
+
+  bool get _isLastStep => _step >= widget.question.questions.length - 1;
+
+  void _next() {
+    if (_stepAnswered && !_isLastStep) {
+      setState(() => _step++);
     }
-    return true;
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final totalSub = widget.question.questions.length;
+    final q = widget.question.questions[_step];
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
@@ -1227,43 +1271,75 @@ class _QuestionCardState extends State<_QuestionCard> {
         border: Border.all(color: scheme.tertiary.withAlpha(120)),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (widget.queueTotal > 1) ...[
-            Align(
-              alignment: Alignment.centerRight,
-              child: Text('1/${widget.queueTotal} 待处理',
-                  style: TextStyle(fontSize: 11.5, color: scheme.outline)),
-            ),
-            const SizedBox(height: 4),
-          ],
-          for (var i = 0; i < widget.question.questions.length; i++) ...[
-            if (i > 0) const SizedBox(height: 16),
-            _questionBlock(i),
-          ],
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              FilledButton.tonal(
-                style: FilledButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    backgroundColor: Colors.red.withAlpha(25)),
-                onPressed: _replying ? null : _reject,
-                child: const Text('拒绝'),
+          InkWell(
+            onTap: () => setState(() => _collapsed = !_collapsed),
+            child: Row(children: [
+              Icon(Icons.help_outline, size: 16, color: scheme.tertiary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(q.header,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
               ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: _replying || !_canSubmit ? null : _reply,
-                child: _replying
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text('提交'),
-              ),
-            ],
+              if (totalSub > 1)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text('${_step + 1}/$totalSub',
+                      style: TextStyle(fontSize: 11.5, color: scheme.outline)),
+                ),
+              if (widget.queueTotal > 1)
+                Text('1/${widget.queueTotal} 待处理',
+                    style: TextStyle(fontSize: 11.5, color: scheme.outline)),
+              const SizedBox(width: 6),
+              Icon(_collapsed ? Icons.expand_less : Icons.expand_more,
+                  size: 18, color: scheme.outline),
+            ]),
           ),
+          if (!_collapsed)
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _questionBlock(_step),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Spacer(),
+                        FilledButton.tonal(
+                          style: FilledButton.styleFrom(
+                              foregroundColor: Colors.red,
+                              backgroundColor: Colors.red.withAlpha(25)),
+                          onPressed: _replying ? null : _reject,
+                          child: const Text('拒绝'),
+                        ),
+                        const SizedBox(width: 8),
+                        if (_isLastStep)
+                          FilledButton(
+                            onPressed: _replying || !_stepAnswered ? null : _reply,
+                            child: _replying
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2))
+                                : const Text('提交'),
+                          )
+                        else
+                          FilledButton(
+                            onPressed: _replying || !_stepAnswered ? null : _next,
+                            child: const Text('下一步'),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1275,13 +1351,6 @@ class _QuestionCardState extends State<_QuestionCard> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(children: [
-          Icon(Icons.help_outline,
-              size: 16, color: Theme.of(context).colorScheme.tertiary),
-          const SizedBox(width: 6),
-          Text(q.header,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-        ]),
         const SizedBox(height: 6),
         Text(q.question, style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface)),
         const SizedBox(height: 8),
