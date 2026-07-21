@@ -15,6 +15,7 @@ void main() async {
   await AppLogger.I.init();
   await connectionStore.load();
   await modelHideStore.load();
+  await defaultAgentModelStore.load();
   wireServerStore();
   await NotificationService.init();
   await SystemFontWeight.init();

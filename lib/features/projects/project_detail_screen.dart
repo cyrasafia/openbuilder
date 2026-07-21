@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../app_state.dart';
+import '../../core/logging/app_logger.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
@@ -179,6 +180,7 @@ class ProjectDetailScreen extends StatelessWidget {
   Future<void> _createSession(BuildContext context, String directory) async {
     try {
       final session = await serverStore.createSession(directory);
+      unawaited(_applyDefaultAgentModel(session.id, directory));
       if (context.mounted) context.push('/session/${session.id}');
     } catch (e) {
       if (context.mounted) {
@@ -186,6 +188,62 @@ class ProjectDetailScreen extends StatelessWidget {
           context,
         ).showSnackBar(SnackBar(content: Text('创建失败：$e')));
       }
+    }
+  }
+
+  Future<void> _applyDefaultAgentModel(
+    String sessionId,
+    String directory,
+  ) async {
+    final client = serverStore.client;
+    if (client == null) return;
+    bool switched = false;
+    try {
+      final results = await Future.wait([
+        client.listAgents(directory: directory),
+        client.listConfigProviders(directory: directory),
+      ]);
+      final agents = results[0] as List<AgentInfo>;
+      final models = results[1] as List<ModelInfo>;
+      final session = serverStore.sessionById(sessionId);
+      if (agents.isNotEmpty && session?.agent != agents.first.name) {
+        await client.switchAgent(sessionId, agents.first.name);
+        switched = true;
+      }
+      if (models.isEmpty) {
+        if (switched) unawaited(serverStore.refresh());
+        return;
+      }
+      final saved = defaultAgentModelStore.getDefaultModel(
+        connectionStore.activeId,
+      );
+      ModelRef targetModel;
+      if (saved != null) {
+        final match = models.where(
+          (m) => m.id == saved.id && m.providerID == saved.providerID,
+        );
+        if (match.isNotEmpty) {
+          targetModel = saved;
+        } else {
+          targetModel = ModelRef(
+            id: models.first.id,
+            providerID: models.first.providerID,
+          );
+        }
+      } else {
+        targetModel = ModelRef(
+          id: models.first.id,
+          providerID: models.first.providerID,
+        );
+      }
+      if (session?.model?.id != targetModel.id ||
+          session?.model?.providerID != targetModel.providerID) {
+        await client.switchModel(sessionId, targetModel);
+        switched = true;
+      }
+      if (switched) unawaited(serverStore.refresh());
+    } catch (e) {
+      AppLogger.I.e('ApplyDefaultAgentModel', e.toString());
     }
   }
 

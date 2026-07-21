@@ -2103,15 +2103,17 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     if (client == null) return;
     setState(() => _switching = true);
     try {
-      await client.switchModel(
-        widget.sessionId,
-        ModelRef(
-          id: model.id,
-          providerID: model.providerID,
-          variant: variant?.id,
-        ),
+      final ref = ModelRef(
+        id: model.id,
+        providerID: model.providerID,
+        variant: variant?.id,
       );
+      await client.switchModel(widget.sessionId, ref);
       unawaited(serverStore.refresh());
+      unawaited(defaultAgentModelStore.saveDefaultModel(
+        connectionStore.activeId,
+        ref,
+      ));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
