@@ -178,7 +178,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             children: [
               const SizedBox(height: 8),
-              if (conv.busy || conv.loading) const _TypingDots(),
+              if (conv.isRetry && conv.retryMessage != null && conv.retryMessage!.isNotEmpty)
+                _RetryMessage(message: conv.retryMessage!)
+              else if (conv.busy || conv.loading)
+                const _TypingDots(),
               ...conv.renderableMessages.map(_message),
               if (conv.loadingEarlier)
                 const _LoadingEarlierRow()
@@ -1360,6 +1363,86 @@ class _TypingDots extends StatelessWidget {
             child: _Dot(delay: i * 300),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Retry indicator shown in the message stream (replaces _TypingDots during
+/// retry). Styled like an assistant message bubble, with an animated spinning
+/// refresh icon to convey the retry action is in progress.
+class _RetryMessage extends StatelessWidget {
+  final String message;
+  const _RetryMessage({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFB923C).withAlpha(20),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFFB923C).withAlpha(80)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SpinningRefresh(),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '重试中：$message',
+                style: const TextStyle(
+                  fontSize: 14,
+                  height: 1.45,
+                  color: Color(0xFFFB923C),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Continuously-rotating refresh icon. Conveys "retry in progress" motion.
+class _SpinningRefresh extends StatefulWidget {
+  const _SpinningRefresh();
+
+  @override
+  State<_SpinningRefresh> createState() => _SpinningRefreshState();
+}
+
+class _SpinningRefreshState extends State<_SpinningRefresh>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _c,
+      child: const Icon(
+        Icons.refresh,
+        size: 16,
+        color: Color(0xFFFB923C),
       ),
     );
   }

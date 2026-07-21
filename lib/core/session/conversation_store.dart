@@ -235,6 +235,7 @@ class ConversationStore extends ChangeNotifier {
   List<Permission> get permissions => List.unmodifiable(_permissions);
   List<QuestionRequest> get questions => List.unmodifiable(_questions);
   bool get busy => status == 'busy' || status == 'retry';
+  bool get isRetry => status == 'retry';
 
   /// Messages for the detail view: only the bottom (reachable) segment,
   /// newest-first (for the reversed ListView). Messages above an unbridged
