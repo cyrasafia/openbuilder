@@ -2315,7 +2315,6 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                         Expanded(
                           child: TextField(
                             controller: _controller,
-                            autofocus: true,
                             textInputAction: TextInputAction.search,
                             style: const TextStyle(fontSize: 14),
                             decoration: InputDecoration(
@@ -2336,12 +2335,7 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                                         setState(() => _query = '');
                                       },
                                     ),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide.none,
-                              ),
-                              filled: true,
-                              fillColor: scheme.surfaceContainerHighest,
+                              border: InputBorder.none,
                               contentPadding: const EdgeInsets.symmetric(
                                   horizontal: 12, vertical: 10),
                             ),
