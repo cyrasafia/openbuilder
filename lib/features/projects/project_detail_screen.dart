@@ -9,6 +9,7 @@ import '../../app_state.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import 'emoji_icons.dart';
 import 'worktree_order.dart';
 
 class ProjectDetailScreen extends StatelessWidget {
@@ -74,24 +75,28 @@ class ProjectDetailScreen extends StatelessWidget {
                 onEdit: canEdit ? () => _showEditProject(context, p) : null,
               ),
               Expanded(
-                child: ListView(
-                  children: [
-                    if (sessions.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(32),
-                        child: Center(child: Text('无活跃会话')),
-                      )
-                    else if (project?.id == 'global' && directory == null)
-                      ..._groupedGlobal(context, sessions)
-                    else
-                      ..._groupedByWorktree(
-                        context,
-                        sessions,
-                        scopedWorktree,
-                        project?.sandboxes ?? const [],
-                      ),
-                    const SizedBox(height: 16),
-                  ],
+                child: MediaQuery.removePadding(
+                  context: context,
+                  removeTop: true,
+                  child: ListView(
+                    children: [
+                      if (sessions.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(32),
+                          child: Center(child: Text('无活跃会话')),
+                        )
+                      else if (project?.id == 'global' && directory == null)
+                        ..._groupedGlobal(context, sessions)
+                      else
+                        ..._groupedByWorktree(
+                          context,
+                          sessions,
+                          scopedWorktree,
+                          project?.sandboxes ?? const [],
+                        ),
+                      const SizedBox(height: 16),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -698,18 +703,7 @@ class _SessionRow extends StatelessWidget {
   }
 }
 
-const _iconColorKeys = <String>[
-  'green',
-  'blue',
-  'orange',
-  'purple',
-  'pink',
-  'yellow',
-  'cyan',
-  'red',
-];
-
-/// Bottom sheet for editing a project's name and icon (image override / color).
+/// Bottom sheet for editing a project's name and icon (emoji / image override).
 class _ProjectEditSheet extends StatefulWidget {
   final ProjectModel project;
   const _ProjectEditSheet({required this.project});
@@ -720,8 +714,10 @@ class _ProjectEditSheet extends StatefulWidget {
 
 class _ProjectEditSheetState extends State<_ProjectEditSheet> {
   late final TextEditingController _nameCtrl;
+  late final List<String> _emojiChoices;
   String? _override;
-  String? _color;
+  String? _selectedEmoji;
+  bool _emojiBusy = false;
   bool _saving = false;
 
   @override
@@ -729,7 +725,8 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
     super.initState();
     _nameCtrl = TextEditingController(text: widget.project.displayName);
     _override = widget.project.icon?.override;
-    _color = widget.project.icon?.color;
+    _emojiChoices = pickRandomEmojiAssets(5);
+    _resolveSelectedEmoji();
   }
 
   @override
@@ -738,11 +735,48 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
     super.dispose();
   }
 
+  Future<void> _resolveSelectedEmoji() async {
+    final current = _override;
+    if (current == null || current.isEmpty) return;
+    try {
+      for (final asset in _emojiChoices) {
+        final dataUrl = await emojiAssetToDataUrl(asset);
+        if (!mounted || _override != current) return;
+        if (dataUrl == current) {
+          setState(() => _selectedEmoji = asset);
+          return;
+        }
+      }
+    } catch (_) {
+      // Best-effort highlight; ignore asset load failures.
+    }
+  }
+
   ProjectIcon get _previewIcon => ProjectIcon(
         url: widget.project.icon?.url,
         override: _override,
-        color: _color,
+        color: widget.project.icon?.color,
       );
+
+  Future<void> _pickEmoji(String assetPath) async {
+    if (_emojiBusy || _selectedEmoji == assetPath) return;
+    setState(() => _emojiBusy = true);
+    try {
+      final dataUrl = await emojiAssetToDataUrl(assetPath);
+      if (!mounted) return;
+      setState(() {
+        _override = dataUrl;
+        _selectedEmoji = assetPath;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('选择 emoji 失败：$e')),
+      );
+    } finally {
+      if (mounted) setState(() => _emojiBusy = false);
+    }
+  }
 
   Future<void> _pickImage() async {
     try {
@@ -758,6 +792,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
       if (!mounted) return;
       setState(() {
         _override = 'data:$mime;base64,${base64Encode(bytes)}';
+        _selectedEmoji = null;
       });
     } catch (e) {
       if (!mounted) return;
@@ -777,8 +812,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
     }
     setState(() => _saving = true);
     final original = widget.project;
-    final iconChanged = _override != original.icon?.override ||
-        _color != original.icon?.color;
+    final iconChanged = _override != original.icon?.override;
     final nameChanged = name != original.displayName;
 
     try {
@@ -788,7 +822,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
         updateIcon: iconChanged,
         iconUrl: original.icon?.url,
         iconOverride: _override,
-        iconColor: _color,
+        iconColor: null,
       );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
@@ -826,6 +860,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
           ),
           const SizedBox(height: 16),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               ProjectAvatar(
                 name: _nameCtrl.text.isEmpty
@@ -843,24 +878,30 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        for (final key in _iconColorKeys)
+                        for (final asset in _emojiChoices)
                           GestureDetector(
-                            onTap: () => setState(() {
-                              _color = _color == key ? null : key;
-                              _override = null;
-                            }),
+                            onTap: _emojiBusy
+                                ? null
+                                : () => _pickEmoji(asset),
                             child: Container(
-                              width: 28,
-                              height: 28,
+                              width: 40,
+                              height: 40,
                               decoration: BoxDecoration(
-                                color: namedColor(key),
-                                shape: BoxShape.circle,
-                                border: _color == key
+                                borderRadius: BorderRadius.circular(8),
+                                border: _selectedEmoji == asset
                                     ? Border.all(
                                         color: scheme.onSurface,
                                         width: 2.5,
                                       )
                                     : null,
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: Image.asset(
+                                  asset,
+                                  fit: BoxFit.contain,
+                                  gaplessPlayback: true,
+                                ),
                               ),
                             ),
                           ),
@@ -878,8 +919,10 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
                         ),
                         if (_override != null)
                           TextButton.icon(
-                            onPressed: () =>
-                                setState(() => _override = null),
+                            onPressed: () => setState(() {
+                              _override = null;
+                              _selectedEmoji = null;
+                            }),
                             icon: const Icon(Icons.restart_alt, size: 18),
                             label: const Text('移除图片'),
                           ),
