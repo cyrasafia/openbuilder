@@ -14,6 +14,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppLogger.I.init();
   await connectionStore.load();
+  await modelHideStore.load();
   wireServerStore();
   await NotificationService.init();
   await SystemFontWeight.init();

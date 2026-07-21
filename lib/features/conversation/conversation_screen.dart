@@ -1910,29 +1910,24 @@ class _AgentModelBarState extends State<_AgentModelBar> {
 
   void _showModelSheet() {
     if (_models.isEmpty) return;
-    final session = serverStore.sessionById(widget.sessionId);
     showModalBottomSheet(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: _models
-              .map((m) => ListTile(
-                    leading: const Icon(Icons.memory, size: 20),
-                    title: Text(m.name),
-                    subtitle: Text('${m.providerID}/${m.id}',
-                        style: AppTheme.mono.copyWith(fontSize: 11)),
-                    trailing: (session?.model?.id == m.id &&
-                            session?.model?.providerID == m.providerID)
-                        ? const Icon(Icons.check, size: 18)
-                        : null,
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _switchModel(m);
-                    },
-                  ))
-              .toList(),
-        ),
+      isScrollControlled: true,
+      builder: (ctx) => _ModelPickerSheet(
+        models: _models,
+        sessionId: widget.sessionId,
+        onSelected: (m) {
+          Navigator.pop(ctx);
+          _switchModel(m);
+        },
+        onManage: () {
+          // Close the sheet first, then push from this (stable) context —
+          // pushing inside the sheet builder would add /models above the
+          // sheet in the root navigator, so a subsequent maybePop would pop
+          // /models instead of the sheet.
+          Navigator.pop(ctx);
+          context.push('/models');
+        },
       ),
     );
   }
@@ -2234,6 +2229,207 @@ class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
         ),
       ),
     );
+  }
+}
+
+/// Model picker bottom sheet: search bar + models grouped by provider.
+///
+/// Grouping follows first-appearance order of `providerID` in [models] (server
+/// order). Search matches model name, id, and providerID (case-insensitive).
+/// When a search is active, empty providers are hidden; the query is reset on
+/// close.
+class _ModelPickerSheet extends StatefulWidget {
+  final List<ModelInfo> models;
+  final String sessionId;
+  final ValueChanged<ModelInfo> onSelected;
+  final VoidCallback? onManage;
+
+  const _ModelPickerSheet({
+    required this.models,
+    required this.sessionId,
+    required this.onSelected,
+    this.onManage,
+  });
+
+  @override
+  State<_ModelPickerSheet> createState() => _ModelPickerSheetState();
+}
+
+class _ModelPickerSheetState extends State<_ModelPickerSheet> {
+  final _controller = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  bool _matches(ModelInfo m, String q) {
+    if (q.isEmpty) return true;
+    return m.name.toLowerCase().contains(q) ||
+        m.id.toLowerCase().contains(q) ||
+        m.providerID.toLowerCase().contains(q);
+  }
+
+  String? get _serverId => connectionStore.activeId;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final session = serverStore.sessionById(widget.sessionId);
+    final q = _query.toLowerCase();
+
+    // Listen to hidden-model changes so toggles in the model-management
+    // page reflect here immediately.
+    return ListenableBuilder(
+      listenable: modelHideStore,
+      builder: (context, _) {
+        // Visible models: server order, grouped by providerID, excluding
+        // hidden ones and search misses.
+        final groups = <String, List<ModelInfo>>{};
+        for (final m in widget.models) {
+          if (modelHideStore.isHidden(_serverId, m.providerID, m.id)) continue;
+          if (!_matches(m, q)) continue;
+          (groups[m.providerID] ??= []).add(m);
+        }
+
+        return SafeArea(
+          child: ConstrainedBox(
+            // Cap at ~70% of the viewport height *above the open keyboard* so
+            // the sheet scrolls internally when there are many models, while
+            // shrinking to content (search + list) when there are few.
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.7,
+            ),
+            child: Padding(
+              padding: EdgeInsets.only(
+                  bottom: MediaQuery.viewInsetsOf(context).bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 4, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _controller,
+                            autofocus: true,
+                            textInputAction: TextInputAction.search,
+                            style: const TextStyle(fontSize: 14),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              hintText: '搜索模型 / provider',
+                              hintStyle: TextStyle(
+                                  fontSize: 14, color: scheme.outline),
+                              prefixIcon: Icon(Icons.search,
+                                  size: 20, color: scheme.outline),
+                              suffixIcon: _query.isEmpty
+                                  ? null
+                                  : IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      iconSize: 18,
+                                      icon: const Icon(Icons.close),
+                                      onPressed: () {
+                                        _controller.clear();
+                                        setState(() => _query = '');
+                                      },
+                                    ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide.none,
+                              ),
+                              filled: true,
+                              fillColor: scheme.surfaceContainerHighest,
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 10),
+                            ),
+                            onChanged: (v) =>
+                                setState(() => _query = v.trim()),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: '模型管理',
+                          icon: const Icon(Icons.tune),
+                          onPressed: widget.onManage,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (groups.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 32),
+                      child: Text('无匹配模型',
+                          style: TextStyle(
+                              fontSize: 13, color: scheme.outline)),
+                    )
+                  else
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: ListView(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        children: _buildGroups(groups, session, scheme),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  List<Widget> _buildGroups(
+    Map<String, List<ModelInfo>> groups,
+    SessionModel? session,
+    ColorScheme scheme,
+  ) {
+    final out = <Widget>[];
+    for (final providerID in groups.keys) {
+      final items = groups[providerID]!;
+      out.add(Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 12, 4),
+            child: Row(
+              children: [
+                Icon(Icons.dns_outlined, size: 14, color: scheme.outline),
+                const SizedBox(width: 6),
+                Text(
+                  providerID,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.outline,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text('${items.length}',
+                    style: TextStyle(fontSize: 11, color: scheme.outline)),
+              ],
+            ),
+          ),
+          ...items.map((m) {
+            final selected = session?.model?.id == m.id &&
+                session?.model?.providerID == m.providerID;
+            return ListTile(
+              dense: true,
+              leading: const Icon(Icons.memory, size: 20),
+              title: Text(m.name, style: const TextStyle(fontSize: 14)),
+              subtitle: Text('${m.providerID}/${m.id}',
+                  style: AppTheme.mono.copyWith(fontSize: 11)),
+              trailing:
+                  selected ? const Icon(Icons.check, size: 18) : null,
+              onTap: () => widget.onSelected(m),
+            );
+          }),
+        ],
+      ));
+    }
+    return out;
   }
 }
 

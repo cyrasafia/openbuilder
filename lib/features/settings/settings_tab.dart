@@ -140,6 +140,13 @@ class _SettingsTabState extends State<SettingsTab> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => context.push('/servers'),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.memory),
+                  title: const Text('模型管理'),
+                  subtitle: const Text('显示 / 隐藏模型'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.push('/models'),
+                ),
               ]),
               _section('客户端', [
                 ListTile(

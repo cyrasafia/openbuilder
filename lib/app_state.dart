@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/connection/connection_store.dart';
+import 'core/models/model_hide_store.dart';
 import 'core/session/server_store.dart';
 
 final ConnectionStore connectionStore = ConnectionStore();
 final ServerStore serverStore = ServerStore();
+final ModelHideStore modelHideStore = ModelHideStore();
 final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 final ValueNotifier<Locale?> localeMode = ValueNotifier(null);
 

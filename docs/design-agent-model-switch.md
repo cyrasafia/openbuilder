@@ -483,3 +483,76 @@ live `:15120`（v1.18.3）的 `/config/providers` model 值比 pin 的 spec（v1
 - 不动 `_switchModel` 的 `unawaited(refresh())` / 无重入守卫（沿用 AM-OPT-2 的 ⏳ 后续决议，本次仅改数据源）。
 - 不引入 models 跨会话缓存（仍为 `_AgentModelBarState` 本地状态，每次挂载重拉，与原设计一致）。
 - 不对 55 个模型做分组/排序（维持服务端返回顺序；如需按 provider 分组展示属后续 UX 优化）。
+
+---
+
+## 三次评审意见 — 模型分组 + 搜索 + 客户端本地隐藏
+
+> 触发问题：模型选择器原为扁平 `ListView`，55 个模型跨 6 家 provider 平铺，难找且无按 provider 维度的概览；且服务端无模型级「启用/禁用」信号（`/config/providers` 的 `Model` schema 无 `enabled` 字段，全部 `status: active`），用户在 Desktop 端隐藏的模型在此仍显示。实测 TUI/CLI 同样显示全部 6 个 zai 模型，证实「隐藏」是 Desktop 客户端本地能力，serve HTTP API 不感知。
+
+### LR-G1 🔴 模型选择器改为按 provider 分组 + 搜索 · 已修复
+
+`_ModelPickerSheet`（新提取的 StatefulWidget）替换原扁平 `ListView`：
+- 按 `providerID` 分组，保留服务端返回顺序（`LinkedHashMap` 首现序）；每组标题 `dns_outlined` 图标 + provider id（`w600`）+ 数量。
+- 顶部搜索框（autofocus），匹配 model `name`/`id`/`providerID`（大小写不敏感）；空 query 显示全部，无匹配显示「无匹配模型」，搜索时空 provider 整组隐藏。
+- 布局 `ConstrainedBox(maxHeight: 0.7*viewport)` + `Flexible(Fit.loose)` + 非 shrinkWrap `ListView`：模型少时收缩贴合内容、多时内部滚动；`Padding(bottom: viewInsetsOf)` 适配软键盘。
+
+### LR-G2 🔴 服务端无模型级启用信号，改为客户端本地隐藏 · 已修复
+
+契约 + 实测确认：`/config/providers` 的 `Model` schema 仅 `status`（且实测 `:15120` 返回的 55 个全 `active`），无 `enabled`/`hidden` 字段；Desktop「隐藏」存于其自身 LevelDB（`~/.config/OpenCode/*.dat`），未写入 opencode 配置，serve 不感知。TUI/CLI 同样全量显示（实测 zai 6 个含 `glm-4.5-air`）。故「隐藏」必须客户端本地维护。
+
+**实现：** 新增 `lib/core/models/model_hide_store.dart` 的 `ModelHideStore`（`ChangeNotifier`）：
+- 按 connection profile（`connectionStore.activeId`）隔离：`Map<serverId, Set<String>>`，键为 `providerID/modelId`。
+- 持久化于 `flutter_secure_storage`（key `opencode.hidden-models.v1`），`main.dart` 启动时 `await modelHideStore.load()`。
+- API：`isHidden / hide / unhide`，变更即 `notifyListeners`；`hide`/`unhide` 在集合未变时跳过持久化。
+
+`_ModelPickerSheet` 监听 `modelHideStore`：
+- 可见列表排除隐藏模型；分组数量也随之收缩。
+- 对话页选择器顶部「模型管理」入口（`tune` 图标），点击跳转 `/models` 集中管理显示/隐藏。
+
+### 四次评审意见 — 模型管理页 + 去掉长按隐藏交互
+
+> 触发问题：长按隐藏不直观、无集中管理入口；用户要求设置页加「模型管理」入口，对话页加配置入口跳转，去掉长按。
+
+### LR-M1 🔴 新增模型管理页（集中显示/隐藏）· 已修复
+
+新增 `lib/features/models/model_management_screen.dart` 的 `ModelManagementScreen`（路由 `GET /models`）：
+- `initState` 调 `listConfigProviders()`（全局解析，不带 directory）拉所有启用 provider 的模型，按 `providerID` 分段（与选择器一致的 provider 标题 + 数量）。
+- 每个模型行带 `Switch`：开=显示、关=隐藏，直接读写 `modelHideStore`（按 `connectionStore.activeId` 隔离）。
+- 顶部信息条说明「隐藏的模型不会出现在对话页，仍可正常使用」，并统计 `已隐藏 N / 总数`。
+- 加载/错误/空态分别处理（含重试按钮）。
+
+入口：
+- 设置页「服务器」组新增「模型管理」`ListTile`（`memory` 图标，`/models`）。
+- 对话页 `_ModelPickerSheet` 顶部搜索栏旁加 `tune` 图标按钮 → 关闭 sheet 后 `context.push('/models')`。
+
+### LR-M2 🔴 去掉长按隐藏交互 · 已修复
+
+`_ModelPickerSheet` 删除：`onLongPress`、`_confirmToggleHide`、`_confirm`、`_buildHiddenTile`、`_buildHiddenToggle`、`_showHidden` 状态、隐藏折叠区。保留隐藏模型过滤（`modelHideStore.isHidden` 过滤可见列表）——隐藏由管理页统一操作，选择器只反映结果。仍监听 `modelHideStore`，管理页改完回到对话页即时生效。
+
+### 修复复审
+
+> 评审基线：LR-M1 / LR-M2 修复后代码。`flutter analyze --fatal-infos` → No issues found；`flutter test` 88/88 通过。
+
+| 编号 | 问题 | 修复 | 核对 |
+|------|------|------|------|
+| LR-M1 | 无集中管理入口，长按不直观 | `ModelManagementScreen` + `/models` 路由 + 设置页/对话页双入口 | ✅ 设置页「模型管理」、对话页 `tune` 入口均跳 `/models`；每模型 Switch 切换 |
+| LR-M2 | 长按隐藏交互冗余 | 删除长按/确认框/隐藏折叠区，保留过滤 | ✅ 选择器无长按；管理页统一操作 |
+
+### 关键设计决策（更新）
+
+- **管理页用全局解析（不带 directory）**：模型管理是服务器级偏好（按 `connectionStore.activeId` 隔离），不应绑特定会话目录；`listConfigProviders()` 默认目录即代表该服务器默认可用模型集。
+- **Switch 而非勾选/长按**：管理页是显式设置场景，`Switch` 语义最直接（显示/隐藏），无歧义、无需二次确认。
+- **选择器仍监听 `modelHideStore`**：管理页改动后回到对话页，选择器因 `ListenableBuilder` 自动重建，隐藏模型即时从分组列表消失/出现，无需重拉网络。
+
+### 关键设计决策（前轮，仍适用）
+
+- **隐藏存于客户端而非请求服务端**：serve HTTP API 无模型级启用信号，且 Desktop 隐藏也未进 opencode 配置；客户端本地维护是唯一可行路径。按 `connectionStore.activeId`（服务器 profile）隔离，切换服务器互不干扰。
+- **存储用 secure storage 而非 SharedPreferences**：与 `ConnectionStore` 一致（连接密码也在 secure storage），且隐藏清单属用户偏好，敏感等级低但保持统一存储层。
+
+### 不做的事（本轮）
+
+- 不做按 provider 整体隐藏（provider 级别已有服务端 `disabled_providers` 配置 + 旧 `disabledProviderIDs` 逻辑历史；本轮聚焦模型级）。
+- 不做隐藏清单的导入/导出/跨设备同步（属后续偏好同步范畴）。
+- 不改 `_switchModel` 行为：隐藏的模型若已是当前会话模型，仍正常工作，仅不在列表展示。
+- 管理页不做搜索/筛选（模型数有限，分段已够；选择器侧已有搜索）。

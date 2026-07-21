@@ -6,6 +6,7 @@ import 'features/files/diff_detail_screen.dart';
 import 'features/files/diff_list_screen.dart';
 import 'features/files/file_list_screen.dart';
 import 'features/files/file_view_screen.dart';
+import 'features/models/model_management_screen.dart';
 import 'features/projects/project_detail_screen.dart';
 import 'features/servers/server_form_screen.dart';
 import 'features/servers/servers_screen.dart';
@@ -87,6 +88,10 @@ GoRouter buildRouter(ConnectionStore store) {
           projectId: s.pathParameters['id']!,
           directory: s.uri.queryParameters['directory'],
         ),
+      ),
+      GoRoute(
+        path: '/models',
+        builder: (_, _) => const ModelManagementScreen(),
       ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => MainShell(shell: shell),
