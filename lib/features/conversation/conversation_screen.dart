@@ -2298,11 +2298,13 @@ class _ModelPickerSheet extends StatefulWidget {
 
 class _ModelPickerSheetState extends State<_ModelPickerSheet> {
   final _controller = TextEditingController();
+  final _scrollController = ScrollController();
   String _query = '';
 
   @override
   void dispose() {
     _controller.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -2374,14 +2376,21 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                                       onPressed: () {
                                         _controller.clear();
                                         setState(() => _query = '');
+                                        if (_scrollController.hasClients) {
+                                          _scrollController.jumpTo(0);
+                                        }
                                       },
                                     ),
                               border: InputBorder.none,
                               contentPadding: const EdgeInsets.symmetric(
                                   horizontal: 12, vertical: 10),
                             ),
-                            onChanged: (v) =>
-                                setState(() => _query = v.trim()),
+                            onChanged: (v) {
+                              setState(() => _query = v.trim());
+                              if (_scrollController.hasClients) {
+                                _scrollController.jumpTo(0);
+                              }
+                            },
                           ),
                         ),
                         IconButton(
@@ -2403,6 +2412,7 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                     Flexible(
                       fit: FlexFit.loose,
                       child: ListView(
+                        controller: _scrollController,
                         padding: const EdgeInsets.only(bottom: 8),
                         children: _buildGroups(groups, session, scheme),
                       ),
