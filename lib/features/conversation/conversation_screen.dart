@@ -346,6 +346,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (startsShell) {
         final command = text.substring(1).trim();
         if (command.isNotEmpty) {
+          conv.addOptimisticUserMessage(text);
+          serverStore.reflectPreviewFrom(widget.sessionId);
           await client.shell(widget.sessionId,
               directory: directory,
               agent: session?.agent,
@@ -379,18 +381,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
         conv.setStatus('busy');
       }
     } catch (e) {
+      final hadOptimistic = conv.messages.any((m) => m.optimistic);
       conv.removeOptimisticMessages();
       serverStore.reflectPreviewFrom(widget.sessionId);
-      _ctl.text = text;
-      setState(() {
-        _cmdMode = startsShell;
-        _attachments
-          ..clear()
-          ..addAll(attachments);
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('发送失败：$e')));
+      if (hadOptimistic) {
+        _ctl.text = text;
+        setState(() {
+          _cmdMode = startsShell;
+          _attachments
+            ..clear()
+            ..addAll(attachments);
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('发送失败：$e')));
+        }
       }
     }
     _scheduleAutoScroll();
