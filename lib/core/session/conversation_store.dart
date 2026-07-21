@@ -201,6 +201,11 @@ class ConversationStore extends ChangeNotifier {
   String? error;
   Map<String, dynamic>? sessionError;
   String status = 'idle';
+  /// Retry error message surfaced from `session.status` (retry variant).
+  /// Cleared on any non-retry status transition. Distinct from
+  /// [sessionError] (fed by the one-shot `session.error` SSE event) so the
+  /// detail page can show whichever the server delivered.
+  String? retryMessage;
   int? sessionUpdated;
   bool _loadingEarlier = false;
   bool _loadEarlierError = false;
@@ -793,9 +798,24 @@ class ConversationStore extends ChangeNotifier {
     return m;
   }
 
-  void setStatus(String s) {
+  void setStatus(String s, {String? retryMessage}) {
+    final prevStatus = status;
+    final prevRetry = this.retryMessage;
     status = s;
-    if (!_disposed) notifyListeners();
+    if (s == 'retry') {
+      // Preserve the last non-empty message across consecutive retry events:
+      // the server may omit `message` on later attempts, but the session is
+      // still retrying so the banner must not flicker off.
+      final next = (retryMessage != null && retryMessage.isNotEmpty)
+          ? retryMessage
+          : prevRetry;
+      this.retryMessage = next;
+    } else {
+      this.retryMessage = null;
+    }
+    if (prevStatus != status || prevRetry != this.retryMessage) {
+      if (!_disposed) notifyListeners();
+    }
   }
 
   void onSessionError(Map<String, dynamic> error) {

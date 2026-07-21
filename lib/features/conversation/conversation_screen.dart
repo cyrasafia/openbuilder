@@ -203,6 +203,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   child: _errorBanner(conv.sessionError!,
                       onDismiss: conv.clearSessionError),
                 ),
+              if (conv.retryMessage != null && conv.retryMessage!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                  child: _retryBanner(conv.retryMessage!),
+                ),
               Expanded(child: list),
               if (showFooter)
                 _FooterPanel(
@@ -474,6 +479,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
               child: const Icon(Icons.close, size: 16, color: Color(0xFFF85149)),
             ),
           ],
+        ],
+      ),
+    );
+  }
+
+  Widget _retryBanner(String message) {
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFB923C).withAlpha(20),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFFB923C).withAlpha(80)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.refresh, size: 16, color: Color(0xFFFB923C)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '重试中：$message',
+              style: const TextStyle(fontSize: 13, color: Color(0xFFFB923C)),
+            ),
+          ),
         ],
       ),
     );

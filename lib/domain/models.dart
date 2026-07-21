@@ -211,14 +211,26 @@ class SessionModel {
 }
 
 /// `idle` | `busy` | `retry`
+///
+/// The `retry` variant carries an error `message` (see OpenAPI `SessionStatus`),
+/// preserved here so the detail page can surface the retry reason instead of
+/// only showing a "running" typing-dots animation.
 class SessionStatusValue {
   final String type;
-  const SessionStatusValue(this.type);
+  final String? message;
+
+  const SessionStatusValue(this.type, {this.message});
 
   factory SessionStatusValue.fromJson(Map<String, dynamic> j) =>
-      SessionStatusValue((j['type'] ?? 'idle').toString());
+      SessionStatusValue(
+        (j['type'] ?? 'idle').toString(),
+        message: j['message']?.toString(),
+      );
 
-  Map<String, dynamic> toJson() => {'type': type};
+  Map<String, dynamic> toJson() => {
+        'type': type,
+        if (message != null) 'message': message,
+      };
 }
 
 enum AgentRunState { working, retrying, idle, paused }

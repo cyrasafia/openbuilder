@@ -404,4 +404,58 @@ void main() {
       expect(conv.messages.single.info.error!['name'], 'APIError');
     });
   });
+
+  group('setStatus retry message', () {
+    ConversationStore newConv() => ConversationStore('s12', _fakeClient());
+
+    test('retry status stores message', () {
+      final conv = newConv();
+      conv.setStatus('retry', retryMessage: 'rate limit hit');
+      expect(conv.status, 'retry');
+      expect(conv.retryMessage, 'rate limit hit');
+    });
+
+    test('consecutive retry with empty message preserves last message', () {
+      final conv = newConv();
+      conv.setStatus('retry', retryMessage: 'rate limit hit');
+      conv.setStatus('retry', retryMessage: null);
+      expect(conv.retryMessage, 'rate limit hit');
+      conv.setStatus('retry', retryMessage: '');
+      expect(conv.retryMessage, 'rate limit hit');
+      conv.setStatus('retry', retryMessage: 'auth failed');
+      expect(conv.retryMessage, 'auth failed');
+    });
+
+    test('non-retry transition clears retryMessage', () {
+      final conv = newConv();
+      conv.setStatus('retry', retryMessage: 'rate limit hit');
+      expect(conv.retryMessage, isNotNull);
+      conv.setStatus('busy');
+      expect(conv.retryMessage, isNull);
+      conv.setStatus('retry', retryMessage: 'again');
+      conv.setStatus('idle');
+      expect(conv.retryMessage, isNull);
+    });
+
+    test('no notify when status and retryMessage unchanged', () {
+      final conv = newConv();
+      conv.setStatus('retry', retryMessage: 'rate limit hit');
+      var notifies = 0;
+      conv.addListener(() => notifies++);
+      conv.setStatus('retry', retryMessage: 'rate limit hit');
+      expect(notifies, 0);
+      conv.setStatus('retry', retryMessage: null);
+      expect(notifies, 0);
+    });
+
+    test('notifies when retryMessage changes', () {
+      final conv = newConv();
+      conv.setStatus('retry', retryMessage: 'rate limit hit');
+      var notifies = 0;
+      conv.addListener(() => notifies++);
+      conv.setStatus('retry', retryMessage: 'auth failed');
+      expect(notifies, 1);
+      expect(conv.retryMessage, 'auth failed');
+    });
+  });
 }

@@ -386,7 +386,8 @@ class ServerStore extends ChangeNotifier {
     conv.onQuestionResolved = _markQuestionResolved;
     conv.onPermissionResolved = _markPermissionResolved;
     _conversations[sid] = conv;
-    conv.status = statusOf(sid).type;
+    final initStatus = statusOf(sid);
+    conv.setStatus(initStatus.type, retryMessage: initStatus.message);
     conv.sessionUpdated = sessionById(sid)?.updated;
     // Inject any pending permission/question known from SSE/REST backfill.
     final pending = _pendingPermissions[sid];
@@ -739,7 +740,8 @@ class ServerStore extends ChangeNotifier {
         ..addAll(status);
       _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
-        conv.setStatus(status[conv.sessionId]?.type ?? 'idle');
+        final s = status[conv.sessionId];
+        conv.setStatus(s?.type ?? 'idle', retryMessage: s?.message);
         conv.sessionUpdated = sessionById(conv.sessionId)?.updated;
       }
       // Start SSE for busy/retry sessions + active conversation.
@@ -1055,9 +1057,10 @@ class ServerStore extends ChangeNotifier {
         final st = ev.properties['status'];
         if (sid != null && st is Map) {
           final status = SessionStatusValue.fromJson(st.cast());
-          AppLogger.I.d(_tag, 'session.status $sid=${status.type}');
+          AppLogger.I.d(_tag, 'session.status $sid=${status.type}'
+              '${status.message != null ? ' msg=${status.message}' : ''}');
           _statusMap[sid] = status;
-          _conversations[sid]?.setStatus(status.type);
+          _conversations[sid]?.setStatus(status.type, retryMessage: status.message);
           _scheduleCacheSave();
         }
         break;
@@ -1067,8 +1070,15 @@ class ServerStore extends ChangeNotifier {
           // Only notify if the session was previously busy (not a spurious
           // idle on an already-idle session).
           final wasBusy = _statusMap[sid]?.type == 'busy';
+          final wasRetry = _statusMap[sid]?.type == 'retry';
           _statusMap[sid] = const SessionStatusValue('idle');
           _scheduleCacheSave();
+          // Clear the retry banner when the session settles out of retry.
+          // busy → idle doesn't need this (no retry message was set), so we
+          // avoid a redundant conv notify for that path.
+          if (wasRetry) {
+            _conversations[sid]?.setStatus('idle');
+          }
           if (wasBusy) {
             AppLogger.I.i(_tag, 'session.idle $sid');
             final title = sessionById(sid)?.title ?? '会话';
