@@ -54,11 +54,19 @@ class OpencodeClient {
 
   /// `PATCH /project/{projectID}` — update project name / icon / commands.
   ///
-  /// [name] is sent only when non-null. When [updateIcon] is true the full
-  /// icon object is serialized with all three keys present — explicit JSON
-  /// `null` for [iconOverride]/[iconColor] clears them, which is correct under
-  /// both merge-patch (RFC 7396: null = delete) and replace semantics.
-  /// [iconUrl] is the server-managed repo URL, passed through unchanged.
+  /// [name] is sent only when non-null.
+  ///
+  /// When [updateIcon] is true, the `icon` object is serialized with only the
+  /// non-null fields included. The server's `Project.Icon` schema declares
+  /// each field as `optional(Schema.String)`, which accepts a missing key
+  /// (leave unchanged) or a string, but **rejects JSON `null`** with a 400.
+  /// Therefore a `null` argument here means "omit the key" (no change), an
+  /// empty string `""` means "clear the stored value" (the avatar renderer
+  /// treats `""` as no image and falls back to the monogram), and any other
+  /// string means "set/replace".
+  ///
+  /// [iconUrl] is the server-managed repo URL; pass the original value to
+  /// echo it, or `null` to leave the stored value untouched.
   Future<ProjectModel> updateProject(
     String projectId, {
     String? name,
@@ -70,11 +78,11 @@ class OpencodeClient {
     final body = <String, dynamic>{};
     if (name != null) body['name'] = name;
     if (updateIcon) {
-      body['icon'] = <String, dynamic>{
-        'url': iconUrl,
-        'override': iconOverride,
-        'color': iconColor,
-      };
+      final icon = <String, dynamic>{};
+      if (iconUrl != null) icon['url'] = iconUrl;
+      if (iconOverride != null) icon['override'] = iconOverride;
+      if (iconColor != null) icon['color'] = iconColor;
+      body['icon'] = icon;
     }
     final r = await dio.patch<dynamic>('/project/$projectId', data: body);
     return ProjectModel.fromJson(_asMap(r.data));

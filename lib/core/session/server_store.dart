@@ -253,9 +253,13 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// `PATCH /project/{projectId}` — update name / icon. Replaces the cached
-  /// project with the server-returned value and notifies listeners. When
-  /// [updateIcon] is true, [iconOverride]/[iconColor] are serialized with
-  /// explicit nulls (null = clear), so removals take effect.
+  /// project with the server-returned value and notifies listeners.
+  ///
+  /// Icon field semantics (see `OpencodeClient.updateProject`): a `null`
+  /// argument omits the key (leave the stored value unchanged); an empty
+  /// string `""` clears the stored value; any other string sets/replaces it.
+  /// Pass `updateIcon: true` only when at least one icon field is being
+  /// changed, to avoid a redundant no-op write.
   Future<ProjectModel> updateProject(
     String projectId, {
     String? name,

@@ -821,8 +821,8 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
         name: nameChanged ? name : null,
         updateIcon: iconChanged,
         iconUrl: original.icon?.url,
-        iconOverride: _override,
-        iconColor: null,
+        iconOverride: _override ?? '',
+        iconColor: '',
       );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
