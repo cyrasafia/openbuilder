@@ -94,6 +94,17 @@ class AppTheme {
           ),
         ),
       ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: scheme.brightness == Brightness.dark
+            ? const Color(0xFF23272E)
+            : null,
+        contentTextStyle: scheme.brightness == Brightness.dark
+            ? TextStyle(
+                color: const Color(0xFFE6EDF3),
+                fontVariations: hasVariations ? variations : null,
+              )
+            : null,
+      ),
     );
   }
 }
