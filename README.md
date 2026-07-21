@@ -19,6 +19,8 @@ openBuilder 的目标是创造一个**面向所有 builder（而非仅 coder）*
 
 ### 功能简介
 
+![](assets/2026-07-21-17-17-00-image.png)
+
 openBuilder 是 opencode 远程服务器的**瘦客户端**（以只读 + 轻交互为主），通过局域网 mDNS / Tailscale 连接你自己的 opencode 服务。主要功能包括：
 
 - **会话管理**：跨项目/工作区的全局会话列表，实时查看 Agent 的状态（idle / busy / retry）与消息流。
@@ -97,6 +99,8 @@ We want to bring AI agent capabilities from the desktop to your phone. Whether y
 The current version only supports **opencode**, an open-source personal agent. In the future we plan to integrate more great open-source personal agents, turning this single client into a unified entry point for collaborating with all kinds of agents.
 
 ### Features
+
+![](assets/2026-07-21-17-17-00-image.png)
 
 openBuilder is a **thin client** for the remote opencode server (read-mostly, with light interaction), connecting to your own opencode instance over LAN mDNS / Tailscale. Key features:
 
