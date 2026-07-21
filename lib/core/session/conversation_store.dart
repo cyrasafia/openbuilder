@@ -199,12 +199,10 @@ class ConversationStore extends ChangeNotifier {
   bool loading = false;
   bool loaded = false;
   String? error;
-  Map<String, dynamic>? sessionError;
   String status = 'idle';
   /// Retry error message surfaced from `session.status` (retry variant).
   /// Cleared on any non-retry status transition. Distinct from
-  /// [sessionError] (fed by the one-shot `session.error` SSE event) so the
-  /// detail page can show whichever the server delivered.
+  /// per-message errors carried via [MessageInfo.error].
   String? retryMessage;
   int? sessionUpdated;
   bool _loadingEarlier = false;
@@ -819,23 +817,11 @@ class ConversationStore extends ChangeNotifier {
     }
   }
 
-  void onSessionError(Map<String, dynamic> error) {
-    sessionError = error;
-    if (!_disposed) notifyListeners();
-  }
-
-  void clearSessionError() {
-    if (sessionError == null) return;
-    sessionError = null;
-    if (!_disposed) notifyListeners();
-  }
-
   void onMessageUpdated(MessageInfo info) {
     // When a real user message arrives from SSE, prune optimistic user
     // messages (the authoritative one replaces the local guess).
     if (info.role == 'user') {
       _pruneOptimistic();
-      sessionError = null;
     }
     final existing = _findMessage(info.id);
     if (existing != null) {

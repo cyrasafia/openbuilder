@@ -1113,7 +1113,6 @@ class ServerStore extends ChangeNotifier {
             break;
           }
           AppLogger.I.e(_tag, 'session.error $sid $errorMap');
-          ensureConversation(sid)?.onSessionError(errorMap);
         }
         break;
       case 'message.updated':
