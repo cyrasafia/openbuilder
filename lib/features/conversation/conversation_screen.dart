@@ -523,6 +523,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _parts(List<DisplayPart> parts, {required bool user}) {
     final children = <Widget>[];
     for (final p in parts) {
+      if (user && p.type != 'text' && p.type != 'file') continue;
       children.add(_part(p, user: user));
     }
     return Column(
