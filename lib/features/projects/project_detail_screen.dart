@@ -54,6 +54,9 @@ class ProjectDetailScreen extends StatelessWidget {
         final wsCapable = p?.workspaceCapable ?? false;
         final wsEnabled = wsCapable && serverStore.workspaceEnabled(p!.id);
         final canEdit = p != null && p.id != 'global';
+        final isGlobal = project?.id == 'global';
+        final showCreateSession =
+            project != null && (!isGlobal || directory != null);
 
         return Scaffold(
           body: Column(
@@ -102,11 +105,17 @@ class ProjectDetailScreen extends StatelessWidget {
               ),
             ],
           ),
-          floatingActionButton: (project != null && project.id != 'global')
+          floatingActionButton: showCreateSession
               ? FloatingActionButton.extended(
                   icon: const Icon(Icons.add_comment_outlined),
                   label: const Text('新建会话'),
-                  onPressed: () => _startCreateSession(context, project),
+                  onPressed: () {
+                    if (isGlobal) {
+                      _createSession(context, directory!);
+                    } else {
+                      _startCreateSession(context, project);
+                    }
+                  },
                 )
               : null,
         );
