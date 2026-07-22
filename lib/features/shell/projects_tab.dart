@@ -8,6 +8,7 @@ import '../../core/session/server_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import '../projects/worktree_order.dart';
 
 class ProjectsTab extends StatefulWidget {
   const ProjectsTab({super.key});
@@ -150,7 +151,11 @@ List<_ProjItem> _buildItems(BuildContext context) {
         items.add(_ProjItem(
           name: name,
           subtitle: dir.isEmpty ? 'global' : dir,
-          states: _statesFor(entry.value),
+          states: _statesFor(
+            entry.value,
+            mainWorktree: dir,
+            sandboxOrder: const {},
+          ),
           lastActivity: last,
           onTap: () => context.push(
               '/project/global?directory=${Uri.encodeQueryComponent(dir)}'),
@@ -165,7 +170,13 @@ List<_ProjItem> _buildItems(BuildContext context) {
       name: p.displayName,
       subtitle: p.worktree,
       icon: p.icon,
-      states: _statesFor(sess),
+      states: _statesFor(
+        sess,
+        mainWorktree: p.worktree,
+        sandboxOrder: {
+          for (var i = 0; i < p.sandboxes.length; i++) p.sandboxes[i]: i,
+        },
+      ),
       lastActivity: last,
       onTap: () => context.push('/project/${p.id}'),
     ));
@@ -174,13 +185,23 @@ List<_ProjItem> _buildItems(BuildContext context) {
   return items;
 }
 
-/// Ordered per-session agent states for [sessions], sorted most-recently-
-/// updated first (matching the project detail list) and mapped through the
-/// store's indicator logic so the project list reflects live status.
-List<AgentIndicatorState> _statesFor(Iterable<SessionModel> sessions) {
-  final list = sessions.toList()
-    ..sort((a, b) => b.updated.compareTo(a.updated));
-  return list.map((s) => serverStore.agentIndicatorStateOf(s.id)).toList();
+/// Ordered per-session agent states for [sessions], ordered the same way the
+/// project detail screen is (see [groupSessionsByWorktree]) so the <=4 glyph
+/// row matches the detail list top→bottom.
+List<AgentIndicatorState> _statesFor(
+  Iterable<SessionModel> sessions, {
+  required String mainWorktree,
+  required Map<String, int> sandboxOrder,
+}) {
+  final groups = groupSessionsByWorktree(
+    sessions,
+    mainWorktree: mainWorktree,
+    sandboxOrder: sandboxOrder,
+  );
+  return [
+    for (final g in groups)
+      for (final s in g.sessions) serverStore.agentIndicatorStateOf(s.id),
+  ];
 }
 
 // Status display order for the collapsed (>4 sessions) summary:

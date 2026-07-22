@@ -410,53 +410,47 @@ class ProjectDetailScreen extends StatelessWidget {
 
   /// Section sessions by worktree (directory). Section headers are shown only
   /// when the project spans more than one worktree, so single-worktree
-  /// projects keep a flat list. The main worktree is pinned first, followed by
-  /// sandboxes in server creation order; within a group, sessions keep the
-  /// global recency order.
+  /// projects keep a flat list. Ordering (main worktree first, then sandboxes,
+  /// recency within a group) comes from [groupSessionsByWorktree] so it matches
+  /// the project list tab.
   List<Widget> _groupedByWorktree(
     BuildContext context,
     List<SessionModel> all,
     String projectWorktree,
     List<String> sandboxes,
   ) {
-    final byDir = <String, List<SessionModel>>{};
-    for (final s in all) {
-      byDir.putIfAbsent(s.directory, () => []).add(s);
-    }
-    final sandboxOrder = <String, int>{
-      for (var i = 0; i < sandboxes.length; i++) sandboxes[i]: i,
-    };
-    final groups = byDir.entries.toList()
-      ..sort(
-        (a, b) => compareWorktreePaths(
-          a.key,
-          b.key,
-          mainWorktree: projectWorktree,
-          sandboxOrder: sandboxOrder,
-        ),
-      );
+    final groups = groupSessionsByWorktree(
+      all,
+      mainWorktree: projectWorktree,
+      sandboxOrder: {
+        for (var i = 0; i < sandboxes.length; i++) sandboxes[i]: i,
+      },
+    );
+    final multi = groups.length > 1;
     final out = <Widget>[];
-    for (final entry in groups) {
-      if (byDir.length > 1) {
-        final name = entry.key.isEmpty ? 'global' : entry.key.split('/').last;
+    for (final g in groups) {
+      if (multi) {
+        final name =
+            g.directory.isEmpty ? 'global' : g.directory.split('/').last;
         // Only non-main worktrees (sandboxes) can be removed.
-        final canDelete = entry.key.isNotEmpty && entry.key != projectWorktree;
+        final canDelete =
+            g.directory.isNotEmpty && g.directory != projectWorktree;
         out.add(
           _SectionHeader(
             name: name,
-            count: entry.value.length,
+            count: g.sessions.length,
             onDelete: canDelete
                 ? () => _confirmRemoveWorktree(
-                    context,
-                    projectWorktree,
-                    entry.key,
-                  )
+                      context,
+                      projectWorktree,
+                      g.directory,
+                    )
                 : null,
           ),
         );
       }
       out.addAll(
-        entry.value.map(
+        g.sessions.map(
           (s) => _SessionRow(
             session: s,
             agentState: serverStore.agentIndicatorStateOf(s.id),
