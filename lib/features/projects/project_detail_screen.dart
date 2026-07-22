@@ -309,49 +309,70 @@ class ProjectDetailScreen extends StatelessWidget {
     String worktreeDir,
   ) {
     final wtName = worktreeDir.split('/').last;
+    var deleting = false;
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除工作区'),
-        content: Text('确定删除工作区「$wtName」？\n该工作区下的会话将一并移除。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => PopScope(
+          canPop: !deleting,
+          child: AlertDialog(
+            title: const Text('删除工作区'),
+            content: Text('确定删除工作区「$wtName」？\n该工作区下的会话将一并移除。'),
+            actions: [
+              TextButton(
+                onPressed: deleting ? null : () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(ctx).colorScheme.error,
+                ),
+                onPressed: deleting
+                    ? null
+                    : () async {
+                        final client = serverStore.client;
+                        if (client == null) {
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          return;
+                        }
+                        setState(() => deleting = true);
+                        try {
+                          await client.removeWorktree(
+                            projectWorktree,
+                            worktreeDir: worktreeDir,
+                          );
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          unawaited(serverStore.refresh());
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(
+                              context,
+                            ).showSnackBar(
+                              SnackBar(content: Text('已删除工作区「$wtName」')),
+                            );
+                          }
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            setState(() => deleting = false);
+                            ScaffoldMessenger.of(
+                              context,
+                            ).showSnackBar(
+                              SnackBar(content: Text('删除失败：$e')),
+                            );
+                          }
+                        }
+                      },
+                child: deleting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('删除'),
+              ),
+            ],
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(ctx).colorScheme.error,
-            ),
-            onPressed: () async {
-              final client = serverStore.client;
-              if (client == null) {
-                if (ctx.mounted) Navigator.pop(ctx);
-                return;
-              }
-              try {
-                await client.removeWorktree(
-                  projectWorktree,
-                  worktreeDir: worktreeDir,
-                );
-                if (ctx.mounted) Navigator.pop(ctx);
-                unawaited(serverStore.refresh());
-                if (ctx.mounted) {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text('已删除工作区「$wtName」')));
-                }
-              } catch (e) {
-                if (ctx.mounted) {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text('删除失败：$e')));
-                }
-              }
-            },
-            child: const Text('删除'),
-          ),
-        ],
+        ),
       ),
     );
   }
