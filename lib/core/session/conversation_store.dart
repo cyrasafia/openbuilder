@@ -377,6 +377,13 @@ class ConversationStore extends ChangeNotifier {
     'compaction',
   };
 
+  static bool _shouldHidePart(Map<String, dynamic> raw) {
+    final type = raw['type']?.toString() ?? '';
+    if (_hidden.contains(type)) return true;
+    if (type == 'text' && raw['synthetic'] == true) return true;
+    return false;
+  }
+
   Future<void> load() async {
     if (loaded || loading) return;
     loading = true;
@@ -646,8 +653,12 @@ class ConversationStore extends ChangeNotifier {
     final result = <DisplayPart>[];
     final sseById = {for (final p in sse) p.id: p};
     final seen = <String>{};
+    final hiddenIds = <String>{};
     for (final rp in rest) {
-      if (_hidden.contains(rp.type)) continue;
+      if (_shouldHidePart(rp.raw)) {
+        hiddenIds.add(rp.id);
+        continue;
+      }
       final sp = sseById[rp.id];
       if (sp != null) {
         seen.add(rp.id);
@@ -664,6 +675,7 @@ class ConversationStore extends ChangeNotifier {
     }
     for (final sp in sse) {
       if (_hidden.contains(sp.type)) continue;
+      if (hiddenIds.contains(sp.id)) continue;
       if (!seen.contains(sp.id)) result.add(sp);
     }
     return result;
@@ -791,7 +803,7 @@ class ConversationStore extends ChangeNotifier {
   DisplayMessage _toDisplay(MessageEntry e) {
     final m = DisplayMessage(e.info);
     for (final p in e.parts) {
-      if (_hidden.contains(p.type)) continue;
+      if (_shouldHidePart(p.raw)) continue;
       m.parts.add(DisplayPart.from(p));
     }
     return m;
@@ -892,8 +904,8 @@ class ConversationStore extends ChangeNotifier {
     DisplayPart dp;
     final idx = msg.parts.indexWhere((x) => x.id == p.id);
     if (idx == -1) {
-      // Insert only renderable part types; skip hidden ones.
-      if (_hidden.contains(p.type)) return;
+      // Insert only renderable part types; skip hidden ones and synthetic text.
+      if (_shouldHidePart(p.raw)) return;
       dp = DisplayPart.from(p);
       msg.parts.add(dp);
     } else {
@@ -1055,4 +1067,11 @@ class ConversationStore extends ChangeNotifier {
 
   @visibleForTesting
   Future<void> loadCacheForTest() async => _loadCache();
+
+  @visibleForTesting
+  static bool shouldHidePartForTest(Map<String, dynamic> raw) =>
+      _shouldHidePart(raw);
+
+  @visibleForTesting
+  DisplayMessage toDisplayForTest(MessageEntry e) => _toDisplay(e);
 }

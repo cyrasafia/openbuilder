@@ -458,4 +458,102 @@ void main() {
       expect(conv.retryMessage, 'auth failed');
     });
   });
+
+  group('synthetic text part filtering', () {
+    test('shouldHidePartForTest hides synthetic text', () {
+      expect(
+        ConversationStore.shouldHidePartForTest(
+            {'type': 'text', 'synthetic': true, 'text': 'file content'}),
+        isTrue,
+      );
+    });
+
+    test('shouldHidePartForTest keeps real text', () {
+      expect(
+        ConversationStore.shouldHidePartForTest(
+            {'type': 'text', 'text': 'hello'}),
+        isFalse,
+      );
+    });
+
+    test('shouldHidePartForTest keeps file parts', () {
+      expect(
+        ConversationStore.shouldHidePartForTest(
+            {'type': 'file', 'url': 'data:...', 'filename': 'a.txt'}),
+        isFalse,
+      );
+    });
+
+    test('toDisplayForTest filters synthetic text but keeps file + real text', () {
+      final conv = ConversationStore('s_syn', _fakeClient());
+      final dm = conv.toDisplayForTest(MessageEntry.fromJson({
+        'info': {
+          'id': 'msg_u1',
+          'role': 'user',
+          'time': {'created': 1000},
+        },
+        'parts': [
+          {'id': 'prt1', 'type': 'text', 'text': 'check this file'},
+          {'id': 'prt2', 'type': 'file', 'url': 'data:text/plain;base64,AA==',
+           'filename': 'test.txt'},
+          {'id': 'prt3', 'type': 'text', 'synthetic': true,
+           'text': 'Called the Read tool with the following input: {"filePath":"test.txt"}'},
+          {'id': 'prt4', 'type': 'text', 'synthetic': true,
+           'text': 'file content here...'},
+        ],
+      }));
+      expect(dm.parts.length, 2);
+      expect(dm.parts[0].type, 'text');
+      expect(dm.parts[0].text, 'check this file');
+      expect(dm.parts[1].type, 'file');
+      expect(dm.parts[1].filename, 'test.txt');
+    });
+
+    test('onPartUpdated skips synthetic text from SSE', () {
+      final conv = ConversationStore('s_syn2', _fakeClient());
+      conv.onMessageUpdated(MessageInfo(
+        id: 'msg_u2', role: 'user', sessionID: 's_syn2', created: 2000));
+      conv.onPartUpdated({
+        'id': 'prt_real',
+        'messageID': 'msg_u2',
+        'type': 'text',
+        'text': 'my message',
+      }, null);
+      conv.onPartUpdated({
+        'id': 'prt_syn1',
+        'messageID': 'msg_u2',
+        'type': 'text',
+        'text': 'Called the Read tool...',
+        'synthetic': true,
+      }, null);
+      conv.onPartUpdated({
+        'id': 'prt_syn2',
+        'messageID': 'msg_u2',
+        'type': 'text',
+        'text': 'file content...',
+        'synthetic': true,
+      }, null);
+      final msg = conv.messages.single;
+      expect(msg.parts.length, 1);
+      expect(msg.parts.single.type, 'text');
+      expect(msg.parts.single.text, 'my message');
+    });
+
+    test('onPartUpdated keeps file parts from SSE', () {
+      final conv = ConversationStore('s_syn3', _fakeClient());
+      conv.onMessageUpdated(MessageInfo(
+        id: 'msg_u3', role: 'user', sessionID: 's_syn3', created: 3000));
+      conv.onPartUpdated({
+        'id': 'prt_file',
+        'messageID': 'msg_u3',
+        'type': 'file',
+        'url': 'data:image/png;base64,AAAA',
+        'filename': 'pic.png',
+      }, null);
+      final msg = conv.messages.single;
+      expect(msg.parts.length, 1);
+      expect(msg.parts.single.type, 'file');
+      expect(msg.parts.single.filename, 'pic.png');
+    });
+  });
 }
