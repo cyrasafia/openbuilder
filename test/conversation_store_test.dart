@@ -542,7 +542,7 @@ void main() {
     test('onPartUpdated keeps file parts from SSE', () {
       final conv = ConversationStore('s_syn3', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
-        id: 'msg_u3', role: 'user', sessionID: 's_syn3', created: 3000));
+          id: 'msg_u3', role: 'user', sessionID: 's_syn3', created: 3000));
       conv.onPartUpdated({
         'id': 'prt_file',
         'messageID': 'msg_u3',
@@ -554,6 +554,65 @@ void main() {
       expect(msg.parts.length, 1);
       expect(msg.parts.single.type, 'file');
       expect(msg.parts.single.filename, 'pic.png');
+    });
+
+    // The server emits a synthetic user message ("The following tool was
+    // executed by the user") for shell commands whose only part is hidden.
+    // It must be hidden from rendering instead of producing an empty bubble.
+    test('synthetic-only user message renders no empty bubble', () {
+      final conv = ConversationStore('s_syn4', _fakeClient());
+      conv.onMessageUpdated(MessageInfo(
+          id: 'msg_u4', role: 'user', sessionID: 's_syn4', created: 4000));
+      conv.onPartUpdated({
+        'id': 'prt_shell',
+        'messageID': 'msg_u4',
+        'type': 'text',
+        'text': 'The following tool was executed by the user',
+        'synthetic': true,
+      }, null);
+      // The hidden part is skipped; the message stays in the store but is
+      // excluded from rendering so no empty bubble appears.
+      expect(conv.messages.single.info.id, 'msg_u4');
+      expect(conv.messages.single.parts, isEmpty);
+      expect(conv.renderableMessages, isEmpty);
+    });
+
+    // Regression: a hidden part arriving before a visible part must not drop
+    // the user message or resurrect it with the wrong role.
+    test('user message renders when visible part follows hidden part', () {
+      final conv = ConversationStore('s_syn5', _fakeClient());
+      conv.onMessageUpdated(MessageInfo(
+          id: 'msg_u5', role: 'user', sessionID: 's_syn5', created: 5000));
+      conv.onPartUpdated({
+        'id': 'prt_syn',
+        'messageID': 'msg_u5',
+        'type': 'text',
+        'text': 'synthetic echo',
+        'synthetic': true,
+      }, null);
+      conv.onPartUpdated({
+        'id': 'prt_real',
+        'messageID': 'msg_u5',
+        'type': 'text',
+        'text': 'real message',
+      }, null);
+      expect(conv.renderableMessages.length, 1);
+      final msg = conv.renderableMessages.single;
+      expect(msg.info.role, 'user');
+      expect(msg.parts.single.text, 'real message');
+    });
+
+    test('isEmptyUserForTest flags only non-optimistic empty user messages', () {
+      final emptyUser = DisplayMessage(MessageInfo(id: 'x', role: 'user'));
+      expect(ConversationStore.isEmptyUserForTest(emptyUser), isTrue);
+      final userWithPart = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
+        ..parts.add(DisplayPart(id: 'p', type: 'text', text: 'hi'));
+      expect(ConversationStore.isEmptyUserForTest(userWithPart), isFalse);
+      final emptyAssistant = DisplayMessage(MessageInfo(id: 'x', role: 'assistant'));
+      expect(ConversationStore.isEmptyUserForTest(emptyAssistant), isFalse);
+      final optimisticEmpty =
+          DisplayMessage(MessageInfo(id: 'x', role: 'user'), optimistic: true);
+      expect(ConversationStore.isEmptyUserForTest(optimisticEmpty), isFalse);
     });
   });
 }

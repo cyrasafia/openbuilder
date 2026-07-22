@@ -333,6 +333,34 @@ void main() {
       await conv.loadOnePage();
       expect(conv.loadEarlierError, isFalse);
     });
+
+    // The server stores a synthetic-only user message for shell commands;
+    // reconcile must drop it so it never renders as an empty bubble.
+    test('reconcile drops synthetic-only user message (no empty bubble)',
+        () async {
+      final assistant = MessageEntry(
+        info: MessageInfo(
+            id: 'm1', role: 'assistant', created: 100, finish: 'stop'),
+        parts: [MessagePart({'type': 'text', 'id': 'p1', 'text': 'done'})],
+      );
+      final syntheticUser = MessageEntry(
+        info: MessageInfo(id: 'm2', role: 'user', created: 200),
+        parts: [
+          MessagePart({
+            'type': 'text',
+            'id': 'p2',
+            'text': 'The following tool was executed by the user',
+            'synthetic': true,
+          })
+        ],
+      );
+      final client =
+          _PageMockClient([_PageSpec([assistant, syntheticUser], null)]);
+      final conv = ConversationStore('s_shell', client);
+      await conv.reconcile();
+      expect(conv.messages.length, 1);
+      expect(conv.messages.single.info.id, 'm1');
+    });
   });
 }
 

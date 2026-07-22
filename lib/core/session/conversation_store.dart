@@ -240,12 +240,18 @@ class ConversationStore extends ChangeNotifier {
   /// gap ([_segments] 1+) are in memory but not rendered — they become
   /// reachable only after the gap is bridged by upward scrolling.
   List<DisplayMessage> get renderableMessages {
-    if (_segments.isEmpty) return _messages.reversed.toList(growable: false);
+    if (_segments.isEmpty) {
+      return _messages.reversed
+          .where((m) => !_isEmptyUser(m))
+          .toList(growable: false);
+    }
     final seg = _segments.first;
     final result = <DisplayMessage>[];
     for (var i = _messages.length - 1; i >= 0; i--) {
       final m = _messages[i];
-      result.add(m);
+      // Exclude empty real user messages (e.g. the server's synthetic
+      // shell-command message) so they don't render as empty bubbles.
+      if (!_isEmptyUser(m)) result.add(m);
       if (m.info.id == seg.oldestId) break;
     }
     return result;
@@ -383,6 +389,15 @@ class ConversationStore extends ChangeNotifier {
     if (type == 'text' && raw['synthetic'] == true) return true;
     return false;
   }
+
+  /// A real (non-optimistic) user message with no renderable parts. The server
+  /// emits such messages for shell commands (a synthetic "tool executed by the
+  /// user" user-message whose only part is hidden). Rendering them produces
+  /// empty bubbles, so [renderableMessages] excludes them and [_upsertEntries]
+  /// skips storing them. Optimistic messages are excluded (managed via prune);
+  /// assistant messages are transiently empty during streaming and are kept.
+  static bool _isEmptyUser(DisplayMessage m) =>
+      !m.optimistic && m.info.role == 'user' && m.parts.isEmpty;
 
   Future<void> load() async {
     if (loaded || loading) return;
@@ -586,9 +601,12 @@ class ConversationStore extends ChangeNotifier {
         _messages.remove(existing);
         final recreated = DisplayMessage(e.info);
         recreated.parts.addAll(_mergeParts(e.parts, existing.parts));
+        if (_isEmptyUser(recreated)) continue;
         _messages.add(recreated);
       } else {
-        _messages.add(_toDisplay(e));
+        final d = _toDisplay(e);
+        if (_isEmptyUser(d)) continue;
+        _messages.add(d);
       }
     }
   }
@@ -1074,4 +1092,7 @@ class ConversationStore extends ChangeNotifier {
 
   @visibleForTesting
   DisplayMessage toDisplayForTest(MessageEntry e) => _toDisplay(e);
+
+  @visibleForTesting
+  static bool isEmptyUserForTest(DisplayMessage m) => _isEmptyUser(m);
 }
