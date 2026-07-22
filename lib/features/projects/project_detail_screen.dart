@@ -95,7 +95,7 @@ class ProjectDetailScreen extends StatelessWidget {
                           scopedWorktree,
                           project?.sandboxes ?? const [],
                         ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 88),
                     ],
                   ),
                 ),
