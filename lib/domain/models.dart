@@ -425,34 +425,51 @@ class Permission {
   });
 
   factory Permission.fromJson(Map<String, dynamic> j) {
-    final perm = (j['permission'] ?? j['type'] ?? '').toString();
+    final perm =
+        (j['permission'] ?? j['action'] ?? j['type'] ?? '').toString();
     final meta = j['metadata'] is Map
         ? (j['metadata'] as Map).cast<String, dynamic>()
         : null;
+    final patterns = j['patterns'] is List
+        ? (j['patterns'] as List).map((e) => e.toString()).toList()
+        : (j['resources'] is List
+            ? (j['resources'] as List).map((e) => e.toString()).toList()
+            : const <String>[]);
     return Permission(
       id: (j['id'] ?? '').toString(),
       type: perm,
-      title: _permissionTitle(perm, meta),
+      title: _permissionTitle(perm, meta, patterns),
       sessionID: (j['sessionID'] ?? '').toString(),
-      patterns: j['patterns'] is List
-          ? (j['patterns'] as List).map((e) => e.toString()).toList()
-          : const [],
+      patterns: patterns,
       metadata: meta,
     );
   }
 }
 
-/// Derive a human-readable title from permission type + metadata.
-String _permissionTitle(String type, Map<String, dynamic>? meta) {
+String _permissionTitle(
+    String type, Map<String, dynamic>? meta, List<String> patterns) {
   switch (type) {
     case 'external_directory':
-      final filepath = meta?['filepath']?.toString();
-      return filepath != null ? '访问目录 $filepath' : '外部目录访问';
+      final dir = _externalDirectoryPath(meta, patterns);
+      return dir != null ? '访问目录 $dir' : '外部目录访问';
     case 'bash':
       return '执行命令';
     default:
       return type.isEmpty ? '权限请求' : type;
   }
+}
+
+String? _externalDirectoryPath(
+    Map<String, dynamic>? meta, List<String> patterns) {
+  final parentDir = meta?['parentDir']?.toString();
+  if (parentDir != null && parentDir.isNotEmpty) return parentDir;
+  final filepath = meta?['filepath']?.toString();
+  if (filepath != null && filepath.isNotEmpty) return filepath;
+  for (final p in patterns) {
+    if (p.endsWith('/*')) return p.substring(0, p.length - 2);
+    if (p.isNotEmpty) return p;
+  }
+  return null;
 }
 
 int _i(dynamic v) {

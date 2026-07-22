@@ -79,6 +79,15 @@ flutter analyze --fatal-infos    # CI 门槛，任何 issue 都 fail
 flutter test                     # 含 widget + parse + smoke（smoke 需本地 opencode serve，无则跳过）
 ```
 
+### 本机 opencode 测试服务
+
+本机已有一个常驻 opencode 服务可供联调 / smoke 测试：
+
+- 地址：`http://localhost:15120`
+- 认证：用户名 `opencode`，密码为空（Basic Auth）
+
+可用于触发 SSE 事件、权限卡、会话流等真实交互。**禁止杀死该进程**（它会中断正在进行的推理 / 测试）；如需独立环境，请新起一个实例到**其他端口**，并用各自 PID 精确管理，不要用 `pkill -f "opencode serve"` 之类的通配杀进程。
+
 ### JDK 要求
 
 Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scripts/build.sh` 已自动设 `JAVA_HOME=~/development/jdk21`；手动构建需同样前置 `JAVA_HOME`。
