@@ -583,6 +583,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           child: MarkdownBody(
             data: p.text,
             selectable: true,
+            softLineBreak: user,
             styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
               p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
               pPadding: const EdgeInsets.only(bottom: 6),
