@@ -67,7 +67,7 @@ openbuilder/
 ./scripts/build.sh --bump-business 0.2
 ```
 
-将 version 改为 `0.2.0+1`（重置 patch/code）。
+将 A.B 设为给定值、patch 重置为 0、versionCode 继续递增（如 `0.3.2+51` → `0.2.0+52`）。
 
 ### 静态分析
 
