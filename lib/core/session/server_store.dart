@@ -147,6 +147,37 @@ class ServerStore extends ChangeNotifier {
 
   String? lastMessageOf(String id) => _lastMessage[id];
 
+  /// Whether reasoning ("thinking") parts may surface as the session-list
+  /// preview. Pushed down from the `showThinking` app setting (the store layer
+  /// cannot import app_state) so the one-line preview tracks the detail view:
+  /// when thinking is hidden in the detail page it must also be hidden here.
+  bool _reasoningVisibleInPreview = false;
+
+  set reasoningVisibleInPreview(bool v) {
+    if (_reasoningVisibleInPreview == v) return;
+    _reasoningVisibleInPreview = v;
+    _recomputePreviews();
+  }
+
+  /// Recompute every loaded conversation's preview under the current setting.
+  /// Sessions not yet loaded are corrected on demand by `_backfillPreview`
+  /// (which also respects this flag), consistent with the incremental-reconcile
+  /// design where the cache is a self-correcting fallback.
+  void _recomputePreviews() {
+    if (_conversations.isEmpty) return;
+    for (final entry in _conversations.entries) {
+      final pv = entry.value
+          .lastMessagePreview(hideReasoning: !_reasoningVisibleInPreview);
+      if (pv != null) {
+        _lastMessage[entry.key] = pv;
+      } else {
+        _lastMessage.remove(entry.key);
+      }
+    }
+    _notifyPreviewChanged();
+    _scheduleCacheSave();
+  }
+
   /// Max `updated` ever observed for [projectID] across all of its sessions
   /// (including ones later archived). Returns 0 if never observed. Drives
   /// project-list sort order so a project doesn't sink when its last active
@@ -1156,7 +1187,8 @@ class ServerStore extends ChangeNotifier {
             // types are _hidden or carry no preview text), but a future
             // preview-bearing part type MUST be added here.
             if (ptype == 'tool' || ptype == 'text' || ptype == 'reasoning') {
-              final pv = conv.lastMessagePreview();
+              final pv = conv.lastMessagePreview(
+                  hideReasoning: !_reasoningVisibleInPreview);
               if (pv != null) {
                 _lastMessage[sid] = pv;
                 _notifyPreviewChanged();
@@ -1253,7 +1285,8 @@ class ServerStore extends ChangeNotifier {
     // Covers the "no part event, only message.updated" edge (e.g. empty or
     // reasoning-only assistant messages). Part events keep the preview live
     // during streaming; this keeps it correct at message boundaries.
-    final local = conv?.lastMessagePreview();
+    final local = conv?.lastMessagePreview(
+        hideReasoning: !_reasoningVisibleInPreview);
     final lastRole = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.role : '?';
     final lastId = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.id : '?';
     AppLogger.I.d(
@@ -1274,7 +1307,8 @@ class ServerStore extends ChangeNotifier {
   Future<void> _backfillPreview(String sid, ConversationStore conv) async {
     // After the conversation loads, surface its last message as the list preview
     // (avoids bulk-proactive fetch but keeps viewed sessions informative).
-    final preview = conv.lastMessagePreview();
+    final preview = conv.lastMessagePreview(
+        hideReasoning: !_reasoningVisibleInPreview);
     if (preview != null) {
       _lastMessage[sid] = preview;
       notifyListeners();
@@ -1287,7 +1321,8 @@ class ServerStore extends ChangeNotifier {
   void reflectPreviewFrom(String sid) {
     final conv = _conversations[sid];
     if (conv == null) return;
-    final pv = conv.lastMessagePreview();
+    final pv = conv.lastMessagePreview(
+        hideReasoning: !_reasoningVisibleInPreview);
     if (pv != null) {
       _lastMessage[sid] = pv;
       _notifyPreviewChanged();

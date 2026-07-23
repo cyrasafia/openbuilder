@@ -275,13 +275,17 @@ class ConversationStore extends ChangeNotifier {
   /// Single source of truth for the session-list preview so it tracks the
   /// detail view's last message during streaming — not only on completion
   /// (frontend §2.2 D1).
-  String? lastMessagePreview() {
+  ///
+  /// When [hideReasoning] is true, reasoning parts are skipped so the list
+  /// preview mirrors the detail view when "展示思考过程" is off.
+  String? lastMessagePreview({bool hideReasoning = false}) {
     if (_messages.isEmpty) return null;
     final last = _messages.last;
     var preview = '';
     for (var i = last.parts.length - 1; i >= 0; i--) {
       final dp = last.parts[i];
       if (_hidden.contains(dp.type)) continue;
+      if (hideReasoning && dp.type == 'reasoning') continue;
       String pv;
       if (dp.type == 'tool') {
         pv = dp.toolSummary;

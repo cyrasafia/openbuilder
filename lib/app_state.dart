@@ -30,6 +30,7 @@ Future<void> initSettings() async {
   if (showThinkingVal != null) {
     showThinking.value = showThinkingVal;
   }
+  serverStore.reasoningVisibleInPreview = showThinking.value;
   themeMode.addListener(() => prefs.setInt('themeMode', themeMode.value.index));
   localeMode.addListener(() {
     final l = localeMode.value;
@@ -40,6 +41,8 @@ Future<void> initSettings() async {
     }
   });
   showThinking.addListener(() => prefs.setBool('showThinking', showThinking.value));
+  showThinking.addListener(
+      () => serverStore.reasoningVisibleInPreview = showThinking.value);
 }
 
 /// Bind the active server in [connectionStore] to [serverStore] (connect on

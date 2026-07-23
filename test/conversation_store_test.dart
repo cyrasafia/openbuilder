@@ -109,6 +109,43 @@ void main() {
     });
   });
 
+  group('lastMessagePreview hides reasoning when asked', () {
+    test('reasoning-only last message: shown by default, null when hidden', () {
+      final conv = ConversationStore('s6', _fakeClient());
+      conv.onPartUpdated(
+          <String, dynamic>{
+            'messageID': 'm1',
+            'id': 'r1',
+            'type': 'reasoning',
+          },
+          'Let me think...');
+      expect(conv.lastMessagePreview(), 'Let me think...');
+      expect(conv.lastMessagePreview(hideReasoning: true), isNull);
+    });
+
+    test('reasoning as last part falls back to earlier text when hidden', () {
+      final conv = ConversationStore('s7', _fakeClient());
+      conv.onPartUpdated(
+          <String, dynamic>{
+            'messageID': 'm1',
+            'id': 't1',
+            'type': 'text',
+          },
+          'final answer');
+      conv.onPartUpdated(
+          <String, dynamic>{
+            'messageID': 'm1',
+            'id': 'r1',
+            'type': 'reasoning',
+          },
+          'thinking out loud');
+      // Default: reasoning is the last renderable part, so it wins.
+      expect(conv.lastMessagePreview(), 'thinking out loud');
+      // Hidden: reasoning skipped, falls back to the earlier text part.
+      expect(conv.lastMessagePreview(hideReasoning: true), 'final answer');
+    });
+  });
+
   group('lastMessagePreview file fallback', () {
     test('pure attachment optimistic -> [附件] when filename empty', () {
       final conv = ConversationStore('s4', _fakeClient());

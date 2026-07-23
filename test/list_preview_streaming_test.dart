@@ -358,6 +358,37 @@ void main() {
     expect(store.lastMessageOf(sid), 'assistant reply');
     store.dispose();
   });
+
+  // Toggling "展示思考过程" off must drop reasoning from the session-list
+  // preview (mirroring the detail view). The last message has text then
+  // reasoning parts, so reasoning normally wins the preview; hiding it must
+  // fall back to the earlier text part. Covers the setter + _recomputePreviews.
+  test('reasoningVisibleInPreview toggle hides reasoning from list preview', () {
+    final store = ServerStore()..client = _fakeClient();
+    const sid = 's1';
+    final conv = store.ensureConversation(sid)!;
+    conv.onPartUpdated(
+        <String, dynamic>{
+          'messageID': 'm1',
+          'id': 't1',
+          'type': 'text',
+        },
+        'final answer');
+    conv.onPartUpdated(
+        <String, dynamic>{
+          'messageID': 'm1',
+          'id': 'r1',
+          'type': 'reasoning',
+        },
+        'thinking');
+    // Show reasoning: setter recomputes and bridges 'thinking' to _lastMessage.
+    store.reasoningVisibleInPreview = true;
+    expect(store.lastMessageOf(sid), 'thinking');
+    // Hide reasoning: recompute skips reasoning, falls back to the text part.
+    store.reasoningVisibleInPreview = false;
+    expect(store.lastMessageOf(sid), 'final answer');
+    store.dispose();
+  });
 }
 
 /// Minimal [OpencodeClient] subclass that returns controlled responses without
