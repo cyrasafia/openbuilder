@@ -121,14 +121,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 16)),
                 if (s != null)
-                  Text(
-                    '${serverStore.projectDisplayOf(s)} › ${serverStore.worktreeDisplayOf(s)}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppTheme.mono.copyWith(
-                        fontSize: 11,
-                        color: Theme.of(context).colorScheme.outline),
-                  ),
+                  Builder(builder: (context) {
+                    final project = serverStore.projectDisplayOf(s);
+                    final wt = serverStore.worktreeDisplayOf(s);
+                    return Text(
+                      wt.isEmpty ? project : '$project › $wt',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTheme.mono.copyWith(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.outline),
+                    );
+                  }),
               ],
             );
           },

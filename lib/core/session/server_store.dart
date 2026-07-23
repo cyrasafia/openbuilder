@@ -367,8 +367,10 @@ class ServerStore extends ChangeNotifier {
   /// where the folder name is already shown as the project name.
   String worktreeDisplayOf(SessionModel s) {
     if (s.projectID == 'global') return '';
-    if (_hasMultipleWorktrees(s.projectID)) return s.dirName;
-    return '';
+    if (!_hasMultipleWorktrees(s.projectID)) return '';
+    final project = projectOf(s.projectID);
+    if (project != null && s.directory == project.worktree) return '主工作区';
+    return s.dirName;
   }
 
   bool _hasMultipleWorktrees(String projectID) {

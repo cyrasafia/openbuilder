@@ -440,8 +440,11 @@ class ProjectDetailScreen extends StatelessWidget {
     final out = <Widget>[];
     for (final g in groups) {
       if (multi) {
-        final name =
-            g.directory.isEmpty ? 'global' : g.directory.split('/').last;
+        final name = g.directory == projectWorktree
+            ? '主工作区'
+            : (g.directory.isEmpty
+                  ? 'global'
+                  : g.directory.split('/').last);
         // Only non-main worktrees (sandboxes) can be removed.
         final canDelete =
             g.directory.isNotEmpty && g.directory != projectWorktree;
