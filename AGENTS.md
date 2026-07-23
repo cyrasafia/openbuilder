@@ -47,6 +47,8 @@ openbuilder/
 
 ## 构建方式
 
+> **Flutter 路径**：本机 Flutter 未加入 `PATH`，绝对路径为 `~/development/flutter/bin/flutter`。直接运行 `flutter` 会报找不到命令；`scripts/build.sh` 已自动把该路径加入 `PATH`。
+
 ### Release APK（必须用脚本，自动递增版本号）
 
 ```bash
