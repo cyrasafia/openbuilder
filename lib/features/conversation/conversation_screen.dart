@@ -383,8 +383,29 @@ class _ConversationScreenState extends State<ConversationScreen> {
           conv.setStatus('busy');
         }
       } else {
+        String? agent = session?.agent;
+        String payloadText = text;
+        if (text.startsWith('/')) {
+          await _loadCommands();
+          final firstSpace = text.indexOf(' ');
+          final cmdToken = (firstSpace == -1
+                  ? text.substring(1)
+                  : text.substring(1, firstSpace))
+              .toLowerCase();
+          final matched = _commands.firstWhere(
+            (c) => c.slash.toLowerCase() == '/$cmdToken',
+            orElse: () => const CommandInfo(name: ''),
+          );
+          if (matched.name.isNotEmpty && matched.agent != null) {
+            agent = matched.agent;
+            payloadText =
+                firstSpace == -1 ? '' : text.substring(firstSpace + 1).trim();
+          }
+        }
         final parts = <Map<String, dynamic>>[];
-        if (text.isNotEmpty) parts.add({'type': 'text', 'text': text});
+        if (payloadText.isNotEmpty) {
+          parts.add({'type': 'text', 'text': payloadText});
+        }
         for (final a in attachments) {
           parts.add({
             'type': 'file',
@@ -393,6 +414,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             'filename': a.filename,
           });
         }
+        if (parts.isEmpty) parts.add({'type': 'text', 'text': ''});
         conv.addOptimisticUserMessage(text, attachments: attachments);
         serverStore.reflectPreviewFrom(widget.sessionId);
         final totalLen = parts.fold<int>(
@@ -400,7 +422,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         await client.prompt(
           widget.sessionId,
           directory: directory,
-          agent: session?.agent,
+          agent: agent,
           parts: parts,
           sendTimeout: totalLen > 2 * 1024 * 1024
               ? const Duration(seconds: 120)
