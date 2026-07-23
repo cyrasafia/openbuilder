@@ -57,8 +57,8 @@ class _SettingsTabState extends State<SettingsTab> {
     try {
       final h = await OpencodeClient(dioFor(server)).health();
       setState(() => _health = h);
-    } catch (e) {
-      setState(() => _error = '$e');
+    } catch (_) {
+      setState(() => _error = '无法连接到服务器');
     } finally {
       if (mounted) setState(() => _checking = false);
     }

@@ -9,6 +9,7 @@ import '../../../data/api/opencode_client.dart';
 import '../../../domain/models.dart';
 import '../attachments/attachment_pipeline.dart';
 import '../logging/app_logger.dart';
+import '../net/net_error.dart';
 
 const _tag = 'Conv';
 
@@ -509,7 +510,7 @@ class ConversationStore extends ChangeNotifier {
       unawaited(_saveCache());
     } catch (e) {
       AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
-      error = '$e';
+      error = friendlyError(e);
       _stale = true;
       if (_messages.isEmpty) {
         await _loadCache();
@@ -983,7 +984,7 @@ class ConversationStore extends ChangeNotifier {
       final code = e.response?.statusCode;
       AppLogger.I.e(_tag, 'respondPermission POST err pid=${p.id} status=$code body=${e.response?.data}');
       // 404 = already resolved (e.g. accepted on another device) — remove locally.
-      if (code != 404) rethrow;
+      if (code != 404) throw OperationException('回复权限', cause: e);
     }
     onPermissionResolved?.call(p.id);
     onPermissionReplied(p.id);
@@ -1019,8 +1020,7 @@ class ConversationStore extends ChangeNotifier {
     } on DioException catch (e) {
       final code = e.response?.statusCode;
       AppLogger.I.e(_tag, 'replyQuestion POST err qid=${q.id} status=$code body=${e.response?.data}');
-      if (code != 404) rethrow;
-      AppLogger.I.i(_tag, 'replyQuestion 404 swallowed qid=${q.id}');
+      if (code != 404) throw OperationException('回复问题', cause: e);
     }
     onQuestionResolved?.call(q.id);
     onQuestionReplied(q.id);
@@ -1038,8 +1038,7 @@ class ConversationStore extends ChangeNotifier {
     } on DioException catch (e) {
       final code = e.response?.statusCode;
       AppLogger.I.e(_tag, 'rejectQuestion POST err qid=${q.id} status=$code body=${e.response?.data}');
-      if (code != 404) rethrow;
-      AppLogger.I.i(_tag, 'rejectQuestion 404 swallowed qid=${q.id}');
+      if (code != 404) throw OperationException('拒绝问题', cause: e);
     }
     onQuestionResolved?.call(q.id);
     onQuestionReplied(q.id);

@@ -10,6 +10,7 @@ import '../../domain/models.dart';
 import '../connection/connection_profile.dart';
 import '../logging/app_logger.dart';
 import '../net/dio_factory.dart';
+import '../net/net_error.dart';
 import '../notifications/notification_service.dart';
 import '../sse/sse_client.dart';
 import 'conversation_store.dart';
@@ -122,10 +123,9 @@ class ServerStore extends ChangeNotifier {
     return _sseByDir.containsKey(session.directory);
   }
   bool _watchdogConnected = false;
-  // Set true when watchdog transitions connected → disconnected.
-  // Stays true after recovery — banner is controlled by !_watchdogConnected,
-  // not _watchdogFailed (which just gates "has ever failed" to suppress
-  // the banner on first connect).
+  // Set true when the watchdog enters reconnecting state (first-connect
+  // failure or post-connect drop). Stays true after recovery — banner is
+  // controlled by !_watchdogConnected, not _watchdogFailed.
   bool _watchdogFailed = false;
 
   /// Whether the initial bootstrap failed (for showing error view + retry).
@@ -270,23 +270,27 @@ class ServerStore extends ChangeNotifier {
   }) async {
     final activeClient = client;
     if (activeClient == null) throw StateError('未连接服务器');
-    final updated = await activeClient.updateProject(
-      projectId,
-      name: name,
-      updateIcon: updateIcon,
-      iconUrl: iconUrl,
-      iconOverride: iconOverride,
-      iconColor: iconColor,
-    );
-    final idx = _projects.indexWhere((p) => p.id == projectId);
-    if (idx >= 0) {
-      _projects[idx] = updated;
-    } else {
-      _projects.add(updated);
+    try {
+      final updated = await activeClient.updateProject(
+        projectId,
+        name: name,
+        updateIcon: updateIcon,
+        iconUrl: iconUrl,
+        iconOverride: iconOverride,
+        iconColor: iconColor,
+      );
+      final idx = _projects.indexWhere((p) => p.id == projectId);
+      if (idx >= 0) {
+        _projects[idx] = updated;
+      } else {
+        _projects.add(updated);
+      }
+      _scheduleCacheSave();
+      notifyListeners();
+      return updated;
+    } catch (e) {
+      throw OperationException('保存项目', cause: e);
     }
-    _scheduleCacheSave();
-    notifyListeners();
-    return updated;
   }
 
   void _inferWorkspaceForNewProjects() {
@@ -307,10 +311,14 @@ class ServerStore extends ChangeNotifier {
   Future<SessionModel> createSession(String directory) async {
     final activeClient = client;
     if (activeClient == null) throw StateError('未连接服务器');
-    final session = await activeClient.createSession(directory);
-    _upsertSession(session);
-    notifyListeners();
-    return session;
+    try {
+      final session = await activeClient.createSession(directory);
+      _upsertSession(session);
+      notifyListeners();
+      return session;
+    } catch (e) {
+      throw OperationException('创建会话', cause: e);
+    }
   }
 
   String projectDisplayOf(SessionModel s) {
@@ -497,49 +505,57 @@ class ServerStore extends ChangeNotifier {
       return;
     }
     AppLogger.I.i(_tag, 'connect ${profile.hostDisplay}');
-    // Flush pending cache save for the OUTGOING profile before switching
-    // _profile — _stopSse's flush runs AFTER reassignment and would write
-    // old profile data to the new profile's key (cross-profile leak).
-    if (_cacheSaveTimer != null) {
-      _cacheSaveTimer!.cancel();
-      _cacheSaveTimer = null;
-      await _saveCache();
-    }
-    _profile = profile;
-    await _teardown(flushCache: false);
-    _projects = [];
-    _sessions = [];
-    _statusMap.clear();
-    _lastMessage.clear();
-    _lastActivityByKey.clear();
-    _workspaceEnabled.clear();
-    _projectsFetched = false;
-    // Load cached data first for instant offline UI, then _bootstrap refreshes.
-    await _loadCache();
-    final dio = dioFor(profile);
-    client = OpencodeClient(dio);
-    _sseHeaders = Map.from(dio.options.headers.map(
-        (k, v) => MapEntry(k, v is String ? v : v.toString())));
-    final ok = await _bootstrap();
-    bootstrapFailed = !ok;
-    if (!ok) {
-      AppLogger.I.e(_tag, 'bootstrap failed ${profile.hostDisplay}');
-      // Keep cached data visible (offline-first); don't clear on failure.
+    try {
+      // Flush pending cache save for the OUTGOING profile before switching
+      // _profile — _stopSse's flush runs AFTER reassignment and would write
+      // old profile data to the new profile's key (cross-profile leak).
+      if (_cacheSaveTimer != null) {
+        _cacheSaveTimer!.cancel();
+        _cacheSaveTimer = null;
+        await _saveCache();
+      }
+      _profile = profile;
+      await _teardown(flushCache: false);
+      _projects = [];
+      _sessions = [];
+      _statusMap.clear();
+      _lastMessage.clear();
+      _lastActivityByKey.clear();
+      _workspaceEnabled.clear();
+      _projectsFetched = false;
+      // Load cached data first for instant offline UI, then _bootstrap refreshes.
+      await _loadCache();
+      final dio = dioFor(profile);
+      client = OpencodeClient(dio);
+      _sseHeaders = Map.from(dio.options.headers.map(
+          (k, v) => MapEntry(k, v is String ? v : v.toString())));
+      final ok = await _bootstrap();
+      bootstrapFailed = !ok;
+      if (!ok) {
+        AppLogger.I.e(_tag, 'bootstrap failed ${profile.hostDisplay}');
+        // Keep cached data visible (offline-first); don't clear on failure.
+        connected = false;
+        notifyListeners();
+        return;
+      }
+      // Save fresh REST data to cache for next offline open.
+      unawaited(_saveCache());
+      // _bootstrap already fetched projects + sessions + status.
+      // Just start watchdog + SSE for busy/retry sessions + active conversation.
+      _startSse(_kGlobalWatchdog);
+      _startRequiredSse();
+      _trimSse();
+      _lastFullRefreshAt = DateTime.now();
+      connected = true;
+      unawaited(_backfillPermissions());
+      notifyListeners();
+    } catch (e) {
+      AppLogger.I.e(_tag, 'connect failed ${profile.hostDisplay}: $e');
+      client = null;
+      bootstrapFailed = true;
       connected = false;
       notifyListeners();
-      return;
     }
-    // Save fresh REST data to cache for next offline open.
-    unawaited(_saveCache());
-    // _bootstrap already fetched projects + sessions + status.
-    // Just start watchdog + SSE for busy/retry sessions + active conversation.
-    _startSse(_kGlobalWatchdog);
-    _startRequiredSse();
-    _trimSse();
-    _lastFullRefreshAt = DateTime.now();
-    connected = true;
-    unawaited(_backfillPermissions());
-    notifyListeners();
   }
 
   /// Sentinel key for the always-on bare `/event` connection (no `directory`
@@ -723,10 +739,10 @@ class ServerStore extends ChangeNotifier {
   /// `force: false` — REST refresh + SSE marking/LRU only. Watchdog untouched.
   Future<bool> refreshListAndWorkingSse({bool force = false}) async {
     if (client == null) return false;
-    if (force || !_sseByDir.containsKey(_kGlobalWatchdog)) {
-      _startSse(_kGlobalWatchdog);
-    }
     try {
+      if (force || !_sseByDir.containsKey(_kGlobalWatchdog)) {
+        _startSse(_kGlobalWatchdog);
+      }
       if (force || !_projectsFetched) {
         _projects = await client!.projects();
         _projectsFetched = true;
@@ -903,12 +919,13 @@ class ServerStore extends ChangeNotifier {
 
   void _onSseState(String dir, SseState s) {
     if (dir == _kGlobalWatchdog) {
-      final wasConnected = _watchdogConnected;
       _watchdogConnected = s.connected;
-      // Mark "failed" when transitioning from connected → reconnecting.
-      // This suppresses the banner on first connect (which starts as
-      // not-connected → connected without ever being "failed").
-      if (wasConnected && !s.connected) {
+      // Mark "failed" whenever the watchdog enters reconnecting state.
+      // On a normal start the first state event is connected:true (no
+      // reconnecting), so the banner stays suppressed. On a no-network
+      // start the first event is reconnecting:true — the banner shows.
+      // On a post-connect drop, the reconnecting event also fires — same.
+      if (!s.connected && s.reconnecting) {
         _watchdogFailed = true;
       }
     }
@@ -1430,9 +1447,16 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// Manual refresh (from pull-to-refresh). Returns true on success.
+  /// Never throws — all network errors are swallowed and surfaced via
+  /// the return value so RefreshIndicator / onRefresh callers stay safe.
   Future<bool> refresh() async {
     if (client == null) return false;
-    return await refreshListAndWorkingSse(force: true);
+    try {
+      return await refreshListAndWorkingSse(force: true);
+    } catch (e) {
+      AppLogger.I.e(_tag, 'refresh failed: $e');
+      return false;
+    }
   }
 
   // ── App lifecycle (specs §5: background → pause, foreground → resume) ──

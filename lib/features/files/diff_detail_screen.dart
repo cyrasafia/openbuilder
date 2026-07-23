@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
+import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 
@@ -46,7 +47,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       }
       _error = _diff == null ? '未找到该文件的 diff' : null;
     } catch (e) {
-      _error = '$e';
+      _error = friendlyError(e);
     } finally {
       if (mounted) setState(() => _loading = false);
     }

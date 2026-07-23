@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
+import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 
@@ -36,7 +37,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
       _diffs = await c.diff(widget.sessionId, directory: widget.directory);
       _error = null;
     } catch (e) {
-      _error = '$e';
+      _error = friendlyError(e);
     } finally {
       if (mounted) setState(() => _loading = false);
     }

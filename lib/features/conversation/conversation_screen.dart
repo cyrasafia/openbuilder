@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
+import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
@@ -422,24 +423,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
         });
         if (mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('发送失败：$e')));
+              .showSnackBar(SnackBar(content: Text('发送失败：${friendlyError(e)}')));
         }
       }
     }
     _scheduleAutoScroll();
   }
 
-  Future<void> _abort(String directory) async {
+  Future<bool> _abort(String directory) async {
     final client = serverStore.client;
-    if (client == null) return;
+    if (client == null) return false;
     try {
       await client.abort(widget.sessionId, directory: directory);
+      return true;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('终止失败：$e')));
+            .showSnackBar(SnackBar(content: Text('终止失败：${friendlyError(e)}')));
       }
-      rethrow;
+      return false;
     }
   }
 
@@ -1091,7 +1093,7 @@ class _PermissionCardState extends State<_PermissionCard> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('回复失败：$e')));
+            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyError(e)}')));
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -1238,7 +1240,7 @@ class _QuestionCardState extends State<_QuestionCard> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('回复失败：$e')));
+            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyError(e)}')));
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -1252,7 +1254,7 @@ class _QuestionCardState extends State<_QuestionCard> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('拒绝失败：$e')));
+            .showSnackBar(SnackBar(content: Text('拒绝失败：${friendlyError(e)}')));
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -1647,7 +1649,7 @@ class _BottomBar extends StatelessWidget {
   final String directory;
   final TextEditingController ctl;
   final bool busy;
-  final Future<void> Function() onAbort;
+  final Future<bool> Function() onAbort;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
   final List<AttachmentPreview> attachments;
@@ -1718,7 +1720,7 @@ class _ComposeBar extends StatefulWidget {
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
   final bool busy;
-  final Future<void> Function() onAbort;
+  final Future<bool> Function() onAbort;
   final List<AttachmentPreview> attachments;
   final bool shellMode;
   final VoidCallback onExitShellMode;
@@ -1760,11 +1762,8 @@ class _ComposeBarState extends State<_ComposeBar> {
   Future<void> _onStopPressed() async {
     if (_aborting) return;
     setState(() => _aborting = true);
-    try {
-      await widget.onAbort();
-    } catch (_) {
-      if (mounted) setState(() => _aborting = false);
-    }
+    final ok = await widget.onAbort();
+    if (mounted && !ok) setState(() => _aborting = false);
   }
 
   @override
@@ -1983,7 +1982,7 @@ class _MoreMenu extends StatelessWidget {
           } catch (e) {
             if (context.mounted) {
               ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text('归档失败：$e')));
+                  .showSnackBar(SnackBar(content: Text('归档失败：${friendlyError(e)}')));
             }
           }
         }
@@ -2026,7 +2025,7 @@ class _MoreMenu extends StatelessWidget {
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('修改失败：$e')));
+              .showSnackBar(SnackBar(content: Text('修改失败：${friendlyError(e)}')));
         }
       }
     }
@@ -2080,7 +2079,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       if (mounted) {
         setState(() => _loading = false);
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('加载选项失败：$e')));
+            .showSnackBar(SnackBar(content: Text('加载选项失败：${friendlyError(e)}')));
       }
     }
   }
@@ -2108,7 +2107,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       if (mounted) {
         setState(() => _optimisticAgent = null);
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('切换 Agent 失败：$e')));
+            .showSnackBar(SnackBar(content: Text('切换 Agent 失败：${friendlyError(e)}')));
       }
     } finally {
       if (mounted) setState(() => _switching = false);
@@ -2134,7 +2133,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('切换模型失败：$e')));
+            .showSnackBar(SnackBar(content: Text('切换模型失败：${friendlyError(e)}')));
       }
     } finally {
       if (mounted) setState(() => _switching = false);

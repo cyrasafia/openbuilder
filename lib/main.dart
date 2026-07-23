@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -9,18 +11,51 @@ import 'core/net/system_font_weight.dart';
 import 'ui/theme.dart';
 
 final _router = buildRouter(connectionStore);
+bool _appStarted = false;
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await AppLogger.I.init();
-  await connectionStore.load();
-  await modelHideStore.load();
-  await defaultAgentModelStore.load();
-  wireServerStore();
-  await NotificationService.init();
-  await SystemFontWeight.init();
-  await initSettings();
-  runApp(const OpenBuilderApp());
+void main() {
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    FlutterError.onError = (details) {
+      AppLogger.I.e('Flutter', '${details.exceptionAsString()}\n${details.stack}');
+    };
+    await AppLogger.I.init();
+    await connectionStore.load();
+    await modelHideStore.load();
+    await defaultAgentModelStore.load();
+    wireServerStore();
+    await NotificationService.init();
+    await SystemFontWeight.init();
+    await initSettings();
+    runApp(const OpenBuilderApp());
+    _appStarted = true;
+  }, (error, stack) {
+    AppLogger.I.e('Zone', 'unhandled: $error\n$stack');
+    if (!_appStarted) {
+      runApp(MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline, size: 48),
+                  const SizedBox(height: 16),
+                  const Text('应用启动失败',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  Text('$error',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ));
+    }
+  });
 }
 
 class OpenBuilderApp extends StatefulWidget {
