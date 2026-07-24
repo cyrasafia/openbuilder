@@ -133,3 +133,39 @@ if (entries.isNotEmpty) {
 | 实现细节 | `status='idle'` 建议改 `setStatus('idle')` | 🟢 低 | ✅ 已采纳 |
 
 两条假设已验证，设计无需调整，可放心实现。
+
+---
+
+## 第 3 层：会话状态内存缓存（后台恢复优先展示）
+
+> 需求：会话状态**只在内存缓存、不落盘**；后台恢复时**优先展示离开前的（缓存）状态**，获取到最新状态后再更新。
+
+### 背景
+
+历史上状态在后台恢复时被反复清掉（cdb0872 / SS-1）：`_bootstrap` / `_reconcile` 里的 `_statusMap..clear()..addAll(status)` 在某目录 REST 失败返回 `{}` 时，会把该目录会话已知 busy/retry 状态一并清成 idle，typing 指示器丢失。这是「清空再覆盖」语义的固有缺陷——它假设每次 fetch 都是完整覆盖，但逐目录容错下并非如此。
+
+### 设计
+
+把 `_statusMap` 当作**纯内存缓存**（不再落盘），并把刷新从「clear + addAll」改为**按目录覆盖度合并**：
+
+1. **不落盘**：`_saveCache` / `_loadCache` 移除 `status` 字段。状态时效性强，几小时前的磁盘 busy 是误导；冷启动显示 idle 直到 REST 返回更准确。
+2. **内存缓存跨后台保留**：`pause()` 不清 `_statusMap`，恢复前台后 REST 异步返回前，UI 即看到离开前的状态——这就是「优先展示离开前的缓存状态」。
+3. **按目录覆盖合并**（`_mergeStatus`）：
+   - 成功 fetch 的目录 → fresh 权威（目录返回里缺该会话 ⇒ idle，不会卡 busy）；
+   - fetch 失败的目录 → 保留内存缓存值（不再误清成 idle，关闭 cdb0872/SS-1 这类回归）。
+
+### 场景验证
+
+| 场景 | 行为 |
+|------|------|
+| 后台前 busy，恢复时该目录 REST 成功且会话已结束 | fresh idle 覆盖 → idle ✅ |
+| 后台前 busy，恢复时该目录 REST 失败（弱网） | 保留缓存 busy，不被误清成 idle ✅ |
+| 冷启动 / 切服务器 | `_statusMap` 为空，显示 idle 直到 bootstrap 返回 ✅ |
+| 成功目录返回里无该会话 | covered ⇒ idle（不卡 busy）✅ |
+
+### 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `lib/core/session/server_store.dart` | `_fetchAllStatuses` 回传成功目录集合；新增 `_mergeStatus`；`_bootstrap` / `refreshListAndWorkingSse` 改用合并；`_saveCache` / `_loadCache` 去掉 status |
+| `test/session_status_cache_test.dart` | 锁定：失败目录保留缓存、成功目录 fresh 生效、covered-absent ⇒ idle、磁盘不还原 status |

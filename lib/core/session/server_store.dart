@@ -643,14 +643,13 @@ class ServerStore extends ChangeNotifier {
     try {
       final projects = await client!.projects();
       final sessions = await _fetchAllSessions();
-      final status =
-          await _fetchAllStatuses(projects: projects, sessions: sessions);
+      final fetchedDirs = <String>{};
+      final status = await _fetchAllStatuses(
+          projects: projects, sessions: sessions, fetchedDirs: fetchedDirs);
       _projects = projects;
       _projectsFetched = true;
       _sessions = sessions;
-      _statusMap
-        ..clear()
-        ..addAll(status);
+      _mergeStatus(fresh: status, sessions: sessions, fetchedDirs: fetchedDirs);
       _inferWorkspaceForNewProjects();
       return true;
     } catch (_) {
@@ -662,9 +661,15 @@ class ServerStore extends ChangeNotifier {
   /// Without a directory, GET /session/status returns `{}`, so we must query
   /// per-dir. Includes sandbox worktree directories (SS-1: must match the
   /// directory coverage of _eventDirectories / _fetchAllSessions).
+  ///
+  /// [fetchedDirs], when non-null, records every directory fetched without
+  /// throwing. The caller uses it to tell which sessions received a fresh,
+  /// authoritative status (so the merge can keep the cached value for sessions
+  /// whose directory fetch failed — see [_mergeStatus]).
   Future<Map<String, SessionStatusValue>> _fetchAllStatuses({
     required List<ProjectModel> projects,
     List<SessionModel> sessions = const [],
+    Set<String>? fetchedDirs,
   }) async {
     final dirs = <String>{};
     for (final p in projects) {
@@ -673,18 +678,46 @@ class ServerStore extends ChangeNotifier {
     for (final s in sessions) {
       if (s.directory.isNotEmpty) dirs.add(s.directory);
     }
-    final results = await Future.wait(dirs.map((dir) async {
-      try {
-        return await client!.sessionStatus(directory: dir);
-      } catch (_) {
-        return const <String, SessionStatusValue>{};
-      }
-    }));
     final out = <String, SessionStatusValue>{};
-    for (final r in results) {
-      out.addAll(r);
-    }
+    await Future.wait(dirs.map((dir) async {
+      try {
+        final r = await client!.sessionStatus(directory: dir);
+        out.addAll(r);
+        fetchedDirs?.add(dir);
+      } catch (_) {}
+    }));
     return out;
+  }
+
+  /// Merge freshly-fetched status into the in-memory status cache.
+  ///
+  /// `_statusMap` is a pure in-memory cache (never persisted): it survives a
+  /// background pause so the UI shows the pre-leave status the instant the app
+  /// resumes, then is updated once the REST fetch returns ("优先展示离开前的
+  /// 缓存状态，获取到最新状态后再更新").
+  ///
+  /// Sessions whose directory was fetched successfully are authoritative —
+  /// their fresh value wins, and absence from [fresh] ⇒ idle. Sessions in a
+  /// directory whose fetch FAILED keep their cached status, so a flaky resume
+  /// never wipes a known busy/retry indicator to idle (the regression behind
+  /// cdb0872 / SS-1).
+  void _mergeStatus({
+    required Map<String, SessionStatusValue> fresh,
+    required List<SessionModel> sessions,
+    required Set<String> fetchedDirs,
+  }) {
+    final covered = <String>{};
+    for (final s in sessions) {
+      if (fetchedDirs.contains(s.directory)) covered.add(s.id);
+    }
+    final merged = <String, SessionStatusValue>{};
+    _statusMap.forEach((id, v) {
+      if (!covered.contains(id)) merged[id] = v;
+    });
+    merged.addAll(fresh);
+    _statusMap
+      ..clear()
+      ..addAll(merged);
   }
 
   /// Aggregate sessions across all projects. For each project, fetches
@@ -782,16 +815,15 @@ class ServerStore extends ChangeNotifier {
         _projectsFetched = true;
       }
       final sessions = await _fetchAllSessions();
-      final status =
-          await _fetchAllStatuses(projects: _projects, sessions: sessions);
+      final fetchedDirs = <String>{};
+      final status = await _fetchAllStatuses(
+          projects: _projects, sessions: sessions, fetchedDirs: fetchedDirs);
       _sessions = sessions;
-      _statusMap
-        ..clear()
-        ..addAll(status);
+      _mergeStatus(fresh: status, sessions: sessions, fetchedDirs: fetchedDirs);
       _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
-        final s = status[conv.sessionId];
-        conv.setStatus(s?.type ?? 'idle', retryMessage: s?.message);
+        final s = statusOf(conv.sessionId);
+        conv.setStatus(s.type, retryMessage: s.message);
         conv.sessionUpdated = sessionById(conv.sessionId)?.updated;
       }
       // Start SSE for busy/retry sessions + active conversation.
@@ -1071,6 +1103,18 @@ class ServerStore extends ChangeNotifier {
   /// `_eventDirectories` / `sessionById`) without going through SSE.
   @visibleForTesting
   void upsertSessionForTesting(SessionModel s) => _upsertSession(s);
+
+  /// Test seam for the in-memory status-cache merge. Seeds `_statusMap` first
+  /// via `session.status` events, then call this to assert the resume-time
+  /// merge: fresh values win for fetched dirs, cached values survive for dirs
+  /// whose fetch failed.
+  @visibleForTesting
+  void mergeStatusForTesting({
+    required Map<String, SessionStatusValue> fresh,
+    required List<SessionModel> sessions,
+    required Set<String> fetchedDirs,
+  }) =>
+      _mergeStatus(fresh: fresh, sessions: sessions, fetchedDirs: fetchedDirs);
 
   /// Test seam: drive `_backfillQuestions` directly to verify the
   /// `_recentlyResolvedQuestions` guard skips recently-resolved ids.
@@ -1636,7 +1680,11 @@ class ServerStore extends ChangeNotifier {
         'v': 1,
         'projects': _projects.map((p) => p.toJson()).toList(),
         'sessions': _sessions.map((s) => s.toJson()).toList(),
-        'status': _statusMap.map((k, v) => MapEntry(k, v.toJson())),
+        // Status is intentionally NOT persisted: it is time-sensitive and a
+        // stale on-disk value (e.g. a session that finished hours ago) would
+        // paint a false busy/retry indicator on cold start. It lives only in
+        // the in-memory `_statusMap` cache, which survives a background pause
+        // and is refreshed on connect/resume.
         'lastMessage': _lastMessage,
         'activity': _lastActivityByKey,
         'workspaceEnabled': _workspaceEnabled,
@@ -1667,12 +1715,6 @@ class ServerStore extends ChangeNotifier {
       final sessions = (j['sessions'] as List? ?? [])
           .map((e) => SessionModel.fromJson((e as Map).cast<String, dynamic>()))
           .toList();
-      final status = <String, SessionStatusValue>{};
-      final statusRaw = j['status'] as Map? ?? {};
-      for (final entry in statusRaw.entries) {
-        status[entry.key] =
-            SessionStatusValue.fromJson((entry.value as Map).cast<String, dynamic>());
-      }
       final lastMsg = <String, String>{};
       final lmRaw = j['lastMessage'] as Map? ?? {};
       for (final entry in lmRaw.entries) {
@@ -1696,9 +1738,6 @@ class ServerStore extends ChangeNotifier {
       // for future call paths that might load cache after SSE starts).
       if (_projects.isEmpty) _projects = projects;
       if (_sessions.isEmpty) _sessions = sessions;
-      for (final e in status.entries) {
-        _statusMap.putIfAbsent(e.key, () => e.value);
-      }
       for (final e in lastMsg.entries) {
         _lastMessage.putIfAbsent(e.key, () => e.value);
       }
