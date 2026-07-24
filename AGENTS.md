@@ -47,7 +47,7 @@ openbuilder/
 
 ## 构建方式
 
-> **Flutter 路径**：本机 Flutter 未加入 `PATH`，绝对路径为 `~/development/flutter/bin/flutter`。直接运行 `flutter` 会报找不到命令；`scripts/build.sh` 已自动把该路径加入 `PATH`。
+> **Flutter 路径**：本机 Flutter 未加入 `PATH`，默认位于 `~/development/flutter/bin/flutter`。直接运行 `flutter` 会报找不到命令；`scripts/build.sh` 会自动把该路径加入 `PATH`，可用环境变量 `FLUTTER_HOME` 覆盖（同理 `ANDROID_SDK_ROOT` / `JAVA_HOME` 均可覆盖）。
 
 ### Release APK（必须用脚本，自动递增版本号）
 
@@ -55,9 +55,9 @@ openbuilder/
 ./scripts/build.sh
 ```
 
-脚本会：读 `pubspec.yaml` version → 递增 patch + versionCode → 写回 → 设 `JAVA_HOME`（~/development/jdk21）→ `flutter build apk --release`。
+脚本会：读 `pubspec.yaml` version → 递增 patch + versionCode → 设 `JAVA_HOME`（~/development/jdk21）→ `flutter build apk --release` → 重命名 APK 为 `OpenBuilder-<版本>.apk` → 写回 pubspec。
 
-产物：`build/app/outputs/flutter-apk/app-release.apk`
+产物：`build/app/outputs/flutter-apk/OpenBuilder-<版本>.apk`（脚本会把 `app-release.apk` 重命名为 `OpenBuilder-A.B.C-N.apk`）
 
 > **不要直接 `flutter build apk`** — 会跳过版本递增。
 
