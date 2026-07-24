@@ -322,10 +322,23 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final dir = serverStore.sessionById(widget.sessionId)?.directory;
     setState(() => _cmdLoading = true);
     try {
-      final cmds = await client.getCommands(directory: dir);
+      final results = await Future.wait([
+        client.getCommands(directory: dir),
+        client.getSkills(directory: dir).catchError((_) => <CommandInfo>[]),
+        client.getConfigCommands().catchError((_) => <CommandInfo>[]),
+      ]);
+      final cmds = results[0];
+      final existing = cmds.map((c) => c.name.toLowerCase()).toSet();
+      var merged = [...cmds];
+      for (final s in results[1]) {
+        if (existing.add(s.name.toLowerCase())) merged = [...merged, s];
+      }
+      for (final c in results[2]) {
+        if (existing.add(c.name.toLowerCase())) merged = [...merged, c];
+      }
       if (mounted) {
         setState(() {
-          _commands = cmds;
+          _commands = merged;
           _cmdLoaded = true;
           _cmdLoading = false;
         });
@@ -426,7 +439,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         }
       } else {
         String? agent = session?.agent;
-        String payloadText = text;
+        var isCommand = false;
         if (text.startsWith('/')) {
           await _loadCommands();
           final firstSpace = text.indexOf(' ');
@@ -438,39 +451,99 @@ class _ConversationScreenState extends State<ConversationScreen> {
             (c) => c.slash.toLowerCase() == '/$cmdToken',
             orElse: () => const CommandInfo(name: ''),
           );
-          if (matched.name.isNotEmpty && matched.agent != null) {
-            agent = matched.agent;
-            payloadText =
-                firstSpace == -1 ? '' : text.substring(firstSpace + 1).trim();
+          if (matched.name.isNotEmpty) {
+            isCommand = true;
+            final arguments = firstSpace == -1
+                ? ''
+                : text.substring(firstSpace + 1).trim();
+            final cmdParts = <Map<String, dynamic>>[
+              for (final a in attachments)
+                {
+                  'type': 'file',
+                  'mime': a.mime,
+                  'url': a.dataUrl,
+                  'filename': a.filename,
+                },
+            ];
+            conv.addOptimisticUserMessage(text, attachments: attachments);
+            serverStore.reflectPreviewFrom(widget.sessionId);
+            if (matched.content != null && matched.content!.isNotEmpty) {
+              final body = matched.content!;
+              final hasPlaceholder = body.contains('\$ARGUMENTS');
+              final parts = <Map<String, dynamic>>[
+                {
+                  'type': 'text',
+                  'text': hasPlaceholder
+                      ? body.replaceAll('\$ARGUMENTS', arguments)
+                      : body,
+                },
+              ];
+              if (arguments.isNotEmpty && !hasPlaceholder) {
+                parts.add({'type': 'text', 'text': arguments});
+              }
+              parts.addAll(cmdParts);
+              final totalLen = parts.fold<int>(
+                  0,
+                  (s, p) =>
+                      s +
+                      (p['text']?.toString().length ?? 0) +
+                      (p['url']?.toString().length ?? 0));
+              await client.prompt(
+                widget.sessionId,
+                directory: directory,
+                agent: matched.agent ?? agent,
+                parts: parts,
+                sendTimeout: totalLen > 2 * 1024 * 1024
+                    ? const Duration(seconds: 120)
+                    : null,
+              );
+            } else {
+              final totalLen = cmdParts.fold<int>(
+                  0, (s, p) => s + (p['url']?.toString().length ?? 0));
+              await client.command(
+                widget.sessionId,
+                directory: directory,
+                agent: matched.agent ?? agent,
+                command: matched.name,
+                arguments: arguments,
+                parts: cmdParts,
+                sendTimeout: totalLen > 2 * 1024 * 1024
+                    ? const Duration(seconds: 120)
+                    : null,
+              );
+            }
+            conv.setStatus('busy');
           }
         }
-        final parts = <Map<String, dynamic>>[];
-        if (payloadText.isNotEmpty) {
-          parts.add({'type': 'text', 'text': payloadText});
+        if (!isCommand) {
+          final parts = <Map<String, dynamic>>[];
+          if (text.isNotEmpty) {
+            parts.add({'type': 'text', 'text': text});
+          }
+          for (final a in attachments) {
+            parts.add({
+              'type': 'file',
+              'mime': a.mime,
+              'url': a.dataUrl,
+              'filename': a.filename,
+            });
+          }
+          if (parts.isEmpty) parts.add({'type': 'text', 'text': ''});
+          conv.addOptimisticUserMessage(text, attachments: attachments);
+          serverStore.reflectPreviewFrom(widget.sessionId);
+          final totalLen = parts.fold<int>(
+              0, (s, p) => s + (p['url']?.toString().length ?? 0));
+          await client.prompt(
+            widget.sessionId,
+            directory: directory,
+            agent: agent,
+            parts: parts,
+            sendTimeout: totalLen > 2 * 1024 * 1024
+                ? const Duration(seconds: 120)
+                : null,
+          );
+          conv.setStatus('busy');
         }
-        for (final a in attachments) {
-          parts.add({
-            'type': 'file',
-            'mime': a.mime,
-            'url': a.dataUrl,
-            'filename': a.filename,
-          });
-        }
-        if (parts.isEmpty) parts.add({'type': 'text', 'text': ''});
-        conv.addOptimisticUserMessage(text, attachments: attachments);
-        serverStore.reflectPreviewFrom(widget.sessionId);
-        final totalLen = parts.fold<int>(
-            0, (s, p) => s + (p['url']?.toString().length ?? 0));
-        await client.prompt(
-          widget.sessionId,
-          directory: directory,
-          agent: agent,
-          parts: parts,
-          sendTimeout: totalLen > 2 * 1024 * 1024
-              ? const Duration(seconds: 120)
-              : null,
-        );
-        conv.setStatus('busy');
       }
       conv.setDraft('', shell: false); // 发送成功 → 清除草稿（与成功路径对称）
       conv.persistDraft();

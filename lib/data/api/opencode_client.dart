@@ -168,6 +168,52 @@ class OpencodeClient {
     return _getModelsFromData(data, CommandInfo.fromJson);
   }
 
+  /// Available skills for a session's directory, from `GET /api/skill`.
+  /// Newer servers already merge skills into `/api/command` with
+  /// `source:"skill"`; older servers (e.g. v1.18.x) do not, so the client
+  /// merges them itself to surface every slash entry. `content` is the full
+  /// SKILL.md body, used to execute the skill as a prompt on servers that lack
+  /// skill-as-command support.
+  Future<List<CommandInfo>> getSkills({String? directory}) async {
+    final params = <String, dynamic>{};
+    if (directory != null && directory.isNotEmpty) {
+      params['directory'] = directory;
+    }
+    final r = await dio.get<dynamic>('/api/skill', queryParameters: params);
+    final data = _asMap(r.data)['data'];
+    return _getModelsFromData(data, (j) => CommandInfo(
+          name: (j['name'] ?? '').toString(),
+          description: (j['description'] ?? '').toString(),
+          source: 'skill',
+          content: (j['content'] ?? '').toString(),
+        ));
+  }
+
+  /// Commands declared under the `command` key of `GET /config` — including
+  /// those injected by plugins (e.g. `/goal` from the goal plugin). Newer
+  /// servers surface these via `/api/command`, but older ones (v1.18.x) do
+  /// not sync plugin-injected commands into the list, so the client merges
+  /// them itself. `content` holds the command `template` (with `$ARGUMENTS`),
+  /// expanded client-side and sent as a prompt.
+  Future<List<CommandInfo>> getConfigCommands() async {
+    final r = await dio.get<dynamic>('/config');
+    final command = _asMap(r.data)['command'];
+    if (command is! Map) return const [];
+    final result = <CommandInfo>[];
+    for (final entry in command.entries) {
+      if (entry.value is Map) {
+        final def = entry.value as Map;
+        result.add(CommandInfo(
+          name: entry.key.toString(),
+          description: (def['description'] ?? '').toString(),
+          source: 'config',
+          content: (def['template'] ?? '').toString(),
+        ));
+      }
+    }
+    return result;
+  }
+
   /// `GET /session/status?directory=<dir>` → `{ sessionID: {type: idle|busy|retry} }`.
   /// Without a directory the endpoint returns `{}`.
   Future<Map<String, SessionStatusValue>> sessionStatus({String? directory}) async {
@@ -287,6 +333,40 @@ class OpencodeClient {
       queryParameters:
           directory != null ? {'directory': directory} : null,
       data: {'agent': agent ?? 'build', 'command': command},
+    );
+  }
+
+  /// `POST /session/:id/command` — execute a slash command by expanding its
+  /// template with [arguments], then return immediately (mirrors
+  /// `prompt_async`; output streams back through SSE). [command] is the name
+  /// without the leading `/` (e.g. "review"); [arguments] feeds `$ARGUMENTS`
+  /// and positional `$N` placeholders in the template. [parts] carries file
+  /// attachments, same shape as `prompt`. This is the only way to actually
+  /// trigger a registered command — sending `/name` through `prompt` just
+  /// posts it as a literal user message and never expands the template.
+  Future<void> command(
+    String sessionId, {
+    String? directory,
+    String? agent,
+    required String command,
+    String arguments = '',
+    List<Map<String, dynamic>> parts = const [],
+    Duration? sendTimeout,
+  }) async {
+    final body = <String, dynamic>{
+      'command': command,
+      'arguments': arguments,
+    };
+    if (agent != null) body['agent'] = agent;
+    if (parts.isNotEmpty) body['parts'] = parts;
+    await dio.post(
+      '/session/$sessionId/command',
+      queryParameters:
+          directory != null ? {'directory': directory} : null,
+      data: body,
+      options: sendTimeout == null
+          ? null
+          : Options(sendTimeout: sendTimeout),
     );
   }
 
