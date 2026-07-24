@@ -652,4 +652,108 @@ void main() {
       expect(ConversationStore.isEmptyUserForTest(optimisticEmpty), isFalse);
     });
   });
+
+  // 会话输入框草稿暂存（docs/design-compose-draft.md §10）。
+  // CD-15：方案 A 下 loadDraftOnly() 公开，直接构造 store 不会自动读盘——
+  // 验证草稿加载须显式调用 loadDraftOnly()；setUp 已隔离 SharedPreferences。
+  group('draft persistence (CD-1~31)', () {
+    test('setDraft updates memory only and does not notify', () {
+      final conv = ConversationStore('d1', _fakeClient());
+      var notifies = 0;
+      conv.addListener(() => notifies++);
+      conv.setDraft('hello', shell: true);
+      expect(conv.draftText, 'hello');
+      expect(conv.draftShell, isTrue);
+      expect(notifies, 0); // §6 D3：setDraft 高频调用，不触发整页重建
+    });
+
+    test('persistDraft writes draft/draftShell into blob', () async {
+      final conv = ConversationStore('d2', _fakeClient());
+      conv.setDraft('unsent text', shell: true);
+      await conv.persistDraft();
+      final restored = ConversationStore('d2', _fakeClient());
+      await restored.loadDraftOnly();
+      expect(restored.draftText, 'unsent text');
+      expect(restored.draftShell, isTrue);
+      expect(restored.draftLoaded, isTrue);
+    });
+
+    test('loadDraftOnly reads only draft, ignores messages/todos (CD-1)', () async {
+      final seed = ConversationStore('d3', _fakeClient());
+      seed.onPartUpdated(
+          {'id': 'p1', 'messageID': 'm1', 'type': 'text'}, 'a real message');
+      await seed.saveCacheForTest();
+
+      final restored = ConversationStore('d3', _fakeClient());
+      await restored.loadDraftOnly();
+      expect(restored.draftText, ''); // 无 draft 字段 → 兜底空
+      expect(restored.draftShell, isFalse);
+      expect(restored.draftLoaded, isTrue);
+      expect(restored.messages, isEmpty); // 独立于消息缓存路径，不读消息
+    });
+
+    test('backward compat: blob without draft fields → empty (CD-7)', () async {
+      SharedPreferences.setMockInitialValues({
+        'conv_d4':
+            '{"messages":[],"todos":[],"segments":[],"cachedSessionUpdated":null}',
+      });
+      final conv = ConversationStore('d4', _fakeClient());
+      await conv.loadDraftOnly();
+      expect(conv.draftText, '');
+      expect(conv.draftShell, isFalse);
+      expect(conv.draftLoaded, isTrue);
+    });
+
+    test('loadDraftOnly is idempotent (_draftLoaded guard)', () async {
+      SharedPreferences.setMockInitialValues({
+        'conv_d5': '{"draft":"first","draftShell":false}',
+      });
+      final conv = ConversationStore('d5', _fakeClient());
+      await conv.loadDraftOnly();
+      expect(conv.draftText, 'first');
+      // 改 backing 值；第二次调用须被守卫拦住、不重读。
+      SharedPreferences.setMockInitialValues({
+        'conv_d5': '{"draft":"second","draftShell":false}',
+      });
+      await conv.loadDraftOnly();
+      expect(conv.draftText, 'first');
+    });
+
+    test('loadDraftOnly on missing blob sets draftLoaded without throw', () async {
+      final conv = ConversationStore('d6', _fakeClient()); // 无缓存
+      await conv.loadDraftOnly();
+      expect(conv.draftText, '');
+      expect(conv.draftLoaded, isTrue);
+    });
+
+    test('loadDraftOnly on corrupt blob does not throw, sets draftLoaded',
+        () async {
+      SharedPreferences.setMockInitialValues({'conv_d7': '{not valid json'});
+      final conv = ConversationStore('d7', _fakeClient());
+      await conv.loadDraftOnly();
+      expect(conv.draftText, '');
+      expect(conv.draftLoaded, isTrue);
+    });
+
+    test('persistDraft after dispose is safe (CD-3/CD-20 ordering)', () async {
+      final conv = ConversationStore('d8', _fakeClient());
+      conv.setDraft('x');
+      conv.dispose();
+      await conv.persistDraft(); // _saveCache 不检查 _disposed；写仍有效、不抛
+    });
+
+    test('loadDraftOnly notifies on completion (reactive restore, §5.3)',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'conv_d9': '{"draft":"restored","draftShell":true}',
+      });
+      final conv = ConversationStore('d9', _fakeClient());
+      var notifies = 0;
+      conv.addListener(() => notifies++);
+      await conv.loadDraftOnly();
+      expect(notifies, 1); // 完成后 notify → 页面 _onDraftChange 回填
+      expect(conv.draftText, 'restored');
+      expect(conv.draftShell, isTrue);
+    });
+  });
 }

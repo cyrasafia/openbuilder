@@ -222,6 +222,14 @@ class ConversationStore extends ChangeNotifier {
   bool _disposed = false;
   Future<void> Function()? _backfillCallback;
 
+  // ── Draft（未发送的输入框文字，见 docs/design-compose-draft.md）──
+  String _draftText = '';
+  bool _draftShell = false;
+  bool _draftLoaded = false; // loadDraftOnly() 完成后置真（CD-1）
+  String get draftText => _draftText;
+  bool get draftShell => _draftShell;
+  bool get draftLoaded => _draftLoaded;
+
   /// Set a callback to be invoked after a successful reconcile (including
   /// retries). Used by ServerStore to bridge _lastMessage on retry success
   /// (LPS-20). Cleared after first successful invocation.
@@ -742,6 +750,8 @@ class ConversationStore extends ChangeNotifier {
                 })
             .toList(),
         'cachedSessionUpdated': sessionUpdated,
+        'draft': _draftText,
+        'draftShell': _draftShell,
       };
       await prefs.setString(_cacheKey, jsonEncode(j));
     } catch (_) {}
@@ -821,6 +831,39 @@ class ConversationStore extends ChangeNotifier {
         if (_messages.isNotEmpty && !_disposed) notifyListeners();
       }
     } catch (_) {}
+  }
+
+  // ── Draft persistence ──
+
+  /// 仅更新内存草稿（onChanged 高频调用，零 I/O）。不 notifyListeners——
+  /// 草稿变化不应触发整页消息列表重建。
+  void setDraft(String text, {bool shell = false}) {
+    _draftText = text;
+    _draftShell = shell;
+  }
+
+  /// 把内存草稿（随整个 `conv_<sessionId>` blob）写盘。
+  /// 离开页 / 发送清除 / 失败回填 / 后台 pause 时调用。
+  /// 复用 _saveCache() 的「整 blob 写」（含 messages/todos，非仅草稿，CD-6），
+  /// 其为直接 unawaited 写（无节流），故仅在低频时机调用（§6 D3）。
+  Future<void> persistDraft() => _saveCache();
+
+  /// 仅读 draft/draftShell，忽略 messages/todos。独立于消息缓存早读（CD-1），
+  /// 不受 _loadCache 的 `_messages.isNotEmpty` 守卫约束。公开：由
+  /// ServerStore.ensureConversation 跨库调用（CD-13）。是唯一的草稿读路径。
+  Future<void> loadDraftOnly() async {
+    if (_draftLoaded) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKey);
+      if (raw != null && raw.isNotEmpty) {
+        final j = jsonDecode(raw) as Map<String, dynamic>;
+        _draftText = (j['draft'] ?? '').toString();
+        _draftShell = j['draftShell'] == true;
+      }
+    } catch (_) {}
+    _draftLoaded = true; // 即使无缓存也置真（表示「已尝试读」）
+    if (!_disposed) notifyListeners(); // 触发页面 reactive 恢复（§5.3）
   }
 
   DisplayMessage _toDisplay(MessageEntry e) {

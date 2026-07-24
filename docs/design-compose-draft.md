@@ -61,7 +61,7 @@
 ```
 
 - **层 ①（内存）**满足需求主场景（离开会话页 → 再回来）。
-- **层 ②（磁盘）**是增强，覆盖进程被销毁的场景；复用 `conv_<sessionId>` blob，几乎零成本。
+- **层 ②（磁盘）**是增强，覆盖进程被销毁的场景；复用 `conv_<sessionId>` blob，几乎零成本。**CD-26**：draft 并入 blob 后**「搭便车」**——每条消息完成 / reconcile 触发的 `_saveCache`（`conversation_store.dart:891` 等）都顺带写草稿，在线会话只要有回复流即被周期性落盘，真实丢失窗口远小于「仅靠 dispose/pause」的措辞暗示。
 
 ## 4. 状态模型
 
@@ -119,6 +119,8 @@ final j = {
 ```
 
 > 向后兼容：现有 `conv_<sessionId>` blob 无版本号，新增字段一律 `?? ''` / `== true` 兜底，老缓存平滑升级。
+>
+> **CD-23（best-effort，记录不修）**：`_saveCache` 是无节流的直接 unawaited 写，多次调用（消息完成 / reconcile / send·persist）对同一 key 的 `setString` 完成顺序不确定（last-writer-wins）。draft 并入 blob 后**继承此既有竞态**：send 成功 `setDraft('')+persistDraft` 后，若一条更早、已快照了清空前旧 draft 的 `_saveCache` 的 `setString` 后完成 → 旧草稿短暂「复活」，靠后续消息的 `_saveCache` 自愈；进程恰在此窗口被杀则重启恢复错误值。根因是 `setString` 乱序，**「await 前快照字段」无法消除**（仅改读时机、不改写序），且会触动共享的消息缓存路径、甚至让 draft 读到比当前更旧的值；序列化 / 版本号对 best-effort 草稿属过度设计。故与既有消息缓存竞态一致、记为 best-effort，见 §7 场景 15。
 
 ### 5.2b 读回：`loadDraftOnly()`（独立于消息缓存，修 CD-1；公开见 CD-13）
 
@@ -248,22 +250,42 @@ conv.setDraft(shellModeWas ? text : displayText, shell: shellModeWas);
 conv.persistDraft();
 ```
 
-### 5.4 后台 / 重启落盘（增强；顺序与驱逐见 CD-3）
+### 5.4 后台 / 重启落盘（增强；顺序与驱逐见 CD-3；pause 与 teardown 区分见 CD-25）
 
-`conv_<sessionId>` blob 当前仅在「消息 settle / reconcile」时由 `ConversationStore._saveCache()` 写（`conversation_store.dart:509/583/886`，**直接 unawaited，非节流**）。`ServerStore.pause()` / `_stopSse()` 的 flush（`server_store.dart:1503-1531`）只刷 **ServerStore 自己的** `server_<profileId>` blob，**不**遍历各会话。因此后台被杀时草稿可能尚未落盘。补一处：
+`conv_<sessionId>` blob 当前仅在「消息 settle / reconcile」时由 `ConversationStore._saveCache()` 写——draft 并入 blob 后每条消息完成 / reconcile 都**「搭便车」**持久化草稿（CD-26），在线会话回复流即周期性落盘。`ServerStore._stopSse()` 现有 flush（`server_store.dart:1586-1590`，`if (flushCache) await _saveCache()`）只刷 **ServerStore 自己的** `server_<profileId>` blob，不遍历各会话；补草稿 flush 时须**区分两类生命周期调用**（CD-25）：
 
-`ServerStore._teardown()`（`server_store.dart:1391`）/ `pause()`（`server_store.dart:1443`）里，遍历 `_conversations.values` 调用 `conv.persistDraft()`。**关键顺序（CD-3）：应在清理/`dispose` 各会话之前**——属实现卫生（不依赖正在拆除的 store、保证 flush 在 store 存活期内完成）。注意（CD-20）：`_saveCache()` 不检查 `_disposed`，故即便先 dispose 再 persist，写仍会成功并写出有效数据（非「被吞」），但顺序仍按「先 persist 再 dispose」以保持清晰。
+**① `pause()`（切后台保活）— 仅 flush 活动会话。** `pause`（`server_store.dart:1502`）是 VM 生命周期调用，调用方可能 await 它；20 个会话串行 `_saveCache`（`getInstance + jsonEncode(整 blob) + setString`）可达数十~上百毫秒，叠加于 `_stopSse` 之外。而切后台时唯一可能有未落盘输入的是**活动会话**（`_activeSessionId`）——其余会话页面早已 `dispose`（已 persist，见 §5.3 dispose）。故 pause 只需一次磁盘写：
 
 ```dart
-for (final c in _conversations.values) {
-  await c.persistDraft();   // ① 先刷盘
+final active = (_activeSessionId != null) ? _conversations[_activeSessionId] : null;
+if (active != null) {
+  await active.persistDraft();   // 仅活动会话，1 次磁盘写
 }
-// ② 再清理 _conversations（dispose 各 store）
+// 不遍历其余会话（已随其页面 dispose 落盘）
 ```
 
-> **`_evictConversations`（`server_store.dart:435`）驱逐前无需 flush**：被驱逐者通常已是用户**离开过的**会话（其页面 `dispose()` 已 persist），且**活动会话**被 `sid == _activeSessionId` 跳过（`:441`），不会在用户正输入时被驱逐。故驱逐即 `dispose()` 安全。
+> **对接真实 `pause()`（CD-29）**：`pause()` 现为「同步函数返回 Future」、含 `_pauseOperation` 去重（去重命中者直接 `return activePause`）。persistDraft 须**织入返回的 operation Future 链**（`_stopSse()` 之前或 `.then`），使 `await pause()` 拿到落盘保证；并置于 `_pauseOperation` 去重 guard **之后**——首个 pause 调用负责 flush，去重命中者不重复写。`persistDraft` 幂等、与 `_stopSse` 无 key 依赖（先后无功能风险），故位置仅影响「是否被 await」，不涉正确性。
+
+**② `_teardown()` / `disconnect()`（进程将销毁）— 全量并行，且受 `flushCache` 门控（CD-24）。** `_teardown`（`server_store.dart:1443`）会 dispose 所有会话，须在 dispose **之前** flush（CD-3 顺序：实现卫生——`_saveCache` 虽不检查 `_disposed`、dispose 后写仍有效、非「被吞」，见 CD-20，但按「先 persist 再 dispose」以不依赖正在拆除的 store），并用 `Future.wait` 并行缩短窗口。**关键（CD-24）**：`connect()` 切 profile 走 `_teardown(flushCache: false)`（`server_store.dart:549`，`_stopSse` 在 `:1589` 已按 `flushCache` 门控、警惕跨 profile leak）。草稿 flush 必须与之一致门控——**`flushCache` 为假时不遍历**，否则会把旧 profile 的 `conv_<sessionId>` 键 flush（该键**无 profile 前缀**，`conversation_store.dart:713` `conv_$sessionId`，故 D6「全局唯一」假设 load-bearing；假设不成立则污染新 profile 草稿）。
+
+```dart
+Future<void> _teardown({bool flushCache = true}) async {
+  await _stopSse(flushCache: flushCache);
+  if (flushCache) {                                  // CD-24：与 _stopSse 门控对齐
+    await Future.wait(                               // CD-25：并行，非串行
+      _conversations.values.map((c) => c.persistDraft()),
+    );
+  }
+  for (final c in _conversations.values) {
+    c.dispose();                                     // 先 persist 再 dispose（CD-3 卫生）
+  }
+  ...
+}
+```
+
+> **`_evictConversations`（`server_store.dart:474`）驱逐前无需 flush**：被驱逐者通常已是用户**离开过的**会话（其页面 `dispose()` 已 persist），且**活动会话**被 `sid == _activeSessionId` 跳过（`:480` `continue`），不会在用户正输入时被驱逐。故驱逐即 `dispose()` 安全。
 >
-> **CD-18（可选优化）**：非活动会话的 `_draftText` 自其页面 `dispose` 后未再变更、与磁盘一致，上述「全部串行」多为冗余写。可收敛为仅 flush 活动会话（`_activeSessionId`，唯一可能有未落盘输入者），或 `Future.wait(_conversations.values.map((c) => c.persistDraft()))` 并行以缩短后台窗口。当前「全部串行」安全，仅效率问题。
+> **CD-18（已升为默认，见 CD-25）**：原「全部串行」改为「pause 仅活动会话 / teardown `Future.wait` 并行」，不再是可选优化——pause 串行 ×N 拖长生命周期 await，应避免。
 
 ## 6. 关键设计决策
 
@@ -276,7 +298,7 @@ for (final c in _conversations.values) {
 
 **D3 — `onChanged` 只写内存，磁盘写仅在「离开 / 发送 / 后台 pause」低频时机。** `ConversationStore._saveCache()` 当前是**无节流的直接 unawaited 写**（区别于 `ServerStore._scheduleCacheSave` 的 2s 节流）。若在每次 `onChanged` 触发它，等于每个按键一次磁盘写。因此：高频 `onChanged` → `setDraft()` 仅改内存；落盘只在 `dispose()` / `_send()` / `pause()` 这类单次、低频时机。需求触发点本就是「离开页暂存」，与该策略天然吻合。
 
-**D4 — 主场景（离开↔重进）靠内存层即可，磁盘层是增强。** 不为「App 被强杀于前台输入中途」这种边角做额外复杂度；`pause()` flush 已覆盖「切后台被杀」（见 §5.4）。**CD-4**：页面 `dispose()` 的 `persistDraft()` 是 unawaited 异步写，离开即落盘为**尽力而为**——硬杀（进程直接退出）靠 `pause()` 兜底；如需更激进的中途落盘，可后续给草稿单独加 1s 节流定时器（独立于消息 blob 的直接写）。
+**D4 — 主场景（离开↔重进）靠内存层即可，磁盘层是增强。** 不为「App 被强杀于前台输入中途」这种边角做额外复杂度；`pause()` flush 已覆盖「切后台被杀」（见 §5.4）。**CD-4**：页面 `dispose()` 的 `persistDraft()` 是 unawaited 异步写，离开即落盘为**尽力而为**——硬杀（进程直接退出）靠 `pause()` 兜底。**CD-26**：无需「给草稿单独加 1s 节流定时器」——draft 并入 `_saveCache` blob 后，每条消息完成 / reconcile 都顺带持久化草稿（「搭便车」，见 §3），在线会话回复流即周期性落盘，丢窗已很小；额外节流属冗余。
 
 **D5 — 用 `conversationForRead` 取 store 做 dispose 写。** 避免离开时把当前会话重新插到 LRU 头部（`conversationFor` 会 remove/insert，见 `server_store.dart:458-459`）。
 
@@ -300,6 +322,10 @@ for (final c in _conversations.values) {
 | 12 | 草稿异步读回晚于首帧 build | 监听 `draftLoaded` 后 setState 回填；用户先输入则不覆盖 | reactive + CD-1 |
 | 13 | preheat 路径（消息空、draft 非空）先恢复输入 | 输入框有字、消息列表仍 loading 的中间态，无碍（CD-7） | 内存① |
 | 14 | 极早期输入与 `loadDraftOnly` 竞态（理论） | `_draftText` 字段被磁盘旧值瞬时覆盖，但 `_ctl.text` 不受影响、离开时 `setDraft(_ctl.text)` 自愈（CD-11） | 自愈 |
+| 15 | send 清空草稿时一条更早的 `_saveCache`（已快照旧 draft）的 `setString` 后完成 | 旧草稿短暂「复活」，靠后续消息 `_saveCache` 自愈；进程恰在此窗口被杀则重启恢复错误值（best-effort，与既有消息缓存竞态同源，CD-23） | best-effort |
+| 16 | 恢复一条 `/help` 草稿 vs 主动从面板选了 `/help` | 恢复态：cmdMode 重算（`!shell && startsWith('/') && !contains(' ')`）→ 开 `_CommandHints` + `_loadCommands`（CD-17/22）；选命令态：`_pickCommand` 置 `'$cmd '`（含空格）→ `!contains(' ')` 为假 → 关面板（CD-21）。两态各自自洽 | CD-27 |
+| 17 | 后台高频会话经 LRU 反复「创建→读 draft→驱逐→再 SSE→重建」 | 每次重建重读同一 blob，读盘次数高于文档暗示；无害（`_draftLoaded` 守卫、载荷小、`unawaited`），记录不处理（CD-28，合 CD-14/19） | 冗余读 |
+| 18 | 会话页仍挂载时被程序化切 profile（`connect` → `_teardown(flushCache:false)`） | 切出 profile 仅存内存的草稿被丢弃（门控不 flush、随后 dispose 清空）；实际不可达（切 profile 须先导航到设置页，会话页 `dispose` 已落盘 + 搭便车 `\_saveCache`）。丢（loss）远轻于跨 profile 串（leak），是 CD-24 的正确取舍（CD-30） | best-effort |
 
 ## 8. 不做的事
 
@@ -316,7 +342,7 @@ for (final c in _conversations.values) {
 |------|------|
 | `lib/core/session/conversation_store.dart` | 加 `_draftText`/`_draftShell`/`_draftLoaded` + `setDraft()` + `persistDraft()` + 公开 `loadDraftOnly()`；`_saveCache` 写 `draft`/`draftShell`（`_loadCacheFromJson` 不改） |
 | `lib/features/conversation/conversation_screen.dart` | `initState` 挂监听 + 首次恢复（`allowSetState:false`）；`_tryRestoreDraft` 带 `allowSetState` + `_ctl.text.isEmpty` 守卫；`onChanged` 同步；`dispose()` 移除监听 + 落盘；`_send()` 清除；失败分支回填+落盘 |
-| `lib/core/session/server_store.dart` | `ensureConversation` 调 `conv.loadDraftOnly()`（CD-13 公开）；`_teardown()`/`pause()` **先**遍历 `persistDraft()` **再**清理会话（CD-3） |
+| `lib/core/session/server_store.dart` | `ensureConversation` 调 `conv.loadDraftOnly()`（CD-13 公开）；`pause()` 仅 flush 活动会话（CD-25）；`_teardown()` 受 `flushCache` 门控（CD-24）+ `Future.wait` 并行（CD-25），**先** persist **再** dispose（CD-3） |
 
 无需新依赖、无需改 `pubspec.yaml`、无需改 `main.dart` 启动流程。
 
@@ -328,6 +354,10 @@ for (final c in _conversations.values) {
   - `persistDraft()` 在 `_disposed=true` 后安全无副作用（契合 §5.4 顺序假设）。
   - 参照现有 `saveCacheForTest`（`conversation_store.dart:1084`）注入隔离的 SharedPreferences，避免污染其它测试。
   - **CD-15**：方案 A 下 `loadDraftOnly()` 公开，测试直接构造 store **不**自动读盘——验证草稿加载时**显式调用** `loadDraftOnly()`；隔离 SharedPreferences。
+  - **CD-23（best-effort 回归守护）**：注入可控 `SharedPreferences`（能左右 `setString` 时序 / 模拟后完成），构造「旧 `_saveCache` 在途 → send `setDraft('')+persistDraft` → 旧写后完成」→ 断言最终靠后续 `_saveCache` 自愈为空；仅记录该竞态存在，不要求消除中间「复活」。
+- **单元/集成（ServerStore 生命周期，CD-24/CD-25）**：
+  - **CD-24**：`_teardown(flushCache: false)`（切 profile 路径）**不**触发任何会话 `persistDraft`（断言隔离 SharedPreferences 无新写）；`flushCache: true` 触发全量。
+  - **CD-25**：`pause()` 仅对 `_activeSessionId` 会话写盘（断言非活动会话未写）；`_teardown(flushCache: true)` 并行写全部会话，且 persist 先于 dispose（顺序断言）。
 - **widget（ConversationScreen）**：
   - 进入时 store 已 `draftLoaded` 且 draft 非空 → 输入框回填、shell 模式同步。
   - 进入时 `draftLoaded=false` → 首帧输入空；`loadDraftOnly` 完成（notify）后回填。
@@ -608,3 +638,164 @@ onChanged: (t) {
 - **未发现**新的阻塞/中等缺陷；CD-11 自愈竞态、CD-21 `_pickCommand` best-effort 窗口均已评估为可忽略。
 
 结论：CD-1~CD-22 共 22 条意见全部关闭，文档实现就绪。
+
+## 七次评审意见
+
+> 评审对象：v6（六轮修复后的「实现就绪」判定）。编号续 CD-23+。本轮聚焦前六轮未系统审视的两个维度：**并发写的持久化语义** 与 **生命周期路径的边界**（connect / pause），并逐条用当前代码（2026-07-24）核对行号。🔴 阻塞 / 🟡 中 / 🟢 低。
+
+**🟡 CD-23（中）— `_saveCache` 并发 unawaited 写为 last-writer-wins；draft 并入 blob 后继承此竞态，存在草稿「复活」窗口。**
+
+`_saveCache()`（`conversation_store.dart:715`）把 draft 并入整个 blob（§5.2），于是**每次消息完成**触发的 `unawaited(_saveCache())`（`:891`）都会顺带写当前 `_draftText`。结构为 `await prefs; final j={...读 _draftText...}; await setString;`——`j` 的构造发生在 `await getInstance()`（`:717`）**之后**，且多个 unawaited 调用的 `setString`（`:746`）**完成顺序不确定**。
+
+具体场景：send 成功 → `setDraft('') + persistDraft()`（§5.3）。若此前一条消息完成触发的 `_saveCache`（读到清空前旧 `_draftText`）尚未写完，它后完成 → 旧值覆盖 → **草稿短暂「复活」**。靠后续 SSE 消息的 `_saveCache` 自愈；若 App 恰在此窗口被杀，重启后草稿错误恢复。
+
+这是**既有问题**（消息缓存本就有此竞态），但草稿是用户可见输入态，「复活」比消息丢失更显眼。文档 §3/§6 D4 把磁盘层描述为「增强、best-effort」，未提及此竞态。
+
+**建议**：§7 补一条 best-effort 场景（类似 CD-21）；或做最小硬化——把 `final j` 构造提到方法最前（`await` 之前同步快照字段），缩小「await 后字段已变」窗口（无法消除 setString 乱序，故仅缩小，非根治）。序列化/版本号对 best-effort 草稿属过度设计，不推荐。
+
+---
+
+**🟡 CD-24（中）— `connect()` → `_teardown(flushCache:false)` 路径的草稿 persist 未受门控，有跨 profile 数据风险。**
+
+`connect()`（`server_store.dart:549`）切 profile 时调 `_teardown(flushCache: false)`，且 `_stopSse` 注释（`:1582-1585`）明确警惕过「跨 profile leak」（LC3-1）。但设计 §5.4 给 `_teardown` 加的 persistDraft 遍历**未判断 `flushCache`**：
+
+```dart
+Future<void> _teardown({bool flushCache = true}) async {
+  await _stopSse(flushCache: flushCache);
+  for (final conv in _conversations.values) { await conv.persistDraft(); } // ← 未门控
+  for (final conv in _conversations.values) { conv.dispose(); }
+  ...
+}
+```
+
+切 profile 时这会把**旧 profile 的会话草稿** flush。键为 `conv_<sessionId>`，D6 假设其全局唯一——若成立，仅冗余（写无关旧键）；**若不成立**（不同服务器复用 UUID / 测试环境），污染新 profile 草稿。
+
+**建议**：persistDraft 遍历应**受 `flushCache` 门控**——`if (flushCache)` 才遍历，与 `_stopSse` 现有门控（`:1589`）对齐。§9 涉及文件表 + §5.4 补此路径。**建议实现前修**。
+
+---
+
+**🟡 CD-25（中）— `pause()` 串行 `await persistDraft() × N` 拖长生命周期 await；CD-18 的「仅活动会话/并行」应升为默认。**
+
+`pause()`（`server_store.dart:1502`）是切后台生命周期调用，调用方（VM handler）可能 await 它。设计 §5.4 在此加 `for c: await c.persistDraft()`。`persistDraft`=`_saveCache`=`getInstance + jsonEncode(整 blob) + setString`，20 个会话**串行** await 可达数十~上百毫秒，叠加于 `_stopSse` 之外。
+
+切后台时唯一可能有未落盘输入的是活动会话（`_activeSessionId`），其余会话页面早已 `dispose`（已 persist，见 §5.3 dispose）。故 `pause` 只需 flush 活动会话（1 次）；`_teardown`/`disconnect`（进程将销毁）才需全量，且也应 `Future.wait` 并行。CD-18 把「并行/仅活动会话」列为**可选优化**是误判优先级。
+
+**建议**：CD-18 升为「pause 默认仅 `_activeSessionId` / teardown `Future.wait` 并行」；§5.4 区分 pause（保活）与 teardown（销毁）两处语义（当前混述）。
+
+---
+
+**🟢 CD-26（低）— 文档低估「草稿随消息流式落盘」的实际持久化频率。**
+
+§3/§6 D4 把磁盘层定位为「增强、靠 dispose/pause 低频落盘」。但 `_saveCache` 含 draft 后，**每条消息完成**（`:891`）、reconcile 都顺带写草稿——在线会话只要有回复流，草稿即被周期性持久化，真实丢失窗口远小于措辞暗示。非缺陷，但建议 §3 点明此「搭便车」特性，避免实现者误以为须再加节流定时器（§6 D4 末「可后续加 1s 节流」其实多余）。
+
+---
+
+**🟢 CD-27（低）— `/` 命令面板在「恢复态」与「主动输入态」的开合一致性需核对。**
+
+`_pickCommand`（`conversation_screen.dart:269`）置 `_ctl.text='$cmd '` 并 `setState(_cmdMode=false)`（关面板），CD-21 记录其不触发 setDraft。而 `_tryRestoreDraft` 命中 cmdMode 时会重开 `_CommandHints`（CD-17 还 `_loadCommands`）。即「恢复态」开面板、「主动选命令态」关面板，可见性不一致。核对后大概率自洽（选过的命令含空格 → `!contains(' ')` → cmdMode=false），建议 §7 补一条确认即可。
+
+---
+
+**🟢 CD-28（低）— `loadDraftOnly()` 配合 LRU 驱逐的重复读（配合 CD-14/19）。**
+
+CD-19 记录 `ensureConversation` 被 SSE 路由（`:1176`/`:1278`）调用，为用户未打开的会话触发磁盘读。叠加 LRU 驱逐（`_evictConversations:474`）：后台会话可能 **创建→loadDraftOnly 读→驱逐 dispose→再 SSE 事件→重建→再读**。每次重建重读同一 blob。CD-14 亦提冗余读；合看后台高频会话的读盘次数高于文档暗示。记录即可，不必处理。
+
+---
+
+### 总体判断
+
+| 维度 | 评价 |
+|---|---|
+| 主路径正确性（离开↔重进 / 重启恢复 / 发送清除） | ✅ 6 轮评审充分验证 |
+| 编译可行性 / Flutter 惯例 | ✅ CD-13（跨库私有）/ CD-9/10（build-setState / addListener 反模式）已修 |
+| 并发写的持久化语义 | ⚠️ CD-23 揭示 last-writer-wins 竞态，文档未覆盖 |
+| 生命周期路径边界 | ⚠️ CD-24（connect 跨 profile）、CD-25（pause 性能）未覆盖 |
+| 测试/场景覆盖 | 🟡 偏功能正路径，建议 §10 补 CD-23/24 用例 |
+
+**结论**：建议实现前至少处理 **CD-24**（`flushCache` 门控，跨 profile 数据风险）与 **CD-25**（pause 默认仅活动会话）；**CD-23** 可记录为 best-effort 或做快照硬化；CD-26~28 为记录项。处理上述中等问题后即可进入实现。修复复审待修复后追加。
+
+### 七次修复复审
+
+> 评审对象：v7（七次评审后的修复）。逐条核对 live 设计体。CD-24/CD-25 为实现前必改项，已落地。
+
+| 编号 | 状态 | 备注 |
+|------|------|------|
+| CD-23 | ✅ 已记录（best-effort） | §5.2 记 draft 继承 `_saveCache` last-writer-wins 竞态、「复活」窗口靠后续消息自愈；评估「await 前快照字段」无法根治（仅改读序、不改写序）且触动共享消息路径 → 记为 best-effort；§7 场景 15 + §10 回归守护 |
+| CD-24 | ✅ 已修 | §5.4 `_teardown` persistDraft 遍历受 `flushCache` 门控（与 `_stopSse:1589` 对齐），切 profile 不 flush 旧键；§9 / §10 同步 |
+| CD-25 | ✅ 已修 | §5.4 区分 pause（仅 `_activeSessionId`，1 次写）/ teardown（`Future.wait` 并行）；CD-18 由「可选优化」升为默认 |
+| CD-26 | ✅ 已修 | §3 / §6 D4 点明「搭便车」持久化（每条消息完成 / reconcile 顺带写 draft），1s 节流属冗余 |
+| CD-27 | ✅ 已修 | §7 场景 16 确认恢复态（开面板）/ 选命令态（含空格 → 关面板）各自自洽 |
+| CD-28 | ✅ 已记录 | §7 场景 17 记录 LRU 驱逐重复读（合 CD-14/19），无害不处理 |
+
+**结论**：CD-23~CD-28 共 6 条全部关闭（CD-24/CD-25 必改项已落地，CD-23 记为 best-effort，CD-26~28 记录项已入 live 体）。设计文档实现就绪。
+
+## 八次评审意见
+
+> 评审对象：v7（七次修复后的 live 体）。编号续 CD-29+。本轮用当前代码（2026-07-24）逐条核对 v7 新增/改写部分（§3/§5.2/§5.4）的代码引用与对接可行性。🔴 阻塞 / 🟡 中 / 🟢 低。
+
+**🟡 CD-29（中）— §5.4 ① 的 `pause()` 片段为理想化伪码，未对接真实 `pause()` 的 `_pauseOperation` 去重与「同步返回 Future」形态。**
+
+真实 `pause()`（`server_store.dart:1502`）：
+
+```dart
+Future<void> pause() {
+  if (!connected || _profile == null) return Future.value();
+  _foreground = false;
+  for (final conv in _conversations.values) { conv.markStale(); conv.cancelLoadRetry(); }
+  final activePause = _pauseOperation;
+  if (activePause != null) return activePause;   // ← 去重：已有 pause 在途则直接返回
+  final operation = _stopSse();
+  _pauseOperation = operation;
+  return operation.whenComplete(() { ... });
+}
+```
+
+§5.4 ① 给的片段（`final active = ...; if (active != null) await active.persistDraft();`）未说明：① 该 `await` 应放在 `_pauseOperation` 去重 guard 的哪一侧；② `pause()` 当前是**同步函数返回 Future**（非 `async`），加 `await` 须使其变 `async` 或把 persistDraft 织入返回的 `operation` 链（如 `final operation = _flushActiveDraft().then((_) => _stopSse())`）；③ persistDraft 与 `_stopSse` 的先后无功能依赖（不同 key），但须保证它在返回的 Future 链内被 await（否则调用方 `await pause()` 拿不到落盘保证）。
+
+实现者照理想化片段直插会困惑。**建议**：§5.4 ① 补一句「persistDraft 须织入 `pause()` 返回的 operation Future 链（在 `_stopSse()` 之前或 `.then`），且置于 `_pauseOperation` 去重 guard 之后（首个 pause 调用负责 flush，去重命中者不重复写；persistDraft 幂等，位置无功能风险）」。
+
+---
+
+**🟢 CD-30（低）— CD-24 的 `flushCache:false` 门控顺带丢弃切出 profile 的内存草稿（理论，已自愈）。**
+
+`_cacheKey` 为 `conv_$sessionId`（`conversation_store.dart:713`），**无 profile 前缀**——D6「sessionId 全局唯一」假设是 load-bearing 的（这也是 CD-24 门控防跨 profile leak 的根因）。但 `connect()` 切 profile 时（`server_store.dart:549` `_teardown(flushCache:false)`）既不 flush 会话草稿、随后又 dispose 清空 `_conversations`，故**切出 profile 仅存于内存的草稿被丢弃**。
+
+实际不触发：切 profile 须先从会话页导航到设置页，会话页 `dispose()` 已 `persistDraft`（§5.3）落盘；叠加「搭便车」`_saveCache`（CD-26）。仅「会话页仍挂载时被程序化切 profile」这一不可达窗口丢，且丢（loss）远轻于跨 profile 串（leak），是正确取舍。建议 §7 补一条记录即可。
+
+---
+
+**🟢 CD-31（低）— §5.4（v7 重写段）代码行号未重核，多处陈旧。**
+
+v7 重写的 §5.4 沿用了早期评审的行号，与当前代码（2026-07-24）不符：
+
+| 引用 | 文档现值 | 实际 |
+|---|---|---|
+| `_teardown` | `:1391` | `:1443` |
+| `_evictConversations`（定义） | `:435` | `:474`（调用处在 `:437`） |
+| 活动会话跳过 | `:441` | `:480`（`sid == _activeSessionId` ... `continue`） |
+| 「现有 flush」 | `:1503-1531` | `:1586-1590`（在 `_stopSse` 内，`if (flushCache) await _saveCache()`） |
+
+正确的：`pause :1502`、`_stopSse` 门控 `:1589`、`connect _teardown(flushCache:false) :549`、`_saveCache :715`（j 在 `:718`、setString `:746`）、消息完成 `unawaited(_saveCache()) :891`。建议订正上述 4 处。
+
+---
+
+### 总体判断
+
+| 维度 | 评价 |
+|---|---|
+| CD-23~28 修复正确性 | ✅ best-effort / 门控 / 区分 pause·teardown / 搭便车 / 面板一致性 / 冗余读 均成立 |
+| 与真实代码对接可行性 | ⚠️ CD-29 pause() 片段需补对接说明（`_pauseOperation` 去重 + 返回链） |
+| 代码行号准确性 | 🟡 CD-31 §5.4 段 4 处陈旧（cosmetic） |
+| 残留风险 | 🟢 CD-30 切 profile 丢内存草稿（理论、自愈、正确取舍） |
+
+**结论**：无阻塞。建议实现前处理 **CD-29**（补 pause() 对接说明）；CD-30 记录、CD-31 订正行号。处理后实现就绪。
+
+### 八次修复复审
+
+| 编号 | 状态 | 备注 |
+|------|------|------|
+| CD-29 | ✅ 已修 | §5.4 ① 补「对接真实 `pause()`」注：persistDraft 织入返回的 operation Future 链、置于 `_pauseOperation` 去重 guard 之后；幂等无 key 依赖 |
+| CD-30 | ✅ 已记录 | §7 场景 18 记录切 profile 丢内存草稿（理论、自愈、loss 轻于 leak 的正确取舍）；§5.4 ② 点明 `conv_$sessionId` 无 profile 前缀、D6 假设 load-bearing |
+| CD-31 | ✅ 已修 | §5.4 行号订正：`_teardown :1443`、`_evictConversations :474`/跳过 `:480`、现有 flush `:1586-1590` |
+
+**结论**：CD-29~CD-31 共 3 条全部关闭。设计文档实现就绪。

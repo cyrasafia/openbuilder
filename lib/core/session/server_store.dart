@@ -436,6 +436,7 @@ class ServerStore extends ChangeNotifier {
     for (final q in _pendingQuestions.values) {
       if (q.sessionID == sid) conv.onQuestion(q);
     }
+    unawaited(conv.loadDraftOnly()); // CD-1/13：构造后异步读草稿（唯一草稿读路径）
     _evictConversations();
     return conv;
   }
@@ -1444,6 +1445,14 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> _teardown({bool flushCache = true}) async {
     await _stopSse(flushCache: flushCache);
+    if (flushCache) {
+      // CD-24：与 _stopSse 的 flushCache 门控对齐（切 profile 走 flushCache:false，
+      // 不 flush 旧 profile 的 conv_<sid> 键，避免跨 profile 草稿污染）。
+      // CD-25：Future.wait 并行，缩短销毁窗口。先 persist 再 dispose（CD-3 卫生）。
+      await Future.wait(
+        _conversations.values.map((c) => c.persistDraft()),
+      );
+    }
     for (final conv in _conversations.values) {
       conv.dispose();
     }
@@ -1511,11 +1520,22 @@ class ServerStore extends ChangeNotifier {
     }
     final activePause = _pauseOperation;
     if (activePause != null) return activePause;
-    final operation = _stopSse();
+    // CD-25/29：persistDraft 织入返回的 operation Future 链（去重 guard 之后），
+    // 使 `await pause()` 拿到落盘保证。仅 flush 活动会话（唯一可能有未落盘输入者）。
+    final operation = _pauseWork();
     _pauseOperation = operation;
     return operation.whenComplete(() {
       if (identical(_pauseOperation, operation)) _pauseOperation = null;
     });
+  }
+
+  Future<void> _pauseWork() async {
+    final active =
+        (_activeSessionId != null) ? _conversations[_activeSessionId] : null;
+    if (active != null) {
+      await active.persistDraft(); // CD-25：仅活动会话，1 次磁盘写
+    }
+    await _stopSse();
   }
 
   /// Called when the app returns to foreground. Decision logic:

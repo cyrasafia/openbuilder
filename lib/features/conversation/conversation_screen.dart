@@ -42,6 +42,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _cmdLoading = false;
   String? _cmdError;
   bool _didForceReload = false;
+  bool _didRestoreDraft = false;
   int _lastMsgCount = 0;
   static const _kScrollThreshold = 200.0;
 
@@ -49,15 +50,51 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    final conv = serverStore.conversationFor(widget.sessionId);
+    if (conv != null) {
+      conv.addListener(_onDraftChange);
+      _tryRestoreDraft(conv, allowSetState: false); // 首帧 build 前，仅写字段
+    }
   }
 
   @override
   void dispose() {
+    final conv = serverStore.conversationForRead(widget.sessionId);
+    if (conv != null) {
+      conv.removeListener(_onDraftChange);
+      conv.setDraft(_ctl.text, shell: _shellMode);
+      conv.persistDraft(); // unawaited，尽力而为（硬杀靠 pause flush 兜底）
+    }
     serverStore.setActiveConversation(null);
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _ctl.dispose();
     super.dispose();
+  }
+
+  /// Reactive 恢复：conv notifyListeners（含 loadDraftOnly 完成）后触发。
+  void _onDraftChange() {
+    final c = serverStore.conversationForRead(widget.sessionId);
+    if (c != null) _tryRestoreDraft(c); // 默认 allowSetState=true（已脱离 build）
+  }
+
+  /// 把 store 内存草稿恢复到输入框。`allowSetState` 控制是否可 setState：
+  /// 从 build/initState 首帧前调用传 false（仅写字段）；从 listener 调用默认 true。
+  void _tryRestoreDraft(ConversationStore c, {bool allowSetState = true}) {
+    if (_didRestoreDraft || !c.draftLoaded) return;
+    _didRestoreDraft = true;
+    if (_ctl.text.isEmpty && c.draftText.isNotEmpty) {
+      final cmdMode = !c.draftShell &&
+          c.draftText.startsWith('/') &&
+          !c.draftText.contains(' '); // CD-22：排除 shell 模式，避免误显 / 命令面板
+      _ctl.text = c.draftText;
+      _shellMode = c.draftShell;
+      _cmdMode = cmdMode;
+      if (cmdMode && !_cmdLoaded && !_cmdLoading) {
+        _loadCommands(); // CD-17：恢复 / 命令草稿时加载命令列表，避免面板空载
+      }
+      if (allowSetState && mounted) setState(() {});
+    }
   }
 
   /// Reversed ListView: visual top = maxScrollExtent. When near the top,
@@ -236,6 +273,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 busy: conv.busy,
                 onAbort: () => _abort(directory),
                 onChanged: (t) {
+                  conv.setDraft(t, shell: _shellMode); // ← 开头：覆盖所有输入路径（含 shell 早退，CD-16）
                   if (_shellMode) {
                     if (t.isEmpty) {
                       setState(() => _shellMode = false);
@@ -434,6 +472,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         );
         conv.setStatus('busy');
       }
+      conv.setDraft('', shell: false); // 发送成功 → 清除草稿（与成功路径对称）
+      conv.persistDraft();
     } catch (e) {
       final hadOptimistic = conv.messages.any((m) => m.optimistic);
       conv.removeOptimisticMessages();
@@ -447,6 +487,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
             ..clear()
             ..addAll(attachments);
         });
+        conv.setDraft(shellModeWas ? text : displayText, shell: shellModeWas);
+        conv.persistDraft(); // CD-2：失败回填草稿并落盘，与成功路径对称
         if (mounted) {
           ScaffoldMessenger.of(context)
               .showSnackBar(SnackBar(content: Text('发送失败：${friendlyError(e)}')));
