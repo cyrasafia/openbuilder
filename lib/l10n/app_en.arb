@@ -62,7 +62,7 @@
   "settingsCheck": "Check",
   "settingsNotConfigured": "Not configured",
   "settingsAddress": "Address",
-  "settingsOpencodeVersion": "version",
+  "settingsOpencodeVersion": "Version",
   "settingsConnectionFailed": "Failed",
   "refreshFailed": "Refresh failed. Please try again later.",
   "noSessions": "No sessions",
