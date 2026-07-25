@@ -99,6 +99,7 @@ class ProjectDetailScreen extends StatelessWidget {
                           sessions,
                           scopedWorktree,
                           project?.sandboxes ?? const [],
+                          alwaysShowHeaders: wsEnabled && directory == null,
                         ),
                       const SizedBox(height: 88),
                     ],
@@ -419,17 +420,21 @@ class ProjectDetailScreen extends StatelessWidget {
     return out;
   }
 
-  /// Section sessions by worktree (directory). Section headers are shown only
-  /// when the project spans more than one worktree, so single-worktree
-  /// projects keep a flat list. Ordering (main worktree first, then sandboxes,
-  /// recency within a group) comes from [groupSessionsByWorktree] so it matches
-  /// the project list tab.
+  /// Section sessions by worktree (directory). Section headers are shown when
+  /// the project spans more than one worktree, or when [alwaysShowHeaders] is
+  /// true (e.g. a workspace-enabled project viewed at the project level, so
+  /// the "主工作区" header still surfaces even with a single populated
+  /// worktree). Single-worktree projects with headers suppressed keep a flat
+  /// list. Ordering (main worktree first, then sandboxes, recency within a
+  /// group) comes from [groupSessionsByWorktree] so it matches the project
+  /// list tab.
   List<Widget> _groupedByWorktree(
     BuildContext context,
     List<SessionModel> all,
     String projectWorktree,
-    List<String> sandboxes,
-  ) {
+    List<String> sandboxes, {
+    bool alwaysShowHeaders = false,
+  }) {
     final groups = groupSessionsByWorktree(
       all,
       mainWorktree: projectWorktree,
@@ -437,10 +442,10 @@ class ProjectDetailScreen extends StatelessWidget {
         for (var i = 0; i < sandboxes.length; i++) sandboxes[i]: i,
       },
     );
-    final multi = groups.length > 1;
+    final showHeaders = groups.length > 1 || alwaysShowHeaders;
     final out = <Widget>[];
     for (final g in groups) {
-      if (multi) {
+      if (showHeaders) {
         final name = g.directory == projectWorktree
             ? '主工作区'
             : (g.directory.isEmpty
