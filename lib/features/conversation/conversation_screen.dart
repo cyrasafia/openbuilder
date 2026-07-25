@@ -331,6 +331,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       final existing = cmds.map((c) => c.name.toLowerCase()).toSet();
       var merged = [...cmds];
       for (final s in results[1]) {
+        if (s.description.trim().isEmpty) continue;
         if (existing.add(s.name.toLowerCase())) merged = [...merged, s];
       }
       for (final c in results[2]) {
