@@ -1173,6 +1173,17 @@ class _FileChip extends StatelessWidget {
         ),
       );
     }
+    // User bubble is always dark green — file name/icon must use light
+    // foreground regardless of theme, or dark text on dark green is unreadable.
+    final fg = user
+        ? const Color(0xFFD8F3E0)
+        : Theme.of(context).colorScheme.onSurface;
+    final iconColor = user
+        ? const Color(0xFFD8F3E0)
+        : Theme.of(context).colorScheme.outline;
+    final linkColor = user
+        ? const Color(0xFFD8F3E0)
+        : Theme.of(context).colorScheme.primary;
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: Row(
@@ -1181,13 +1192,13 @@ class _FileChip extends StatelessWidget {
           Icon(
             Icons.insert_drive_file,
             size: 16,
-            color: Theme.of(context).colorScheme.outline,
+            color: iconColor,
           ),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
               part.filename ?? part.fileUrl ?? l(context).attachmentFallback,
-              style: AppTheme.mono.copyWith(fontSize: 12),
+              style: AppTheme.mono.copyWith(fontSize: 12, color: fg),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -1198,7 +1209,7 @@ class _FileChip extends StatelessWidget {
               child: Icon(
                 Icons.open_in_new,
                 size: 14,
-                color: Theme.of(context).colorScheme.primary,
+                color: linkColor,
               ),
             ),
           ],
