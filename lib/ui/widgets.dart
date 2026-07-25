@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../domain/models.dart';
+import '../l10n/gen/app_localizations.dart';
 
 const _palette = <int>[
   0xFF4ADE80, 0xFF60A5FA, 0xFFF0883E, 0xFFC084FC, 0xFFF472B6,
@@ -117,6 +118,7 @@ class AgentStatusIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context)!;
     final paused = state.state == AgentRunState.paused;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final workingColor = dark
@@ -132,27 +134,27 @@ class AgentStatusIndicator extends StatelessWidget {
       AgentRunState.working => (
           workingColor,
           workingColor.withAlpha(31),
-          '运行中',
+          l.agentRunning,
           _WorkingGlyph(key: const ValueKey('working'), color: workingColor),
         ),
       AgentRunState.retrying => (
           retryColor,
           retryColor.withAlpha(31),
-          '重试中',
+          l.agentRetrying,
           const _RetryGlyph(key: ValueKey('retrying')),
         ),
       AgentRunState.idle => (
           Theme.of(context).colorScheme.outline,
           Theme.of(context).colorScheme.surfaceContainerHighest,
-          '空闲',
+          l.agentIdle,
           const Icon(Icons.circle, key: ValueKey('idle'), size: 8),
         ),
       AgentRunState.paused => (
           pausedColor,
           pausedColor.withAlpha(31),
           state.pauseReason == AgentPauseReason.permission
-              ? '需要授权'
-              : '需要选择',
+              ? l.agentNeedAuth
+              : l.agentNeedChoice,
           Icon(
             state.pauseReason == AgentPauseReason.permission
                 ? Icons.warning_amber_rounded
@@ -164,7 +166,7 @@ class AgentStatusIndicator extends StatelessWidget {
     };
     final text = state.pendingCount > 1 ? '$label · ${state.pendingCount}' : label;
     return Semantics(
-      label: 'Agent $label${state.pendingCount > 1 ? '，共 ${state.pendingCount} 项待处理' : ''}',
+      label: 'Agent $label${state.pendingCount > 1 ? l.agentPendingCount(state.pendingCount) : ''}',
       excludeSemantics: true,
       child: RepaintBoundary(
         child: AnimatedContainer(
@@ -206,13 +208,15 @@ class AgentStatusIndicator extends StatelessWidget {
 }
 
 /// Status name for [state], used as tooltip by the compact indicators below.
-String _agentStatusLabel(AgentIndicatorState state) => switch (state.state) {
-      AgentRunState.working => '运行中',
-      AgentRunState.retrying => '重试中',
-      AgentRunState.idle => '空闲',
-      AgentRunState.paused => state.pauseReason == AgentPauseReason.permission
-          ? '需要授权'
-          : '需要选择',
+String _agentStatusLabel(AgentIndicatorState state, AppLocalizations l) =>
+    switch (state.state) {
+      AgentRunState.working => l.agentRunning,
+      AgentRunState.retrying => l.agentRetrying,
+      AgentRunState.idle => l.agentIdle,
+      AgentRunState.paused =>
+        state.pauseReason == AgentPauseReason.permission
+            ? l.agentNeedAuth
+            : l.agentNeedChoice,
     };
 
 /// Foreground accent color for an agent status, mirroring the palette used by
@@ -253,7 +257,7 @@ class AgentStatusGlyph extends StatelessWidget {
       AgentRunState.idle => const Icon(Icons.circle, size: 8),
     };
     return Tooltip(
-      message: _agentStatusLabel(state),
+      message: _agentStatusLabel(state, AppLocalizations.of(context)!),
       child: SizedBox(
         width: size,
         height: size,
@@ -282,7 +286,7 @@ class AgentStatusCountChip extends StatelessWidget {
         ? Theme.of(context).colorScheme.surfaceContainerHighest
         : color.withAlpha(31);
     return Tooltip(
-      message: '$count ${_agentStatusLabel(state)}',
+      message: '$count ${_agentStatusLabel(state, AppLocalizations.of(context)!)}',
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
@@ -453,9 +457,10 @@ class SseStatusDot extends StatelessWidget {
     // Disconnected: don't show.
     if (!connected && !reconnecting) return const SizedBox.shrink();
 
+    final l = AppLocalizations.of(context)!;
     final (color, tooltip) = switch ((connected, reconnecting)) {
-      (true, _) => (const Color(0xFF3FB950), 'SSE 已连接'),
-      (false, true) => (const Color(0xFFF0883E), 'SSE 重连中'),
+      (true, _) => (const Color(0xFF3FB950), l.sseConnected),
+      (false, true) => (const Color(0xFFF0883E), l.sseReconnecting),
       (false, false) => (const Color(0xFF3FB950), ''),
     };
     return Tooltip(
@@ -491,6 +496,7 @@ class ErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -500,17 +506,17 @@ class ErrorView extends StatelessWidget {
             Icon(Icons.cloud_off,
                 size: 48, color: Theme.of(context).colorScheme.outline),
             const SizedBox(height: 12),
-            Text('连接失败',
+            Text(l.errorViewTitle,
                 style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
-            Text('请检查网络和服务器设置',
+            Text(l.errorViewHint,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontSize: 12,
                     color: Theme.of(context).colorScheme.outline)),
             if (onRetry != null) ...[
               const SizedBox(height: 16),
-              FilledButton(onPressed: onRetry, child: const Text('重试')),
+              FilledButton(onPressed: onRetry, child: Text(l.retry)),
             ],
           ],
         ),

@@ -300,7 +300,7 @@ class ServerStore extends ChangeNotifier {
     String? iconColor,
   }) async {
     final activeClient = client;
-    if (activeClient == null) throw StateError('未连接服务器');
+    if (activeClient == null) throw const KnownError(FriendlyErrorKind.notConnected);
     try {
       final updated = await activeClient.updateProject(
         projectId,
@@ -341,7 +341,7 @@ class ServerStore extends ChangeNotifier {
 
   Future<SessionModel> createSession(String directory) async {
     final activeClient = client;
-    if (activeClient == null) throw StateError('未连接服务器');
+    if (activeClient == null) throw const KnownError(FriendlyErrorKind.notConnected);
     try {
       final session = await activeClient.createSession(directory);
       _upsertSession(session);

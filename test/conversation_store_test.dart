@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/attachments/attachment_pipeline.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
+import 'package:open_builder/core/net/net_error.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
@@ -296,7 +297,7 @@ void main() {
         conv.replyQuestion(q, const [
           ['a']
         ]),
-        throwsA(isA<StateError>()),
+        throwsA(isA<KnownError>()),
       );
       // 抛错前不移除卡片：用户可重试。
       expect(conv.questions.length, 1);
@@ -305,7 +306,7 @@ void main() {
     test('rejectQuestion throws when directory empty and keeps the card', () async {
       final conv = ConversationStore('s1', _fakeClient());
       conv.onQuestion(q);
-      await expectLater(conv.rejectQuestion(q), throwsA(isA<StateError>()));
+      await expectLater(conv.rejectQuestion(q), throwsA(isA<KnownError>()));
       expect(conv.questions.length, 1);
     });
 

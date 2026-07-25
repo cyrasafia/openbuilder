@@ -9,6 +9,7 @@ import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
+import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'emoji_icons.dart';
@@ -196,7 +197,7 @@ class ProjectDetailScreen extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('创建失败：${friendlyError(e)}')));
+        ).showSnackBar(SnackBar(content: Text('创建失败：${friendlyMessage(l(context), e)}')));
       }
     }
   }
@@ -307,7 +308,7 @@ class ProjectDetailScreen extends StatelessWidget {
       if (context.mounted) Navigator.of(context).pop();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('创建失败：${friendlyError(e)}')),
+          SnackBar(content: Text('创建失败：${friendlyMessage(l(context), e)}')),
         );
       }
     }
@@ -367,7 +368,7 @@ class ProjectDetailScreen extends StatelessWidget {
                             ScaffoldMessenger.of(
                               context,
                             ).showSnackBar(
-                              SnackBar(content: Text('删除失败：${friendlyError(e)}')),
+                              SnackBar(content: Text('删除失败：${friendlyMessage(l(context), e)}')),
                             );
                           }
                         }
@@ -914,7 +915,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败：${friendlyError(e)}')),
+          SnackBar(content: Text('保存失败：${friendlyMessage(l(context), e)}')),
         );
       }
     } finally {

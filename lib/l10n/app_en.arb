@@ -1,5 +1,26 @@
 {
   "@@locale": "en",
   "settingsLanguage": "Language",
-  "systemLanguage": "System"
+  "systemLanguage": "System",
+  "errorAuthFailed": "Authentication failed. Check your server settings.",
+  "errorNotFound": "Resource not found",
+  "errorServerError": "Server error. Please try again later.",
+  "errorTimeout": "Request timed out. Check your network.",
+  "errorConnect": "Unable to connect to the server",
+  "errorCancelled": "Request cancelled",
+  "errorBadCert": "Certificate error",
+  "errorSessionNotReady": "Session is still loading. Please try again shortly.",
+  "errorNotConnected": "Not connected to server",
+  "errorGeneric": "Operation failed. Please try again later.",
+  "agentRunning": "Running",
+  "agentRetrying": "Retrying",
+  "agentIdle": "Idle",
+  "agentNeedAuth": "Authorization needed",
+  "agentNeedChoice": "Selection needed",
+  "agentPendingCount": "{count, plural, one{, {count} item pending} other{, {count} items pending}}",
+  "sseConnected": "SSE connected",
+  "sseReconnecting": "SSE reconnecting",
+  "errorViewTitle": "Connection failed",
+  "errorViewHint": "Check your network and server settings",
+  "retry": "Retry"
 }

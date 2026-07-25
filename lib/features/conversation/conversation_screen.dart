@@ -12,6 +12,7 @@ import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
+import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -216,7 +217,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           if (!conv.loading && conv.error != null && conv.messages.isEmpty) {
-            return Center(child: Text('加载失败：${conv.error}'));
+            return Center(child: Text('加载失败：${friendlyMessage(l(context), conv.error!)}'));
           }
           // Reversed ListView pins to the newest message (bottom) on open,
           // so we enter directly at the latest part with no top→bottom flash.
@@ -565,7 +566,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         conv.persistDraft(); // CD-2：失败回填草稿并落盘，与成功路径对称
         if (mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('发送失败：${friendlyError(e)}')));
+              .showSnackBar(SnackBar(content: Text('发送失败：${friendlyMessage(l(context), e)}')));
         }
       }
     }
@@ -581,7 +582,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('终止失败：${friendlyError(e)}')));
+            .showSnackBar(SnackBar(content: Text('终止失败：${friendlyMessage(l(context), e)}')));
       }
       return false;
     }
@@ -1235,7 +1236,7 @@ class _PermissionCardState extends State<_PermissionCard> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyError(e)}')));
+            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyMessage(l(context), e)}')));
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -1382,7 +1383,7 @@ class _QuestionCardState extends State<_QuestionCard> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyError(e)}')));
+            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyMessage(l(context), e)}')));
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -1396,7 +1397,7 @@ class _QuestionCardState extends State<_QuestionCard> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('拒绝失败：${friendlyError(e)}')));
+            .showSnackBar(SnackBar(content: Text('拒绝失败：${friendlyMessage(l(context), e)}')));
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -2124,7 +2125,7 @@ class _MoreMenu extends StatelessWidget {
           } catch (e) {
             if (context.mounted) {
               ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text('归档失败：${friendlyError(e)}')));
+                  .showSnackBar(SnackBar(content: Text('归档失败：${friendlyMessage(l(context), e)}')));
             }
           }
         }
@@ -2167,7 +2168,7 @@ class _MoreMenu extends StatelessWidget {
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('修改失败：${friendlyError(e)}')));
+              .showSnackBar(SnackBar(content: Text('修改失败：${friendlyMessage(l(context), e)}')));
         }
       }
     }
@@ -2221,7 +2222,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       if (mounted) {
         setState(() => _loading = false);
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('加载选项失败：${friendlyError(e)}')));
+            .showSnackBar(SnackBar(content: Text('加载选项失败：${friendlyMessage(l(context), e)}')));
       }
     }
   }
@@ -2249,7 +2250,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       if (mounted) {
         setState(() => _optimisticAgent = null);
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('切换 Agent 失败：${friendlyError(e)}')));
+            .showSnackBar(SnackBar(content: Text('切换 Agent 失败：${friendlyMessage(l(context), e)}')));
       }
     } finally {
       if (mounted) setState(() => _switching = false);
@@ -2275,7 +2276,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('切换模型失败：${friendlyError(e)}')));
+            .showSnackBar(SnackBar(content: Text('切换模型失败：${friendlyMessage(l(context), e)}')));
       }
     } finally {
       if (mounted) setState(() => _switching = false);

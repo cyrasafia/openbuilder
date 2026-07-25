@@ -33,6 +33,7 @@ void main() {
   }, (error, stack) {
     AppLogger.I.e('Zone', 'unhandled: $error\n$stack');
     if (!_appStarted) {
+      final loc = resolveActiveLocale();
       runApp(MaterialApp(
         home: Scaffold(
           body: Center(
@@ -43,8 +44,8 @@ void main() {
                 children: [
                   const Icon(Icons.error_outline, size: 48),
                   const SizedBox(height: 16),
-                  const Text('应用启动失败',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text(loc.languageCode == 'zh' ? '应用启动失败' : 'App failed to start',
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   Text('$error',
                       textAlign: TextAlign.center,

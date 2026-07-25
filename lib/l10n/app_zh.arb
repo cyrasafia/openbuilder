@@ -1,5 +1,27 @@
 {
   "@@locale": "zh",
   "settingsLanguage": "语言",
-  "systemLanguage": "系统"
+  "systemLanguage": "系统",
+  "errorAuthFailed": "认证失败，请检查服务器配置",
+  "errorNotFound": "资源不存在",
+  "errorServerError": "服务器错误，请稍后重试",
+  "errorTimeout": "请求超时，请检查网络",
+  "errorConnect": "无法连接到服务器",
+  "errorCancelled": "请求已取消",
+  "errorBadCert": "证书错误",
+  "errorSessionNotReady": "会话信息尚未加载完成，请稍后重试",
+  "errorNotConnected": "未连接服务器",
+  "errorGeneric": "操作失败，请稍后重试",
+  "agentRunning": "运行中",
+  "agentRetrying": "重试中",
+  "agentIdle": "空闲",
+  "agentNeedAuth": "需要授权",
+  "agentNeedChoice": "需要选择",
+  "agentPendingCount": "{count, plural, other{，共 {count} 项待处理}}",
+  "@agentPendingCount": {"placeholders": {"count": {"type": "int"}}},
+  "sseConnected": "SSE 已连接",
+  "sseReconnecting": "SSE 重连中",
+  "errorViewTitle": "连接失败",
+  "errorViewHint": "请检查网络和服务器设置",
+  "retry": "重试"
 }

@@ -34,21 +34,22 @@
    template-arb-file: app_zh.arb
    output-localization-file: app_localizations.dart
    output-class: AppLocalizations
-   synthetic-package: false
    output-dir: lib/l10n/gen
    ```
-3. 新建 `lib/l10n/app_zh.arb`（模板，含一条示例 `common_cancel`）和 `lib/l10n/app_en.arb`（`common_cancel: "Cancel"`）
+
+   > 注：旧版 Flutter 需 `synthetic-package: false` 才会写到 `output-dir`；当前 SDK（^3.12.2）已废弃该选项（`flutter gen-l10n` 会警告 "no longer has any effect"），默认即写到 `output-dir`，故不写。
+3. 新建 `lib/l10n/app_zh.arb`（模板）和 `lib/l10n/app_en.arb`，含两条示例 key：`settingsLanguage`（zh "语言" / en "Language"）、`systemLanguage`（zh "系统" / en "System"）—— 直接本地化语言切换入口自身（自引用冒烟，见 item 8）
 4. 运行 `flutter gen-l10n` 确认 `lib/l10n/gen/app_localizations.dart` 生成
 5. **`.gitignore` 加 `lib/l10n/gen/`**：生成文件不提交，靠 `flutter:` 段 `generate: true` 在 `pub get`/构建时自动重新生成（与 `.gen_ref/` 思路一致）。CI 需确保 `flutter pub get` 先于 `analyze`/build 跑以触发 gen
 6. `main.dart`：`localizationsDelegates` 列表追加 `AppLocalizations.delegate`，加 `localeResolutionCallback` 调统一 `resolveActiveLocale()`（P0 item 7 已建）。**fallback 决策 = `en`**：本项目目标是补齐英文，未知系统 locale（fr/es/de/ja…）的用户应看到英文而非中文——这是有意识的产品取舍，记入 `review-i18n.md`
 7. 新建 `lib/ui/l10n_ext.dart`：`AppLocalizations l(BuildContext c) => AppLocalizations.of(c)!;` 便捷 getter；并在 `app_state.dart` 加 `Locale resolveActiveLocale()` 统一解析 helper（供 MaterialApp 的 `localeResolutionCallback` 与通知服务共用，避免两条路径漂移——见 design §3.3）
-8. 把 `settings_tab.dart` 的一处 `Text('取消')` 改成 `Text(l(context).commonCancel)` 做冒烟验证
+8. 把 `settings_tab.dart` 语言切换入口的 `Text('语言')`（标题）与 `Text('系统')`（SegmentedButton label）改成 `Text(l(context).settingsLanguage)` / `Text(l(context).systemLanguage)` 做冒烟验证（设置页无"取消"按钮，改用语言切换器自身的 label——随 locale 变化最直观，且这两个 key 在 P2 设置页改造时复用）
 
 ### 完成标准 (DoD)
-- [ ] `flutter gen-l10n` 无报错，`AppLocalizations` 类已生成
-- [ ] 切换语言（系统→中文→English），该条 `取消`/`Cancel` 文案正确变化
-- [ ] `flutter analyze --fatal-infos` 0 issue
-- [ ] `flutter test` 全绿
+- [x] `flutter gen-l10n` 无报错，`AppLocalizations` 类已生成
+- [x] 切换语言（系统→中文→English），该条 `语言`/`Language`、`系统`/`System` 文案正确变化
+- [x] `flutter analyze --fatal-infos` 0 issue
+- [x] `flutter test` 全绿
 
 ---
 
@@ -70,7 +71,7 @@
    - `friendlyErrorRaw` 增加 `if (e is KnownError) return e.kind;` 分支（P1 即生效，零字符串解析）
    - **行为变更**：现有 `friendlyError` 末尾 `if (e is StateError) return e.message`（`net_error.dart:42`）会被移除——其余非 `KnownError` 的 StateError（如 `sse_transport.dart:55` 断言）不再泄露原文，统一落到 `generic`。属预期改善，记入 `review-i18n.md`
    - **行为变更**：新增 `resolveActiveLocale()` 后，未匹配系统 locale（fr/es/de/ja…）的 fallback 由 Flutter 默认的 `zh` 改为 `en`（§5 #9）——存量非 zh/en 设备用户升级后界面会从中文切到英文，符合补齐英文目标，记入 `review-i18n.md`
-3. **`domain/models.dart`**：3 处权限标题/工具描述，改为英文 key 兜底（标题优先用后端返回值，兜底走 ARB）
+3. **`domain/models.dart` 权限标题**：~~英文 key 兜底~~ → **整体延后至 P5**。评审发现英文兜底会让中文用户看到英文（回归），而 design §3.3 要求 model 不翻译、UI 层翻译；权限标题渲染点 `_PermissionCard` 在 conversation_screen（P5）。故 P1 保持 `_permissionTitle` 中文现状（无回归），把 type→本地化标题的映射移至 P5 与权限卡一同处理（见 P5 工作项 6）
 4. **`widgets.dart`**（16 处）：
    - `AgentStatusIndicator` / `_agentStatusLabel`：状态文案 `running`/`retrying`/`idle`/`needAuth`/`needChoice` 抽 ARB
    - `_agentStatusLabel` 改签名加 `AppLocalizations` 参数（或改为接收 context）
@@ -178,7 +179,7 @@
 3. **Todo/思考过程**：`任务` / `收起思考` / `展开思考`
 4. **附件 SnackBar**：选取失败/过大/读取失败/shell 忽略附件提示/`[附件]`/无法打开链接
 5. **发送/终止 SnackBar**：发送失败/终止失败（前缀 + `friendlyError`）
-6. **权限卡片**：标题 `权限请求` / `1/$total 待处理`（plural）/ `拒绝` / `始终允许` / `允许一次` / 回复失败 SnackBar
+6. **权限卡片**：标题 `权限请求` / `1/$total 待处理`（plural）/ `拒绝` / `始终允许` / `允许一次` / 回复失败 SnackBar。**+ 权限标题本地化（从 P1 移入）**：`_PermissionCard` 渲染时按 `permission.type`（external_directory/bash/...）走 ARB 映射（`permissionAccessDir{dir}`/`permissionExternalAccess`/`permissionExecute`/`permissionRequest`），type 未知时用后端返回值兜底；models 层 `_permissionTitle` 不再承担显示文案
 7. **问题卡片**：`1/$total 待处理` / `拒绝` / `提交` / `下一步`
 8. **右上角菜单与对话框**：刷新/修改标题/归档 + 归档确认对话框 + 重命名对话框（标题 label + 取消/保存）
 9. **Agent/模型切换**：加载选项失败/切换失败 SnackBar / `默认` / 搜索框 `搜索模型 / provider` / 模型管理 tooltip / `无匹配模型`

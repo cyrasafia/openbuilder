@@ -199,7 +199,7 @@ class ConversationStore extends ChangeNotifier {
   final List<QuestionRequest> _questions = [];
   bool loading = false;
   bool loaded = false;
-  String? error;
+  Object? error;
   String status = 'idle';
   /// Retry error message surfaced from `session.status` (retry variant).
   /// Cleared on any non-retry status transition. Distinct from
@@ -522,7 +522,7 @@ class ConversationStore extends ChangeNotifier {
       unawaited(_saveCache());
     } catch (e) {
       AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
-      error = friendlyError(e);
+      error = e;
       _stale = true;
       if (_messages.isEmpty) {
         await _loadCache();
@@ -1058,7 +1058,7 @@ class ConversationStore extends ChangeNotifier {
     if (directory.isEmpty) {
       AppLogger.I.w(_tag, 'replyQuestion aborted: directory not ready qid=${q.id} sid=$sessionId');
       // 不发请求、不移除卡片；UI catch 弹 SnackBar，待 session 加载后重试。
-      throw StateError('会话信息尚未加载完成，请稍后重试');
+      throw const KnownError(FriendlyErrorKind.sessionNotReady);
     }
     AppLogger.I.i(_tag, 'replyQuestion sid=$sessionId qid=${q.id} dir=$directory answers=$answers');
     try {
@@ -1076,7 +1076,7 @@ class ConversationStore extends ChangeNotifier {
   Future<void> rejectQuestion(QuestionRequest q) async {
     if (directory.isEmpty) {
       AppLogger.I.w(_tag, 'rejectQuestion aborted: directory not ready qid=${q.id} sid=$sessionId');
-      throw StateError('会话信息尚未加载完成，请稍后重试');
+      throw const KnownError(FriendlyErrorKind.sessionNotReady);
     }
     AppLogger.I.i(_tag, 'rejectQuestion sid=$sessionId qid=${q.id} dir=$directory');
     try {

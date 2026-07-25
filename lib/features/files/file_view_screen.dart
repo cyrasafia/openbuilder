@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../app_state.dart';
 import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
+import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 
 class FileViewScreen extends StatefulWidget {
@@ -25,7 +26,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
   FileContent? _content;
   bool _hasDiff = false;
   bool _loading = true;
-  String? _error;
+  Object? _error;
 
   @override
   void initState() {
@@ -36,7 +37,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
   Future<void> _load() async {
     final c = serverStore.client;
     if (c == null) {
-      setState(() => _error = '未连接服务器');
+      setState(() => _error = const KnownError(FriendlyErrorKind.notConnected));
       return;
     }
     setState(() => _loading = true);
@@ -51,7 +52,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       }
       _error = null;
     } catch (e) {
-      _error = friendlyError(e);
+      _error = e;
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -87,7 +88,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Text('加载失败', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
-          Text(_error!, style: AppTheme.mono.copyWith(fontSize: 12)),
+          Text(friendlyMessage(l(context), _error!), style: AppTheme.mono.copyWith(fontSize: 12)),
           const SizedBox(height: 12),
           FilledButton(onPressed: _load, child: const Text('重试')),
         ]),

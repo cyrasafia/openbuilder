@@ -1,9 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/domain/models.dart';
+import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/widgets.dart';
+
+Widget _wrap(Widget child) => MaterialApp(
+      locale: const Locale('en'),
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [Locale('en'), Locale('zh')],
+      home: Scaffold(body: child),
+    );
 
 void main() {
   test('pending requests project over run status without replacing it', () {
@@ -59,46 +73,38 @@ void main() {
   testWidgets('indicator renders all visible states and pending count',
       (tester) async {
     Future<void> show(AgentIndicatorState state) async {
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: AgentStatusIndicator(state: state),
-        ),
-      ));
+      await tester.pumpWidget(_wrap(AgentStatusIndicator(state: state)));
       await tester.pump();
     }
 
     await show(const AgentIndicatorState(AgentRunState.working));
-    expect(find.text('运行中'), findsOneWidget);
+    expect(find.text('Running'), findsOneWidget);
 
     await show(const AgentIndicatorState(AgentRunState.retrying));
-    expect(find.text('重试中'), findsOneWidget);
+    expect(find.text('Retrying'), findsOneWidget);
 
     await show(const AgentIndicatorState(AgentRunState.idle));
-    expect(find.text('空闲'), findsOneWidget);
+    expect(find.text('Idle'), findsOneWidget);
 
     await show(const AgentIndicatorState(AgentRunState.paused,
         pauseReason: AgentPauseReason.permission, pendingCount: 2));
-    expect(find.text('需要授权 · 2'), findsOneWidget);
+    expect(find.text('Authorization needed · 2'), findsOneWidget);
 
     await show(const AgentIndicatorState(AgentRunState.paused,
         pauseReason: AgentPauseReason.choice, pendingCount: 1));
-    expect(find.text('需要选择'), findsOneWidget);
+    expect(find.text('Selection needed'), findsOneWidget);
   });
 
   testWidgets('indicator exposes one combined semantics label', (tester) async {
     final semantics = tester.ensureSemantics();
-    await tester.pumpWidget(const MaterialApp(
-      home: Scaffold(
-        body: AgentStatusIndicator(
-          state: AgentIndicatorState(AgentRunState.paused,
-              pauseReason: AgentPauseReason.permission, pendingCount: 2),
-        ),
-      ),
-    ));
+    await tester.pumpWidget(_wrap(const AgentStatusIndicator(
+      state: AgentIndicatorState(AgentRunState.paused,
+          pauseReason: AgentPauseReason.permission, pendingCount: 2),
+    )));
 
     expect(
       tester.getSemantics(find.byType(AgentStatusIndicator)),
-      matchesSemantics(label: 'Agent 需要授权，共 2 项待处理'),
+      matchesSemantics(label: 'Agent Authorization needed, 2 items pending'),
     );
     semantics.dispose();
   });
