@@ -45,7 +45,10 @@ class _FileListScreenState extends State<FileListScreen> {
     }
     setState(() => _loading = true);
     try {
-      _nodes = await c.listFiles(directory: widget.directory ?? '', path: _path);
+      _nodes = await c.listFiles(
+        directory: widget.directory ?? '',
+        path: _path,
+      );
       _nodes = _sortNodes(_nodes);
       _error = null;
     } catch (e) {
@@ -95,7 +98,7 @@ class _FileListScreenState extends State<FileListScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('文件', style: TextStyle(fontSize: 16)),
+        title: Text(l(context).fileTitle, style: const TextStyle(fontSize: 16)),
       ),
       body: Column(
         children: [
@@ -104,7 +107,7 @@ class _FileListScreenState extends State<FileListScreen> {
             child: TextField(
               controller: _searchCtl,
               decoration: InputDecoration(
-                hintText: '搜索文件…',
+                hintText: l(context).fileSearchHint,
                 prefixIcon: const Icon(Icons.search, size: 20),
                 isDense: true,
                 suffixIcon: _searchCtl.text.isNotEmpty
@@ -138,29 +141,34 @@ class _FileListScreenState extends State<FileListScreen> {
 
   Widget _breadcrumb() {
     final items = <Widget>[];
-    items.add(_Crumb(
-      label: '工作区',
-      onTap: _segments.isNotEmpty
-          ? () {
-              setState(() => _path = '');
-              _load();
-            }
-          : null,
-    ));
+    items.add(
+      _Crumb(
+        label: l(context).fileWorkspace,
+        onTap: _segments.isNotEmpty
+            ? () {
+                setState(() => _path = '');
+                _load();
+              }
+            : null,
+      ),
+    );
     for (var i = 0; i < _segments.length; i++) {
-      items.add(const Text(' / ',
-          style: TextStyle(color: Colors.grey, fontSize: 12)));
+      items.add(
+        const Text(' / ', style: TextStyle(color: Colors.grey, fontSize: 12)),
+      );
       final seg = _segments[i];
       final isLast = i == _segments.length - 1;
-      items.add(_Crumb(
-        label: seg,
-        onTap: isLast
-            ? null
-            : () {
-                setState(() => _path = _prefixPath(i + 1));
-                _load();
-              },
-      ));
+      items.add(
+        _Crumb(
+          label: seg,
+          onTap: isLast
+              ? null
+              : () {
+                  setState(() => _path = _prefixPath(i + 1));
+                  _load();
+                },
+        ),
+      );
     }
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
@@ -173,20 +181,34 @@ class _FileListScreenState extends State<FileListScreen> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
       return Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('加载失败', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Text(friendlyMessage(l(context), _error!), style: AppTheme.mono.copyWith(fontSize: 12)),
-          const SizedBox(height: 12),
-          FilledButton(onPressed: _query.isEmpty ? _load : () => _search(_query),
-              child: const Text('重试')),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              l(context).loadFailed,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              friendlyMessage(l(context), _error!),
+              style: AppTheme.mono.copyWith(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _query.isEmpty ? _load : () => _search(_query),
+              child: Text(l(context).retry),
+            ),
+          ],
+        ),
       );
     }
     if (_nodes.isEmpty) {
       return Center(
-          child: Text(_query.isEmpty ? '空目录' : '无匹配文件',
-              style: const TextStyle(color: Colors.grey)));
+        child: Text(
+          _query.isEmpty ? l(context).fileEmptyDir : l(context).fileNoMatch,
+          style: const TextStyle(color: Colors.grey),
+        ),
+      );
     }
     return ListView.separated(
       itemCount: _nodes.length,
@@ -194,23 +216,29 @@ class _FileListScreenState extends State<FileListScreen> {
       itemBuilder: (_, i) {
         final n = _nodes[i];
         return ListTile(
-          leading: Icon(n.isDir
-              ? Icons.folder_outlined
-              : Icons.insert_drive_file_outlined),
-          title: Text(n.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: n.ignored
-                  ? TextStyle(
-                      color: Theme.of(context).colorScheme.outline,
-                      fontSize: 14,
-                      fontStyle: FontStyle.italic)
-                  : const TextStyle(fontSize: 14)),
+          leading: Icon(
+            n.isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+          ),
+          title: Text(
+            n.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: n.ignored
+                ? TextStyle(
+                    color: Theme.of(context).colorScheme.outline,
+                    fontSize: 14,
+                    fontStyle: FontStyle.italic,
+                  )
+                : const TextStyle(fontSize: 14),
+          ),
           subtitle: n.ignored
-              ? Text('.gitignored',
+              ? Text(
+                  '.gitignored',
                   style: TextStyle(
-                      fontSize: 11,
-                      color: Theme.of(context).colorScheme.outline))
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                )
               : null,
           trailing: n.isDir ? const Icon(Icons.chevron_right) : null,
           onTap: () {
@@ -237,14 +265,16 @@ class _Crumb extends StatelessWidget {
   const _Crumb({required this.label, this.onTap});
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        child: Text(label,
-            style: TextStyle(
-              fontSize: 12.5,
-              color: onTap == null
-                  ? Theme.of(context).colorScheme.outline
-                  : Theme.of(context).colorScheme.primary,
-              fontWeight: onTap == null ? FontWeight.w600 : FontWeight.w400,
-            )),
-      );
+    onTap: onTap,
+    child: Text(
+      label,
+      style: TextStyle(
+        fontSize: 12.5,
+        color: onTap == null
+            ? Theme.of(context).colorScheme.outline
+            : Theme.of(context).colorScheme.primary,
+        fontWeight: onTap == null ? FontWeight.w600 : FontWeight.w400,
+      ),
+    ),
+  );
 }

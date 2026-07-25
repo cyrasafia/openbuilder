@@ -43,8 +43,7 @@ class ProjectModel {
 
   bool get workspacesEnabled => commands != null;
 
-  bool get workspaceCapable =>
-      id != 'global' && vcs != null && vcs!.isNotEmpty;
+  bool get workspaceCapable => id != 'global' && vcs != null && vcs!.isNotEmpty;
 
   String get displayName {
     final n = name;
@@ -203,22 +202,22 @@ class SessionModel {
       directory.isEmpty ? 'global' : directory.split('/').last;
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'projectID': projectID,
-        'directory': directory,
-        'title': title,
-        'time': {
-          'created': created,
-          'updated': updated,
-          if (archived != null) 'archived': archived,
-        },
-        if (parentID != null) 'parentID': parentID,
-        if (workspaceID != null) 'workspaceID': workspaceID,
-        'cost': cost,
-        'tokens': tokens.toJson(),
-        if (agent != null) 'agent': agent,
-        if (model != null) 'model': model!.toJson(),
-      };
+    'id': id,
+    'projectID': projectID,
+    'directory': directory,
+    'title': title,
+    'time': {
+      'created': created,
+      'updated': updated,
+      if (archived != null) 'archived': archived,
+    },
+    if (parentID != null) 'parentID': parentID,
+    if (workspaceID != null) 'workspaceID': workspaceID,
+    'cost': cost,
+    'tokens': tokens.toJson(),
+    if (agent != null) 'agent': agent,
+    if (model != null) 'model': model!.toJson(),
+  };
 }
 
 /// `idle` | `busy` | `retry`
@@ -239,9 +238,9 @@ class SessionStatusValue {
       );
 
   Map<String, dynamic> toJson() => {
-        'type': type,
-        if (message != null) 'message': message,
-      };
+    'type': type,
+    if (message != null) 'message': message,
+  };
 }
 
 enum AgentRunState { working, retrying, idle, paused }
@@ -435,17 +434,22 @@ class Permission {
     this.metadata,
   });
 
+  /// Best-effort directory path extracted from metadata/patterns for an
+  /// `external_directory` permission. Consumed by the UI to build a localized
+  /// title; null when no path is derivable.
+  String? get externalDirectoryPath =>
+      _externalDirectoryPath(metadata, patterns);
+
   factory Permission.fromJson(Map<String, dynamic> j) {
-    final perm =
-        (j['permission'] ?? j['action'] ?? j['type'] ?? '').toString();
+    final perm = (j['permission'] ?? j['action'] ?? j['type'] ?? '').toString();
     final meta = j['metadata'] is Map
         ? (j['metadata'] as Map).cast<String, dynamic>()
         : null;
     final patterns = j['patterns'] is List
         ? (j['patterns'] as List).map((e) => e.toString()).toList()
         : (j['resources'] is List
-            ? (j['resources'] as List).map((e) => e.toString()).toList()
-            : const <String>[]);
+              ? (j['resources'] as List).map((e) => e.toString()).toList()
+              : const <String>[]);
     return Permission(
       id: (j['id'] ?? '').toString(),
       type: perm,
@@ -458,7 +462,10 @@ class Permission {
 }
 
 String _permissionTitle(
-    String type, Map<String, dynamic>? meta, List<String> patterns) {
+  String type,
+  Map<String, dynamic>? meta,
+  List<String> patterns,
+) {
   switch (type) {
     case 'external_directory':
       final dir = _externalDirectoryPath(meta, patterns);
@@ -471,7 +478,9 @@ String _permissionTitle(
 }
 
 String? _externalDirectoryPath(
-    Map<String, dynamic>? meta, List<String> patterns) {
+  Map<String, dynamic>? meta,
+  List<String> patterns,
+) {
   final parentDir = meta?['parentDir']?.toString();
   if (parentDir != null && parentDir.isNotEmpty) return parentDir;
   final filepath = meta?['filepath']?.toString();

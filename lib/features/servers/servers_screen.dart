@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
+import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 
 /// List of configured servers; reached from Settings → 服务器管理.
@@ -15,8 +16,9 @@ class ServersScreen extends StatelessWidget {
       builder: (context, _) {
         final servers = connectionStore.servers;
         final activeId = connectionStore.activeId;
+        final loc = l(context);
         return Scaffold(
-          appBar: AppBar(title: const Text('服务器管理')),
+          appBar: AppBar(title: Text(loc.settingsServerManagement)),
           body: ListView.separated(
             itemCount: servers.length,
             separatorBuilder: (_, _) => const Divider(height: 1, indent: 16),
@@ -31,36 +33,42 @@ class ServersScreen extends StatelessWidget {
                 title: Row(
                   children: [
                     Flexible(
-                      child: Text(s.name,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                          overflow: TextOverflow.ellipsis),
+                      child: Text(
+                        s.name,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                     if (active)
                       Container(
                         margin: const EdgeInsets.only(left: 8),
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .primaryContainer,
+                          color: Theme.of(context).colorScheme.primaryContainer,
                           borderRadius: BorderRadius.circular(6),
                         ),
-                        child: Text('当前',
-                            style: TextStyle(
-                                fontSize: 10,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onPrimaryContainer)),
+                        child: Text(
+                          loc.serverActive,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onPrimaryContainer,
+                          ),
+                        ),
                       ),
                   ],
                 ),
-                subtitle: Text(s.hostDisplay,
-                    style: AppTheme.mono.copyWith(fontSize: 12)),
+                subtitle: Text(
+                  s.hostDisplay,
+                  style: AppTheme.mono.copyWith(fontSize: 12),
+                ),
                 trailing: IconButton(
                   icon: const Icon(Icons.edit_outlined),
-                  onPressed: () =>
-                      context.push('/servers/${s.id}/edit'),
+                  onPressed: () => context.push('/servers/${s.id}/edit'),
                 ),
                 onTap: () => connectionStore.setActive(s.id),
               );
@@ -69,7 +77,7 @@ class ServersScreen extends StatelessWidget {
           floatingActionButton: FloatingActionButton.extended(
             onPressed: () => context.push('/servers/new'),
             icon: const Icon(Icons.add),
-            label: const Text('添加'),
+            label: Text(loc.serverAdd),
           ),
         );
       },

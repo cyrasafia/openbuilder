@@ -138,10 +138,10 @@
 6. **`diff_detail_screen.dart`**（5 处）：查看完整文件/加载失败/重试/未找到 diff
 
 ### 完成标准 (DoD)
-- [ ] 添加/编辑服务器表单全英文
-- [ ] Web SSE 警告英文准确通顺
-- [ ] 文件列表/Diff 列表/Diff 详情/文件查看 中英正确
-- [ ] `flutter analyze --fatal-infos` 0 issue
+- [x] 添加/编辑服务器表单全英文
+- [x] Web SSE 警告英文准确通顺
+- [x] 文件列表/Diff 列表/Diff 详情/文件查看 中英正确
+- [x] `flutter analyze --fatal-infos` 0 issue
 
 ---
 
@@ -161,10 +161,10 @@
 2. **`model_management_screen.dart`**（7 处）：错误/加载失败/标题/重试/无可用模型/**隐藏模型提示长句**（含 plural `已隐藏 $hiddenCount / ${total} 个`）
 
 ### 完成标准 (DoD)
-- [ ] 项目详情所有对话框/菜单/SnackBar 中英正确
-- [ ] 删除工作区确认对话框插值正确
-- [ ] 会话数/模型隐藏数 plural 在英文下正确（1 session / 3 sessions）
-- [ ] `flutter analyze --fatal-infos` 0 issue
+- [x] 项目详情所有对话框/菜单/SnackBar 中英正确
+- [x] 删除工作区确认对话框插值正确
+- [x] 会话数/模型隐藏数 plural 在英文下正确（1 session / 3 sessions）
+- [x] `flutter analyze --fatal-infos` 0 issue
 
 ---
 
@@ -186,11 +186,11 @@
 10. **会话默认标题 fallback**：`?? '会话'`
 
 ### 完成标准 (DoD)
-- [ ] 会话页全部可见文案中英正确
-- [ ] 权限卡/问题卡的 `待处理` 数量 plural 正确
-- [ ] 归档/重命名对话框完整双语
-- [ ] Agent/模型切换菜单双语
-- [ ] `flutter analyze --fatal-infos` 0 issue
+- [x] 会话页全部可见文案中英正确
+- [x] 权限卡/问题卡的 `待处理` 数量 plural 正确
+- [x] 归档/重命名对话框完整双语
+- [x] Agent/模型切换菜单双语
+- [x] `flutter analyze --fatal-infos` 0 issue
 
 ---
 

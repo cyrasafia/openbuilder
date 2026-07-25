@@ -30,10 +30,11 @@ class ProjectDetailScreen extends StatelessWidget {
       listenable: serverStore,
       builder: (context, _) {
         final project = serverStore.projectOf(projectId);
+        final loc = l(context);
         if (project == null && directory == null) {
           return Scaffold(
             appBar: AppBar(),
-            body: const Center(child: Text('项目不存在')),
+            body: Center(child: Text(loc.projectNotFound)),
           );
         }
         final sessions =
@@ -74,9 +75,9 @@ class ProjectDetailScreen extends StatelessWidget {
                 onBack: () => Navigator.maybeOf(context)?.maybePop(),
                 onToggleWorkspace: wsCapable
                     ? () => serverStore.setWorkspaceEnabled(
-                          p!.id,
-                          !serverStore.workspaceEnabled(p.id),
-                        )
+                        p!.id,
+                        !serverStore.workspaceEnabled(p.id),
+                      )
                     : null,
                 onEdit: canEdit ? () => _showEditProject(context, p) : null,
               ),
@@ -87,9 +88,11 @@ class ProjectDetailScreen extends StatelessWidget {
                   child: ListView(
                     children: [
                       if (sessions.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.all(32),
-                          child: Center(child: Text('无活跃会话')),
+                        Padding(
+                          padding: const EdgeInsets.all(32),
+                          child: Center(
+                            child: Text(loc.projectNoActiveSessions),
+                          ),
                         )
                       else if (project?.id == 'global' && directory == null)
                         ..._groupedGlobal(context, sessions)
@@ -111,7 +114,7 @@ class ProjectDetailScreen extends StatelessWidget {
           floatingActionButton: showCreateSession
               ? FloatingActionButton.extended(
                   icon: const Icon(Icons.add_comment_outlined),
-                  label: const Text('新建会话'),
+                  label: Text(loc.projectNewSession),
                   onPressed: () {
                     if (isGlobal) {
                       _createSession(context, directory!);
@@ -135,8 +138,9 @@ class ProjectDetailScreen extends StatelessWidget {
       await _createSession(context, project.worktree);
       return;
     }
-    final workspaces =
-        project.sandboxes.isNotEmpty ? project.sandboxes : [project.worktree];
+    final workspaces = project.sandboxes.isNotEmpty
+        ? project.sandboxes
+        : [project.worktree];
     final directory = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -150,7 +154,7 @@ class ProjectDetailScreen extends StatelessWidget {
             shrinkWrap: true,
             children: [
               ListTile(
-                title: const Text('选择工作区'),
+                title: Text(l(ctx).projectSelectWorkspace),
                 titleTextStyle: Theme.of(
                   ctx,
                 ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
@@ -169,7 +173,7 @@ class ProjectDetailScreen extends StatelessWidget {
               ),
               ListTile(
                 leading: const Icon(Icons.create_new_folder_outlined),
-                title: const Text('新建工作区'),
+                title: Text(l(ctx).projectNewWorkspace),
                 onTap: () => Navigator.pop(ctx, ''),
               ),
             ],
@@ -196,9 +200,13 @@ class ProjectDetailScreen extends StatelessWidget {
       if (context.mounted) context.push('/session/${session.id}');
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('创建失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).createFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
     }
   }
@@ -267,9 +275,9 @@ class ProjectDetailScreen extends StatelessWidget {
     final client = serverStore.client;
     if (client == null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('未连接服务器')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l(context).errorNotConnected)));
       }
       return;
     }
@@ -287,7 +295,7 @@ class ProjectDetailScreen extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2.5),
               ),
               const SizedBox(width: 16),
-              const Text('正在创建工作区…'),
+              Text(l(ctx).projectCreatingWorkspace),
             ],
           ),
         ),
@@ -299,7 +307,9 @@ class ProjectDetailScreen extends StatelessWidget {
       unawaited(serverStore.refresh());
       if (!createSessionAfterward && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已创建工作区：${result.name}')),
+          SnackBar(
+            content: Text(l(context).projectWorktreeCreated(result.name)),
+          ),
         );
       }
       if (context.mounted && createSessionAfterward) {
@@ -309,7 +319,11 @@ class ProjectDetailScreen extends StatelessWidget {
       if (context.mounted) Navigator.of(context).pop();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('创建失败：${friendlyMessage(l(context), e)}')),
+          SnackBar(
+            content: Text(
+              l(context).createFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
         );
       }
     }
@@ -329,12 +343,12 @@ class ProjectDetailScreen extends StatelessWidget {
         builder: (ctx, setState) => PopScope(
           canPop: !deleting,
           child: AlertDialog(
-            title: const Text('删除工作区'),
-            content: Text('确定删除工作区「$wtName」？\n该工作区下的会话将一并移除。'),
+            title: Text(l(ctx).projectDeleteWorkspace),
+            content: Text(l(ctx).projectDeleteWorkspaceConfirm(wtName)),
             actions: [
               TextButton(
                 onPressed: deleting ? null : () => Navigator.pop(ctx),
-                child: const Text('取消'),
+                child: Text(l(ctx).cancel),
               ),
               FilledButton(
                 style: FilledButton.styleFrom(
@@ -357,19 +371,25 @@ class ProjectDetailScreen extends StatelessWidget {
                           if (ctx.mounted) Navigator.pop(ctx);
                           unawaited(serverStore.refresh());
                           if (ctx.mounted) {
-                            ScaffoldMessenger.of(
-                              context,
-                            ).showSnackBar(
-                              SnackBar(content: Text('已删除工作区「$wtName」')),
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  l(context).projectWorktreeDeleted(wtName),
+                                ),
+                              ),
                             );
                           }
                         } catch (e) {
                           if (ctx.mounted) {
                             setState(() => deleting = false);
-                            ScaffoldMessenger.of(
-                              context,
-                            ).showSnackBar(
-                              SnackBar(content: Text('删除失败：${friendlyMessage(l(context), e)}')),
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  l(context).deleteFailed(
+                                    friendlyMessage(l(context), e),
+                                  ),
+                                ),
+                              ),
                             );
                           }
                         }
@@ -380,7 +400,7 @@ class ProjectDetailScreen extends StatelessWidget {
                         height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('删除'),
+                    : Text(l(ctx).delete),
               ),
             ],
           ),
@@ -447,10 +467,8 @@ class ProjectDetailScreen extends StatelessWidget {
     for (final g in groups) {
       if (showHeaders) {
         final name = g.directory == projectWorktree
-            ? '主工作区'
-            : (g.directory.isEmpty
-                  ? 'global'
-                  : g.directory.split('/').last);
+            ? l(context).projectMainWorkspace
+            : (g.directory.isEmpty ? 'global' : g.directory.split('/').last);
         // Only non-main worktrees (sandboxes) can be removed.
         final canDelete =
             g.directory.isNotEmpty && g.directory != projectWorktree;
@@ -460,10 +478,10 @@ class ProjectDetailScreen extends StatelessWidget {
             count: g.sessions.length,
             onDelete: canDelete
                 ? () => _confirmRemoveWorktree(
-                      context,
-                      projectWorktree,
-                      g.directory,
-                    )
+                    context,
+                    projectWorktree,
+                    g.directory,
+                  )
                 : null,
           ),
         );
@@ -568,12 +586,12 @@ class _ProjectCard extends StatelessWidget {
                   children: [
                     _StatChip(
                       icon: Icons.chat_bubble_outline,
-                      label: '$sessionCount 个会话',
+                      label: l(context).projectSessionCount(sessionCount),
                     ),
                     if (workspaceEnabled)
-                      const _StatChip(
+                      _StatChip(
                         icon: Icons.call_split,
-                        label: '工作区已开启',
+                        label: l(context).projectWorkspaceOn,
                       ),
                   ],
                 ),
@@ -588,6 +606,7 @@ class _ProjectCard extends StatelessWidget {
   Widget _topBar(BuildContext context) {
     final hasMenu = onToggleWorkspace != null || onEdit != null;
     final scheme = Theme.of(context).colorScheme;
+    final loc = l(context);
     return Row(
       children: [
         IconButton(
@@ -616,7 +635,7 @@ class _ProjectCard extends StatelessWidget {
                       const Icon(Icons.edit_outlined, size: 20),
                       const SizedBox(width: 12),
                       Text(
-                        '编辑项目',
+                        loc.projectEdit,
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w400,
@@ -634,7 +653,9 @@ class _ProjectCard extends StatelessWidget {
                       const Icon(Icons.workspaces_outline, size: 20),
                       const SizedBox(width: 12),
                       Text(
-                        workspaceEnabled ? '关闭工作区' : '开启工作区',
+                        workspaceEnabled
+                            ? loc.projectCloseWorkspace
+                            : loc.projectOpenWorkspace,
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w400,
@@ -670,10 +691,7 @@ class _StatChip extends StatelessWidget {
         children: [
           Icon(icon, size: 13, color: scheme.outline),
           const SizedBox(width: 5),
-          Text(
-            label,
-            style: TextStyle(fontSize: 12, color: scheme.onSurface),
-          ),
+          Text(label, style: TextStyle(fontSize: 12, color: scheme.onSurface)),
         ],
       ),
     );
@@ -845,10 +863,10 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
   }
 
   ProjectIcon get _previewIcon => ProjectIcon(
-        url: widget.project.icon?.url,
-        override: _override,
-        color: widget.project.icon?.color,
-      );
+    url: widget.project.icon?.url,
+    override: _override,
+    color: widget.project.icon?.color,
+  );
 
   Future<void> _pickEmoji(String assetPath) async {
     if (_emojiBusy || _selectedEmoji == assetPath) return;
@@ -863,7 +881,9 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('选择 emoji 失败：$e')),
+        SnackBar(
+          content: Text(l(context).projectEmojiPickFailed(e.toString())),
+        ),
       );
     } finally {
       if (mounted) setState(() => _emojiBusy = false);
@@ -889,7 +909,9 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('选择图片失败：$e')),
+        SnackBar(
+          content: Text(l(context).projectImagePickFailed(e.toString())),
+        ),
       );
     }
   }
@@ -897,9 +919,9 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
   Future<void> _save() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('项目名称不能为空')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l(context).projectNameEmpty)));
       return;
     }
     setState(() => _saving = true);
@@ -920,7 +942,11 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败：${friendlyMessage(l(context), e)}')),
+          SnackBar(
+            content: Text(
+              l(context).saveFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
         );
       }
     } finally {
@@ -943,7 +969,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            '编辑项目',
+            l(context).projectEdit,
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w600,
@@ -972,9 +998,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
                       children: [
                         for (final asset in _emojiChoices)
                           GestureDetector(
-                            onTap: _emojiBusy
-                                ? null
-                                : () => _pickEmoji(asset),
+                            onTap: _emojiBusy ? null : () => _pickEmoji(asset),
                             child: Container(
                               width: 40,
                               height: 40,
@@ -1007,7 +1031,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
                         TextButton.icon(
                           onPressed: _pickImage,
                           icon: const Icon(Icons.image_outlined, size: 18),
-                          label: const Text('选择图片'),
+                          label: Text(l(context).projectPickImage),
                         ),
                         if (_override != null)
                           TextButton.icon(
@@ -1016,7 +1040,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
                               _selectedEmoji = null;
                             }),
                             icon: const Icon(Icons.restart_alt, size: 18),
-                            label: const Text('移除图片'),
+                            label: Text(l(context).projectRemoveImage),
                           ),
                       ],
                     ),
@@ -1028,10 +1052,10 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
           const SizedBox(height: 16),
           TextField(
             controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: '项目名称',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.label_outline),
+            decoration: InputDecoration(
+              labelText: l(context).projectNameLabel,
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.label_outline),
             ),
             onChanged: (_) => setState(() {}),
           ),
@@ -1043,7 +1067,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
                 onPressed: _saving
                     ? null
                     : () => Navigator.of(context).maybePop(),
-                child: const Text('取消'),
+                child: Text(l(context).cancel),
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
@@ -1055,7 +1079,7 @@ class _ProjectEditSheetState extends State<_ProjectEditSheet> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.check),
-                label: const Text('保存'),
+                label: Text(l(context).save),
               ),
             ],
           ),

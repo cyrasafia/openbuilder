@@ -21,6 +21,7 @@ enum FriendlyErrorKind {
   badCert,
   sessionNotReady,
   notConnected,
+  diffNotFound,
   generic,
 }
 
@@ -41,13 +42,12 @@ FriendlyErrorKind friendlyErrorRaw(Object e) {
       DioExceptionType.connectionTimeout ||
       DioExceptionType.receiveTimeout ||
       DioExceptionType.sendTimeout ||
-      DioExceptionType.transformTimeout =>
-        FriendlyErrorKind.timeout,
+      DioExceptionType.transformTimeout => FriendlyErrorKind.timeout,
       DioExceptionType.connectionError => FriendlyErrorKind.connect,
       DioExceptionType.cancel => FriendlyErrorKind.cancelled,
       DioExceptionType.badCertificate => FriendlyErrorKind.badCert,
-      DioExceptionType.badResponse || DioExceptionType.unknown =>
-        FriendlyErrorKind.generic,
+      DioExceptionType.badResponse ||
+      DioExceptionType.unknown => FriendlyErrorKind.generic,
     };
   }
   return FriendlyErrorKind.generic;
@@ -65,6 +65,7 @@ String friendlyMessage(AppLocalizations l, Object e) {
     FriendlyErrorKind.badCert => l.errorBadCert,
     FriendlyErrorKind.sessionNotReady => l.errorSessionNotReady,
     FriendlyErrorKind.notConnected => l.errorNotConnected,
+    FriendlyErrorKind.diffNotFound => l.errorDiffNotFound,
     FriendlyErrorKind.generic => l.errorGeneric,
   };
 }

@@ -13,6 +13,7 @@ import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
+import '../../l10n/gen/app_localizations.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -85,7 +86,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (_didRestoreDraft || !c.draftLoaded) return;
     _didRestoreDraft = true;
     if (_ctl.text.isEmpty && c.draftText.isNotEmpty) {
-      final cmdMode = !c.draftShell &&
+      final cmdMode =
+          !c.draftShell &&
           c.draftText.startsWith('/') &&
           !c.draftText.contains(' '); // CD-22：排除 shell 模式，避免误显 / 命令面板
       _ctl.text = c.draftText;
@@ -141,7 +143,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (conv == null) {
       return Scaffold(
         appBar: AppBar(),
-        body: const Center(child: Text('会话不可用（未连接服务器）')),
+        body: Center(child: Text(l(context).convUnavailable)),
       );
     }
     final directory = session?.directory ?? '';
@@ -154,23 +156,28 @@ class _ConversationScreenState extends State<ConversationScreen> {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(s?.title ?? '会话',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 16)),
+                Text(
+                  s?.title ?? l(context).convDefaultTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 16),
+                ),
                 if (s != null)
-                  Builder(builder: (context) {
-                    final project = serverStore.projectDisplayOf(s);
-                    final wt = serverStore.worktreeDisplayOf(s);
-                    return Text(
-                      wt.isEmpty ? project : '$project › $wt',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppTheme.mono.copyWith(
+                  Builder(
+                    builder: (context) {
+                      final project = serverStore.projectDisplayOf(s);
+                      final wt = serverStore.worktreeDisplayOf(s);
+                      return Text(
+                        wt.isEmpty ? project : '$project › $wt',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTheme.mono.copyWith(
                           fontSize: 11,
-                          color: Theme.of(context).colorScheme.outline),
-                    );
-                  }),
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                      );
+                    },
+                  ),
               ],
             );
           },
@@ -188,7 +195,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
-            tooltip: '文件',
+            tooltip: l(context).fileTitle,
             onPressed: () => context.push(
               '/session/${widget.sessionId}/files'
               '?directory=${Uri.encodeQueryComponent(directory)}',
@@ -217,7 +224,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           if (!conv.loading && conv.error != null && conv.messages.isEmpty) {
-            return Center(child: Text('加载失败：${friendlyMessage(l(context), conv.error!)}'));
+            return Center(
+              child: Text(
+                l(
+                  context,
+                ).loadFailedDetail(friendlyMessage(l(context), conv.error!)),
+              ),
+            );
           }
           // Reversed ListView pins to the newest message (bottom) on open,
           // so we enter directly at the latest part with no top→bottom flash.
@@ -229,7 +242,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             children: [
               const SizedBox(height: 8),
-              if (conv.isRetry && conv.retryMessage != null && conv.retryMessage!.isNotEmpty)
+              if (conv.isRetry &&
+                  conv.retryMessage != null &&
+                  conv.retryMessage!.isNotEmpty)
                 _RetryMessage(message: conv.retryMessage!)
               else if (conv.busy || conv.loading)
                 const _TypingDots(),
@@ -274,7 +289,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 busy: conv.busy,
                 onAbort: () => _abort(directory),
                 onChanged: (t) {
-                  conv.setDraft(t, shell: _shellMode); // ← 开头：覆盖所有输入路径（含 shell 早退，CD-16）
+                  conv.setDraft(
+                    t,
+                    shell: _shellMode,
+                  ); // ← 开头：覆盖所有输入路径（含 shell 早退，CD-16）
                   if (_shellMode) {
                     if (t.isEmpty) {
                       setState(() => _shellMode = false);
@@ -312,7 +330,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void _pickCommand(String cmd) {
     _ctl.text = '$cmd ';
     _ctl.selection = TextSelection.fromPosition(
-        TextPosition(offset: _ctl.text.length));
+      TextPosition(offset: _ctl.text.length),
+    );
     setState(() => _cmdMode = false);
   }
 
@@ -362,22 +381,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
       picked = await AttachmentPicker.pick(context);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('选取失败：$e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l(context).attachmentPickFailed(e.toString())),
+          ),
+        );
       }
       return;
     }
     if (picked.isEmpty) return;
     // CR-6：并行 resolve（含压缩）；逐条收集错误
-    final results = await Future.wait(picked.map((x) async {
-      try {
-        return (preview: await AttachmentPipeline.resolve(x), error: null);
-      } on AttachmentTooLargeException catch (e) {
-        return (preview: null, error: e);
-      } catch (e) {
-        return (preview: null, error: e);
-      }
-    }));
+    final results = await Future.wait(
+      picked.map((x) async {
+        try {
+          return (preview: await AttachmentPipeline.resolve(x), error: null);
+        } on AttachmentTooLargeException catch (e) {
+          return (preview: null, error: e);
+        } catch (e) {
+          return (preview: null, error: e);
+        }
+      }),
+    );
     final resolved = <AttachmentPreview>[];
     for (final r in results) {
       if (r.preview != null) {
@@ -385,14 +409,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
       } else if (r.error is AttachmentTooLargeException) {
         final e = r.error! as AttachmentTooLargeException;
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
               content: Text(
-                  '「${e.name}」过大（${(e.len / 1048576).toStringAsFixed(1)}MB），未添加')));
+                l(context).attachmentTooLarge(
+                  e.name,
+                  (e.len / 1048576).toStringAsFixed(1),
+                ),
+              ),
+            ),
+          );
         }
       } else if (r.error != null) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('读取失败：${r.error}')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(l(context).attachmentReadFailed('${r.error}')),
+            ),
+          );
         }
       }
     }
@@ -407,7 +441,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (startsShell && _attachments.isNotEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('shell 命令（!）忽略附件，请去掉 ! 后重发')));
+          SnackBar(content: Text(l(context).attachmentShellIgnore)),
+        );
       }
       return;
     }
@@ -433,10 +468,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (command.isNotEmpty) {
           conv.addOptimisticUserMessage(displayText);
           serverStore.reflectPreviewFrom(widget.sessionId);
-          await client.shell(widget.sessionId,
-              directory: directory,
-              agent: session?.agent,
-              command: command);
+          await client.shell(
+            widget.sessionId,
+            directory: directory,
+            agent: session?.agent,
+            command: command,
+          );
           conv.setStatus('busy');
         }
       } else {
@@ -445,10 +482,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (text.startsWith('/')) {
           await _loadCommands();
           final firstSpace = text.indexOf(' ');
-          final cmdToken = (firstSpace == -1
-                  ? text.substring(1)
-                  : text.substring(1, firstSpace))
-              .toLowerCase();
+          final cmdToken =
+              (firstSpace == -1
+                      ? text.substring(1)
+                      : text.substring(1, firstSpace))
+                  .toLowerCase();
           final matched = _commands.firstWhere(
             (c) => c.slash.toLowerCase() == '/$cmdToken',
             orElse: () => const CommandInfo(name: ''),
@@ -485,11 +523,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
               }
               parts.addAll(cmdParts);
               final totalLen = parts.fold<int>(
-                  0,
-                  (s, p) =>
-                      s +
-                      (p['text']?.toString().length ?? 0) +
-                      (p['url']?.toString().length ?? 0));
+                0,
+                (s, p) =>
+                    s +
+                    (p['text']?.toString().length ?? 0) +
+                    (p['url']?.toString().length ?? 0),
+              );
               await client.prompt(
                 widget.sessionId,
                 directory: directory,
@@ -501,7 +540,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
               );
             } else {
               final totalLen = cmdParts.fold<int>(
-                  0, (s, p) => s + (p['url']?.toString().length ?? 0));
+                0,
+                (s, p) => s + (p['url']?.toString().length ?? 0),
+              );
               await client.command(
                 widget.sessionId,
                 directory: directory,
@@ -534,7 +575,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
           conv.addOptimisticUserMessage(text, attachments: attachments);
           serverStore.reflectPreviewFrom(widget.sessionId);
           final totalLen = parts.fold<int>(
-              0, (s, p) => s + (p['url']?.toString().length ?? 0));
+            0,
+            (s, p) => s + (p['url']?.toString().length ?? 0),
+          );
           await client.prompt(
             widget.sessionId,
             directory: directory,
@@ -565,8 +608,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
         conv.setDraft(shellModeWas ? text : displayText, shell: shellModeWas);
         conv.persistDraft(); // CD-2：失败回填草稿并落盘，与成功路径对称
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('发送失败：${friendlyMessage(l(context), e)}')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                l(context).sendFailed(friendlyMessage(l(context), e)),
+              ),
+            ),
+          );
         }
       }
     }
@@ -581,8 +629,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
       return true;
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('终止失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).abortFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
       return false;
     }
@@ -604,9 +657,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
             constraints: const BoxConstraints(maxWidth: 320),
             child: _parts(m.parts, user: true),
           ),
-      ),
-    );
-  }
+        ),
+      );
+    }
     return Padding(
       key: ValueKey(m.info.id),
       padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
@@ -646,7 +699,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
             const SizedBox(width: 8),
             InkWell(
               onTap: onDismiss,
-              child: const Icon(Icons.close, size: 16, color: Color(0xFFF85149)),
+              child: const Icon(
+                Icons.close,
+                size: 16,
+                color: Color(0xFFF85149),
+              ),
             ),
           ],
         ],
@@ -708,8 +765,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _part(DisplayPart p, {required bool user}) {
     switch (p.type) {
       case 'text':
-        final baseColor =
-            user ? const Color(0xFFD8F3E0) : Theme.of(context).colorScheme.onSurface;
+        final baseColor = user
+            ? const Color(0xFFD8F3E0)
+            : Theme.of(context).colorScheme.onSurface;
         final isDark = Theme.of(context).brightness == Brightness.dark;
         // User bubble is always dark green — code blocks inside it must use
         // dark backgrounds regardless of theme, or light text on light bg
@@ -729,31 +787,40 @@ class _ConversationScreenState extends State<ConversationScreen> {
             data: p.text,
             selectable: true,
             softLineBreak: user,
-            styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-              p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
-              pPadding: const EdgeInsets.only(bottom: 6),
-              strong: TextStyle(fontWeight: FontWeight.w600, color: baseColor),
-              code: TextStyle(
-                fontSize: 13,
-                fontFamily: 'monospace',
-                color: codeFg,
-              ),
-              codeblockDecoration: BoxDecoration(
-                color: codeBlockBg,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: codeBlockBorder),
-              ),
-              codeblockPadding: const EdgeInsets.all(12),
-              listBullet: TextStyle(color: baseColor),
-              blockquote: TextStyle(color: baseColor, fontStyle: FontStyle.italic),
-              blockquoteDecoration: BoxDecoration(
-                border: Border(
-                  left: BorderSide(
-                    color: Theme.of(context).colorScheme.outline, width: 3),
+            styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
+                .copyWith(
+                  p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
+                  pPadding: const EdgeInsets.only(bottom: 6),
+                  strong: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: baseColor,
+                  ),
+                  code: TextStyle(
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                    color: codeFg,
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: codeBlockBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: codeBlockBorder),
+                  ),
+                  codeblockPadding: const EdgeInsets.all(12),
+                  listBullet: TextStyle(color: baseColor),
+                  blockquote: TextStyle(
+                    color: baseColor,
+                    fontStyle: FontStyle.italic,
+                  ),
+                  blockquoteDecoration: BoxDecoration(
+                    border: Border(
+                      left: BorderSide(
+                        color: Theme.of(context).colorScheme.outline,
+                        width: 3,
+                      ),
+                    ),
+                  ),
+                  blockquotePadding: const EdgeInsets.only(left: 12),
                 ),
-              ),
-              blockquotePadding: const EdgeInsets.only(left: 12),
-            ),
           ),
         );
       case 'reasoning':
@@ -773,8 +840,7 @@ class _TodoCard extends StatelessWidget {
   final List<Todo> todos;
   final bool collapsed;
   final VoidCallback? onToggle;
-  const _TodoCard(
-      {required this.todos, this.collapsed = false, this.onToggle});
+  const _TodoCard({required this.todos, this.collapsed = false, this.onToggle});
 
   @override
   Widget build(BuildContext context) {
@@ -792,28 +858,42 @@ class _TodoCard extends StatelessWidget {
         children: [
           InkWell(
             onTap: onToggle,
-            child: Row(children: [
-              const Icon(Icons.checklist, size: 16),
-              const SizedBox(width: 6),
-              const Text('任务',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              Text('$done/${todos.length}',
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.outline)),
-              if (onToggle != null) ...[
+            child: Row(
+              children: [
+                const Icon(Icons.checklist, size: 16),
                 const SizedBox(width: 6),
-                Icon(collapsed ? Icons.expand_less : Icons.expand_more,
-                    size: 18, color: Theme.of(context).colorScheme.outline),
+                Text(
+                  l(context).todoTitle,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '$done/${todos.length}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ),
+                if (onToggle != null) ...[
+                  const SizedBox(width: 6),
+                  Icon(
+                    collapsed ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ],
               ],
-            ]),
+            ),
           ),
           if (!collapsed)
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight:
-                    MediaQuery.of(context).size.height * _kFooterCardContentHeightFactor,
+                    MediaQuery.of(context).size.height *
+                    _kFooterCardContentHeightFactor,
               ),
               child: SingleChildScrollView(
                 child: Column(
@@ -828,7 +908,8 @@ class _TodoCard extends StatelessWidget {
                         minHeight: 5,
                         backgroundColor: const Color(0xFF23272E),
                         valueColor: AlwaysStoppedAnimation(
-                            Theme.of(context).colorScheme.primary),
+                          Theme.of(context).colorScheme.primary,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -846,10 +927,10 @@ class _TodoCard extends StatelessWidget {
     final icon = t.cancelled
         ? Icons.cancel
         : t.done
-            ? Icons.check_box
-            : t.active
-                ? Icons.indeterminate_check_box
-                : Icons.check_box_outline_blank;
+        ? Icons.check_box
+        : t.active
+        ? Icons.indeterminate_check_box
+        : Icons.check_box_outline_blank;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -858,12 +939,16 @@ class _TodoCard extends StatelessWidget {
           Icon(icon, size: 16),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(t.content,
-                style: TextStyle(
-                    fontSize: 12.5,
-                    decoration:
-                        t.done ? TextDecoration.lineThrough : TextDecoration.none,
-                    color: t.done ? const Color(0xFF8B949E) : null)),
+            child: Text(
+              t.content,
+              style: TextStyle(
+                fontSize: 12.5,
+                decoration: t.done
+                    ? TextDecoration.lineThrough
+                    : TextDecoration.none,
+                color: t.done ? const Color(0xFF8B949E) : null,
+              ),
+            ),
           ),
         ],
       ),
@@ -895,40 +980,41 @@ class _FooterPanelState extends State<_FooterPanel> {
     final totalPending = widget.permissions.length + widget.questions.length;
     final children = <Widget>[];
     if (widget.permissions.isNotEmpty) {
-      children.add(_PermissionCard(
-        key: ValueKey(widget.permissions.first.id),
-        permission: widget.permissions.first,
-        store: widget.store,
-        queueTotal: totalPending,
-      ));
+      children.add(
+        _PermissionCard(
+          key: ValueKey(widget.permissions.first.id),
+          permission: widget.permissions.first,
+          store: widget.store,
+          queueTotal: totalPending,
+        ),
+      );
     } else if (widget.questions.isNotEmpty) {
-      children.add(_QuestionCard(
-        key: ValueKey(widget.questions.first.id),
-        question: widget.questions.first,
-        store: widget.store,
-        queueTotal: totalPending,
-      ));
+      children.add(
+        _QuestionCard(
+          key: ValueKey(widget.questions.first.id),
+          question: widget.questions.first,
+          store: widget.store,
+          queueTotal: totalPending,
+        ),
+      );
     }
     if (widget.todos.isNotEmpty && totalPending == 0) {
-      children.add(_TodoCard(
-        todos: widget.todos,
-        collapsed: !_todoExpanded,
-        onToggle: () => setState(() => _todoExpanded = !_todoExpanded),
-      ));
+      children.add(
+        _TodoCard(
+          todos: widget.todos,
+          collapsed: !_todoExpanded,
+          onToggle: () => setState(() => _todoExpanded = !_todoExpanded),
+        ),
+      );
     }
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        border: Border(
-          top: BorderSide(color: Theme.of(context).dividerColor),
-        ),
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: children,
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: children),
       ),
     );
   }
@@ -961,20 +1047,29 @@ class _ReasoningState extends State<_Reasoning> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(children: [
-                Icon(Icons.psychology_outlined, size: 14, color: muted),
-                const SizedBox(width: 6),
-                Text(expanded ? '收起思考' : '展开思考',
-                    style: TextStyle(fontSize: 11.5, color: muted)),
-              ]),
+              Row(
+                children: [
+                  Icon(Icons.psychology_outlined, size: 14, color: muted),
+                  const SizedBox(width: 6),
+                  Text(
+                    expanded
+                        ? l(context).reasoningCollapse
+                        : l(context).reasoningExpand,
+                    style: TextStyle(fontSize: 11.5, color: muted),
+                  ),
+                ],
+              ),
               if (expanded) ...[
                 const SizedBox(height: 6),
-                Text(widget.text,
-                    style: TextStyle(
-                        fontSize: 12.5,
-                        color: muted,
-                        fontStyle: FontStyle.italic,
-                        height: 1.45)),
+                Text(
+                  widget.text,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: muted,
+                    fontStyle: FontStyle.italic,
+                    height: 1.45,
+                  ),
+                ),
               ],
             ],
           ),
@@ -998,7 +1093,8 @@ class _ToolChip extends StatelessWidget {
     };
     final summary = part.toolSummary;
     final error = part.toolError;
-    final showError = part.toolStatus == 'error' && error != null && error.isNotEmpty;
+    final showError =
+        part.toolStatus == 'error' && error != null && error.isNotEmpty;
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1021,7 +1117,9 @@ class _ToolChip extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: AppTheme.mono.copyWith(
-                      fontSize: 12, fontWeight: FontWeight.w400),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                  ),
                 ),
               ),
             ],
@@ -1065,8 +1163,12 @@ class _FileChip extends StatelessWidget {
           onTap: () => _showFullScreen(context),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: Image.memory(thumb,
-                width: 120, height: 120, fit: BoxFit.cover),
+            child: Image.memory(
+              thumb,
+              width: 120,
+              height: 120,
+              fit: BoxFit.cover,
+            ),
           ),
         ),
       );
@@ -1076,12 +1178,15 @@ class _FileChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.insert_drive_file,
-              size: 16, color: Theme.of(context).colorScheme.outline),
+          Icon(
+            Icons.insert_drive_file,
+            size: 16,
+            color: Theme.of(context).colorScheme.outline,
+          ),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
-              part.filename ?? part.fileUrl ?? '[附件]',
+              part.filename ?? part.fileUrl ?? l(context).attachmentFallback,
               style: AppTheme.mono.copyWith(fontSize: 12),
               overflow: TextOverflow.ellipsis,
             ),
@@ -1090,8 +1195,11 @@ class _FileChip extends StatelessWidget {
             const SizedBox(width: 6),
             GestureDetector(
               onTap: () => _openUrl(context),
-              child: Icon(Icons.open_in_new,
-                  size: 14, color: Theme.of(context).colorScheme.primary),
+              child: Icon(
+                Icons.open_in_new,
+                size: 14,
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
           ],
         ],
@@ -1108,13 +1216,17 @@ class _FileChip extends StatelessWidget {
     try {
       final ok = await launchUrl(uri);
       if (!ok && context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('无法打开链接')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('无法打开链接：$e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l(context).linkOpenFailedDetail(e.toString())),
+          ),
+        );
       }
     }
   }
@@ -1153,8 +1265,10 @@ class _FileChip extends StatelessWidget {
 class _AttachmentPreviewBar extends StatelessWidget {
   final List<AttachmentPreview> attachments;
   final ValueChanged<int> onRemove;
-  const _AttachmentPreviewBar(
-      {required this.attachments, required this.onRemove});
+  const _AttachmentPreviewBar({
+    required this.attachments,
+    required this.onRemove,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1173,16 +1287,20 @@ class _AttachmentPreviewBar extends StatelessWidget {
               a.isImage && a.previewThumb != null
                   ? ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: Image.memory(a.previewThumb!,
-                          width: 48, height: 48, fit: BoxFit.cover),
+                      child: Image.memory(
+                        a.previewThumb!,
+                        width: 48,
+                        height: 48,
+                        fit: BoxFit.cover,
+                      ),
                     )
                   : Container(
                       width: 48,
                       height: 48,
                       decoration: BoxDecoration(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: const Icon(Icons.insert_drive_file, size: 20),
@@ -1229,14 +1347,34 @@ class _PermissionCardState extends State<_PermissionCard> {
   bool _replying = false;
   bool _collapsed = false;
 
+  String _title(AppLocalizations loc) {
+    final p = widget.permission;
+    switch (p.type) {
+      case 'external_directory':
+        final dir = p.externalDirectoryPath;
+        return dir != null
+            ? loc.permissionAccessDir(dir)
+            : loc.permissionExternalAccess;
+      case 'bash':
+        return loc.permissionExecute;
+      default:
+        return p.type.isEmpty ? loc.permissionRequest : p.type;
+    }
+  }
+
   Future<void> _respond(String response) async {
     setState(() => _replying = true);
     try {
       await widget.store.respondPermission(widget.permission, response);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).replyFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -1245,6 +1383,7 @@ class _PermissionCardState extends State<_PermissionCard> {
 
   @override
   Widget build(BuildContext context) {
+    final loc = l(context);
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
@@ -1252,7 +1391,8 @@ class _PermissionCardState extends State<_PermissionCard> {
         color: Theme.of(context).colorScheme.primaryContainer.withAlpha(120),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-            color: Theme.of(context).colorScheme.primary.withAlpha(120)),
+          color: Theme.of(context).colorScheme.primary.withAlpha(120),
+        ),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1260,36 +1400,55 @@ class _PermissionCardState extends State<_PermissionCard> {
         children: [
           InkWell(
             onTap: () => setState(() => _collapsed = !_collapsed),
-            child: Row(children: [
-              Icon(Icons.shield_outlined,
-                  size: 16, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(width: 6),
-              const Text('权限请求',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              if (widget.queueTotal > 1)
-                Text('1/${widget.queueTotal} 待处理',
+            child: Row(
+              children: [
+                Icon(
+                  Icons.shield_outlined,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  loc.permissionRequest,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                if (widget.queueTotal > 1)
+                  Text(
+                    loc.queuePending(1, widget.queueTotal),
                     style: TextStyle(
-                        fontSize: 11.5,
-                        color: Theme.of(context).colorScheme.outline)),
-              const SizedBox(width: 6),
-              Icon(_collapsed ? Icons.expand_less : Icons.expand_more,
-                  size: 18, color: Theme.of(context).colorScheme.outline),
-            ]),
+                      fontSize: 11.5,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                  ),
+                const SizedBox(width: 6),
+                Icon(
+                  _collapsed ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+              ],
+            ),
           ),
           if (_collapsed)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(widget.permission.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTheme.mono.copyWith(fontSize: 12.5)),
+              child: Text(
+                _title(loc),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTheme.mono.copyWith(fontSize: 12.5),
+              ),
             )
           else
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight:
-                    MediaQuery.of(context).size.height * _kFooterCardContentHeightFactor,
+                    MediaQuery.of(context).size.height *
+                    _kFooterCardContentHeightFactor,
               ),
               child: SingleChildScrollView(
                 child: Column(
@@ -1297,23 +1456,30 @@ class _PermissionCardState extends State<_PermissionCard> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 8),
-                    Text(widget.permission.title,
-                        style: AppTheme.mono.copyWith(fontSize: 12.5)),
+                    Text(
+                      _title(loc),
+                      style: AppTheme.mono.copyWith(fontSize: 12.5),
+                    ),
                     const SizedBox(height: 12),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         FilledButton.tonal(
                           style: FilledButton.styleFrom(
-                              foregroundColor: Colors.red,
-                              backgroundColor: Colors.red.withAlpha(25)),
-                          onPressed: _replying ? null : () => _respond('reject'),
-                          child: const Text('拒绝'),
+                            foregroundColor: Colors.red,
+                            backgroundColor: Colors.red.withAlpha(25),
+                          ),
+                          onPressed: _replying
+                              ? null
+                              : () => _respond('reject'),
+                          child: Text(loc.reject),
                         ),
                         const SizedBox(width: 8),
                         FilledButton.tonal(
-                          onPressed: _replying ? null : () => _respond('always'),
-                          child: const Text('始终允许'),
+                          onPressed: _replying
+                              ? null
+                              : () => _respond('always'),
+                          child: Text(loc.permissionAlwaysAllow),
                         ),
                         const SizedBox(width: 8),
                         FilledButton(
@@ -1322,9 +1488,11 @@ class _PermissionCardState extends State<_PermissionCard> {
                               ? const SizedBox(
                                   width: 14,
                                   height: 14,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
-                              : const Text('允许一次'),
+                              : Text(loc.permissionAllowOnce),
                         ),
                       ],
                     ),
@@ -1382,8 +1550,13 @@ class _QuestionCardState extends State<_QuestionCard> {
       await widget.store.replyQuestion(widget.question, answers);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('回复失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).replyFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _replying = false);
@@ -1396,16 +1569,20 @@ class _QuestionCardState extends State<_QuestionCard> {
       await widget.store.rejectQuestion(widget.question);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('拒绝失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).replyFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _replying = false);
     }
   }
 
-  bool get _stepAnswered =>
-      (_selected[_step] ?? const {}).isNotEmpty;
+  bool get _stepAnswered => (_selected[_step] ?? const {}).isNotEmpty;
 
   bool get _isLastStep => _step >= widget.question.questions.length - 1;
 
@@ -1434,34 +1611,49 @@ class _QuestionCardState extends State<_QuestionCard> {
         children: [
           InkWell(
             onTap: () => setState(() => _collapsed = !_collapsed),
-            child: Row(children: [
-              Icon(Icons.help_outline, size: 16, color: scheme.tertiary),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(q.header,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            child: Row(
+              children: [
+                Icon(Icons.help_outline, size: 16, color: scheme.tertiary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    q.header,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                     maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-              ),
-              if (totalSub > 1)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8),
-                  child: Text('${_step + 1}/$totalSub',
-                      style: TextStyle(fontSize: 11.5, color: scheme.outline)),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              if (widget.queueTotal > 1)
-                Text('1/${widget.queueTotal} 待处理',
-                    style: TextStyle(fontSize: 11.5, color: scheme.outline)),
-              const SizedBox(width: 6),
-              Icon(_collapsed ? Icons.expand_less : Icons.expand_more,
-                  size: 18, color: scheme.outline),
-            ]),
+                if (totalSub > 1)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text(
+                      '${_step + 1}/$totalSub',
+                      style: TextStyle(fontSize: 11.5, color: scheme.outline),
+                    ),
+                  ),
+                if (widget.queueTotal > 1)
+                  Text(
+                    l(context).queuePending(1, widget.queueTotal),
+                    style: TextStyle(fontSize: 11.5, color: scheme.outline),
+                  ),
+                const SizedBox(width: 6),
+                Icon(
+                  _collapsed ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: scheme.outline,
+                ),
+              ],
+            ),
           ),
           if (!_collapsed)
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight:
-                    MediaQuery.of(context).size.height * _kFooterCardContentHeightFactor,
+                    MediaQuery.of(context).size.height *
+                    _kFooterCardContentHeightFactor,
               ),
               child: SingleChildScrollView(
                 child: Column(
@@ -1475,26 +1667,34 @@ class _QuestionCardState extends State<_QuestionCard> {
                         const Spacer(),
                         FilledButton.tonal(
                           style: FilledButton.styleFrom(
-                              foregroundColor: Colors.red,
-                              backgroundColor: Colors.red.withAlpha(25)),
+                            foregroundColor: Colors.red,
+                            backgroundColor: Colors.red.withAlpha(25),
+                          ),
                           onPressed: _replying ? null : _reject,
-                          child: const Text('拒绝'),
+                          child: Text(l(context).reject),
                         ),
                         const SizedBox(width: 8),
                         if (_isLastStep)
                           FilledButton(
-                            onPressed: _replying || !_stepAnswered ? null : _reply,
+                            onPressed: _replying || !_stepAnswered
+                                ? null
+                                : _reply,
                             child: _replying
                                 ? const SizedBox(
                                     width: 16,
                                     height: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 2))
-                                : const Text('提交'),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : Text(l(context).submit),
                           )
                         else
                           FilledButton(
-                            onPressed: _replying || !_stepAnswered ? null : _next,
-                            child: const Text('下一步'),
+                            onPressed: _replying || !_stepAnswered
+                                ? null
+                                : _next,
+                            child: Text(l(context).nextStep),
                           ),
                       ],
                     ),
@@ -1514,7 +1714,13 @@ class _QuestionCardState extends State<_QuestionCard> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 6),
-        Text(q.question, style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface)),
+        Text(
+          q.question,
+          style: TextStyle(
+            fontSize: 13,
+            color: Theme.of(context).colorScheme.onSurface,
+          ),
+        ),
         const SizedBox(height: 8),
         for (final opt in q.options)
           InkWell(
@@ -1539,8 +1745,12 @@ class _QuestionCardState extends State<_QuestionCard> {
                 children: [
                   Icon(
                     sel.contains(opt.label)
-                        ? (q.multiple ? Icons.check_box : Icons.radio_button_checked)
-                        : (q.multiple ? Icons.check_box_outline_blank : Icons.radio_button_unchecked),
+                        ? (q.multiple
+                              ? Icons.check_box
+                              : Icons.radio_button_checked)
+                        : (q.multiple
+                              ? Icons.check_box_outline_blank
+                              : Icons.radio_button_unchecked),
                     size: 18,
                     color: Theme.of(context).colorScheme.tertiary,
                   ),
@@ -1549,15 +1759,23 @@ class _QuestionCardState extends State<_QuestionCard> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(opt.label,
-                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w400)),
+                        Text(
+                          opt.label,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
                         if (opt.description.isNotEmpty)
-                          Text(opt.description,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color: Theme.of(context).colorScheme.outline)),
+                          Text(
+                            opt.description,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(context).colorScheme.outline,
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -1615,7 +1833,7 @@ class _RetryMessage extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                '重试中：$message',
+                l(context).retryingMessage(message),
                 style: const TextStyle(
                   fontSize: 14,
                   height: 1.45,
@@ -1661,11 +1879,7 @@ class _SpinningRefreshState extends State<_SpinningRefresh>
   Widget build(BuildContext context) {
     return RotationTransition(
       turns: _c,
-      child: const Icon(
-        Icons.refresh,
-        size: 16,
-        color: Color(0xFFFB923C),
-      ),
+      child: const Icon(Icons.refresh, size: 16, color: Color(0xFFFB923C)),
     );
   }
 }
@@ -1687,14 +1901,11 @@ class _LoadingEarlierRow extends StatelessWidget {
             SizedBox(
               width: 14,
               height: 14,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: color,
-              ),
+              child: CircularProgressIndicator(strokeWidth: 2, color: color),
             ),
             const SizedBox(width: 8),
             Text(
-              '加载中',
+              l(context).loadingMore,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w400,
@@ -1724,7 +1935,7 @@ class _LoadEarlierErrorRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 12),
         child: Center(
           child: Text(
-            '加载失败，点按或上滑重试',
+            l(context).loadEarlierFailedHint,
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w400,
@@ -1776,7 +1987,9 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
           width: 8,
           height: 8,
           decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primary.withAlpha((255 * a).round()),
+            color: Theme.of(
+              context,
+            ).colorScheme.primary.withAlpha((255 * a).round()),
             shape: BoxShape.circle,
           ),
         );
@@ -1822,13 +2035,13 @@ class _BottomBar extends StatelessWidget {
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         border: Border(
-            top: BorderSide(
-                color: Theme.of(context).dividerTheme.color ??
-                    const Color(0xFF33373E))),
+          top: BorderSide(
+            color:
+                Theme.of(context).dividerTheme.color ?? const Color(0xFF33373E),
+          ),
+        ),
       ),
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).padding.bottom,
-      ),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).padding.bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1848,10 +2061,7 @@ class _BottomBar extends StatelessWidget {
             onExitShellMode: onExitShellMode,
             onPickAttachments: onPickAttachments,
           ),
-          _AgentModelBar(
-            sessionId: sessionId,
-            directory: directory,
-          ),
+          _AgentModelBar(sessionId: sessionId, directory: directory),
         ],
       ),
     );
@@ -1911,7 +2121,8 @@ class _ComposeBarState extends State<_ComposeBar> {
 
   @override
   Widget build(BuildContext context) {
-    final showStop = widget.busy &&
+    final showStop =
+        widget.busy &&
         widget.ctl.text.trim().isEmpty &&
         widget.attachments.isEmpty;
     return Padding(
@@ -1936,25 +2147,35 @@ class _ComposeBarState extends State<_ComposeBar> {
                 minLines: 1,
                 maxLines: 4,
                 decoration: InputDecoration(
-                  hintText: widget.shellMode ? 'shell 命令…' : '/ 命令　! shell　发指令…',
+                  hintText: widget.shellMode
+                      ? l(context).composeShellHint
+                      : l(context).composeHint,
                   isDense: true,
                   prefixIcon: IconButton(
-                    icon: Icon(widget.shellMode ? Icons.priority_high : Icons.add),
-                    tooltip: widget.shellMode ? 'shell 模式' : '附件',
+                    icon: Icon(
+                      widget.shellMode ? Icons.priority_high : Icons.add,
+                    ),
+                    tooltip: widget.shellMode
+                        ? l(context).composeShellMode
+                        : l(context).composeAttachment,
                     onPressed: widget.shellMode
                         ? widget.onExitShellMode
                         : widget.onPickAttachments,
                   ),
-                  prefixIconColor:
-                      Theme.of(context).colorScheme.onSurfaceVariant,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  prefixIconColor: Theme.of(
+                    context,
+                  ).colorScheme.onSurfaceVariant,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(20),
                     borderSide: BorderSide.none,
                   ),
-                  fillColor:
-                      Theme.of(context).colorScheme.surfaceContainerHighest,
+                  fillColor: Theme.of(
+                    context,
+                  ).colorScheme.surfaceContainerHighest,
                   filled: true,
                 ),
               ),
@@ -1974,7 +2195,7 @@ class _ComposeBarState extends State<_ComposeBar> {
                           ),
                         )
                       : const Icon(Icons.stop_rounded),
-                  tooltip: '停止推理',
+                  tooltip: l(context).composeStop,
                   style: IconButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.error,
                   ),
@@ -1982,7 +2203,7 @@ class _ComposeBarState extends State<_ComposeBar> {
               : IconButton.filled(
                   onPressed: widget.onSend,
                   icon: const Icon(Icons.send),
-                  tooltip: '发送',
+                  tooltip: l(context).composeSend,
                 ),
         ],
       ),
@@ -2014,14 +2235,17 @@ class _CommandHints extends StatelessWidget {
       if (loading) {
         return _shell(
           context,
-          const ListTile(
+          ListTile(
             dense: true,
-            leading: SizedBox(
+            leading: const SizedBox(
               width: 18,
               height: 18,
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
-            title: Text('加载可用命令…', style: TextStyle(fontSize: 13)),
+            title: Text(
+              l(context).composeLoadingCommands,
+              style: const TextStyle(fontSize: 13),
+            ),
           ),
         );
       }
@@ -2032,39 +2256,43 @@ class _CommandHints extends StatelessWidget {
       ListView(
         shrinkWrap: true,
         children: matches
-            .map((c) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.terminal, size: 18),
-                  title: Text(c.slash,
-                      style: AppTheme.mono.copyWith(fontSize: 13)),
-                  subtitle: c.description.isNotEmpty
-                      ? Text(
-                          c.description,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Theme.of(context).colorScheme.outline,
-                          ),
-                        )
-                      : null,
-                  onTap: () => onPick(c.slash),
-                ))
+            .map(
+              (c) => ListTile(
+                dense: true,
+                leading: const Icon(Icons.terminal, size: 18),
+                title: Text(
+                  c.slash,
+                  style: AppTheme.mono.copyWith(fontSize: 13),
+                ),
+                subtitle: c.description.isNotEmpty
+                    ? Text(
+                        c.description,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                      )
+                    : null,
+                onTap: () => onPick(c.slash),
+              ),
+            )
             .toList(),
       ),
     );
   }
 
   Widget _shell(BuildContext context, Widget child) => Container(
-        constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.3),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          border:
-              Border(top: BorderSide(color: Theme.of(context).dividerColor)),
-        ),
-        child: child,
-      );
+    constraints: BoxConstraints(
+      maxHeight: MediaQuery.of(context).size.height * 0.3,
+    ),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surface,
+      border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+    ),
+    child: child,
+  );
 }
 
 class _MoreMenu extends StatelessWidget {
@@ -2079,14 +2307,15 @@ class _MoreMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final loc = l(context);
     return PopupMenuButton<String>(
       icon: const Icon(Icons.more_vert),
-      tooltip: '更多',
+      tooltip: loc.moreMenu,
       onSelected: (v) => _onSelected(context, v),
-      itemBuilder: (_) => const [
-        PopupMenuItem(value: 'refresh', child: Text('刷新')),
-        PopupMenuItem(value: 'rename', child: Text('修改标题')),
-        PopupMenuItem(value: 'archive', child: Text('归档')),
+      itemBuilder: (_) => [
+        PopupMenuItem(value: 'refresh', child: Text(loc.convRefresh)),
+        PopupMenuItem(value: 'rename', child: Text(loc.convRename)),
+        PopupMenuItem(value: 'archive', child: Text(loc.convArchive)),
       ],
     );
   }
@@ -2103,29 +2332,38 @@ class _MoreMenu extends StatelessWidget {
         if (client == null) return;
         final ok = await showDialog<bool>(
           context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('归档会话'),
-            content: const Text('归档后会话从列表隐藏，可稍后恢复。'),
+          builder: (ctx) => AlertDialog(
+            title: Text(l(ctx).convArchiveTitle),
+            content: Text(l(ctx).convArchiveConfirm),
             actions: [
               TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('取消')),
+                onPressed: () => Navigator.pop(context, false),
+                child: Text(l(ctx).cancel),
+              ),
               FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('归档')),
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(l(ctx).convArchive),
+              ),
             ],
           ),
         );
         if (ok == true) {
           try {
-            await client.archive(sessionId,
-                directory: directory,
-                archived: DateTime.now().millisecondsSinceEpoch);
+            await client.archive(
+              sessionId,
+              directory: directory,
+              archived: DateTime.now().millisecondsSinceEpoch,
+            );
             if (context.mounted) context.pop();
           } catch (e) {
             if (context.mounted) {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text('归档失败：${friendlyMessage(l(context), e)}')));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    l(context).archiveFailed(friendlyMessage(l(context), e)),
+                  ),
+                ),
+              );
             }
           }
         }
@@ -2135,27 +2373,28 @@ class _MoreMenu extends StatelessWidget {
   Future<void> _showRenameDialog(BuildContext context) async {
     final client = serverStore.client;
     if (client == null) return;
-    final ctl =
-        TextEditingController(text: session?.title ?? '');
+    final ctl = TextEditingController(text: session?.title ?? '');
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('修改标题'),
+        title: Text(l(ctx).convRename),
         content: TextField(
           controller: ctl,
           autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '标题',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            labelText: l(ctx).convTitleLabel,
+            border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l(ctx).cancel),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('保存')),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l(ctx).save),
+          ),
         ],
       ),
     );
@@ -2167,8 +2406,13 @@ class _MoreMenu extends StatelessWidget {
         unawaited(serverStore.refresh());
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('修改失败：${friendlyMessage(l(context), e)}')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                l(context).renameFailed(friendlyMessage(l(context), e)),
+              ),
+            ),
+          );
         }
       }
     }
@@ -2180,10 +2424,7 @@ class _AgentModelBar extends StatefulWidget {
   final String sessionId;
   final String directory;
 
-  const _AgentModelBar({
-    required this.sessionId,
-    required this.directory,
-  });
+  const _AgentModelBar({required this.sessionId, required this.directory});
 
   @override
   State<_AgentModelBar> createState() => _AgentModelBarState();
@@ -2221,8 +2462,13 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     } catch (e) {
       if (mounted) {
         setState(() => _loading = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('加载选项失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).optionsLoadFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
     }
   }
@@ -2242,15 +2488,20 @@ class _AgentModelBarState extends State<_AgentModelBar> {
           setState(() => _optimisticAgent = null);
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('已切换，刷新会话失败，将自动重试')),
+            SnackBar(content: Text(l(context).switchedRefreshFailed)),
           );
         }
       }
     } catch (e) {
       if (mounted) {
         setState(() => _optimisticAgent = null);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('切换 Agent 失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).switchAgentFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _switching = false);
@@ -2269,14 +2520,18 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       );
       await client.switchModel(widget.sessionId, ref);
       unawaited(serverStore.refresh());
-      unawaited(defaultAgentModelStore.saveDefaultModel(
-        connectionStore.activeId,
-        ref,
-      ));
+      unawaited(
+        defaultAgentModelStore.saveDefaultModel(connectionStore.activeId, ref),
+      );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('切换模型失败：${friendlyMessage(l(context), e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l(context).switchModelFailed(friendlyMessage(l(context), e)),
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _switching = false);
@@ -2291,23 +2546,32 @@ class _AgentModelBarState extends State<_AgentModelBar> {
         child: ListView(
           shrinkWrap: true,
           children: _agents
-              .map((a) => ListTile(
-                    leading: Icon(
-                      a.mode == 'primary' ? Icons.person : Icons.subdirectory_arrow_right,
-                      size: 20,
-                    ),
-                    title: Text(a.name),
-                    subtitle: a.description != null && a.description!.isNotEmpty
-                        ? Text(a.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
-                        : null,
-                    trailing: serverStore.sessionById(widget.sessionId)?.agent == a.name
-                        ? const Icon(Icons.check, size: 18)
-                        : null,
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _switchAgent(a.name);
-                    },
-                  ))
+              .map(
+                (a) => ListTile(
+                  leading: Icon(
+                    a.mode == 'primary'
+                        ? Icons.person
+                        : Icons.subdirectory_arrow_right,
+                    size: 20,
+                  ),
+                  title: Text(a.name),
+                  subtitle: a.description != null && a.description!.isNotEmpty
+                      ? Text(
+                          a.description!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        )
+                      : null,
+                  trailing:
+                      serverStore.sessionById(widget.sessionId)?.agent == a.name
+                      ? const Icon(Icons.check, size: 18)
+                      : null,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _switchAgent(a.name);
+                  },
+                ),
+              )
               .toList(),
         ),
       ),
@@ -2348,7 +2612,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
           children: [
             ListTile(
               leading: const Icon(Icons.do_not_disturb, size: 20),
-              title: const Text('默认'),
+              title: Text(l(ctx).defaultLabel),
               trailing: session?.model?.variant == null
                   ? const Icon(Icons.check, size: 18)
                   : null,
@@ -2357,17 +2621,19 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                 _switchModel(model);
               },
             ),
-            ...variants.map((v) => ListTile(
-                  leading: const Icon(Icons.tune, size: 20),
-                  title: Text(v.id),
-                  trailing: session?.model?.variant == v.id
-                      ? const Icon(Icons.check, size: 18)
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _switchModel(model, v);
-                  },
-                )),
+            ...variants.map(
+              (v) => ListTile(
+                leading: const Icon(Icons.tune, size: 20),
+                title: Text(v.id),
+                trailing: session?.model?.variant == v.id
+                    ? const Icon(Icons.check, size: 18)
+                    : null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _switchModel(model, v);
+                },
+              ),
+            ),
           ],
         ),
       ),
@@ -2418,9 +2684,11 @@ class _AgentModelBarState extends State<_AgentModelBar> {
         // (e.g. deepseek-v4-flash exists under both `deepseek` and
         // `ollama-cloud`), so id-only matching would pick the wrong entry.
         final currentModel = _models
-            .where((m) =>
-                m.id == session?.model?.id &&
-                m.providerID == session?.model?.providerID)
+            .where(
+              (m) =>
+                  m.id == session?.model?.id &&
+                  m.providerID == session?.model?.providerID,
+            )
             .toList();
         final hasVariants =
             currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
@@ -2458,8 +2726,13 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                   const SizedBox(width: 8),
                   _Chip(
                     icon: Icons.psychology_outlined,
-                    label: session?.model?.variant ?? '默认',
-                    onTap: _switching ? null : () => _showVariantSheet(currentModel.first, currentModel.first.variants),
+                    label: session?.model?.variant ?? l(context).defaultLabel,
+                    onTap: _switching
+                        ? null
+                        : () => _showVariantSheet(
+                            currentModel.first,
+                            currentModel.first.variants,
+                          ),
                     muted: muted,
                   ),
                 ],
@@ -2712,7 +2985,8 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
             ),
             child: Padding(
               padding: EdgeInsets.only(
-                  bottom: MediaQuery.viewInsetsOf(context).bottom),
+                bottom: MediaQuery.viewInsetsOf(context).bottom,
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2727,11 +3001,16 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                             style: const TextStyle(fontSize: 14),
                             decoration: InputDecoration(
                               isDense: true,
-                              hintText: '搜索模型 / provider',
+                              hintText: l(context).modelSearchHint,
                               hintStyle: TextStyle(
-                                  fontSize: 14, color: scheme.outline),
-                              prefixIcon: Icon(Icons.search,
-                                  size: 20, color: scheme.outline),
+                                fontSize: 14,
+                                color: scheme.outline,
+                              ),
+                              prefixIcon: Icon(
+                                Icons.search,
+                                size: 20,
+                                color: scheme.outline,
+                              ),
                               suffixIcon: _query.isEmpty
                                   ? null
                                   : IconButton(
@@ -2748,7 +3027,9 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                                     ),
                               border: InputBorder.none,
                               contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 10),
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
                             ),
                             onChanged: (v) {
                               setState(() => _query = v.trim());
@@ -2759,7 +3040,7 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                           ),
                         ),
                         IconButton(
-                          tooltip: '模型管理',
+                          tooltip: l(context).settingsModelsManage,
                           icon: const Icon(Icons.tune),
                           onPressed: widget.onManage,
                         ),
@@ -2769,9 +3050,10 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                   if (groups.isEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 32),
-                      child: Text('无匹配模型',
-                          style: TextStyle(
-                              fontSize: 13, color: scheme.outline)),
+                      child: Text(
+                        l(context).modelNoMatch,
+                        style: TextStyle(fontSize: 13, color: scheme.outline),
+                      ),
                     )
                   else
                     Flexible(
@@ -2799,45 +3081,51 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
     final out = <Widget>[];
     for (final providerID in groups.keys) {
       final items = groups[providerID]!;
-      out.add(Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 12, 4),
-            child: Row(
-              children: [
-                Icon(Icons.dns_outlined, size: 14, color: scheme.outline),
-                const SizedBox(width: 6),
-                Text(
-                  providerID,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: scheme.outline,
+      out.add(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 12, 4),
+              child: Row(
+                children: [
+                  Icon(Icons.dns_outlined, size: 14, color: scheme.outline),
+                  const SizedBox(width: 6),
+                  Text(
+                    providerID,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.outline,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 6),
-                Text('${items.length}',
-                    style: TextStyle(fontSize: 11, color: scheme.outline)),
-              ],
+                  const SizedBox(width: 6),
+                  Text(
+                    '${items.length}',
+                    style: TextStyle(fontSize: 11, color: scheme.outline),
+                  ),
+                ],
+              ),
             ),
-          ),
-          ...items.map((m) {
-            final selected = session?.model?.id == m.id &&
-                session?.model?.providerID == m.providerID;
-            return ListTile(
-              dense: true,
-              leading: const Icon(Icons.memory, size: 20),
-              title: Text(m.name, style: const TextStyle(fontSize: 14)),
-              subtitle: Text('${m.providerID}/${m.id}',
-                  style: AppTheme.mono.copyWith(fontSize: 11)),
-              trailing:
-                  selected ? const Icon(Icons.check, size: 18) : null,
-              onTap: () => widget.onSelected(m),
-            );
-          }),
-        ],
-      ));
+            ...items.map((m) {
+              final selected =
+                  session?.model?.id == m.id &&
+                  session?.model?.providerID == m.providerID;
+              return ListTile(
+                dense: true,
+                leading: const Icon(Icons.memory, size: 20),
+                title: Text(m.name, style: const TextStyle(fontSize: 14)),
+                subtitle: Text(
+                  '${m.providerID}/${m.id}',
+                  style: AppTheme.mono.copyWith(fontSize: 11),
+                ),
+                trailing: selected ? const Icon(Icons.check, size: 18) : null,
+                onTap: () => widget.onSelected(m),
+              );
+            }),
+          ],
+        ),
+      );
     }
     return out;
   }

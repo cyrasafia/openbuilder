@@ -42,10 +42,16 @@ class _FileViewScreenState extends State<FileViewScreen> {
     }
     setState(() => _loading = true);
     try {
-      _content = await c.readFile(directory: widget.directory ?? '', path: widget.path);
+      _content = await c.readFile(
+        directory: widget.directory ?? '',
+        path: widget.path,
+      );
       // Whether this file has a diff (controls the "查看该文件 Diff" action).
       try {
-        final diffs = await c.diff(widget.sessionId, directory: widget.directory);
+        final diffs = await c.diff(
+          widget.sessionId,
+          directory: widget.directory,
+        );
         _hasDiff = diffs.any((d) => d.file == widget.path);
       } catch (_) {
         _hasDiff = false;
@@ -62,9 +68,12 @@ class _FileViewScreenState extends State<FileViewScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.path.split('/').last,
-            maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 16)),
+        title: Text(
+          widget.path.split('/').last,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 16),
+        ),
         actions: [
           if (_hasDiff)
             TextButton(
@@ -73,7 +82,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
                 '?path=${Uri.encodeQueryComponent(widget.path)}'
                 '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
               ),
-              child: const Text('查看 Diff'),
+              child: Text(l(context).fileViewDiff),
             ),
         ],
       ),
@@ -85,22 +94,34 @@ class _FileViewScreenState extends State<FileViewScreen> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
       return Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('加载失败', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Text(friendlyMessage(l(context), _error!), style: AppTheme.mono.copyWith(fontSize: 12)),
-          const SizedBox(height: 12),
-          FilledButton(onPressed: _load, child: const Text('重试')),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              l(context).loadFailed,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              friendlyMessage(l(context), _error!),
+              style: AppTheme.mono.copyWith(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(onPressed: _load, child: Text(l(context).retry)),
+          ],
+        ),
       );
     }
     if (_content!.type == 'binary') {
-      return const Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.file_present, size: 48, color: Colors.grey),
-          SizedBox(height: 12),
-          Text('二进制文件，无法预览'),
-        ]),
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.file_present, size: 48, color: Colors.grey),
+            const SizedBox(height: 12),
+            Text(l(context).fileBinaryHint),
+          ],
+        ),
       );
     }
     final lines = _content!.content.split('\n');
@@ -112,9 +133,11 @@ class _FileViewScreenState extends State<FileViewScreen> {
         children: [
           SizedBox(
             width: 48,
-            child: Text('${i + 1}',
-                style: AppTheme.mono.copyWith(fontSize: 12, color: muted),
-                textAlign: TextAlign.right),
+            child: Text(
+              '${i + 1}',
+              style: AppTheme.mono.copyWith(fontSize: 12, color: muted),
+              textAlign: TextAlign.right,
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(

@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/connection_profile.dart';
 import '../../core/net/dio_factory.dart';
+import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import '../../core/net/mdns_discovery.dart';
 import '../../data/api/opencode_client.dart';
@@ -29,7 +30,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
   bool _testing = false;
   bool _saving = false;
   String? _testMsg;
-  Color? _testColor;
+  String? _testVersion;
 
   bool get _isEdit => widget.id != null;
 
@@ -38,7 +39,9 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     super.initState();
     final p = widget.id == null ? null : connectionStore.byId(widget.id!);
     _name = TextEditingController(text: p?.name ?? '');
-    _address = TextEditingController(text: p?.address ?? 'http://localhost:15120');
+    _address = TextEditingController(
+      text: p?.address ?? 'http://localhost:15120',
+    );
     _username = TextEditingController(text: p?.username ?? 'opencode');
     _password = TextEditingController(text: p?.password ?? '');
   }
@@ -53,37 +56,37 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
   }
 
   ConnectionProfile _profileFromFields({String? id}) => ConnectionProfile(
-        id: id ?? DateTime.now().microsecondsSinceEpoch.toString(),
-        name: _name.text.trim(),
-        address: _address.text.trim(),
-        username: _username.text.trim().isEmpty
-            ? 'opencode'
-            : _username.text.trim(),
-        password: _password.text,
-      );
+    id: id ?? DateTime.now().microsecondsSinceEpoch.toString(),
+    name: _name.text.trim(),
+    address: _address.text.trim(),
+    username: _username.text.trim().isEmpty
+        ? 'opencode'
+        : _username.text.trim(),
+    password: _password.text,
+  );
 
   Future<void> _test() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() {
       _testing = true;
       _testMsg = null;
+      _testVersion = null;
     });
     try {
       final client = OpencodeClient(dioFor(_profileFromFields()));
       final h = await client.health();
       setState(() {
-        _testMsg = '✓ 连接成功 · opencode ${h.version}';
-        _testColor = Colors.green;
+        _testVersion = h.version;
+        _testMsg = null;
       });
     } on DioException catch (e) {
       setState(() {
-        _testMsg = '✗ ${e.response?.statusCode ?? e.type.name} ${e.message ?? ''}';
-        _testColor = Colors.red;
+        _testMsg =
+            '✗ ${e.response?.statusCode ?? e.type.name} ${e.message ?? ''}';
       });
     } catch (e) {
       setState(() {
         _testMsg = '✗ $e';
-        _testColor = Colors.red;
       });
     } finally {
       if (mounted) setState(() => _testing = false);
@@ -119,28 +122,23 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
   Future<bool> _warnWebBasicAuth() async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Row(
+      builder: (ctx) => AlertDialog(
+        title: Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.orange),
-            SizedBox(width: 8),
-            Text('Web 端 basic auth 限制'),
+            const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            const SizedBox(width: 8),
+            Text(l(ctx).webBasicAuthTitle),
           ],
         ),
-        content: const Text(
-          '当前在 Web 端运行，且服务器密码非空。浏览器的 EventSource 无法携带鉴权头，'
-          '实时事件流（SSE）会因 401 而失效，会话 / 任务进度不会自动刷新。\n\n'
-          '移动端不受影响（走 IO 传输 + dio 鉴权头）。若仅用于本地空密码测试可忽略；'
-          '否则建议在移动端使用本应用。',
-        ),
+        content: Text(l(ctx).webBasicAuthBody),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l(ctx).cancel),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('仍要保存'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l(ctx).webBasicAuthProceed),
           ),
         ],
       ),
@@ -151,16 +149,18 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
   Future<void> _delete() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('删除服务器'),
-        content: const Text('确定删除此服务器配置？'),
+      builder: (ctx) => AlertDialog(
+        title: Text(l(ctx).serverFormDelete),
+        content: Text(l(ctx).serverFormDeleteConfirm),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l(ctx).cancel),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('删除')),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l(ctx).delete),
+          ),
         ],
       ),
     );
@@ -172,8 +172,11 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final loc = l(context);
     return Scaffold(
-      appBar: AppBar(title: Text(_isEdit ? '编辑服务器' : '添加服务器')),
+      appBar: AppBar(
+        title: Text(_isEdit ? loc.serverFormEditTitle : loc.serverFormAddTitle),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
@@ -182,35 +185,37 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _field(
-                label: '名称',
+                label: loc.serverFormFieldName,
                 controller: _name,
                 icon: Icons.label_outline,
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? '必填' : null,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? loc.serverFormRequired
+                    : null,
               ),
               const SizedBox(height: 12),
               _field(
-                label: '地址',
+                label: loc.serverFormFieldAddress,
                 controller: _address,
                 icon: Icons.link,
-                hint: 'host:port 或 http(s)://host:port',
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? '必填' : null,
+                hint: loc.serverFormAddressHint,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? loc.serverFormRequired
+                    : null,
               ),
               const SizedBox(height: 12),
               _field(
-                label: '用户名',
+                label: loc.serverFormFieldUsername,
                 controller: _username,
                 icon: Icons.person_outline,
-                hint: '默认 opencode',
+                hint: loc.serverFormUsernameHint,
               ),
               const SizedBox(height: 12),
               _field(
-                label: '密码',
+                label: loc.serverFormFieldPassword,
                 controller: _password,
                 icon: Icons.lock_outline,
                 obscure: true,
-                hint: '可留空',
+                hint: loc.serverFormPasswordHint,
               ),
               const SizedBox(height: 16),
               Row(
@@ -222,9 +227,10 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                           ? const SizedBox(
                               width: 16,
                               height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2))
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
                           : const Icon(Icons.cable),
-                      label: const Text('测试连接'),
+                      label: Text(loc.serverFormTestConnection),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -232,15 +238,23 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                     child: FilledButton.icon(
                       onPressed: _saving ? null : _save,
                       icon: const Icon(Icons.save),
-                      label: const Text('保存'),
+                      label: Text(loc.save),
                     ),
                   ),
                 ],
               ),
-              if (_testMsg != null) ...[
+              if (_testVersion != null) ...[
                 const SizedBox(height: 12),
-                Text(_testMsg!,
-                    style: TextStyle(color: _testColor, fontSize: 13)),
+                Text(
+                  loc.serverFormTestSuccess(_testVersion!),
+                  style: const TextStyle(color: Colors.green, fontSize: 13),
+                ),
+              ] else if (_testMsg != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _testMsg!,
+                  style: const TextStyle(color: Colors.red, fontSize: 13),
+                ),
               ],
               const SizedBox(height: 8),
               Align(
@@ -248,18 +262,19 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                 child: TextButton.icon(
                   onPressed: _discover,
                   icon: const Icon(Icons.wifi_find),
-                  label: const Text('发现 (mDNS)'),
+                  label: Text(loc.serverFormDiscoverMdns),
                 ),
               ),
               if (_isEdit) ...[
                 const SizedBox(height: 16),
                 FilledButton.tonalIcon(
                   style: FilledButton.styleFrom(
-                      foregroundColor: Colors.red,
-                      backgroundColor: Colors.red.withAlpha(25)),
+                    foregroundColor: Colors.red,
+                    backgroundColor: Colors.red.withAlpha(25),
+                  ),
                   onPressed: _delete,
                   icon: const Icon(Icons.delete_outline),
-                  label: const Text('删除服务器'),
+                  label: Text(loc.serverFormDelete),
                 ),
               ],
               const SizedBox(height: 24),
@@ -341,22 +356,25 @@ class _MdnsDiscoveryDialogState extends State<_MdnsDiscoveryDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final loc = l(context);
     return AlertDialog(
-      title: const Text('发现 opencode 服务器'),
+      title: Text(loc.mdnsDialogTitle),
       content: SizedBox(
         width: double.maxFinite,
         height: 320,
         child: _servers.isEmpty
             ? Center(
                 child: _error
-                    ? const Text('mDNS 不可用（此平台可能不支持）',
-                        textAlign: TextAlign.center)
-                    : const Column(
+                    ? Text(loc.mdnsUnavailable, textAlign: TextAlign.center)
+                    : Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 12),
-                          Text('正在扫描局域网…', style: TextStyle(fontSize: 13)),
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 12),
+                          Text(
+                            loc.mdnsScanning,
+                            style: const TextStyle(fontSize: 13),
+                          ),
                         ],
                       ),
               )
@@ -368,8 +386,10 @@ class _MdnsDiscoveryDialogState extends State<_MdnsDiscoveryDialog> {
                   return ListTile(
                     leading: const Icon(Icons.dns_outlined),
                     title: Text(s.name),
-                    subtitle: Text(s.address,
-                        style: AppTheme.mono.copyWith(fontSize: 12)),
+                    subtitle: Text(
+                      s.address,
+                      style: AppTheme.mono.copyWith(fontSize: 12),
+                    ),
                     onTap: () => Navigator.pop(context, s),
                   );
                 },
@@ -378,7 +398,7 @@ class _MdnsDiscoveryDialogState extends State<_MdnsDiscoveryDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
+          child: Text(loc.cancel),
         ),
       ],
     );

@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import '../../app_state.dart';
 import '../../core/models/model_hide_store.dart';
 import '../../domain/models.dart';
+import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+
+enum _ModelLoadErr { notConnected, loadFailed }
 
 /// Lists every enabled provider's models grouped by provider, with a
 /// show/hide toggle per model. The hide set is the client-local
@@ -18,7 +21,7 @@ class ModelManagementScreen extends StatefulWidget {
 class _ModelManagementScreenState extends State<ModelManagementScreen> {
   List<ModelInfo> _models = const [];
   bool _loading = true;
-  String? _error;
+  _ModelLoadErr? _error;
   String? _loadedServerId;
   VoidCallback? _serverListener;
 
@@ -54,7 +57,7 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = '未连接到服务器';
+          _error = _ModelLoadErr.notConnected;
           // Stamp so the serverStore listener guard (activeId !=
           // _loadedServerId) doesn't re-trigger _load() on every unrelated
           // streaming notify while disconnected.
@@ -83,7 +86,7 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
       // bodies.
       if (mounted && connectionStore.activeId == targetSid) {
         setState(() {
-          _error = '加载失败，请检查服务器连接';
+          _error = _ModelLoadErr.loadFailed;
           // Stamp on failure too, so a persistent error doesn't cause the
           // serverStore listener to retry on every streaming notify.
           _loadedServerId = targetSid;
@@ -101,8 +104,9 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final loc = l(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('模型管理')),
+      appBar: AppBar(title: Text(loc.settingsModelsManage)),
       body: ListenableBuilder(
         listenable: modelHideStore,
         builder: (context, _) {
@@ -116,19 +120,25 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
                 children: [
                   Icon(Icons.cloud_off, size: 40, color: scheme.outline),
                   const SizedBox(height: 8),
-                  Text(_error!,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 13, color: scheme.outline)),
+                  Text(
+                    _error == _ModelLoadErr.notConnected
+                        ? loc.errorNotConnected
+                        : loc.modelsLoadFailed,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: scheme.outline),
+                  ),
                   const SizedBox(height: 12),
-                  OutlinedButton(onPressed: _load, child: const Text('重试')),
+                  OutlinedButton(onPressed: _load, child: Text(loc.retry)),
                 ],
               ),
             );
           }
           if (_models.isEmpty) {
             return Center(
-              child: Text('无可用模型',
-                  style: TextStyle(fontSize: 13, color: scheme.outline)),
+              child: Text(
+                loc.modelsEmpty,
+                style: TextStyle(fontSize: 13, color: scheme.outline),
+              ),
             );
           }
           // Group by providerID in server order.
@@ -150,8 +160,7 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        '隐藏的模型不会出现在对话页的模型列表中，仍可正常使用。'
-                        '已隐藏 $hiddenCount / ${_models.length} 个。',
+                        loc.modelsHideHint(hiddenCount, _models.length),
                         style: TextStyle(fontSize: 12, color: scheme.outline),
                       ),
                     ),
@@ -187,8 +196,10 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
                 ),
               ),
               const SizedBox(width: 6),
-              Text('${items.length}',
-                  style: TextStyle(fontSize: 11, color: scheme.outline)),
+              Text(
+                '${items.length}',
+                style: TextStyle(fontSize: 11, color: scheme.outline),
+              ),
             ],
           ),
         ),
@@ -206,8 +217,7 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
       dense: true,
       leading: const Icon(Icons.memory, size: 20),
       title: Text(m.name, style: const TextStyle(fontSize: 14)),
-      subtitle:
-          Text(key, style: AppTheme.mono.copyWith(fontSize: 11)),
+      subtitle: Text(key, style: AppTheme.mono.copyWith(fontSize: 11)),
       trailing: Switch(
         value: !isHidden,
         onChanged: sid == null

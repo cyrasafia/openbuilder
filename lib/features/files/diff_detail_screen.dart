@@ -11,11 +11,12 @@ class DiffDetailScreen extends StatefulWidget {
   final String sessionId;
   final String path;
   final String? directory;
-  const DiffDetailScreen(
-      {super.key,
-      required this.sessionId,
-      required this.path,
-      this.directory});
+  const DiffDetailScreen({
+    super.key,
+    required this.sessionId,
+    required this.path,
+    this.directory,
+  });
 
   @override
   State<DiffDetailScreen> createState() => _DiffDetailScreenState();
@@ -46,7 +47,9 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
           break;
         }
       }
-      _error = _diff == null ? '未找到该文件的 diff' : null;
+      _error = _diff == null
+          ? const KnownError(FriendlyErrorKind.diffNotFound)
+          : null;
     } catch (e) {
       _error = e;
     } finally {
@@ -61,10 +64,12 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.path.split('/').last,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 16)),
+            Text(
+              widget.path.split('/').last,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 16),
+            ),
             if (_diff != null)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
@@ -77,11 +82,11 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
             onPressed: _diff == null
                 ? null
                 : () => context.push(
-                      '/session/${widget.sessionId}/file'
-                      '?path=${Uri.encodeQueryComponent(widget.path)}'
-                      '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
-                    ),
-            child: const Text('查看完整文件'),
+                    '/session/${widget.sessionId}/file'
+                    '?path=${Uri.encodeQueryComponent(widget.path)}'
+                    '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
+                  ),
+            child: Text(l(context).diffViewFullFile),
           ),
         ],
       ),
@@ -93,13 +98,23 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
       return Center(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Text('加载失败', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        Text(friendlyMessage(l(context), _error!), style: AppTheme.mono.copyWith(fontSize: 12)),
-        const SizedBox(height: 12),
-        FilledButton(onPressed: _load, child: const Text('重试')),
-      ]));
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              l(context).loadFailed,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              friendlyMessage(l(context), _error!),
+              style: AppTheme.mono.copyWith(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(onPressed: _load, child: Text(l(context).retry)),
+          ],
+        ),
+      );
     }
     final lines = parseUnifiedDiff(_diff!.patch);
     return ListView.builder(
@@ -151,18 +166,21 @@ class _DiffRow extends StatelessWidget {
           if (line.kind != '@' && line.kind != 'h')
             SizedBox(
               width: 40,
-              child: Text(line.oldNo?.toString() ?? '',
-                  style: mono.copyWith(fontSize: 12, color: muted),
-                  textAlign: TextAlign.right),
+              child: Text(
+                line.oldNo?.toString() ?? '',
+                style: mono.copyWith(fontSize: 12, color: muted),
+                textAlign: TextAlign.right,
+              ),
             ),
-          if (line.kind != '@' && line.kind != 'h')
-            const SizedBox(width: 4),
+          if (line.kind != '@' && line.kind != 'h') const SizedBox(width: 4),
           if (line.kind != '@' && line.kind != 'h')
             SizedBox(
               width: 40,
-              child: Text(line.newNo?.toString() ?? '',
-                  style: mono.copyWith(fontSize: 12, color: muted),
-                  textAlign: TextAlign.right),
+              child: Text(
+                line.newNo?.toString() ?? '',
+                style: mono.copyWith(fontSize: 12, color: muted),
+                textAlign: TextAlign.right,
+              ),
             ),
           const SizedBox(width: 6),
           Expanded(
@@ -184,11 +202,17 @@ class _Stat extends StatelessWidget {
   const _Stat({required this.add, required this.del});
   @override
   Widget build(BuildContext context) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('+$add', style: const TextStyle(color: Color(0xFF3FB950), fontSize: 12)),
-          const SizedBox(width: 8),
-          Text('-$del', style: const TextStyle(color: Color(0xFFF85149), fontSize: 12)),
-        ],
-      );
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(
+        '+$add',
+        style: const TextStyle(color: Color(0xFF3FB950), fontSize: 12),
+      ),
+      const SizedBox(width: 8),
+      Text(
+        '-$del',
+        style: const TextStyle(color: Color(0xFFF85149), fontSize: 12),
+      ),
+    ],
+  );
 }
