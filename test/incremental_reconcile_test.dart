@@ -361,6 +361,30 @@ void main() {
       expect(conv.messages.length, 1);
       expect(conv.messages.single.info.id, 'm1');
     });
+
+    // A slash command can leave a user message whose only part is a blank text
+    // (echoed control message with empty body). Reconcile must drop it so it
+    // never renders as an empty bubble.
+    test('reconcile drops blank-text-only user message (no empty bubble)',
+        () async {
+      final assistant = MessageEntry(
+        info: MessageInfo(
+            id: 'm1', role: 'assistant', created: 100, finish: 'stop'),
+        parts: [MessagePart({'type': 'text', 'id': 'p1', 'text': 'done'})],
+      );
+      final blankUser = MessageEntry(
+        info: MessageInfo(id: 'm2', role: 'user', created: 200),
+        parts: [
+          MessagePart({'type': 'text', 'id': 'p2', 'text': ''}),
+        ],
+      );
+      final client =
+          _PageMockClient([_PageSpec([assistant, blankUser], null)]);
+      final conv = ConversationStore('s_cmd', client);
+      await conv.reconcile();
+      expect(conv.messages.length, 1);
+      expect(conv.messages.single.info.id, 'm1');
+    });
   });
 }
 

@@ -662,6 +662,48 @@ void main() {
           DisplayMessage(MessageInfo(id: 'x', role: 'user'), optimistic: true);
       expect(ConversationStore.isEmptyUserForTest(optimisticEmpty), isFalse);
     });
+
+    // Slash commands can leave a user message whose only part is a blank text
+    // (e.g. an echoed control message with empty body). The renderer draws the
+    // green bubble but no text → empty bubble. It must be filtered like the
+    // shell synthetic case.
+    test('blank-text-only user message renders no empty bubble', () {
+      final conv = ConversationStore('s_cmd1', _fakeClient());
+      conv.onMessageUpdated(MessageInfo(
+          id: 'msg_c1', role: 'user', sessionID: 's_cmd1', created: 6000));
+      conv.onPartUpdated({
+        'id': 'prt_blank',
+        'messageID': 'msg_c1',
+        'type': 'text',
+        'text': '',
+      }, null);
+      expect(conv.messages.single.parts.single.text, '');
+      expect(conv.renderableMessages, isEmpty);
+    });
+
+    // A whitespace-only text part is equally contentless and must be filtered.
+    test('whitespace-only text part renders no empty bubble', () {
+      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
+        ..parts.add(DisplayPart(id: 'p', type: 'text', text: '   \n  '));
+      expect(ConversationStore.isEmptyUserForTest(m), isTrue);
+    });
+
+    // A user message whose only part is non-text/non-file (e.g. a tool part the
+    // server attaches to a command echo) renders nothing in user mode → filter.
+    test('non-renderable-only user message renders no empty bubble', () {
+      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
+        ..parts.add(DisplayPart(id: 'p', type: 'tool', tool: 'Bash'));
+      expect(ConversationStore.isEmptyUserForTest(m), isTrue);
+    });
+
+    // An attachment-only user message (file part, no text) is NOT empty — the
+    // attachment must still render.
+    test('file-only user message is not empty', () {
+      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
+        ..parts.add(DisplayPart(
+            id: 'p', type: 'file', filename: 'a.png', fileUrl: 'data:'));
+      expect(ConversationStore.isEmptyUserForTest(m), isFalse);
+    });
   });
 
   // 会话输入框草稿暂存（docs/design-compose-draft.md §10）。

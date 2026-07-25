@@ -406,14 +406,22 @@ class ConversationStore extends ChangeNotifier {
     return false;
   }
 
-  /// A real (non-optimistic) user message with no renderable parts. The server
-  /// emits such messages for shell commands (a synthetic "tool executed by the
-  /// user" user-message whose only part is hidden). Rendering them produces
-  /// empty bubbles, so [renderableMessages] excludes them and [_upsertEntries]
-  /// skips storing them. Optimistic messages are excluded (managed via prune);
-  /// assistant messages are transiently empty during streaming and are kept.
-  static bool _isEmptyUser(DisplayMessage m) =>
-      !m.optimistic && m.info.role == 'user' && m.parts.isEmpty;
+  /// A real (non-optimistic) user message with no renderable content. The
+  /// renderer (`_parts`, user mode) only draws `text` and `file` parts, so a
+  /// user message whose parts are all hidden (shell's synthetic "tool executed
+  /// by the user"), blank-text, or non-text/non-file (e.g. a slash command's
+  /// echoed control message) renders as an empty bubble. Such messages are
+  /// excluded from [renderableMessages] and skipped by [_upsertEntries].
+  /// Optimistic messages are excluded (managed via prune); assistant messages
+  /// are transiently empty during streaming and are kept.
+  static bool _isEmptyUser(DisplayMessage m) {
+    if (m.optimistic || m.info.role != 'user') return false;
+    for (final p in m.parts) {
+      if (p.type == 'file') return false;
+      if (p.type == 'text' && p.text.trim().isNotEmpty) return false;
+    }
+    return true;
+  }
 
   Future<void> load() async {
     if (loaded || loading) return;
