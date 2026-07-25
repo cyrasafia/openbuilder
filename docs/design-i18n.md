@@ -222,6 +222,7 @@ gen-l10n 原生支持 ICU 语法。ARB 中：
 8. **平台层**：iOS Info.plist 加 `CFBundleLocalizations` + 两个 Usage Description 的 `*.lproj/InfoPlist.strings` 本地化；Android 加 `locales.xml`（可选，影响系统语言感知）。
 9. **fallback locale = `en`**：未知系统 locale（非 zh/en）解析为英文。本项目目标是补齐英文，未知语言用户应看到英文而非中文——有意识的产品取舍。
 10. **统一 locale 解析**：MaterialApp 的 `localeResolutionCallback` 与通知服务共用 `resolveActiveLocale()`，避免两条路径对同一系统 locale 解析出不同结果而漂移（见 §3.3）。
+11. **英文文案遵循 `DESIGN.md` 多语言原则**：英文不是中文的逐字翻译，而是按 UI 场景用英文习惯重写；优先用语言特性无关的句式（如 `session: 4` 单数标签 + 数值，规避 plural）；能用图标/符号表达的减少文字，但注意跨文化图标含义差异。所有英文文案的编写与审校**必须遵循根目录 [`DESIGN.md`](../DESIGN.md) 的「多语言 / i18n」章节**，它是本设计的上位约束。
 
 ---
 
