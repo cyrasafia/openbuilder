@@ -1347,20 +1347,8 @@ class _PermissionCardState extends State<_PermissionCard> {
   bool _replying = false;
   bool _collapsed = false;
 
-  String _title(AppLocalizations loc) {
-    final p = widget.permission;
-    switch (p.type) {
-      case 'external_directory':
-        final dir = p.externalDirectoryPath;
-        return dir != null
-            ? loc.permissionAccessDir(dir)
-            : loc.permissionExternalAccess;
-      case 'bash':
-        return loc.permissionExecute;
-      default:
-        return p.type.isEmpty ? loc.permissionRequest : p.type;
-    }
-  }
+  String _title(AppLocalizations loc) =>
+      permissionTitle(loc, widget.permission);
 
   Future<void> _respond(String response) async {
     setState(() => _replying = true);

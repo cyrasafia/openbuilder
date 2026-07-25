@@ -6,6 +6,11 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Open Builder</string>
 	<key>CFBundleExecutable</key>
@@ -67,8 +72,8 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSUserNotificationsUsageDescription</key>
-	<string>用于在 Agent 完成推理或请求授权时发送通知</string>
+	<string>Sends notifications when an agent finishes reasoning or requests authorization</string>
 	<key>NSCameraUsageDescription</key>
-	<string>用于拍照作为消息附件发送</string>
+	<string>Take photos to send as message attachments</string>
 </dict>
 </plist>

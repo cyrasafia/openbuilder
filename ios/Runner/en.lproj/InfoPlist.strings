@@ -1,0 +1,2 @@
+"NSUserNotificationsUsageDescription" = "Sends notifications when an agent finishes reasoning or requests authorization";
+"NSCameraUsageDescription" = "Take photos to send as message attachments";

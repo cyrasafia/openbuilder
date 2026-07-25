@@ -7,6 +7,8 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mime/mime.dart';
 
+import '../../ui/l10n_ext.dart';
+
 const maxImageBase64Bytes = 4 * 1024 * 1024;
 const maxFileBytes = 8 * 1024 * 1024;
 const imageMaxWidth = 2048;
@@ -89,17 +91,17 @@ class AttachmentPicker {
           children: [
             ListTile(
               leading: const Icon(Icons.photo_outlined),
-              title: const Text('图片'),
+              title: Text(l(ctx).attachSourceImage),
               onTap: () => Navigator.pop(ctx, 'image'),
             ),
             ListTile(
               leading: const Icon(Icons.insert_drive_file_outlined),
-              title: const Text('文件'),
+              title: Text(l(ctx).attachSourceFile),
               onTap: () => Navigator.pop(ctx, 'file'),
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt_outlined),
-              title: const Text('拍照'),
+              title: Text(l(ctx).attachSourceCamera),
               onTap: () => Navigator.pop(ctx, 'camera'),
             ),
           ],

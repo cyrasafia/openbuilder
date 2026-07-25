@@ -217,5 +217,17 @@
   "@switchModelFailed": {"placeholders": {"detail": {"type": "String"}}},
   "defaultLabel": "默认",
   "modelSearchHint": "搜索模型 / provider",
-  "modelNoMatch": "无匹配模型"
+  "modelNoMatch": "无匹配模型",
+  "attachSourceImage": "图片",
+  "attachSourceFile": "文件",
+  "attachSourceCamera": "拍照",
+  "notifRunCompleteBody": "「{title}」已完成",
+  "@notifRunCompleteBody": {"placeholders": {"title": {"type": "String"}}},
+  "notifPermissionTitle": "需要授权",
+  "notifPermissionBody": "「{title}」: {detail}",
+  "@notifPermissionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
+  "notifQuestionTitle": "需要回答",
+  "notifQuestionBody": "「{title}」: {detail}",
+  "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
+  "notifQuestionDefaultHeader": "问题"
 }

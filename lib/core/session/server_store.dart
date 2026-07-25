@@ -1176,8 +1176,8 @@ class ServerStore extends ChangeNotifier {
           }
           if (wasBusy) {
             AppLogger.I.i(_tag, 'session.idle $sid');
-            final title = sessionById(sid)?.title ?? '会话';
-            unawaited(NotificationService.notifyRunComplete(title)
+            unawaited(NotificationService.notifyRunComplete(
+                    sessionById(sid)?.title)
                 .catchError((_) {}));
             final conv = _conversations[sid];
             if (conv != null && conv.isStale) {
@@ -1268,9 +1268,9 @@ class ServerStore extends ChangeNotifier {
         _pendingPermissions[p.sessionID] = p;
         _conversations[p.sessionID]?.onPermission(p);
         AppLogger.I.i(_tag, 'SSE permission.asked sid=${p.sessionID} pid=${p.id}');
-        final title = sessionById(p.sessionID)?.title ?? '会话';
-        unawaited(
-            NotificationService.notifyPermission(title, p.title).catchError((_) {}));
+        unawaited(NotificationService.notifyPermission(
+                sessionById(p.sessionID)?.title, p)
+            .catchError((_) {}));
         break;
       case 'permission.replied':
       case 'permission.v2.replied':
@@ -1291,8 +1291,10 @@ class ServerStore extends ChangeNotifier {
         _pendingQuestions[qr.id] = qr;
         _conversations[qr.sessionID]?.onQuestion(qr);
         AppLogger.I.i(_tag, 'SSE question.asked sid=${qr.sessionID} qid=${qr.id}');
-        final title = sessionById(qr.sessionID)?.title ?? '会话';
-        unawaited(NotificationService.notifyQuestion(title, qr.questions.firstOrNull?.header ?? '问题').catchError((_) {}));
+        unawaited(NotificationService.notifyQuestion(
+                sessionById(qr.sessionID)?.title,
+                qr.questions.firstOrNull?.header)
+            .catchError((_) {}));
         break;
       case 'question.replied':
       case 'question.v2.replied':

@@ -421,14 +421,12 @@ class WorktreeResult {
 class Permission {
   final String id;
   final String type;
-  final String title;
   final String sessionID;
   final List<String> patterns;
   final Map<String, dynamic>? metadata;
   const Permission({
     required this.id,
     required this.type,
-    required this.title,
     required this.sessionID,
     this.patterns = const [],
     this.metadata,
@@ -453,27 +451,10 @@ class Permission {
     return Permission(
       id: (j['id'] ?? '').toString(),
       type: perm,
-      title: _permissionTitle(perm, meta, patterns),
       sessionID: (j['sessionID'] ?? '').toString(),
       patterns: patterns,
       metadata: meta,
     );
-  }
-}
-
-String _permissionTitle(
-  String type,
-  Map<String, dynamic>? meta,
-  List<String> patterns,
-) {
-  switch (type) {
-    case 'external_directory':
-      final dir = _externalDirectoryPath(meta, patterns);
-      return dir != null ? '访问目录 $dir' : '外部目录访问';
-    case 'bash':
-      return '执行命令';
-    default:
-      return type.isEmpty ? '权限请求' : type;
   }
 }
 

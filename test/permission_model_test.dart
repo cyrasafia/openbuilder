@@ -3,7 +3,7 @@ import 'package:open_builder/domain/models.dart';
 
 void main() {
   group('Permission.fromJson', () {
-    test('v1 external_directory with metadata → shows parentDir', () {
+    test('v1 external_directory with metadata → parentDir extracted', () {
       final p = Permission.fromJson({
         'id': 'per_1',
         'sessionID': 'ses_1',
@@ -16,7 +16,7 @@ void main() {
         'always': ['/tmp/outside/*'],
       });
       expect(p.type, 'external_directory');
-      expect(p.title, '访问目录 /tmp/outside');
+      expect(p.externalDirectoryPath, '/tmp/outside');
       expect(p.patterns, ['/tmp/outside/*']);
       expect(p.metadata?['parentDir'], '/tmp/outside');
     });
@@ -30,7 +30,7 @@ void main() {
         'metadata': {'parentDir': '/tmp/outside'},
         'always': [],
       });
-      expect(p.title, '访问目录 /tmp/outside');
+      expect(p.externalDirectoryPath, '/tmp/outside');
     });
 
     test('v1 external_directory without metadata → derives dir from glob', () {
@@ -42,20 +42,20 @@ void main() {
         'metadata': <String, dynamic>{},
         'always': [],
       });
-      expect(p.title, '访问目录 /home/me/elsewhere');
+      expect(p.externalDirectoryPath, '/home/me/elsewhere');
     });
 
-    test('external_directory with nothing usable → generic fallback', () {
+    test('external_directory with nothing usable → no dir', () {
       final p = Permission.fromJson({
         'id': 'per_4',
         'sessionID': 'ses_1',
         'permission': 'external_directory',
         'patterns': <String>[],
       });
-      expect(p.title, '外部目录访问');
+      expect(p.externalDirectoryPath, isNull);
     });
 
-    test('v2 external_directory (action/resources) → type + dir shown', () {
+    test('v2 external_directory (action/resources) → type + dir extracted', () {
       final p = Permission.fromJson({
         'id': 'per_5',
         'sessionID': 'ses_1',
@@ -67,7 +67,7 @@ void main() {
         },
       });
       expect(p.type, 'external_directory');
-      expect(p.title, '访问目录 /tmp/outside');
+      expect(p.externalDirectoryPath, '/tmp/outside');
       expect(p.patterns, ['/tmp/outside/*']);
     });
 
@@ -79,10 +79,10 @@ void main() {
         'resources': ['/data/elsewhere/*'],
       });
       expect(p.type, 'external_directory');
-      expect(p.title, '访问目录 /data/elsewhere');
+      expect(p.externalDirectoryPath, '/data/elsewhere');
     });
 
-    test('bash permission → 执行命令', () {
+    test('bash permission → type parsed', () {
       final p = Permission.fromJson({
         'id': 'per_7',
         'sessionID': 'ses_1',
@@ -91,10 +91,10 @@ void main() {
         'metadata': <String, dynamic>{},
         'always': [],
       });
-      expect(p.title, '执行命令');
+      expect(p.type, 'bash');
     });
 
-    test('unknown permission type → echoes type string', () {
+    test('unknown permission type → type preserved verbatim', () {
       final p = Permission.fromJson({
         'id': 'per_8',
         'sessionID': 'ses_1',
@@ -103,13 +103,12 @@ void main() {
         'metadata': <String, dynamic>{},
         'always': [],
       });
-      expect(p.title, 'webfetch');
+      expect(p.type, 'webfetch');
     });
 
-    test('empty payload → generic 权限请求', () {
+    test('empty payload → empty type, no patterns', () {
       final p = Permission.fromJson({'id': 'per_9', 'sessionID': 'ses_1'});
       expect(p.type, '');
-      expect(p.title, '权限请求');
       expect(p.patterns, isEmpty);
     });
 
@@ -122,7 +121,7 @@ void main() {
         'metadata': {'parentDir': '', 'filepath': '/tmp/outside/file.txt'},
         'always': [],
       });
-      expect(p.title, '访问目录 /tmp/outside/file.txt');
+      expect(p.externalDirectoryPath, '/tmp/outside/file.txt');
     });
 
     test('type-only carrier (permission/action absent) → recognized', () {
@@ -134,7 +133,7 @@ void main() {
         'metadata': {'parentDir': '/tmp/outside'},
       });
       expect(p.type, 'external_directory');
-      expect(p.title, '访问目录 /tmp/outside');
+      expect(p.externalDirectoryPath, '/tmp/outside');
     });
   });
 }

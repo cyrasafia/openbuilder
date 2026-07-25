@@ -217,10 +217,10 @@
 6. **`app_state.dart`**：确认 `localeMode` 持久化/恢复无变化（已就绪，仅复核）
 
 ### 完成标准 (DoD)
-- [ ] 后台收到的通知中英双语正确（手动测：切英文后触发 Agent 完成/权限请求）
-- [ ] store 异常文案中英正确（制造"会话未加载完成"场景）
-- [ ] iOS `CFBundleLocalizations` 声明，Usage Description 双语
-- [ ] `flutter analyze --fatal-infos` 0 issue
+- [x] 后台收到的通知中英双语正确（手动测：切英文后触发 Agent 完成/权限请求）
+- [x] store 异常文案中英正确（制造"会话未加载完成"场景）
+- [x] iOS `CFBundleLocalizations` 声明，Usage Description 双语
+- [x] `flutter analyze --fatal-infos` 0 issue
 
 ---
 

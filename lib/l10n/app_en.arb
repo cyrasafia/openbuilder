@@ -217,5 +217,17 @@
   "@switchModelFailed": {"placeholders": {"detail": {"type": "String"}}},
   "defaultLabel": "Default",
   "modelSearchHint": "Search models / providers",
-  "modelNoMatch": "No matching models"
+  "modelNoMatch": "No matching models",
+  "attachSourceImage": "Photo",
+  "attachSourceFile": "File",
+  "attachSourceCamera": "Camera",
+  "notifRunCompleteBody": "\"{title}\" completed",
+  "@notifRunCompleteBody": {"placeholders": {"title": {"type": "String"}}},
+  "notifPermissionTitle": "Authorization needed",
+  "notifPermissionBody": "\"{title}\": {detail}",
+  "@notifPermissionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
+  "notifQuestionTitle": "Answer needed",
+  "notifQuestionBody": "\"{title}\": {detail}",
+  "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
+  "notifQuestionDefaultHeader": "Question"
 }
