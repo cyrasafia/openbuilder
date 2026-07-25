@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
+import '../../l10n/gen/app_localizations.dart';
 import '../connection/connection_profile.dart';
 import '../logging/app_logger.dart';
 import '../net/dio_factory.dart';
@@ -147,6 +148,20 @@ class ServerStore extends ChangeNotifier {
 
   String? lastMessageOf(String id) => _lastMessage[id];
 
+  /// Active [AppLocalizations] pushed down from app_state (the store layer
+  /// cannot import app_state, mirroring [reasoningVisibleInPreview]). Used to
+  /// localize the session-list preview ("You: " prefix, attachment fallback)
+  /// and the worktree label, which are produced here without a BuildContext.
+  AppLocalizations? _loc;
+
+  /// Set the active localization and recompute cached previews so the list
+  /// follows a locale switch instead of showing stale-language text.
+  set activeLoc(AppLocalizations v) {
+    if (_loc?.localeName == v.localeName) return;
+    _loc = v;
+    _recomputePreviews();
+  }
+
   /// Whether reasoning ("thinking") parts may surface as the session-list
   /// preview. Pushed down from the `showThinking` app setting (the store layer
   /// cannot import app_state) so the one-line preview tracks the detail view:
@@ -167,7 +182,8 @@ class ServerStore extends ChangeNotifier {
     if (_conversations.isEmpty) return;
     for (final entry in _conversations.entries) {
       final pv = entry.value
-          .lastMessagePreview(hideReasoning: !_reasoningVisibleInPreview);
+          .lastMessagePreview(
+              hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
       if (pv != null) {
         _lastMessage[entry.key] = pv;
       } else {
@@ -369,7 +385,9 @@ class ServerStore extends ChangeNotifier {
     if (s.projectID == 'global') return '';
     if (!_hasMultipleWorktrees(s.projectID)) return '';
     final project = projectOf(s.projectID);
-    if (project != null && s.directory == project.worktree) return '主工作区';
+    if (project != null && s.directory == project.worktree) {
+      return _loc?.projectMainWorkspace ?? 'main';
+    }
     return s.dirName;
   }
 
@@ -1235,7 +1253,7 @@ class ServerStore extends ChangeNotifier {
             // preview-bearing part type MUST be added here.
             if (ptype == 'tool' || ptype == 'text' || ptype == 'reasoning') {
               final pv = conv.lastMessagePreview(
-                  hideReasoning: !_reasoningVisibleInPreview);
+                  hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
               if (pv != null) {
                 _lastMessage[sid] = pv;
                 _notifyPreviewChanged();
@@ -1335,7 +1353,7 @@ class ServerStore extends ChangeNotifier {
     // reasoning-only assistant messages). Part events keep the preview live
     // during streaming; this keeps it correct at message boundaries.
     final local = conv?.lastMessagePreview(
-        hideReasoning: !_reasoningVisibleInPreview);
+        hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     final lastRole = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.role : '?';
     final lastId = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.id : '?';
     AppLogger.I.d(
@@ -1357,7 +1375,7 @@ class ServerStore extends ChangeNotifier {
     // After the conversation loads, surface its last message as the list preview
     // (avoids bulk-proactive fetch but keeps viewed sessions informative).
     final preview = conv.lastMessagePreview(
-        hideReasoning: !_reasoningVisibleInPreview);
+        hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     if (preview != null) {
       _lastMessage[sid] = preview;
       notifyListeners();
@@ -1371,7 +1389,7 @@ class ServerStore extends ChangeNotifier {
     final conv = _conversations[sid];
     if (conv == null) return;
     final pv = conv.lastMessagePreview(
-        hideReasoning: !_reasoningVisibleInPreview);
+        hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     if (pv != null) {
       _lastMessage[sid] = pv;
       _notifyPreviewChanged();

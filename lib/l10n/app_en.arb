@@ -152,6 +152,7 @@
   "@modelsHideHint": {"placeholders": {"hidden": {"type": "int"}, "total": {"type": "int"}}},
   "convUnavailable": "Conversation unavailable (not connected to server)",
   "convDefaultTitle": "Conversation",
+  "previewYouPrefix": "You: ",
   "loadFailedDetail": "Load failed: {detail}",
   "@loadFailedDetail": {"placeholders": {"detail": {"type": "String"}}},
   "attachmentPickFailed": "Failed to pick: {detail}",

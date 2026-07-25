@@ -240,12 +240,12 @@
 6. 更新 `docs/design-i18n.md` 评审意见的「修复复审」表格
 
 ### 完成标准 (DoD)
-- [ ] `lib/` 内用户可见中文文案 = 0（注释除外）
-- [ ] zh / en ARB key 集合一致
-- [ ] l10n 解析测试通过
-- [ ] 英文模式全流程走查无错位/截断/未翻译
-- [ ] `flutter analyze --fatal-infos` + `flutter test` 全绿
-- [ ] `review-i18n.md` 完成
+- [x] `lib/` 内用户可见中文文案 = 0（注释除外）—— 2 处 by-design 例外（`main.dart` 启动兜底双语 / `settings_tab.dart` 语言名母语写法），见 [review-i18n.md](./review-i18n.md) §3
+- [x] zh / en ARB key 集合一致（208 = 208，`test/l10n_test.dart` 守护）
+- [x] l10n 解析测试通过（`test/l10n_test.dart`：key 对齐 + 关键 getter 非空 + en 非 zh 副本）
+- [ ] 英文模式全流程走查无错位/截断/未翻译 —— **人工验收项**，需真机/模拟器切英文走全流程
+- [x] `flutter analyze --fatal-infos` + `flutter test` 全绿（199 项）
+- [x] `review-i18n.md` 完成
 
 ---
 

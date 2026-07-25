@@ -5,6 +5,7 @@ import 'core/connection/connection_store.dart';
 import 'core/models/default_agent_model_store.dart';
 import 'core/models/model_hide_store.dart';
 import 'core/session/server_store.dart';
+import 'l10n/gen/app_localizations.dart';
 
 final ConnectionStore connectionStore = ConnectionStore();
 final ServerStore serverStore = ServerStore();
@@ -45,6 +46,7 @@ Future<void> initSettings() async {
     showThinking.value = showThinkingVal;
   }
   serverStore.reasoningVisibleInPreview = showThinking.value;
+  serverStore.activeLoc = lookupAppLocalizations(resolveActiveLocale());
   themeMode.addListener(() => prefs.setInt('themeMode', themeMode.value.index));
   localeMode.addListener(() {
     final l = localeMode.value;
@@ -53,6 +55,10 @@ Future<void> initSettings() async {
     } else {
       prefs.remove('locale');
     }
+    // Push the new locale's strings down so cached session-list previews
+    // ("You: " prefix, attachment fallback) and worktree labels recompute
+    // instead of showing stale-language text.
+    serverStore.activeLoc = lookupAppLocalizations(resolveActiveLocale());
   });
   showThinking.addListener(() => prefs.setBool('showThinking', showThinking.value));
   showThinking.addListener(

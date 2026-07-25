@@ -152,6 +152,7 @@
   "@modelsHideHint": {"placeholders": {"hidden": {"type": "int"}, "total": {"type": "int"}}},
   "convUnavailable": "会话不可用（未连接服务器）",
   "convDefaultTitle": "会话",
+  "previewYouPrefix": "你: ",
   "loadFailedDetail": "加载失败：{detail}",
   "@loadFailedDetail": {"placeholders": {"detail": {"type": "String"}}},
   "attachmentPickFailed": "选取失败：{detail}",

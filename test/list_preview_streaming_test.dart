@@ -8,6 +8,11 @@ import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
+import 'package:open_builder/l10n/gen/app_localizations.dart';
+
+// Mirrors app_state pushing the active locale into ServerStore; tests assert
+// zh-localized previews ("你: " prefix), so seed the store with a zh loc.
+final _zhLoc = lookupAppLocalizations(const Locale('zh'));
 
 // A non-null [OpencodeClient] pointing at a discard port. The preview logic
 // under test never makes network calls (onPartUpdated / lastMessagePreview /
@@ -44,7 +49,7 @@ void main() {
 
   // LPSI-1 (2/3): reflectPreviewFrom shows optimistic preview, reverts on remove.
   test('reflectPreviewFrom shows optimistic preview and reverts on remove', () {
-    final store = ServerStore()..client = _fakeClient();
+    final store = ServerStore()..client = _fakeClient()..activeLoc = _zhLoc;
     const sid = 's1';
     final conv = store.ensureConversation(sid)!;
     // Seed a prior real assistant reply so the revert has something to show.
@@ -71,7 +76,7 @@ void main() {
   // The break↔return regression lock for that path is the onEventForTesting
   // test below (LPSI-1R1).
   test('reflectPreviewFrom coalesces rapid notifications via 120ms throttle', () {
-    final store = ServerStore()..client = _fakeClient();
+    final store = ServerStore()..client = _fakeClient()..activeLoc = _zhLoc;
     const sid = 's1';
     store.ensureConversation(sid)!.addOptimisticUserMessage('hi');
     var count = 0;
@@ -92,7 +97,7 @@ void main() {
   // (LPS-1) makes each event fall through to :790's unthrottled
   // notifyListeners → count==20 → this fails. The actual break↔return lock.
   test('part.updated events coalesce via throttle through _onEvent (locks LPS-1 break->return)', () {
-    final store = ServerStore()..client = _fakeClient();
+    final store = ServerStore()..client = _fakeClient()..activeLoc = _zhLoc;
     const sid = 's1';
     // Seed a message so lastMessagePreview() is non-null (preview write happens).
     store.ensureConversation(sid)!.addOptimisticUserMessage('seed');
@@ -123,7 +128,7 @@ void main() {
   // immediate-merge test above disposes before the timer fires; this pumps past
   // the window and asserts the trailing notify + final preview content.
   testWidgets('part.updated trailing timer emits final state (LPSI-1R2)', (tester) async {
-    final store = ServerStore()..client = _fakeClient();
+    final store = ServerStore()..client = _fakeClient()..activeLoc = _zhLoc;
     const sid = 's1';
     var count = 0;
     store.addListener(() => count++);
@@ -190,7 +195,7 @@ void main() {
   // reconcile/load/reload completes. Without E path, conversationFor(force)
   // fires reconcile but never backfills → _lastMessage stays at the old value.
   test('reconcile.then backfills _lastMessage after merge (E path, LPS-14)', () async {
-    final store = ServerStore()..client = _fakeClient();
+    final store = ServerStore()..client = _fakeClient()..activeLoc = _zhLoc;
     const sid = 's1';
     final conv = store.ensureConversation(sid)!;
     // Pre-background state: an old user message + its preview seeded.
@@ -241,7 +246,8 @@ void main() {
       ),
     ];
     final store = ServerStore()
-      ..client = _MockClient(messagesFn: (_) async => entries);
+      ..client = _MockClient(messagesFn: (_) async => entries)
+      ..activeLoc = _zhLoc;
     const sid = 's1';
     // Seed stale state so conversationFor triggers load→reconcile.
     final conv = store.ensureConversation(sid)!;
@@ -283,7 +289,8 @@ void main() {
         callCount++;
         if (callCount == 1) throw Exception('network error');
         return entries;
-      });
+      })
+      ..activeLoc = _zhLoc;
     const sid = 's1';
     // Seed old preview.
     final conv = store.ensureConversation(sid)!;
@@ -323,7 +330,8 @@ void main() {
               id: 'u1', role: 'user', sessionID: 's1', created: 1000),
           parts: [MessagePart({'type': 'text', 'id': 'pu1', 'text': 'user text'})],
         ),
-      );
+      )
+      ..activeLoc = _zhLoc;
     const sid = 's1';
     final conv = store.ensureConversation(sid)!;
     // Seed an assistant message with parts so _lastMessage has a real value.
@@ -364,7 +372,7 @@ void main() {
   // reasoning parts, so reasoning normally wins the preview; hiding it must
   // fall back to the earlier text part. Covers the setter + _recomputePreviews.
   test('reasoningVisibleInPreview toggle hides reasoning from list preview', () {
-    final store = ServerStore()..client = _fakeClient();
+    final store = ServerStore()..client = _fakeClient()..activeLoc = _zhLoc;
     const sid = 's1';
     final conv = store.ensureConversation(sid)!;
     conv.onPartUpdated(

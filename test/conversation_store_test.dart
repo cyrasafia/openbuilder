@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/attachments/attachment_pipeline.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
@@ -8,6 +9,7 @@ import 'package:open_builder/core/net/net_error.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
+import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // 指向丢弃端口的非空 client；被测逻辑（addOptimisticUserMessage /
@@ -148,7 +150,13 @@ void main() {
   });
 
   group('lastMessagePreview file fallback', () {
-    test('pure attachment optimistic -> [附件] when filename empty', () {
+    // Locale pushed down from app_state in production; tests pass it directly
+    // to assert the localized prefix + attachment fallback.
+    final zh = lookupAppLocalizations(const Locale('zh'));
+    final en = lookupAppLocalizations(const Locale('en'));
+
+    test('pure attachment optimistic -> localized fallback when filename empty',
+        () {
       final conv = ConversationStore('s4', _fakeClient());
       conv.addOptimisticUserMessage('', attachments: [
         AttachmentPreview(
@@ -156,7 +164,8 @@ void main() {
             filename: '',
             dataUrl: 'data:image/png;base64,AAAA'),
       ]);
-      expect(conv.lastMessagePreview(), '你: [附件]');
+      expect(conv.lastMessagePreview(loc: zh), '你: [附件]');
+      expect(conv.lastMessagePreview(loc: en), 'You: [Attachment]');
     });
 
     test('attachment with filename uses filename', () {
@@ -167,7 +176,8 @@ void main() {
             filename: 'doc.pdf',
             dataUrl: 'data:application/pdf;base64,YQ=='),
       ]);
-      expect(conv.lastMessagePreview(), '你: doc.pdf');
+      expect(conv.lastMessagePreview(loc: zh), '你: doc.pdf');
+      expect(conv.lastMessagePreview(loc: en), 'You: doc.pdf');
     });
   });
 

@@ -252,3 +252,17 @@ gen-l10n 原生支持 ICU 语法。ARB 中：
 | I18N-6 | 🟡 | Android channel name 能否随 locale 本地化？ | ✅ **已确认不能**：channel 创建后 name/description 系统级不可变。已纳入 §6「不做的事」与 plan P6「已知限制」——channel name 用英文中性词，仅 title/body 本地化 |
 
 > 修复复审见对应 plan 阶段完成后追加。
+
+### 修复复审（P0–P7 全部落地后）
+
+| 编号 | 状态 | 复核证据 |
+|---|---|---|
+| I18N-1 | ✅ 已落实 | `friendlyMessage(l, e)` 接收原始异常；store/State 6 处缓存点存 `Object?` 原始 `e`，渲染时翻译（避免 locale 陈旧）。grep `friendlyError(` 无旧式缓存调用 |
+| I18N-2 | ✅ 已落实 | `notification_service.dart` 每次 `show()` 现取 `AppLocalizations.delegate.load(resolveActiveLocale())`；`localeMode` 主 isolate 全局单例，SSE 回调可达 |
+| I18N-3 | ✅ 已落实 | `relTime` 保持 locale-neutral 紧凑格式，未改；P7 扫描确认无中文 |
+| I18N-4 | ✅ 已落实 | 单 ARB（`app_zh.arb` 模板 + `app_en.arb`），key 前缀分组；193 key |
+| I18N-5 | ✅ 已落实 | `notification_service.dart` 的 `NotificationDetails` 已移除 const，title/body 走 `delegate.load()` |
+| I18N-6 | ✅ 已落实 | channel id 固定 + 英文中性 name（`Agent`/`Permission`/`Question`），title/body 本地化 |
+| **P7 扫描新增** | ✅ 已落实 | 修复 3 处漏网：`lastMessagePreview` 的 `'你: '` 前缀与 `'[附件]'` fallback、`worktreeDisplayOf` 的 `'主工作区'`，均改走 ARB（`previewYouPrefix` 新增 + 复用 `attachmentFallback` / `projectMainWorkspace`）。store 经 `activeLoc` 下推 + `_recomputePreviews()` 避免 locale 陈旧 |
+
+> 完整逐阶段 DoD 核对与残留清单见 [`review-i18n.md`](./review-i18n.md)。`flutter analyze --fatal-infos` 0 issue、`flutter test` 199 项全绿。

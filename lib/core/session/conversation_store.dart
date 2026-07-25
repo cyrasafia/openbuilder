@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../data/api/opencode_client.dart';
 import '../../../domain/models.dart';
+import '../../../l10n/gen/app_localizations.dart';
 import '../attachments/attachment_pipeline.dart';
 import '../logging/app_logger.dart';
 import '../net/net_error.dart';
@@ -286,7 +287,7 @@ class ConversationStore extends ChangeNotifier {
   ///
   /// When [hideReasoning] is true, reasoning parts are skipped so the list
   /// preview mirrors the detail view when "展示思考过程" is off.
-  String? lastMessagePreview({bool hideReasoning = false}) {
+  String? lastMessagePreview({bool hideReasoning = false, AppLocalizations? loc}) {
     if (_messages.isEmpty) return null;
     final last = _messages.last;
     var preview = '';
@@ -298,7 +299,8 @@ class ConversationStore extends ChangeNotifier {
       if (dp.type == 'tool') {
         pv = dp.toolSummary;
       } else if (dp.type == 'file') {
-        pv = (dp.filename?.isNotEmpty ?? false) ? dp.filename! : '[附件]';
+        final name = dp.filename ?? '';
+        pv = name.isNotEmpty ? name : (loc?.attachmentFallback ?? '');
       } else {
         pv = dp.text.replaceAll('\n', ' ').trim();
       }
@@ -308,7 +310,8 @@ class ConversationStore extends ChangeNotifier {
       }
     }
     if (preview.isEmpty) return null;
-    return (last.info.role == 'user' ? '你: ' : '') + preview;
+    final prefix = last.info.role == 'user' ? (loc?.previewYouPrefix ?? '') : '';
+    return prefix + preview;
   }
 
   // ── Self-healing public API ──
