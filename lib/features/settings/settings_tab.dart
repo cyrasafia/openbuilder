@@ -168,17 +168,14 @@ class _SettingsTabState extends State<SettingsTab> {
                       ButtonSegment(
                         value: ThemeMode.system,
                         icon: const Icon(Icons.brightness_auto, size: 18),
-                        label: Text(loc.themeSystem),
                       ),
                       ButtonSegment(
                         value: ThemeMode.light,
                         icon: const Icon(Icons.light_mode, size: 18),
-                        label: Text(loc.themeLight),
                       ),
                       ButtonSegment(
                         value: ThemeMode.dark,
                         icon: const Icon(Icons.dark_mode, size: 18),
-                        label: Text(loc.themeDark),
                       ),
                     ],
                   ),
@@ -198,11 +195,11 @@ class _SettingsTabState extends State<SettingsTab> {
                       ),
                       const ButtonSegment(
                         value: Locale('zh'),
-                        label: Text('中文'),
+                        label: Text('中'),
                       ),
                       const ButtonSegment(
                         value: Locale('en'),
-                        label: Text('English'),
+                        label: Text('En'),
                       ),
                     ],
                   ),

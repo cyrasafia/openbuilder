@@ -2138,6 +2138,10 @@ class _ComposeBarState extends State<_ComposeBar> {
                   hintText: widget.shellMode
                       ? l(context).composeShellHint
                       : l(context).composeHint,
+                  hintStyle: const TextStyle(
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  hintMaxLines: 1,
                   isDense: true,
                   prefixIcon: IconButton(
                     icon: Icon(
