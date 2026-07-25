@@ -62,7 +62,7 @@
   "settingsCheck": "检测",
   "settingsNotConfigured": "未配置",
   "settingsAddress": "地址",
-  "settingsOpencodeVersion": "opencode 版本",
+  "settingsOpencodeVersion": "版本",
   "settingsConnectionFailed": "连接失败",
   "refreshFailed": "刷新失败，请稍后再试",
   "noSessions": "暂无会话",
