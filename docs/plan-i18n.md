@@ -88,12 +88,12 @@
 8. 批量在 `app_zh.arb` / `app_en.arb` 补齐本阶段 key
 
 ### 完成标准 (DoD)
-- [ ] 制造网络错误（断网/401/超时），SnackBar 中英双语正确
-- [ ] 共享 ErrorView / AgentStatusIndicator 中英正确
-- [ ] **4 处 `StateError` 已改为 `KnownError`，`friendlyErrorRaw` 能正确分类 `sessionNotReady`/`notConnected`**（无行为回归）
-- [ ] store / State 层缓存的是**原始异常 `e`**（字段 `Object?`）而非翻译文案/枚举；grep `friendlyError(` 无旧式缓存调用
-- [ ] 切换语言后，已存在的错误页面文案跟随更新（验证不陈旧）
-- [ ] `flutter analyze --fatal-infos` 0 issue
+- [x] 制造网络错误（断网/401/超时），SnackBar 中英双语正确
+- [x] 共享 ErrorView / AgentStatusIndicator 中英正确
+- [x] **4 处 `StateError` 已改为 `KnownError`，`friendlyErrorRaw` 能正确分类 `sessionNotReady`/`notConnected`**（无行为回归）
+- [x] store / State 层缓存的是**原始异常 `e`**（字段 `Object?`）而非翻译文案/枚举；grep `friendlyError(` 无旧式缓存调用
+- [x] 切换语言后，已存在的错误页面文案跟随更新（验证不陈旧）
+- [x] `flutter analyze --fatal-infos` 0 issue
 
 ---
 
@@ -110,11 +110,11 @@
 5. **`welcome_screen.dart`**（3 处）：引导长文案（拆行）+ `添加服务器` + `稍后`
 
 ### 完成标准 (DoD)
-- [ ] 设置页所有分区/label/subtitle 中英双语正确
-- [ ] 语言切换器三档 label 自身本地化（系统/System、中文、English）
-- [ ] 底部 Tab 标签中英切换
-- [ ] 欢迎页引导文案中英正确
-- [ ] `flutter analyze --fatal-infos` 0 issue
+- [x] 设置页所有分区/label/subtitle 中英双语正确
+- [x] 语言切换器三档 label 自身本地化（系统/System、中文、English）
+- [x] 底部 Tab 标签中英切换
+- [x] 欢迎页引导文案中英正确
+- [x] `flutter analyze --fatal-infos` 0 issue
 
 ---
 

@@ -8,6 +8,7 @@ import '../../core/session/server_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import '../../ui/l10n_ext.dart';
 import '../projects/worktree_order.dart';
 
 class ProjectsTab extends StatefulWidget {
@@ -39,7 +40,7 @@ class _ProjectsTabState extends State<ProjectsTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('项目')),
+      appBar: AppBar(title: Text(l(context).tabProjects)),
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
@@ -63,8 +64,8 @@ class _ProjectsTabState extends State<ProjectsTab> {
             onRefresh: () => serverStore.refresh(),
             child: items.isEmpty
                 ? emptyScrollable(
-                    const Text('服务器上暂无项目',
-                        style: TextStyle(fontSize: 14)),
+                    Text(l(context).noProjects,
+                        style: const TextStyle(fontSize: 14)),
                   )
                 : ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),

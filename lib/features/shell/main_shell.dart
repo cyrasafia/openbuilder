@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
+import '../../ui/l10n_ext.dart';
 
 class MainShell extends StatefulWidget {
   final StatefulNavigationShell shell;
@@ -72,21 +73,21 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         selectedIndex: widget.shell.currentIndex,
         onDestinationSelected: (i) =>
             widget.shell.goBranch(i, initialLocation: i == widget.shell.currentIndex),
-        destinations: const [
+        destinations: [
           NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: '会话',
+            icon: const Icon(Icons.chat_bubble_outline),
+            selectedIcon: const Icon(Icons.chat_bubble),
+            label: l(context).tabSessions,
           ),
           NavigationDestination(
-            icon: Icon(Icons.folder_copy_outlined),
-            selectedIcon: Icon(Icons.folder_copy),
-            label: '项目',
+            icon: const Icon(Icons.folder_copy_outlined),
+            selectedIcon: const Icon(Icons.folder_copy),
+            label: l(context).tabProjects,
           ),
           NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: '设置',
+            icon: const Icon(Icons.settings_outlined),
+            selectedIcon: const Icon(Icons.settings),
+            label: l(context).tabSettings,
           ),
         ],
       ),
@@ -118,7 +119,7 @@ class _DisconnectBanner extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Text(
-            '网络已断开，重连中…',
+            l(context).disconnectBanner,
             style: TextStyle(
               fontSize: 13,
               color: scheme.onSurface,

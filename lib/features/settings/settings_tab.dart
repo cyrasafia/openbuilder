@@ -11,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
+import '../../core/net/net_error.dart';
 import '../../data/api/opencode_client.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -29,7 +30,7 @@ class _SettingsTabState extends State<SettingsTab> {
 
   bool _checking = false;
   HealthInfo? _health;
-  String? _error;
+  Object? _error;
   String _appVersion = '';
 
   @override
@@ -58,8 +59,8 @@ class _SettingsTabState extends State<SettingsTab> {
     try {
       final h = await OpencodeClient(dioFor(server)).health();
       setState(() => _health = h);
-    } catch (_) {
-      setState(() => _error = '无法连接到服务器');
+    } catch (e) {
+      setState(() => _error = e);
     } finally {
       if (mounted) setState(() => _checking = false);
     }
@@ -68,8 +69,9 @@ class _SettingsTabState extends State<SettingsTab> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final loc = l(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('设置')),
+      appBar: AppBar(title: Text(loc.settingsTitle)),
       body: ListenableBuilder(
         listenable: connectionStore,
         builder: (context, _) {
@@ -98,7 +100,7 @@ class _SettingsTabState extends State<SettingsTab> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            server?.name ?? '未配置',
+                            server?.name ?? loc.settingsNotConfigured,
                             style:
                                 const TextStyle(fontWeight: FontWeight.w600),
                           ),
@@ -112,18 +114,22 @@ class _SettingsTabState extends State<SettingsTab> {
                                   child: CircularProgressIndicator(
                                       strokeWidth: 2))
                               : const Icon(Icons.refresh, size: 18),
-                          label: const Text('检测'),
+                          label: Text(loc.settingsCheck),
                         ),
                       ],
                     ),
                     const SizedBox(height: 8),
-                    _kv('地址', server?.hostDisplay ?? '-'),
-                    _kv('opencode 版本',
-                        _health?.version ?? (_error != null ? '连接失败' : '—')),
+                    _kv(loc.settingsAddress, server?.hostDisplay ?? '-'),
+                    _kv(
+                        loc.settingsOpencodeVersion,
+                        _health?.version ??
+                            (_error != null
+                                ? loc.settingsConnectionFailed
+                                : '—')),
                     if (_error != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
-                        child: Text(_error!,
+                        child: Text(friendlyMessage(loc, _error!),
                             style: AppTheme.mono.copyWith(
                                 fontSize: 11, color: scheme.outline),
                             maxLines: 3,
@@ -132,53 +138,54 @@ class _SettingsTabState extends State<SettingsTab> {
                   ],
                 ),
               ),
-              _section('服务器', [
+              _section(loc.settingsServerSection, [
                 ListTile(
                   leading: const Icon(Icons.dns_outlined),
-                  title: const Text('服务器管理'),
-                  subtitle: Text('${connectionStore.servers.length} 个已配置'),
+                  title: Text(loc.settingsServerManagement),
+                  subtitle: Text(loc.settingsConfiguredCount(
+                      connectionStore.servers.length)),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => context.push('/servers'),
                 ),
                 ListTile(
                   leading: const Icon(Icons.memory),
-                  title: const Text('模型管理'),
-                  subtitle: const Text('显示 / 隐藏模型'),
+                  title: Text(loc.settingsModelsManage),
+                  subtitle: Text(loc.settingsModelsHint),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => context.push('/models'),
                 ),
               ]),
-              _section('客户端', [
+              _section(loc.settingsClientSection, [
                 ListTile(
                   leading: const Icon(Icons.palette_outlined),
-                  title: const Text('主题'),
+                  title: Text(loc.settingsTheme),
                   trailing: SegmentedButton<ThemeMode>(
                     showSelectedIcon: false,
                     selected: {themeMode.value},
                     onSelectionChanged: (s) =>
                         setState(() => themeMode.value = s.first),
-                    segments: const [
+                    segments: [
                       ButtonSegment(
                         value: ThemeMode.system,
-                        icon: Icon(Icons.brightness_auto, size: 18),
-                        label: Text('系统'),
+                        icon: const Icon(Icons.brightness_auto, size: 18),
+                        label: Text(loc.themeSystem),
                       ),
                       ButtonSegment(
                         value: ThemeMode.light,
-                        icon: Icon(Icons.light_mode, size: 18),
-                        label: Text('浅色'),
+                        icon: const Icon(Icons.light_mode, size: 18),
+                        label: Text(loc.themeLight),
                       ),
                       ButtonSegment(
                         value: ThemeMode.dark,
-                        icon: Icon(Icons.dark_mode, size: 18),
-                        label: Text('深色'),
+                        icon: const Icon(Icons.dark_mode, size: 18),
+                        label: Text(loc.themeDark),
                       ),
                     ],
                   ),
                 ),
                 ListTile(
                   leading: const Icon(Icons.language),
-                  title: Text(l(context).settingsLanguage),
+                  title: Text(loc.settingsLanguage),
                   trailing: SegmentedButton<Locale?>(
                     showSelectedIcon: false,
                     selected: {localeMode.value},
@@ -187,7 +194,7 @@ class _SettingsTabState extends State<SettingsTab> {
                     segments: [
                       ButtonSegment(
                         value: null,
-                        label: Text(l(context).systemLanguage),
+                        label: Text(loc.systemLanguage),
                       ),
                       const ButtonSegment(
                         value: Locale('zh'),
@@ -202,26 +209,26 @@ class _SettingsTabState extends State<SettingsTab> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.psychology_outlined),
-                  title: const Text('展示思考过程'),
-                  subtitle: const Text('在会话详情页显示推理内容'),
+                  title: Text(loc.settingsShowThinking),
+                  subtitle: Text(loc.settingsShowThinkingHint),
                   trailing: Switch(
                     value: showThinking.value,
                     onChanged: (v) => setState(() => showThinking.value = v),
                   ),
                 ),
               ]),
-              _section('日志', [
+              _section(loc.settingsLogsSection, [
                 ListTile(
                   leading: const Icon(Icons.description_outlined),
-                  title: const Text('导出日志'),
+                  title: Text(loc.settingsExportLogs),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _showExportRangeSheet,
                 ),
               ]),
-              _section('关于', [
+              _section(loc.settingsAboutSection, [
                 ListTile(
                   leading: const Icon(Icons.info_outline),
-                  title: const Text('客户端版本'),
+                  title: Text(loc.settingsClientVersion),
                   trailing: Text(_appVersion.isEmpty
                       ? '…'
                       : _appVersion),
@@ -244,7 +251,7 @@ class _SettingsTabState extends State<SettingsTab> {
           children: [
             ListTile(
               leading: const Icon(Icons.timer_outlined),
-              title: const Text('最近 5 分钟'),
+              title: Text(l(ctx).logsLast5Min),
               onTap: () {
                 Navigator.pop(ctx);
                 _doExport(() => AppLogger.I
@@ -253,7 +260,7 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
             ListTile(
               leading: const Icon(Icons.schedule_outlined),
-              title: const Text('最近 1 小时'),
+              title: Text(l(ctx).logsLastHour),
               onTap: () {
                 Navigator.pop(ctx);
                 _doExport(() => AppLogger.I
@@ -262,7 +269,7 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
             ListTile(
               leading: const Icon(Icons.today_outlined),
-              title: const Text('今天'),
+              title: Text(l(ctx).logsToday),
               onTap: () {
                 Navigator.pop(ctx);
                 _doExport(() => AppLogger.I.exportFileDisk(todayOnly: true));
@@ -270,7 +277,7 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
             ListTile(
               leading: const Icon(Icons.file_download_outlined),
-              title: const Text('全部'),
+              title: Text(l(ctx).logsAll),
               onTap: () {
                 Navigator.pop(ctx);
                 _doExport(
@@ -289,8 +296,8 @@ class _SettingsTabState extends State<SettingsTab> {
       file = await build();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('导出失败: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l(context).logsExportFailed(e.toString()))));
       return;
     }
     if (!mounted) return;
@@ -310,7 +317,7 @@ class _SettingsTabState extends State<SettingsTab> {
           children: [
             ListTile(
               leading: const Icon(Icons.save_alt),
-              title: const Text('保存到本地'),
+              title: Text(l(ctx).logsSaveToLocal),
               onTap: () {
                 Navigator.pop(ctx);
                 _saveToLocal(file);
@@ -318,7 +325,7 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
             ListTile(
               leading: const Icon(Icons.share_outlined),
-              title: const Text('分享…'),
+              title: Text(l(ctx).logsShare),
               onTap: () {
                 Navigator.pop(ctx);
                 _share(file);
@@ -337,8 +344,8 @@ class _SettingsTabState extends State<SettingsTab> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('分享失败: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l(context).logsShareFailed(e.toString()))));
     }
   }
 
@@ -352,8 +359,8 @@ class _SettingsTabState extends State<SettingsTab> {
             'displayName': name,
           });
           if (!mounted) return;
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('已保存到 Download：$name')));
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(l(context).logsSavedToDownload(name))));
           return;
         } catch (e) {
           AppLogger.I.w('Settings', 'saveToDownloads failed: $e');
@@ -362,20 +369,20 @@ class _SettingsTabState extends State<SettingsTab> {
       final dir = await getExternalStorageDirectory();
       if (dir == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('无法访问本地存储')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l(context).logsLocalStorageUnavailable)));
         return;
       }
       final dest = Directory('${dir.path}/logs');
       if (!await dest.exists()) await dest.create(recursive: true);
       final saved = await file.copy('${dest.path}/$name');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Download 不可用，已保存到应用目录：${saved.path}')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l(context).logsSavedToAppDir(saved.path))));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('保存失败: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l(context).logsSaveFailed(e.toString()))));
     }
   }
 

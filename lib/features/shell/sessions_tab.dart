@@ -8,6 +8,7 @@ import '../../core/session/server_store.dart';
 import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import '../../ui/l10n_ext.dart';
 
 class SessionsTab extends StatefulWidget {
   const SessionsTab({super.key});
@@ -40,7 +41,7 @@ class _SessionsTabState extends State<SessionsTab> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('会话'),
+        title: Text(l(context).tabSessions),
       ),
       body: ListenableBuilder(
         listenable: serverStore,
@@ -66,7 +67,7 @@ class _SessionsTabState extends State<SessionsTab> {
               final ok = await serverStore.refresh();
               if (!ok && context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('刷新失败，请稍后再试')),
+                  SnackBar(content: Text(l(context).refreshFailed)),
                 );
               }
             },
@@ -78,7 +79,7 @@ class _SessionsTabState extends State<SessionsTab> {
                         Icon(Icons.chat_bubble_outline,
                             size: 56, color: Theme.of(context).colorScheme.outline),
                         const SizedBox(height: 12),
-                        Text('暂无会话', style: Theme.of(context).textTheme.titleMedium),
+                        Text(l(context).noSessions, style: Theme.of(context).textTheme.titleMedium),
                       ],
                     ),
                   )
