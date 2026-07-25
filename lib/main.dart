@@ -8,6 +8,7 @@ import 'app_state.dart';
 import 'core/logging/app_logger.dart';
 import 'core/notifications/notification_service.dart';
 import 'core/net/system_font_weight.dart';
+import 'l10n/gen/app_localizations.dart';
 import 'ui/theme.dart';
 
 final _router = buildRouter(connectionStore);
@@ -101,12 +102,14 @@ class _OpenBuilderAppState extends State<OpenBuilderApp>
           darkTheme: AppTheme.dark,
           themeMode: mode,
           localizationsDelegates: const [
+            AppLocalizations.delegate,
             GlobalMaterialLocalizations.delegate,
             GlobalWidgetsLocalizations.delegate,
             GlobalCupertinoLocalizations.delegate,
           ],
           supportedLocales: const [Locale('zh'), Locale('en')],
           locale: locale,
+          localeResolutionCallback: (_, _) => resolveActiveLocale(),
           routerConfig: _router,
         ),
       ),

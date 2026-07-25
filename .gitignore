@@ -54,3 +54,6 @@ app.*.map.json
 
 # codegen reference output
 .gen_ref/
+
+# Flutter gen-l10n output (regenerated on pub get via generate: true)
+lib/l10n/gen/

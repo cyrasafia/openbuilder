@@ -12,6 +12,20 @@ final ModelHideStore modelHideStore = ModelHideStore();
 final DefaultAgentModelStore defaultAgentModelStore = DefaultAgentModelStore();
 final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 final ValueNotifier<Locale?> localeMode = ValueNotifier(null);
+
+/// Resolve the active app locale for MaterialApp's `localeResolutionCallback`
+/// (single source of truth so explicit selection and system-mode resolution
+/// stay consistent). The notification service will share this helper in P6.
+/// Falls back to `en` for unsupported device locales — this effort adds
+/// English, so an unknown-locale user should see English rather than Chinese.
+Locale resolveActiveLocale() {
+  final chosen = localeMode.value ??
+      WidgetsBinding.instance.platformDispatcher.locale;
+  for (final s in const [Locale('zh'), Locale('en')]) {
+    if (s.languageCode == chosen.languageCode) return s;
+  }
+  return const Locale('en');
+}
 final ValueNotifier<bool> showThinking = ValueNotifier(false);
 
 /// Load persisted theme/locale preferences and wire up change listeners to

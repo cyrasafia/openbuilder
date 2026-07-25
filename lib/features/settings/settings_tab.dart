@@ -12,6 +12,7 @@ import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
 import '../../data/api/opencode_client.dart';
+import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 
 /// Phase 0: server status card (health/version) + server management entry +
@@ -177,22 +178,22 @@ class _SettingsTabState extends State<SettingsTab> {
                 ),
                 ListTile(
                   leading: const Icon(Icons.language),
-                  title: const Text('语言'),
+                  title: Text(l(context).settingsLanguage),
                   trailing: SegmentedButton<Locale?>(
                     showSelectedIcon: false,
                     selected: {localeMode.value},
                     onSelectionChanged: (s) =>
                         setState(() => localeMode.value = s.first),
-                    segments: const [
+                    segments: [
                       ButtonSegment(
                         value: null,
-                        label: Text('系统'),
+                        label: Text(l(context).systemLanguage),
                       ),
-                      ButtonSegment(
+                      const ButtonSegment(
                         value: Locale('zh'),
                         label: Text('中文'),
                       ),
-                      ButtonSegment(
+                      const ButtonSegment(
                         value: Locale('en'),
                         label: Text('English'),
                       ),
