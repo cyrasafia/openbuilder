@@ -767,75 +767,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _part(DisplayPart p, {required bool user}) {
     switch (p.type) {
       case 'subtask':
+        final cmd = p.command ?? '';
+        final displayText = cmd.isEmpty
+            ? p.text
+            : (p.text.isEmpty ? cmd : '$cmd\n\n${p.text}');
+        return _markdownPart(displayText, user: user);
       case 'text':
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
-        final baseColor = mdTheme.colorScheme.onSurface;
-        final appColors = mdTheme.extension<AppColors>()!;
-        // Build the base sheet from the resolved Theme.of(context): its
-        // textTheme is localized by MaterialApp, so bodyMedium.fontSize is
-        // non-null (flutter_markdown's fromTheme does `bodyMedium.fontSize!`).
-        // The raw AppTheme.dark keeps fontSize=null (inherit), which crashes.
-        // Colors are all overridden below, so only font sizes/families matter.
-        final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
-        return Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: MarkdownBody(
-            data: p.text,
-            selectable: true,
-            softLineBreak: user,
-            styleSheet: mdBase.copyWith(
-                  p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
-                  pPadding: const EdgeInsets.only(bottom: 6),
-                  strong: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: baseColor,
-                  ),
-                  h1: mdBase.h1?.copyWith(color: baseColor),
-                  h2: mdBase.h2?.copyWith(color: baseColor),
-                  h3: mdBase.h3?.copyWith(color: baseColor),
-                  h4: mdBase.h4?.copyWith(color: baseColor),
-                  h5: mdBase.h5?.copyWith(color: baseColor),
-                  h6: mdBase.h6?.copyWith(color: baseColor),
-                  em: mdBase.em?.copyWith(color: baseColor),
-                  del: mdBase.del?.copyWith(color: baseColor),
-                  tableHead: mdBase.tableHead?.copyWith(color: baseColor),
-                  tableBody: mdBase.tableBody?.copyWith(color: baseColor),
-                  tableBorder: TableBorder.all(color: appColors.border),
-                  horizontalRuleDecoration: BoxDecoration(
-                    border: Border(
-                      top: BorderSide(color: appColors.border, width: 1),
-                    ),
-                  ),
-                  a: TextStyle(color: appColors.link),
-                  code: TextStyle(
-                    fontSize: 13,
-                    fontFamily: 'monospace',
-                    color: appColors.code,
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: appColors.codeBackground,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: appColors.border),
-                  ),
-                  codeblockPadding: const EdgeInsets.all(12),
-                  listBullet: TextStyle(color: baseColor),
-                  blockquote: TextStyle(
-                    color: baseColor,
-                    fontStyle: FontStyle.italic,
-                  ),
-                  blockquoteDecoration: BoxDecoration(
-                    border: Border(
-                      left: BorderSide(
-                        color: appColors.quoteBar,
-                        width: 3,
-                      ),
-                    ),
-                  ),
-                  blockquotePadding: const EdgeInsets.only(left: 12),
-                ),
-          ),
-        );
+        return _markdownPart(p.text, user: user);
       case 'reasoning':
         if (!showThinking.value) return const SizedBox.shrink();
         return _Reasoning(text: p.text);
@@ -846,6 +784,77 @@ class _ConversationScreenState extends State<ConversationScreen> {
       default:
         return const SizedBox.shrink();
     }
+  }
+
+  Widget _markdownPart(String data, {required bool user}) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
+    final baseColor = mdTheme.colorScheme.onSurface;
+    final appColors = mdTheme.extension<AppColors>()!;
+    // Build the base sheet from the resolved Theme.of(context): its
+    // textTheme is localized by MaterialApp, so bodyMedium.fontSize is
+    // non-null (flutter_markdown's fromTheme does `bodyMedium.fontSize!`).
+    // The raw AppTheme.dark keeps fontSize=null (inherit), which crashes.
+    // Colors are all overridden below, so only font sizes/families matter.
+    final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: MarkdownBody(
+        data: data,
+        selectable: true,
+        softLineBreak: user,
+        styleSheet: mdBase.copyWith(
+              p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
+              pPadding: const EdgeInsets.only(bottom: 6),
+              strong: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: baseColor,
+              ),
+              h1: mdBase.h1?.copyWith(color: baseColor),
+              h2: mdBase.h2?.copyWith(color: baseColor),
+              h3: mdBase.h3?.copyWith(color: baseColor),
+              h4: mdBase.h4?.copyWith(color: baseColor),
+              h5: mdBase.h5?.copyWith(color: baseColor),
+              h6: mdBase.h6?.copyWith(color: baseColor),
+              em: mdBase.em?.copyWith(color: baseColor),
+              del: mdBase.del?.copyWith(color: baseColor),
+              tableHead: mdBase.tableHead?.copyWith(color: baseColor),
+              tableBody: mdBase.tableBody?.copyWith(color: baseColor),
+              tableBorder: TableBorder.all(color: appColors.border),
+              horizontalRuleDecoration: BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: appColors.border, width: 1),
+                ),
+              ),
+              a: TextStyle(color: appColors.link),
+              code: TextStyle(
+                fontSize: 13,
+                fontFamily: 'monospace',
+                color: appColors.code,
+              ),
+              codeblockDecoration: BoxDecoration(
+                color: appColors.codeBackground,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: appColors.border),
+              ),
+              codeblockPadding: const EdgeInsets.all(12),
+              listBullet: TextStyle(color: baseColor),
+              blockquote: TextStyle(
+                color: baseColor,
+                fontStyle: FontStyle.italic,
+              ),
+              blockquoteDecoration: BoxDecoration(
+                border: Border(
+                  left: BorderSide(
+                    color: appColors.quoteBar,
+                    width: 3,
+                  ),
+                ),
+              ),
+              blockquotePadding: const EdgeInsets.only(left: 12),
+            ),
+      ),
+    );
   }
 }
 
