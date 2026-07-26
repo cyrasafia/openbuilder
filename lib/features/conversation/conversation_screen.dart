@@ -765,45 +765,50 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _part(DisplayPart p, {required bool user}) {
     switch (p.type) {
       case 'text':
-        final baseColor = user
-            ? const Color(0xFFD8F3E0)
-            : Theme.of(context).colorScheme.onSurface;
         final isDark = Theme.of(context).brightness == Brightness.dark;
-        // User bubble is always dark green — code blocks inside it must use
-        // dark backgrounds regardless of theme, or light text on light bg
-        // becomes unreadable.
-        final codeBlockBg = user
-            ? const Color(0xFF142A1E)
-            : (isDark ? const Color(0xFF161B22) : const Color(0xFFF0F2F5));
-        final codeBlockBorder = user
-            ? const Color(0xFF2A4A38)
-            : (isDark ? const Color(0xFF30363D) : const Color(0xFFDADDE3));
-        final codeFg = (user || isDark)
-            ? const Color(0xFFEC407A)
-            : const Color(0xFFC2185B);
+        final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
+        final baseColor = mdTheme.colorScheme.onSurface;
+        final appColors = mdTheme.extension<AppColors>()!;
+        final mdBase = MarkdownStyleSheet.fromTheme(mdTheme);
         return Padding(
           padding: const EdgeInsets.only(top: 4),
           child: MarkdownBody(
             data: p.text,
             selectable: true,
             softLineBreak: user,
-            styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                .copyWith(
+            styleSheet: mdBase.copyWith(
                   p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
                   pPadding: const EdgeInsets.only(bottom: 6),
                   strong: TextStyle(
                     fontWeight: FontWeight.w600,
                     color: baseColor,
                   ),
+                  h1: mdBase.h1?.copyWith(color: baseColor),
+                  h2: mdBase.h2?.copyWith(color: baseColor),
+                  h3: mdBase.h3?.copyWith(color: baseColor),
+                  h4: mdBase.h4?.copyWith(color: baseColor),
+                  h5: mdBase.h5?.copyWith(color: baseColor),
+                  h6: mdBase.h6?.copyWith(color: baseColor),
+                  em: mdBase.em?.copyWith(color: baseColor),
+                  del: mdBase.del?.copyWith(color: baseColor),
+                  tableHead: mdBase.tableHead?.copyWith(color: baseColor),
+                  tableBody: mdBase.tableBody?.copyWith(color: baseColor),
+                  tableBorder: TableBorder.all(color: appColors.border),
+                  horizontalRuleDecoration: BoxDecoration(
+                    border: Border(
+                      top: BorderSide(color: appColors.border, width: 1),
+                    ),
+                  ),
+                  a: TextStyle(color: appColors.link),
                   code: TextStyle(
                     fontSize: 13,
                     fontFamily: 'monospace',
-                    color: codeFg,
+                    color: appColors.code,
                   ),
                   codeblockDecoration: BoxDecoration(
-                    color: codeBlockBg,
+                    color: appColors.codeBackground,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: codeBlockBorder),
+                    border: Border.all(color: appColors.border),
                   ),
                   codeblockPadding: const EdgeInsets.all(12),
                   listBullet: TextStyle(color: baseColor),
@@ -814,7 +819,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   blockquoteDecoration: BoxDecoration(
                     border: Border(
                       left: BorderSide(
-                        color: Theme.of(context).colorScheme.outline,
+                        color: appColors.quoteBar,
                         width: 3,
                       ),
                     ),
@@ -1173,17 +1178,12 @@ class _FileChip extends StatelessWidget {
         ),
       );
     }
-    // User bubble is always dark green — file name/icon must use light
-    // foreground regardless of theme, or dark text on dark green is unreadable.
-    final fg = user
-        ? const Color(0xFFD8F3E0)
-        : Theme.of(context).colorScheme.onSurface;
-    final iconColor = user
-        ? const Color(0xFFD8F3E0)
-        : Theme.of(context).colorScheme.outline;
-    final linkColor = user
-        ? const Color(0xFFD8F3E0)
-        : Theme.of(context).colorScheme.primary;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
+    final appColors = mdTheme.extension<AppColors>()!;
+    final fg = mdTheme.colorScheme.onSurface;
+    final iconColor = mdTheme.colorScheme.outline;
+    final linkColor = appColors.link;
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: Row(

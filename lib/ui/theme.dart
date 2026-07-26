@@ -17,21 +17,21 @@ class AppTheme {
   static List<FontVariation>? get _weightVariations =>
       SystemFontWeight.variations;
 
-  static ThemeData get dark {
-    final scheme = ColorScheme.fromSeed(
+  static final ThemeData dark = _base(
+    ColorScheme.fromSeed(
       seedColor: const Color(0xFF4ADE80),
       brightness: Brightness.dark,
-    );
-    return _base(scheme, const Color(0xFF0E0F12));
-  }
+    ),
+    const Color(0xFF0E0F12),
+  );
 
-  static ThemeData get light {
-    final scheme = ColorScheme.fromSeed(
+  static final ThemeData light = _base(
+    ColorScheme.fromSeed(
       seedColor: const Color(0xFF16A34A),
       brightness: Brightness.light,
-    );
-    return _base(scheme, const Color(0xFFF7F8FA));
-  }
+    ),
+    const Color(0xFFF7F8FA),
+  );
 
   static ThemeData _base(ColorScheme scheme, Color scaffold) {
     final variations = _weightVariations;
@@ -73,6 +73,11 @@ class AppTheme {
       colorScheme: scheme,
       scaffoldBackgroundColor: scaffold,
       textTheme: textTheme,
+      extensions: [
+        scheme.brightness == Brightness.dark
+            ? AppColors.dark
+            : AppColors.light,
+      ],
       appBarTheme: AppBarTheme(
         backgroundColor: scaffold,
         elevation: 0,
@@ -105,6 +110,66 @@ class AppTheme {
               )
             : null,
       ),
+    );
+  }
+}
+
+class AppColors extends ThemeExtension<AppColors> {
+  const AppColors({
+    required this.code,
+    required this.link,
+    required this.codeBackground,
+    required this.border,
+    required this.quoteBar,
+  });
+
+  final Color code;
+  final Color link;
+  final Color codeBackground;
+  final Color border;
+  final Color quoteBar;
+
+  static const dark = AppColors(
+    code: Color(0xFFEC407A),
+    link: Color(0xFF2196F3),
+    codeBackground: Color(0xFF161B22),
+    border: Color(0xFF30363D),
+    quoteBar: Color(0xFF6E7681),
+  );
+
+  static const light = AppColors(
+    code: Color(0xFFC2185B),
+    link: Color(0xFF2196F3),
+    codeBackground: Color(0xFFF0F2F5),
+    border: Color(0xFFDADDE3),
+    quoteBar: Color(0xFF8C959F),
+  );
+
+  @override
+  AppColors copyWith({
+    Color? code,
+    Color? link,
+    Color? codeBackground,
+    Color? border,
+    Color? quoteBar,
+  }) =>
+      AppColors(
+        code: code ?? this.code,
+        link: link ?? this.link,
+        codeBackground: codeBackground ?? this.codeBackground,
+        border: border ?? this.border,
+        quoteBar: quoteBar ?? this.quoteBar,
+      );
+
+  @override
+  AppColors lerp(AppColors? other, double t) {
+    if (other == null) return this;
+    return AppColors(
+      code: Color.lerp(code, other.code, t)!,
+      link: Color.lerp(link, other.link, t)!,
+      codeBackground: Color.lerp(codeBackground, other.codeBackground, t)!,
+      border: Color.lerp(border, other.border, t)!,
+      quoteBar: Color.lerp(quoteBar, other.quoteBar, t)!,
     );
   }
 }
