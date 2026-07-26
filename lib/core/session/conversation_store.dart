@@ -27,6 +27,7 @@ class DisplayPart {
   String? fileMime;
   String? fileUrl;
   String? filename;
+  String? command;
   Uint8List? previewThumb;
 
   DisplayPart({
@@ -41,6 +42,7 @@ class DisplayPart {
     this.fileMime,
     this.fileUrl,
     this.filename,
+    this.command,
     this.previewThumb,
   });
 
@@ -125,6 +127,14 @@ class DisplayPart {
         fileMime: p.raw['mime']?.toString(),
         fileUrl: p.raw['url']?.toString() ?? '',
         filename: p.raw['filename']?.toString(),
+      );
+    }
+    if (p.type == 'subtask') {
+      return DisplayPart(
+        id: p.id,
+        type: 'subtask',
+        command: p.raw['command']?.toString(),
+        text: p.text ?? '',
       );
     }
     return DisplayPart(id: p.id, type: p.type, text: p.text ?? '');
@@ -298,6 +308,9 @@ class ConversationStore extends ChangeNotifier {
       String pv;
       if (dp.type == 'tool') {
         pv = dp.toolSummary;
+      } else if (dp.type == 'subtask') {
+        final cmd = dp.command;
+        pv = (cmd == null || cmd.isEmpty) ? 'subtask' : 'subtask: $cmd';
       } else if (dp.type == 'file') {
         final name = dp.filename ?? '';
         pv = name.isNotEmpty ? name : (loc?.attachmentFallback ?? '');
@@ -407,17 +420,18 @@ class ConversationStore extends ChangeNotifier {
   }
 
   /// A real (non-optimistic) user message with no renderable content. The
-  /// renderer (`_parts`, user mode) only draws `text` and `file` parts, so a
-  /// user message whose parts are all hidden (shell's synthetic "tool executed
-  /// by the user"), blank-text, or non-text/non-file (e.g. a slash command's
-  /// echoed control message) renders as an empty bubble. Such messages are
-  /// excluded from [renderableMessages] and skipped by [_upsertEntries].
-  /// Optimistic messages are excluded (managed via prune); assistant messages
-  /// are transiently empty during streaming and are kept.
+  /// renderer (`_parts`, user mode) draws `text`, `file`, and `subtask` parts,
+  /// so a user message whose parts are all hidden (shell's synthetic "tool
+  /// executed by the user"), blank-text, or non-renderable (e.g. a `tool` part
+  /// the server attaches to a command echo) renders as an empty bubble. Such
+  /// messages are excluded from [renderableMessages] and skipped by
+  /// [_upsertEntries]. Optimistic messages are excluded (managed via prune);
+  /// assistant messages are transiently empty during streaming and are kept.
   static bool _isEmptyUser(DisplayMessage m) {
     if (m.optimistic || m.info.role != 'user') return false;
     for (final p in m.parts) {
       if (p.type == 'file') return false;
+      if (p.type == 'subtask') return false;
       if (p.type == 'text' && p.text.trim().isNotEmpty) return false;
     }
     return true;
@@ -748,6 +762,7 @@ class ConversationStore extends ChangeNotifier {
                             'toolOutput': p.toolOutput,
                             'toolError': p.toolError,
                             'toolInput': p.toolInput, // MA-5: 补存
+                            'command': p.command,
                           })
                       .toList(),
                 })
@@ -804,6 +819,7 @@ class ConversationStore extends ChangeNotifier {
           toolInput: p2['toolInput'] is Map
               ? (p2['toolInput'] as Map).cast<String, dynamic>()
               : null, // MA-5: 补读 toolInput
+          command: p2['command']?.toString(),
         ));
       }
       _messages.add(dm);

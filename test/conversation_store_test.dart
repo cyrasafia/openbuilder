@@ -181,6 +181,32 @@ void main() {
     });
   });
 
+  group('lastMessagePreview subtask', () {
+    final zh = lookupAppLocalizations(const Locale('zh'));
+    final en = lookupAppLocalizations(const Locale('en'));
+
+    test('subtask-only last message shows `subtask: <command>` with user prefix',
+        () {
+      final conv = ConversationStore('s_st', _fakeClient());
+      conv.onMessageUpdated(
+          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st', created: 1));
+      conv.onPartUpdated(
+          {'id': 'p1', 'messageID': 'm1', 'type': 'subtask', 'command': 'review'},
+          null);
+      expect(conv.lastMessagePreview(loc: zh), '你: subtask: review');
+      expect(conv.lastMessagePreview(loc: en), 'You: subtask: review');
+    });
+
+    test('subtask with empty command falls back to bare `subtask`', () {
+      final conv = ConversationStore('s_st2', _fakeClient());
+      conv.onMessageUpdated(
+          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st2', created: 1));
+      conv.onPartUpdated(
+          {'id': 'p1', 'messageID': 'm1', 'type': 'subtask'}, null);
+      expect(conv.lastMessagePreview(loc: zh), '你: subtask');
+    });
+  });
+
   // Error display coverage: tool part state.error extraction + persistence.
   group('tool part error extraction', () {
     test('extracts string error from state.error', () {
@@ -290,6 +316,22 @@ void main() {
       await restored.loadCacheForTest();
       expect(restored.messages.length, 1);
       expect(restored.messages.single.parts.single.toolError, 'disk full');
+    });
+
+    test('cache round-trip preserves subtask command', () async {
+      final conv = ConversationStore('s7c', _fakeClient());
+      conv.onPartUpdated({
+        'id': 'pst',
+        'messageID': 'mst',
+        'type': 'subtask',
+        'command': 'review',
+      }, null);
+      await conv.saveCacheForTest();
+
+      final restored = ConversationStore('s7c', _fakeClient());
+      await restored.loadCacheForTest();
+      expect(restored.messages.length, 1);
+      expect(restored.messages.single.parts.single.command, 'review');
     });
   });
 
@@ -702,6 +744,14 @@ void main() {
       final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
         ..parts.add(DisplayPart(
             id: 'p', type: 'file', filename: 'a.png', fileUrl: 'data:'));
+      expect(ConversationStore.isEmptyUserForTest(m), isFalse);
+    });
+
+    // A subtask command echo (e.g. /review) renders as `subtask: <command>`,
+    // so a user message whose only part is a subtask is NOT empty.
+    test('subtask-only user message is not empty', () {
+      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
+        ..parts.add(DisplayPart(id: 'p', type: 'subtask', command: 'review'));
       expect(ConversationStore.isEmptyUserForTest(m), isFalse);
     });
   });

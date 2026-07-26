@@ -753,7 +753,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _parts(List<DisplayPart> parts, {required bool user}) {
     final children = <Widget>[];
     for (final p in parts) {
-      if (user && p.type != 'text' && p.type != 'file') continue;
+      if (user && p.type != 'text' && p.type != 'file' && p.type != 'subtask') {
+        continue;
+      }
       children.add(_part(p, user: user));
     }
     return Column(
@@ -833,6 +835,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return _Reasoning(text: p.text);
       case 'tool':
         return _ToolChip(part: p);
+      case 'subtask':
+        return _SubtaskChip(part: p, user: user);
       case 'file':
         return _FileChip(part: p, user: user);
       default:
@@ -1140,6 +1144,42 @@ class _ToolChip extends StatelessWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SubtaskChip extends StatelessWidget {
+  final DisplayPart part;
+  final bool user;
+  const _SubtaskChip({required this.part, this.user = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = user
+        ? const Color(0xFFD8F3E0)
+        : Theme.of(context).colorScheme.onSurface;
+    final iconColor = user
+        ? const Color(0xFFD8F3E0)
+        : Theme.of(context).colorScheme.outline;
+    final command = part.command;
+    final label =
+        (command == null || command.isEmpty) ? 'subtask' : 'subtask: $command';
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.task_alt, size: 15, color: iconColor),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              style: AppTheme.mono.copyWith(fontSize: 12, color: fg),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ],
       ),
     );
