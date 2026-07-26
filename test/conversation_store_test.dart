@@ -185,25 +185,46 @@ void main() {
     final zh = lookupAppLocalizations(const Locale('zh'));
     final en = lookupAppLocalizations(const Locale('en'));
 
-    test('subtask-only last message shows `subtask: <command>` with user prefix',
+    test('subtask-only last message shows expanded prompt with user prefix',
         () {
       final conv = ConversationStore('s_st', _fakeClient());
       conv.onMessageUpdated(
           MessageInfo(id: 'm1', role: 'user', sessionID: 's_st', created: 1));
       conv.onPartUpdated(
-          {'id': 'p1', 'messageID': 'm1', 'type': 'subtask', 'command': 'review'},
+          {'id': 'p1', 'messageID': 'm1', 'type': 'subtask', 'command': 'review',
+           'text': 'Review the code for bugs and suggest improvements'},
           null);
+      expect(conv.lastMessagePreview(loc: zh),
+              '你: Review the code for bugs and suggest improvements');
+      expect(conv.lastMessagePreview(loc: en),
+              'You: Review the code for bugs and suggest improvements');
+    });
+
+    test('subtask with empty text falls back to subtask: review', () {
+      final conv = ConversationStore('s_st3', _fakeClient());
+      conv.onMessageUpdated(
+          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st3', created: 1));
+      conv.onPartUpdated({
+        'id': 'p1',
+        'messageID': 'm1',
+        'type': 'subtask',
+        'command': 'review',
+      }, null);
       expect(conv.lastMessagePreview(loc: zh), '你: subtask: review');
       expect(conv.lastMessagePreview(loc: en), 'You: subtask: review');
     });
 
-    test('subtask with empty command falls back to bare `subtask`', () {
-      final conv = ConversationStore('s_st2', _fakeClient());
+    test('subtask with empty command and text falls back to bare subtask', () {
+      final conv = ConversationStore('s_st4', _fakeClient());
       conv.onMessageUpdated(
-          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st2', created: 1));
-      conv.onPartUpdated(
-          {'id': 'p1', 'messageID': 'm1', 'type': 'subtask'}, null);
+          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st4', created: 1));
+      conv.onPartUpdated({
+        'id': 'p1',
+        'messageID': 'm1',
+        'type': 'subtask',
+      }, null);
       expect(conv.lastMessagePreview(loc: zh), '你: subtask');
+      expect(conv.lastMessagePreview(loc: en), 'You: subtask');
     });
   });
 
@@ -318,13 +339,14 @@ void main() {
       expect(restored.messages.single.parts.single.toolError, 'disk full');
     });
 
-    test('cache round-trip preserves subtask command', () async {
+    test('cache round-trip preserves subtask command and text', () async {
       final conv = ConversationStore('s7c', _fakeClient());
       conv.onPartUpdated({
         'id': 'pst',
         'messageID': 'mst',
         'type': 'subtask',
         'command': 'review',
+        'text': 'Review the code for bugs',
       }, null);
       await conv.saveCacheForTest();
 
@@ -332,6 +354,7 @@ void main() {
       await restored.loadCacheForTest();
       expect(restored.messages.length, 1);
       expect(restored.messages.single.parts.single.command, 'review');
+      expect(restored.messages.single.parts.single.text, 'Review the code for bugs');
     });
   });
 
@@ -747,11 +770,13 @@ void main() {
       expect(ConversationStore.isEmptyUserForTest(m), isFalse);
     });
 
-    // A subtask command echo (e.g. /review) renders as `subtask: <command>`,
-    // so a user message whose only part is a subtask is NOT empty.
+    // A subtask part renders its expanded prompt (text), so a user message
+    // whose only part is a subtask is NOT empty.
     test('subtask-only user message is not empty', () {
       final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
-        ..parts.add(DisplayPart(id: 'p', type: 'subtask', command: 'review'));
+        ..parts.add(DisplayPart(id: 'p', type: 'subtask',
+                                command: 'review',
+                                text: 'Review the code'));
       expect(ConversationStore.isEmptyUserForTest(m), isFalse);
     });
   });

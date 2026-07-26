@@ -309,8 +309,12 @@ class ConversationStore extends ChangeNotifier {
       if (dp.type == 'tool') {
         pv = dp.toolSummary;
       } else if (dp.type == 'subtask') {
-        final cmd = dp.command;
-        pv = (cmd == null || cmd.isEmpty) ? 'subtask' : 'subtask: $cmd';
+        if (dp.text.isNotEmpty) {
+          pv = dp.text.replaceAll('\n', ' ').trim();
+        } else {
+          final cmd = dp.command ?? '';
+          pv = cmd.isEmpty ? 'subtask' : 'subtask: $cmd';
+        }
       } else if (dp.type == 'file') {
         final name = dp.filename ?? '';
         pv = name.isNotEmpty ? name : (loc?.attachmentFallback ?? '');
@@ -1017,6 +1021,13 @@ class ConversationStore extends ChangeNotifier {
         break;
       case 'text':
       case 'reasoning':
+        if (delta != null && delta.isNotEmpty) {
+          dp.text += delta;
+        } else if ((p.text ?? '').isNotEmpty) {
+          dp.text = p.text!;
+        }
+        break;
+      case 'subtask':
         if (delta != null && delta.isNotEmpty) {
           dp.text += delta;
         } else if ((p.text ?? '').isNotEmpty) {
