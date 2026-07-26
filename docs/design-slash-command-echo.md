@@ -28,22 +28,30 @@ Open Builder 采用乐观消息机制（optimistic messaging）：用户发送�
 
 部分命令在后端标记为 `subtask: true`（如 `/review`），表示该命令会生成一个任务，需要在聊天中显示其展开后的 prompt。
 
-**后端返回的 part 结构：**
+**后端返回的 part 结构（实测，`GET /session/:id/message`）：**
 
 ```json
 {
-  "id": "part_123",
-  "messageID": "msg_456",
+  "id": "prt_...",
+  "sessionID": "ses_...",
+  "messageID": "msg_...",
   "type": "subtask",
   "command": "review",
-  "text": "Review the code for bugs and suggest improvements..."
+  "description": "review changes [commit|branch|pr], defaults to uncommitted",
+  "agent": "build",
+  "model": {"providerID": "zai-coding-plan", "modelID": "glm-5.2"},
+  "prompt": "You are a code reviewer. Your job is to review code changes and provide actionable feedback...",
+  "text": null
 }
 ```
 
 **字段说明：**
 - `type: "subtask"`：特殊 part 类型
 - `command`：命令名称（如 `review`）
-- `text`：服务端展开后的 prompt 全文
+- `prompt`：**服务端展开后的 prompt 全文**（渲染正文取这里）
+- `description`：命令的一句话描述（如 review 的帮助文案）
+- `agent` / `model`：subtask 子会话使用的 agent 与模型
+- `text`：**始终为 null / 空**（早期文档误以为展开 prompt 在此字段，实测不成立）
 
 **对比普通用户消息：**
 
@@ -72,7 +80,7 @@ Open Builder 采用乐观消息机制（optimistic messaging）：用户发送�
 2. SSE 返回 message.updated 事件
    → 包含真实的用户消息
    → part.type = "subtask"
-   → part.text = "展开后的 prompt"
+   → part.prompt = "展开后的 prompt"（part.text 为空）
     ↓
 3. 客户端移除乐观消息，插入真实消息
    → _pruneOptimistic()
@@ -91,7 +99,7 @@ Open Builder 采用乐观消息机制（optimistic messaging）：用户发送�
 | part.type | 渲染方式 |
 |-----------|---------|
 | `text` | Markdown 渲染 |
-| `subtask` | 两行显示：第一行 "subtask: review"，第二行 Markdown 渲染 `text` |
+| `subtask` | 标签行 `subtask: <command>`（mono 12px）+ Markdown 渲染 `prompt` 正文 |
 | `file` | 文件预览组件 |
 | `tool` | 工具调用卡片 |
 | `reasoning` | 推理文本（可隐藏） |
@@ -125,7 +133,9 @@ Open Builder 采用乐观消息机制（optimistic messaging）：用户发送�
     {
       "type": "subtask",
       "command": "review",
-      "text": "Review the code for bugs and suggest improvements. Focus on readability, maintainability, and performance."
+      "description": "review changes ...",
+      "prompt": "You are a code reviewer. Your job is to review code changes and provide actionable feedback...",
+      "text": null
     }
   ]
 }
@@ -133,7 +143,9 @@ Open Builder 采用乐观消息机制（optimistic messaging）：用户发送�
 
 **最终显示：**
 ```
-Review the code for bugs and suggest improvements. Focus on readability, maintainability, and performance.
+subtask: review
+You are a code reviewer. Your job is to review code changes and provide
+actionable feedback...
 ```
 
 ### 场景 2：普通消息
@@ -227,16 +239,16 @@ Review the code for bugs and suggest improvements. Focus on readability, maintai
 - 优点：信息透明，用户体验一致
 - 缺点：可能占用较多聊天空间
 
-### 决策 2：subtask part 与 text part 合并渲染
+### 决策 2：subtask 独立分支渲染（标签 + Markdown 正文）
 
 **理由：**
-- 两者都显示纯文本内容（可包含 Markdown）
-- 避免为 subtask 单独创建特殊的 UI 组件（chip）
-- 简化代码逻辑
+- subtask 需要一个 `subtask: <command>` 标签行来区分命令来源，普通 text 消息不需要
+- 正文部分仍复用 text 的 Markdown 渲染（`_markdownPart`），避免重复样式表
+- 曾尝试把 subtask 并入 text 分支只渲染 `p.text`（commit 842cc8e / 7a4155b），但因数据源读错字段（见一次评审意见），导致空气泡，故拆回独立分支
 
 **权衡：**
-- 优点：代码简洁，UI 一致
-- 缺点：无法在视觉上区分 subtask 与普通文本消息
+- 优点：标签清晰区分 subtask 与普通文本，正文复用同一套 Markdown 样式
+- 缺点：分支数 +1（但样式表已抽到 `_markdownPart` 共用）
 
 ### 决策 3：移除 `_SubtaskChip` 组件
 
@@ -253,7 +265,7 @@ Review the code for bugs and suggest improvements. Focus on readability, maintai
 1. **不显示原始斜杠命令**：用户不需要看到 `/review`，他们需要看到展开后的 prompt
 2. **不显示 `command` 字段**：`command` 字段（如 `review`）是内部标识，无需在 UI 中展示
 3. **不区分 subtask 与普通文本的视觉效果**：两者都以相同方式渲染 Markdown
-4. **不处理 `part.text` 为空的情况**：后端保证 subtask 命令返回的 `text` 字段非空
+4. **`text` 字段不可依赖**：实测 subtask part 的 `text` 始终为空，展开 prompt 在 `prompt` 字段；客户端读取时以 `prompt` 为准、`text`/`description` 仅作历史/合成输入的兜底
 
 ## 实现细节
 
@@ -271,22 +283,23 @@ Review the code for bugs and suggest improvements. Focus on readability, maintai
 - `lib/core/session/conversation_store.dart:387` → `_pruneOptimistic()`
 
 **subtask part 处理：**
-- `lib/core/session/conversation_store.dart:132-137` → `DisplayPart.from()` 处理 `type: 'subtask'`
-- `lib/core/session/conversation_store.dart:311-313` → `lastMessagePreview()` 提取 subtask 的 `text` 字段
+- `lib/core/session/conversation_store.dart` → `DisplayPart.from()` 处理 `type: 'subtask'`，从 `prompt` 取展开正文（`text`/`description` 兜底）
+- `lib/core/session/conversation_store.dart` → `onPartUpdated()` 的 `subtask` 分支优先读 `prompt`
+- `lib/core/session/conversation_store.dart` → `lastMessagePreview()` 对 subtask 用 `subtask: <command>`（prompt 过长，不适合一行预览）
 
 **UI 渲染：**
-- `lib/features/conversation/conversation_screen.dart:753-760` → `_parts()` 合并 `subtask` 和 `text` 的渲染逻辑
-- `lib/features/conversation/conversation_screen.dart:767-773` → `_part()` 统一使用 `MarkdownBody` 渲染
+- `lib/features/conversation/conversation_screen.dart` → `_parts()` 允许 user 消息渲染 `text`/`file`/`subtask`
+- `lib/features/conversation/conversation_screen.dart` → `_part()` 的 `subtask` 分支：标签行 `subtask: <command>`（mono 12px）+ `_markdownPart(prompt)` 正文
 
 ### 测试
 
 **单元测试：**
-- `test/conversation_store_test.dart:188-211` → subtask 消息的 lastMessagePreview 测试
+- `test/conversation_store_test.dart` → subtask 从 `prompt` 填充正文、预览为 `subtask: <command>`
 
 **测试用例：**
-1. subtask-only 消息显示展开后的 prompt
-2. subtask 消息的空文本 fallback 显示 "subtask"
-3. 缓存 round-trip 保留 subtask command 字段
+1. subtask 从 `prompt` 字段填充正文，预览保持 `subtask: <command>`
+2. subtask 无 prompt 时回退显示 "subtask: <command>" / "subtask"
+3. 缓存 round-trip 保留 subtask command 与展开 prompt
 
 ## 验证
 
@@ -310,11 +323,11 @@ Review the code for bugs and suggest improvements. Focus on readability, maintai
 | 类型 | part.type | 字段 |
 |------|-----------|------|
 | 普通用户消息 | `text` | `text: '用户输入内容'` |
-| subtask 命令<br>（如 `/review`） | **`subtask`** | `command: 'review'`<br>`text: '展开后的 prompt'` |
+| subtask 命令<br>（如 `/review`） | **`subtask`** | `command: 'review'`<br>`prompt: '展开后的 prompt'`<br>`description / agent / model`<br>`text`（始终为空） |
 
 **代码验证：**
-- `lib/core/session/conversation_store.dart:132-137`：处理 `subtask` 类型 part
-- `test/conversation_store_test.dart:188-201`：测试 subtask 显示展开后的 prompt
+- `lib/core/session/conversation_store.dart`：`DisplayPart.from()` 处理 `subtask` 类型，从 `prompt` 取展开文本（`text`/`description` 兜底）
+- `test/conversation_store_test.dart`：测试 subtask 从 `prompt` 填充正文、预览为 `subtask: <command>`
 
 ### 问题 3：SSE 事件机制
 
@@ -339,4 +352,16 @@ Review the code for bugs and suggest improvements. Focus on readability, maintai
 
 ## 评审意见
 
-（待补充）
+### 一次评审：数据源字段订正（🔴 阻塞 → 已修复）
+
+**SC-1（🔴）原文档与早期实现误以为展开 prompt 在 `text` 字段。**
+实测本地 opencode 服务（`GET /session/:id/message`）返回的 subtask part 中 `text` 始终为 `null`，展开 prompt 在 **`prompt`** 字段，另有 `description` / `agent` / `model`。所有读 `p.text` 的实现（commit `75c786a`、`842cc8e`、`7a4155b`）都拿到空串，导致消息气泡空白或只剩 command 名。
+
+**修复：**
+- `DisplayPart.from()` 与 `onPartUpdated()` 的 subtask 分支优先读 `prompt`（`text`/`description` 仅作兜底）
+- 渲染改为独立分支：标签行 `subtask: <command>` + `_markdownPart(prompt)` 正文
+- `lastMessagePreview()` 对 subtask 改用 `subtask: <command>`（prompt 过长，不适合一行预览；此前因 `text` 恒空恰好落到此 fallback，订正后必须显式走该路径以避免把全文灌进预览）
+
+**验证：** `flutter analyze --fatal-infos` 无 issue；`flutter test test/conversation_store_test.dart` 全部通过；本地服务真实 `/review` part 结构已核对。
+
+**遗留（🟡 低）：** `/review` 的 `prompt` 是整段 reviewer 系统指令（数百字），整段塞进气泡偏高，后续可考虑加可展开/收起。

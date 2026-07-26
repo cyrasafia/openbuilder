@@ -130,11 +130,17 @@ class DisplayPart {
       );
     }
     if (p.type == 'subtask') {
+      // The server carries the expanded prompt in `prompt`, not `text`
+      // (which is always empty for subtask parts). Fall back to `text` /
+      // `description` for older payloads or synthetic test inputs.
       return DisplayPart(
         id: p.id,
         type: 'subtask',
         command: p.raw['command']?.toString(),
-        text: p.text ?? '',
+        text: p.raw['prompt']?.toString() ??
+            p.text ??
+            p.raw['description']?.toString() ??
+            '',
       );
     }
     return DisplayPart(id: p.id, type: p.type, text: p.text ?? '');
@@ -309,12 +315,10 @@ class ConversationStore extends ChangeNotifier {
       if (dp.type == 'tool') {
         pv = dp.toolSummary;
       } else if (dp.type == 'subtask') {
-        if (dp.text.isNotEmpty) {
-          pv = dp.text.replaceAll('\n', ' ').trim();
-        } else {
-          final cmd = dp.command ?? '';
-          pv = cmd.isEmpty ? 'subtask' : 'subtask: $cmd';
-        }
+        // The expanded prompt is too verbose for a one-line preview; the
+        // command name identifies the subtask concisely.
+        final cmd = dp.command ?? '';
+        pv = cmd.isEmpty ? 'subtask' : 'subtask: $cmd';
       } else if (dp.type == 'file') {
         final name = dp.filename ?? '';
         pv = name.isNotEmpty ? name : (loc?.attachmentFallback ?? '');
@@ -1028,7 +1032,10 @@ class ConversationStore extends ChangeNotifier {
         }
         break;
       case 'subtask':
-        if (delta != null && delta.isNotEmpty) {
+        final prompt = p.raw['prompt']?.toString() ?? '';
+        if (prompt.isNotEmpty) {
+          dp.text = prompt;
+        } else if (delta != null && delta.isNotEmpty) {
           dp.text += delta;
         } else if ((p.text ?? '').isNotEmpty) {
           dp.text = p.text!;

@@ -185,22 +185,24 @@ void main() {
     final zh = lookupAppLocalizations(const Locale('zh'));
     final en = lookupAppLocalizations(const Locale('en'));
 
-    test('subtask-only last message shows expanded prompt with user prefix',
+    test('subtask body is populated from prompt field, preview stays concise',
         () {
       final conv = ConversationStore('s_st', _fakeClient());
       conv.onMessageUpdated(
           MessageInfo(id: 'm1', role: 'user', sessionID: 's_st', created: 1));
       conv.onPartUpdated(
           {'id': 'p1', 'messageID': 'm1', 'type': 'subtask', 'command': 'review',
-           'text': 'Review the code for bugs and suggest improvements'},
+           'prompt': 'You are a code reviewer. Review the code for bugs.'},
           null);
-      expect(conv.lastMessagePreview(loc: zh),
-              '你: Review the code for bugs and suggest improvements');
-      expect(conv.lastMessagePreview(loc: en),
-              'You: Review the code for bugs and suggest improvements');
+      // The expanded prompt (server `prompt` field) feeds the message body.
+      expect(conv.messages.single.parts.single.text,
+          'You are a code reviewer. Review the code for bugs.');
+      // Preview is command-based (the verbose prompt would be a poor one-liner).
+      expect(conv.lastMessagePreview(loc: zh), '你: subtask: review');
+      expect(conv.lastMessagePreview(loc: en), 'You: subtask: review');
     });
 
-    test('subtask with empty text falls back to subtask: review', () {
+    test('subtask without prompt falls back to subtask: review', () {
       final conv = ConversationStore('s_st3', _fakeClient());
       conv.onMessageUpdated(
           MessageInfo(id: 'm1', role: 'user', sessionID: 's_st3', created: 1));
@@ -339,14 +341,15 @@ void main() {
       expect(restored.messages.single.parts.single.toolError, 'disk full');
     });
 
-    test('cache round-trip preserves subtask command and text', () async {
+    test('cache round-trip preserves subtask command and expanded prompt',
+        () async {
       final conv = ConversationStore('s7c', _fakeClient());
       conv.onPartUpdated({
         'id': 'pst',
         'messageID': 'mst',
         'type': 'subtask',
         'command': 'review',
-        'text': 'Review the code for bugs',
+        'prompt': 'You are a code reviewer. Review the code for bugs.',
       }, null);
       await conv.saveCacheForTest();
 
@@ -354,7 +357,8 @@ void main() {
       await restored.loadCacheForTest();
       expect(restored.messages.length, 1);
       expect(restored.messages.single.parts.single.command, 'review');
-      expect(restored.messages.single.parts.single.text, 'Review the code for bugs');
+      expect(restored.messages.single.parts.single.text,
+          'You are a code reviewer. Review the code for bugs.');
     });
   });
 

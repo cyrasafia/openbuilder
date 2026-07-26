@@ -767,11 +767,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _part(DisplayPart p, {required bool user}) {
     switch (p.type) {
       case 'subtask':
-        final cmd = p.command ?? '';
-        final displayText = cmd.isEmpty
-            ? p.text
-            : (p.text.isEmpty ? cmd : '$cmd\n\n${p.text}');
-        return _markdownPart(displayText, user: user);
+        final commandName = p.command ?? 'subtask';
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
+        final baseColor = mdTheme.colorScheme.onSurface;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'subtask: $commandName',
+                style: AppTheme.mono.copyWith(
+                  fontSize: 12,
+                  color: baseColor,
+                ),
+              ),
+            ),
+            _markdownPart(p.text, user: user),
+          ],
+        );
       case 'text':
         return _markdownPart(p.text, user: user);
       case 'reasoning':
