@@ -91,12 +91,20 @@ class _OpenBuilderAppState extends State<OpenBuilderApp>
   }
 
   @override
+  void didChangeLocales(List<Locale>? locales) {
+    if (localeMode.value == null) {
+      serverStore.activeLoc = lookupAppLocalizations(resolveActiveLocale());
+      setState(() {});
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: themeMode,
       builder: (_, mode, _) => ValueListenableBuilder<Locale?>(
         valueListenable: localeMode,
-        builder: (_, locale, _) => MaterialApp.router(
+        builder: (_, _, _) => MaterialApp.router(
           title: 'Open Builder',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.light,
@@ -109,8 +117,7 @@ class _OpenBuilderAppState extends State<OpenBuilderApp>
             GlobalCupertinoLocalizations.delegate,
           ],
           supportedLocales: const [Locale('zh'), Locale('en')],
-          locale: locale,
-          localeResolutionCallback: (_, _) => resolveActiveLocale(),
+          locale: resolveActiveLocale(),
           routerConfig: _router,
         ),
       ),

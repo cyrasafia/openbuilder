@@ -20,9 +20,9 @@ final DefaultAgentModelStore defaultAgentModelStore = DefaultAgentModelStore();
 final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 final ValueNotifier<Locale?> localeMode = ValueNotifier(null);
 
-Locale? _lastLoggedLocale;
+int _localeLogSeq = 0;
 
-/// Resolve the active app locale for MaterialApp's `localeResolutionCallback`
+/// Resolve the active app locale for MaterialApp's `locale` property
 /// (single source of truth so explicit selection and system-mode resolution
 /// stay consistent). The notification service will share this helper in P6.
 /// Falls back to `en` for unsupported device locales — this effort adds
@@ -37,15 +37,12 @@ Locale resolveActiveLocale() {
       break;
     }
   }
-  if (_lastLoggedLocale != result) {
-    _lastLoggedLocale = result;
-    final pd = WidgetsBinding.instance.platformDispatcher;
-    AppLogger.I.i('Locale', 'localeMode=${localeMode.value} '
-        'platformDispatcher.locale=${pd.locale} '
-        'platformDispatcher.locales=${pd.locales} '
-        'dart.io.Platform.localeName=${kIsWeb ? 'n/a(web)' : Platform.localeName} '
-        'chosen=$chosen resolved=$result');
-  }
+  final pd = WidgetsBinding.instance.platformDispatcher;
+  AppLogger.I.i('Locale', '#${_localeLogSeq++} localeMode=${localeMode.value} '
+      'platformDispatcher.locale=${pd.locale} '
+      'platformDispatcher.locales=${pd.locales} '
+      'dart.io.Platform.localeName=${kIsWeb ? 'n/a(web)' : Platform.localeName} '
+      'chosen=$chosen resolved=$result');
   return result;
 }
 final ValueNotifier<bool> showThinking = ValueNotifier(false);
