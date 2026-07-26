@@ -771,7 +771,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
         final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
         final baseColor = mdTheme.colorScheme.onSurface;
         final appColors = mdTheme.extension<AppColors>()!;
-        final mdBase = MarkdownStyleSheet.fromTheme(mdTheme);
+        // Build the base sheet from the resolved Theme.of(context): its
+        // textTheme is localized by MaterialApp, so bodyMedium.fontSize is
+        // non-null (flutter_markdown's fromTheme does `bodyMedium.fontSize!`).
+        // The raw AppTheme.dark keeps fontSize=null (inherit), which crashes.
+        // Colors are all overridden below, so only font sizes/families matter.
+        final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
         return Padding(
           padding: const EdgeInsets.only(top: 4),
           child: MarkdownBody(
