@@ -804,55 +804,44 @@ class _ConversationScreenState extends State<ConversationScreen> {
         selectable: true,
         softLineBreak: user,
         styleSheet: mdBase.copyWith(
-              p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
-              pPadding: const EdgeInsets.only(bottom: 6),
-              strong: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: baseColor,
-              ),
-              h1: mdBase.h1?.copyWith(color: baseColor),
-              h2: mdBase.h2?.copyWith(color: baseColor),
-              h3: mdBase.h3?.copyWith(color: baseColor),
-              h4: mdBase.h4?.copyWith(color: baseColor),
-              h5: mdBase.h5?.copyWith(color: baseColor),
-              h6: mdBase.h6?.copyWith(color: baseColor),
-              em: mdBase.em?.copyWith(color: baseColor),
-              del: mdBase.del?.copyWith(color: baseColor),
-              tableHead: mdBase.tableHead?.copyWith(color: baseColor),
-              tableBody: mdBase.tableBody?.copyWith(color: baseColor),
-              tableBorder: TableBorder.all(color: appColors.border),
-              horizontalRuleDecoration: BoxDecoration(
-                border: Border(
-                  top: BorderSide(color: appColors.border, width: 1),
-                ),
-              ),
-              a: TextStyle(color: appColors.link),
-              code: TextStyle(
-                fontSize: 13,
-                fontFamily: 'monospace',
-                color: appColors.code,
-              ),
-              codeblockDecoration: BoxDecoration(
-                color: appColors.codeBackground,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: appColors.border),
-              ),
-              codeblockPadding: const EdgeInsets.all(12),
-              listBullet: TextStyle(color: baseColor),
-              blockquote: TextStyle(
-                color: baseColor,
-                fontStyle: FontStyle.italic,
-              ),
-              blockquoteDecoration: BoxDecoration(
-                border: Border(
-                  left: BorderSide(
-                    color: appColors.quoteBar,
-                    width: 3,
-                  ),
-                ),
-              ),
-              blockquotePadding: const EdgeInsets.only(left: 12),
+          p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
+          pPadding: const EdgeInsets.only(bottom: 6),
+          strong: TextStyle(fontWeight: FontWeight.w600, color: baseColor),
+          h1: mdBase.h1?.copyWith(color: baseColor),
+          h2: mdBase.h2?.copyWith(color: baseColor),
+          h3: mdBase.h3?.copyWith(color: baseColor),
+          h4: mdBase.h4?.copyWith(color: baseColor),
+          h5: mdBase.h5?.copyWith(color: baseColor),
+          h6: mdBase.h6?.copyWith(color: baseColor),
+          em: mdBase.em?.copyWith(color: baseColor),
+          del: mdBase.del?.copyWith(color: baseColor),
+          tableHead: mdBase.tableHead?.copyWith(color: baseColor),
+          tableBody: mdBase.tableBody?.copyWith(color: baseColor),
+          tableBorder: TableBorder.all(color: appColors.border),
+          horizontalRuleDecoration: BoxDecoration(
+            border: Border(top: BorderSide(color: appColors.border, width: 1)),
+          ),
+          a: TextStyle(color: appColors.link),
+          code: TextStyle(
+            fontSize: 13,
+            fontFamily: 'monospace',
+            color: appColors.code,
+          ),
+          codeblockDecoration: BoxDecoration(
+            color: appColors.codeBackground,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: appColors.border),
+          ),
+          codeblockPadding: const EdgeInsets.all(12),
+          listBullet: TextStyle(color: baseColor),
+          blockquote: TextStyle(color: baseColor, fontStyle: FontStyle.italic),
+          blockquoteDecoration: BoxDecoration(
+            border: Border(
+              left: BorderSide(color: appColors.quoteBar, width: 3),
             ),
+          ),
+          blockquotePadding: const EdgeInsets.only(left: 12),
+        ),
       ),
     );
   }
@@ -1101,63 +1090,126 @@ class _ReasoningState extends State<_Reasoning> {
   }
 }
 
-class _ToolChip extends StatelessWidget {
+class _ToolChip extends StatefulWidget {
   final DisplayPart part;
   const _ToolChip({required this.part});
 
   @override
+  State<_ToolChip> createState() => _ToolChipState();
+}
+
+class _ToolChipState extends State<_ToolChip> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final part = widget.part;
+    final theme = Theme.of(context);
     final (icon, color) = switch (part.toolStatus) {
       'completed' => (Icons.check_circle, const Color(0xFF3FB950)),
       'running' => (Icons.play_arrow, const Color(0xFF4ADE80)),
       'error' => (Icons.error, const Color(0xFFF85149)),
       _ => (Icons.hourglass_top, const Color(0xFF8B949E)),
     };
-    final summary = part.toolSummary;
-    final error = part.toolError;
-    final showError =
-        part.toolStatus == 'error' && error != null && error.isNotEmpty;
     return Container(
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 15, color: color),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  summary,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTheme.mono.copyWith(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 15, color: color),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    part.toolSummary,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTheme.mono.copyWith(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          if (showError) ...[
-            const SizedBox(height: 6),
-            Text(
-              error,
-              style: const TextStyle(
-                fontSize: 12,
-                color: Color(0xFFF85149),
-                height: 1.4,
-              ),
+                const SizedBox(width: 6),
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: theme.colorScheme.outline,
+                ),
+              ],
             ),
-          ],
+          ),
+          if (_expanded) ..._expandedChildren(part, theme),
         ],
+      ),
+    );
+  }
+
+  List<Widget> _expandedChildren(DisplayPart part, ThemeData theme) {
+    final appColors = theme.extension<AppColors>()!;
+    final input = part.toolInput;
+    final output = part.toolOutput;
+    final error = part.toolError;
+    final children = <Widget>[];
+    if (input != null && input.isNotEmpty) {
+      children.add(const SizedBox(height: 8));
+      children.add(
+        _codeBlock(
+          const JsonEncoder.withIndent('  ').convert(input),
+          appColors,
+        ),
+      );
+    }
+    if (output != null && output.isNotEmpty) {
+      children.add(const SizedBox(height: 8));
+      children.add(_codeBlock(output, appColors));
+    }
+    if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
+      children.add(const SizedBox(height: 8));
+      children.add(
+        SelectableText(
+          error,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Color(0xFFF85149),
+            height: 1.4,
+          ),
+        ),
+      );
+    }
+    return children;
+  }
+
+  Widget _codeBlock(String body, AppColors appColors) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight:
+            MediaQuery.sizeOf(context).height * _kFooterCardContentHeightFactor,
+      ),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: appColors.codeBackground,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: appColors.border),
+        ),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            body,
+            style: AppTheme.mono.copyWith(fontSize: 12.5, height: 1.45),
+          ),
+        ),
       ),
     );
   }
@@ -1206,11 +1258,7 @@ class _FileChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.insert_drive_file,
-            size: 16,
-            color: iconColor,
-          ),
+          Icon(Icons.insert_drive_file, size: 16, color: iconColor),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
@@ -1223,11 +1271,7 @@ class _FileChip extends StatelessWidget {
             const SizedBox(width: 6),
             GestureDetector(
               onTap: () => _openUrl(context),
-              child: Icon(
-                Icons.open_in_new,
-                size: 14,
-                color: linkColor,
-              ),
+              child: Icon(Icons.open_in_new, size: 14, color: linkColor),
             ),
           ],
         ],
@@ -2166,9 +2210,7 @@ class _ComposeBarState extends State<_ComposeBar> {
                   hintText: widget.shellMode
                       ? l(context).composeShellHint
                       : l(context).composeHint,
-                  hintStyle: const TextStyle(
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  hintStyle: const TextStyle(overflow: TextOverflow.ellipsis),
                   hintMaxLines: 1,
                   isDense: true,
                   prefixIcon: IconButton(
