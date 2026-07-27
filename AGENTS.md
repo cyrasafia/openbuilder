@@ -128,6 +128,7 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 
 | 文档 | 主题 |
 |------|------|
+| [`CONTEXT.md`](CONTEXT.md) | 领域术语表（FileView / Render Mode / Soft Wrap） |
 | [`DESIGN.md`](DESIGN.md) | 前端样式与字重系统（三档字重制、字体族、Do/Don't） |
 | `spec-overview.md` | 整体架构、技术栈、领域模型、端点映射 |
 | `design-frontend.md` | 前端页面、组件、交互设计 |
@@ -142,4 +143,5 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `design-optimistic-messages.md` | 乐观消息插入 |
 | `design-session-status.md` | 会话状态同步 |
 | `design-agent-model-switch.md` | Agent/Model 切换 |
+| `design-file-view.md` | FileView 重构（渲染路由、语法高亮、Markdown 预览、图片预览、二进制下载） |
 | `design-v2-migration.md` | **前瞻记录（未来迁移，暂不动）** OpenCode V2 差异与迁移路线 |
