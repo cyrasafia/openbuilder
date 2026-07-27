@@ -121,6 +121,14 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.codeBackground,
     required this.border,
     required this.quoteBar,
+    required this.userBubble,
+    required this.userCodeBackground,
+    required this.userText,
+    required this.userOutline,
+    required this.userCode,
+    required this.userLink,
+    required this.userBorder,
+    required this.userQuoteBar,
   });
 
   final Color code;
@@ -128,6 +136,14 @@ class AppColors extends ThemeExtension<AppColors> {
   final Color codeBackground;
   final Color border;
   final Color quoteBar;
+  final Color userBubble;
+  final Color userCodeBackground;
+  final Color userText;
+  final Color userOutline;
+  final Color userCode;
+  final Color userLink;
+  final Color userBorder;
+  final Color userQuoteBar;
 
   static const dark = AppColors(
     code: Color(0xFFEC407A),
@@ -135,6 +151,14 @@ class AppColors extends ThemeExtension<AppColors> {
     codeBackground: Color(0xFF161B22),
     border: Color(0xFF30363D),
     quoteBar: Color(0xFF6E7681),
+    userBubble: Color(0xFF1F3D2A),
+    userCodeBackground: Color(0xFF28513A),
+    userText: Color(0xFFDFE4DC),
+    userOutline: Color(0xFF8B938A),
+    userCode: Color(0xFFEC407A),
+    userLink: Color(0xFF2196F3),
+    userBorder: Color(0xFF30363D),
+    userQuoteBar: Color(0xFF6E7681),
   );
 
   static const light = AppColors(
@@ -143,6 +167,14 @@ class AppColors extends ThemeExtension<AppColors> {
     codeBackground: Color(0xFFF0F2F5),
     border: Color(0xFFDADDE3),
     quoteBar: Color(0xFF8C959F),
+    userBubble: Color(0xFF1F3D2A),
+    userCodeBackground: Color(0xFF162B1C),
+    userText: Color(0xFFDFE4DC),
+    userOutline: Color(0xFF8B938A),
+    userCode: Color(0xFFEC407A),
+    userLink: Color(0xFF2196F3),
+    userBorder: Color(0xFF30363D),
+    userQuoteBar: Color(0xFF6E7681),
   );
 
   @override
@@ -152,6 +184,14 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? codeBackground,
     Color? border,
     Color? quoteBar,
+    Color? userBubble,
+    Color? userCodeBackground,
+    Color? userText,
+    Color? userOutline,
+    Color? userCode,
+    Color? userLink,
+    Color? userBorder,
+    Color? userQuoteBar,
   }) =>
       AppColors(
         code: code ?? this.code,
@@ -159,6 +199,14 @@ class AppColors extends ThemeExtension<AppColors> {
         codeBackground: codeBackground ?? this.codeBackground,
         border: border ?? this.border,
         quoteBar: quoteBar ?? this.quoteBar,
+        userBubble: userBubble ?? this.userBubble,
+        userCodeBackground: userCodeBackground ?? this.userCodeBackground,
+        userText: userText ?? this.userText,
+        userOutline: userOutline ?? this.userOutline,
+        userCode: userCode ?? this.userCode,
+        userLink: userLink ?? this.userLink,
+        userBorder: userBorder ?? this.userBorder,
+        userQuoteBar: userQuoteBar ?? this.userQuoteBar,
       );
 
   @override
@@ -170,6 +218,15 @@ class AppColors extends ThemeExtension<AppColors> {
       codeBackground: Color.lerp(codeBackground, other.codeBackground, t)!,
       border: Color.lerp(border, other.border, t)!,
       quoteBar: Color.lerp(quoteBar, other.quoteBar, t)!,
+      userBubble: Color.lerp(userBubble, other.userBubble, t)!,
+      userCodeBackground:
+          Color.lerp(userCodeBackground, other.userCodeBackground, t)!,
+      userText: Color.lerp(userText, other.userText, t)!,
+      userOutline: Color.lerp(userOutline, other.userOutline, t)!,
+      userCode: Color.lerp(userCode, other.userCode, t)!,
+      userLink: Color.lerp(userLink, other.userLink, t)!,
+      userBorder: Color.lerp(userBorder, other.userBorder, t)!,
+      userQuoteBar: Color.lerp(userQuoteBar, other.userQuoteBar, t)!,
     );
   }
 }

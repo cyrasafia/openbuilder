@@ -33,6 +33,39 @@ class ConversationScreen extends StatefulWidget {
   State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
+({
+  Color text,
+  Color outline,
+  Color code,
+  Color link,
+  Color border,
+  Color quoteBar,
+  Color codeBackground,
+}) _messagePalette(BuildContext context, bool user) {
+  final theme = Theme.of(context);
+  final a = theme.extension<AppColors>()!;
+  if (user) {
+    return (
+      text: a.userText,
+      outline: a.userOutline,
+      code: a.userCode,
+      link: a.userLink,
+      border: a.userBorder,
+      quoteBar: a.userQuoteBar,
+      codeBackground: a.userCodeBackground,
+    );
+  }
+  return (
+    text: theme.colorScheme.onSurface,
+    outline: theme.colorScheme.outline,
+    code: a.code,
+    link: a.link,
+    border: a.border,
+    quoteBar: a.quoteBar,
+    codeBackground: a.codeBackground,
+  );
+}
+
 class _ConversationScreenState extends State<ConversationScreen> {
   final _scrollController = ScrollController();
   final _ctl = TextEditingController();
@@ -748,7 +781,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     });
   }
 
-  Color _userBubbleColor() => const Color(0xFF1F3D2A);
+  Color _userBubbleColor() =>
+      Theme.of(context).extension<AppColors>()!.userBubble;
 
   Widget _parts(List<DisplayPart> parts, {required bool user}) {
     final children = <Widget>[];
@@ -787,15 +821,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Widget _markdownPart(String data, {required bool user}) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
-    final baseColor = mdTheme.colorScheme.onSurface;
-    final appColors = mdTheme.extension<AppColors>()!;
-    // Build the base sheet from the resolved Theme.of(context): its
-    // textTheme is localized by MaterialApp, so bodyMedium.fontSize is
-    // non-null (flutter_markdown's fromTheme does `bodyMedium.fontSize!`).
-    // The raw AppTheme.dark keeps fontSize=null (inherit), which crashes.
-    // Colors are all overridden below, so only font sizes/families matter.
+    final p = _messagePalette(context, user);
     final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
     return Padding(
       padding: const EdgeInsets.only(top: 4),
@@ -804,40 +830,40 @@ class _ConversationScreenState extends State<ConversationScreen> {
         selectable: true,
         softLineBreak: user,
         styleSheet: mdBase.copyWith(
-          p: TextStyle(fontSize: 14, height: 1.45, color: baseColor),
+          p: TextStyle(fontSize: 14, height: 1.45, color: p.text),
           pPadding: const EdgeInsets.only(bottom: 6),
-          strong: TextStyle(fontWeight: FontWeight.w600, color: baseColor),
-          h1: mdBase.h1?.copyWith(color: baseColor),
-          h2: mdBase.h2?.copyWith(color: baseColor),
-          h3: mdBase.h3?.copyWith(color: baseColor),
-          h4: mdBase.h4?.copyWith(color: baseColor),
-          h5: mdBase.h5?.copyWith(color: baseColor),
-          h6: mdBase.h6?.copyWith(color: baseColor),
-          em: mdBase.em?.copyWith(color: baseColor),
-          del: mdBase.del?.copyWith(color: baseColor),
-          tableHead: mdBase.tableHead?.copyWith(color: baseColor),
-          tableBody: mdBase.tableBody?.copyWith(color: baseColor),
-          tableBorder: TableBorder.all(color: appColors.border),
+          strong: TextStyle(fontWeight: FontWeight.w600, color: p.text),
+          h1: mdBase.h1?.copyWith(color: p.text),
+          h2: mdBase.h2?.copyWith(color: p.text),
+          h3: mdBase.h3?.copyWith(color: p.text),
+          h4: mdBase.h4?.copyWith(color: p.text),
+          h5: mdBase.h5?.copyWith(color: p.text),
+          h6: mdBase.h6?.copyWith(color: p.text),
+          em: mdBase.em?.copyWith(color: p.text),
+          del: mdBase.del?.copyWith(color: p.text),
+          tableHead: mdBase.tableHead?.copyWith(color: p.text),
+          tableBody: mdBase.tableBody?.copyWith(color: p.text),
+          tableBorder: TableBorder.all(color: p.border),
           horizontalRuleDecoration: BoxDecoration(
-            border: Border(top: BorderSide(color: appColors.border, width: 1)),
+            border: Border(top: BorderSide(color: p.border, width: 1)),
           ),
-          a: TextStyle(color: appColors.link),
+          a: TextStyle(color: p.link),
           code: TextStyle(
             fontSize: 13,
             fontFamily: 'monospace',
-            color: appColors.code,
+            color: p.code,
           ),
           codeblockDecoration: BoxDecoration(
-            color: appColors.codeBackground,
+            color: p.codeBackground,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: appColors.border),
+            border: Border.all(color: p.border),
           ),
           codeblockPadding: const EdgeInsets.all(12),
-          listBullet: TextStyle(color: baseColor),
-          blockquote: TextStyle(color: baseColor, fontStyle: FontStyle.italic),
+          listBullet: TextStyle(color: p.text),
+          blockquote: TextStyle(color: p.text, fontStyle: FontStyle.italic),
           blockquoteDecoration: BoxDecoration(
             border: Border(
-              left: BorderSide(color: appColors.quoteBar, width: 3),
+              left: BorderSide(color: p.quoteBar, width: 3),
             ),
           ),
           blockquotePadding: const EdgeInsets.only(left: 12),
@@ -1247,23 +1273,18 @@ class _FileChip extends StatelessWidget {
         ),
       );
     }
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
-    final appColors = mdTheme.extension<AppColors>()!;
-    final fg = mdTheme.colorScheme.onSurface;
-    final iconColor = mdTheme.colorScheme.outline;
-    final linkColor = appColors.link;
+    final p = _messagePalette(context, user);
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.insert_drive_file, size: 16, color: iconColor),
+          Icon(Icons.insert_drive_file, size: 16, color: p.outline),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
               part.filename ?? part.fileUrl ?? l(context).attachmentFallback,
-              style: AppTheme.mono.copyWith(fontSize: 12, color: fg),
+              style: AppTheme.mono.copyWith(fontSize: 12, color: p.text),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -1271,7 +1292,7 @@ class _FileChip extends StatelessWidget {
             const SizedBox(width: 6),
             GestureDetector(
               onTap: () => _openUrl(context),
-              child: Icon(Icons.open_in_new, size: 14, color: linkColor),
+              child: Icon(Icons.open_in_new, size: 14, color: p.link),
             ),
           ],
         ],
