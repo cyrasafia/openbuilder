@@ -768,25 +768,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     switch (p.type) {
       case 'subtask':
         final commandName = p.command ?? 'subtask';
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        final mdTheme = (user || isDark) ? AppTheme.dark : Theme.of(context);
-        final baseColor = mdTheme.colorScheme.onSurface;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                'subtask: $commandName',
-                style: AppTheme.mono.copyWith(
-                  fontSize: 12,
-                  color: baseColor,
-                ),
-              ),
-            ),
-            _markdownPart(p.text, user: user),
-          ],
-        );
+        final label = '**subtask: $commandName**';
+        final body = p.text;
+        final combined = body.isEmpty ? label : '$label\n\n$body';
+        return _markdownPart(combined, user: user);
       case 'text':
         return _markdownPart(p.text, user: user);
       case 'reasoning':

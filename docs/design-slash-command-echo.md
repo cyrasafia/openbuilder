@@ -99,7 +99,7 @@ Open Builder 采用乐观消息机制（optimistic messaging）：用户发送�
 | part.type | 渲染方式 |
 |-----------|---------|
 | `text` | Markdown 渲染 |
-| `subtask` | 标签行 `subtask: <command>`（mono 12px）+ Markdown 渲染 `prompt` 正文 |
+| `subtask` | Markdown 渲染 `subtask: <command>` 加粗标签行 + `prompt` 正文（单一 Markdown 块） |
 | `file` | 文件预览组件 |
 | `tool` | 工具调用卡片 |
 | `reasoning` | 推理文本（可隐藏） |
@@ -250,6 +250,8 @@ actionable feedback...
 - 优点：标签清晰区分 subtask 与普通文本，正文复用同一套 Markdown 样式
 - 缺点：分支数 +1（但样式表已抽到 `_markdownPart` 共用）
 
+> **迭代（二次评审后调整）：** 上述「标签行用 mono 12px 独立 `Text`」被用户反馈为 chip 观感、与正文 Markdown 不一致。改为将 `**subtask: <command>**` 加粗标签行与 `prompt` 正文合并为单一字符串，统一交由 `_markdownPart()` 渲染：标签成为加粗段落（`strong` = w600），正文为普通段落，视觉上完全统一于 Markdown 样式，仅靠加粗保留命令来源标识。`subtask` 仍保留独立 `_part()` 分支（数据源取 `prompt`/`command`，与 `text` 不同），只是不再单独画 mono 标签 widget。
+
 ### 决策 3：移除 `_SubtaskChip` 组件
 
 **理由：**
@@ -289,7 +291,7 @@ actionable feedback...
 
 **UI 渲染：**
 - `lib/features/conversation/conversation_screen.dart` → `_parts()` 允许 user 消息渲染 `text`/`file`/`subtask`
-- `lib/features/conversation/conversation_screen.dart` → `_part()` 的 `subtask` 分支：标签行 `subtask: <command>`（mono 12px）+ `_markdownPart(prompt)` 正文
+- `lib/features/conversation/conversation_screen.dart` → `_part()` 的 `subtask` 分支：将 `**subtask: <command>**` 标签行与 `prompt` 正文合并为单一字符串，交由 `_markdownPart()` 统一渲染（标签为加粗段落，正文为普通段落，两者共用同一套 Markdown 样式）
 
 ### 测试
 
@@ -365,3 +367,11 @@ actionable feedback...
 **验证：** `flutter analyze --fatal-infos` 无 issue；`flutter test test/conversation_store_test.dart` 全部通过；本地服务真实 `/review` part 结构已核对。
 
 **遗留（🟡 低）：** `/review` 的 `prompt` 是整段 reviewer 系统指令（数百字），整段塞进气泡偏高，后续可考虑加可展开/收起。
+
+### 二次评审：subtask 标签改为 Markdown 样式（🟡 中 → 已修复）
+
+**SC-2（🟡）** 用户反馈：subtask 命令回显时，开头的 `subtask: review` 仍以 mono 12px `Text` 渲染，观感像 chip，与下方 prompt 的 Markdown 正文不一致。
+
+**修复：** `_part()` 的 `subtask` 分支不再单独画 mono 标签 widget，改为把 `**subtask: <command>**` 加粗标签行与 `prompt` 正文合并为单一字符串，统一交 `_markdownPart()` 渲染。无 prompt 时仅渲染加粗标签行。
+
+**验证：** `flutter analyze --fatal-infos lib/features/conversation/conversation_screen.dart` 无新增 issue（仅余与本改动无关的 l10n gen 缺失）；`lastMessagePreview` 单测不受影响（预览仍为 `subtask: <command>`）。
