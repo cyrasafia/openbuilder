@@ -556,3 +556,44 @@ live `:15120`（v1.18.3）的 `/config/providers` model 值比 pin 的 spec（v1
 - 不做隐藏清单的导入/导出/跨设备同步（属后续偏好同步范畴）。
 - 不改 `_switchModel` 行为：隐藏的模型若已是当前会话模型，仍正常工作，仅不在列表展示。
 - 管理页不做搜索/筛选（模型数有限，分段已够；选择器侧已有搜索）。
+
+---
+
+## 五次评审意见 — 模型 status 过滤由白名单改为黑名单
+
+> 触发问题：alibaba-token-plan-cn 新增的 `qwen3.8-max-preview` 在 app 端模型选择器/管理页均不可见。经本地 `:15120` 实测 `GET /config/providers` 定位，根因在客户端过滤层，非服务端未下发。
+
+### LR-BL1 🔴 模型 status 用 `== 'active'` 白名单过滤，把 `beta` 等可用预览模型误杀 · 已修复
+
+**实测数据**（live `:15120`）：服务端在 6 家 provider 下共下发 61 个模型，其中 60 个 `status='active'`，仅 1 个 `status='beta'`——即 `alibaba-token-plan-cn/qwen3.8-max-preview`（自带 3 个 variants/thinking 等级）。`opencode_client.dart` 的防御性过滤 `.where((m) => m.enabled && m.status == 'active')` 把它排除，导致该模型在选择器与管理页都消失。
+
+**过滤来历**：本层由 LR-R2（二次复审）作为「防御性」加入，理由是「契约不保证每条 active，deprecated 可能漏进 sheet」。但其 `== 'active'` 白名单写法过严：服务端语义是「beta = 可用预览」，客户端却理解成「非 active = 不可用」，两边不对齐，把带 variants 的可用新模型静默丢弃。
+
+**修复**：白名单 → 黑名单语义。仅挡明确废弃/禁用的，其余（含 active / beta / 缺省）一律放行，与服务端「可用即下发」对齐：
+
+```dart
+return out
+    .where((m) =>
+        m.enabled && m.status != 'deprecated' && m.status != 'disabled')
+    .toList();
+```
+
+`ModelInfo.fromJson` 默认值不变（`enabled` 仅显式 `false` 为 false；`status` 缺省 `'active'`，见 `models.dart:693-694`），故缺省模型仍保留。
+
+### 反转 LR-R2
+
+LR-R2 当初「加 active 防御过滤」的本意（挡 deprecated）由黑名单继承，但白名单写法被本次反转。LR-R2 文字保留作历史记录，以本节为准。
+
+### 修复复审
+
+> 评审基线：LR-BL1 修复后代码。`flutter analyze lib/data/api/opencode_client.dart` → No issues found；`flutter test` → 227/227 通过。（注：本 worktree 首跑前 `lib/l10n/gen/` 生成产物缺失致 13 个测试加载失败，`flutter gen-l10n` 后全过，与本次改动无关。）
+
+| 编号 | 问题 | 修复 | 核对 |
+|------|------|------|------|
+| LR-BL1 | `status == 'active'` 白名单把 beta 预览模型误杀 | 改黑名单 `!= deprecated && != disabled` | ✅ 用 live `:15120` 真实数据模拟：旧过滤 60 保留 / 1 丢弃（`qwen3.8-max-preview`）；新过滤 61 全保留 / 0 丢弃，目标模型 OLD `shown=False` → NEW `shown=True` |
+
+### 关键设计决策
+
+- **黑名单而非白名单**：服务端是「可用即下发」的源（`/config/providers` 只返回已连接 provider），客户端应默认信任，仅排除明确废弃项。黑名单语义还能自动兼容未来新增的 status 取值（如 `rc`/`preview`），不必每次加白名单条目。
+- **保留 `enabled` 门**：`enabled: false` 仍是明确的「禁用」信号（虽 `/config/providers` 实测不带该字段），保留 `m.enabled` 作为兜底无害且语义更完整。
+- **不影响隐藏机制**：黑名单只决定「服务端列表里哪些进入客户端可选池」；`ModelHideStore` 的客户端本地隐藏是独立第二层，二者正交，互不影响。

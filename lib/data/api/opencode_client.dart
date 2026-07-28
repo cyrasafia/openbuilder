@@ -467,12 +467,16 @@ class OpencodeClient {
         }
       }
     }
-    // Defensive: keep the enabled+active gate that the old /api/model path
-    // applied. /config/providers exposes only connected providers, but a
-    // provider may still advertise deprecated models; the OpenAPI contract
-    // does not guarantee every entry is active. ModelInfo tolerates missing
-    // enabled/status (defaults true / 'active').
-    return out.where((m) => m.enabled && m.status == 'active').toList();
+    // Defensive: /config/providers exposes only connected providers, but a
+    // provider may still advertise deprecated/disabled models. Block those
+    // explicitly (blacklist) rather than gating on status == 'active': a
+    // usable preview/beta model (e.g. qwen3.8-max-preview, status=beta, with
+    // variants) would otherwise be silently dropped. ModelInfo tolerates
+    // missing status/enabled (defaults 'active' / true).
+    return out
+        .where((m) =>
+            m.enabled && m.status != 'deprecated' && m.status != 'disabled')
+        .toList();
   }
 
   /// `POST /api/session/:id/agent` — switch the session's agent.
