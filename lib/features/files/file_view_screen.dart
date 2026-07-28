@@ -6,6 +6,7 @@ import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import 'binary_view.dart';
 import 'code_view.dart';
 import 'highlight_theme.dart';
 import 'image_view.dart';
@@ -182,15 +183,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
         wrap: _wrap,
       );
     }
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.file_present, size: 48, color: Colors.grey),
-          const SizedBox(height: 12),
-          Text(l(context).fileBinaryHint),
-        ],
-      ),
+    return BinaryView(
+      filename: widget.path.split('/').last,
+      base64Content: file.content,
+      mimeType: file.mimeType,
     );
   }
 

@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
+import android.webkit.MimeTypeMap
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -38,11 +39,12 @@ class MainActivity : FlutterActivity() {
                     "saveToDownloads" -> {
                         val srcPath = call.argument<String>("srcPath")
                         val displayName = call.argument<String>("displayName")
+                        val mimeType = call.argument<String>("mimeType")
                         if (srcPath == null || displayName == null) {
                             result.error("invalid_args", "missing srcPath or displayName", null)
                         } else {
                             try {
-                                result.success(saveToDownloads(srcPath, displayName))
+                                result.success(saveToDownloads(srcPath, displayName, mimeType))
                             } catch (e: Exception) {
                                 result.error("save_failed", e.message, null)
                             }
@@ -56,16 +58,17 @@ class MainActivity : FlutterActivity() {
     /// Save [srcPath] into the public Download folder via MediaStore (API 29+).
     /// No permission needed. Older API has no permission-free path to public
     /// Download, so it throws and the Dart side falls back to app storage.
-    private fun saveToDownloads(srcPath: String, displayName: String): String {
+    /// [mimeType] (optional) overrides extension-based detection.
+    private fun saveToDownloads(srcPath: String, displayName: String, mimeType: String?): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             throw UnsupportedOperationException("saveToDownloads 需要 API 29+")
         }
         val src = File(srcPath)
-        if (!src.exists()) throw java.io.FileNotFoundException("源日志文件不存在: $srcPath")
+        if (!src.exists()) throw java.io.FileNotFoundException("源文件不存在: $srcPath")
         val resolver = contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+            put(MediaStore.MediaColumns.MIME_TYPE, resolveMimeType(displayName, mimeType))
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
@@ -87,6 +90,18 @@ class MainActivity : FlutterActivity() {
             }
         }
         return uri.toString()
+    }
+
+    /// Prefer an explicit [mimeType]; else derive from the file extension;
+    /// fall back to text/plain to preserve legacy log-export behavior.
+    private fun resolveMimeType(displayName: String, mimeType: String?): String {
+        if (!mimeType.isNullOrEmpty()) return mimeType
+        val ext = displayName.substringAfterLast('.', "").lowercase()
+        if (ext.isNotEmpty()) {
+            val fromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            if (!fromExt.isNullOrEmpty()) return fromExt
+        }
+        return "text/plain"
     }
 
     /// Attempt to read the system font weight.
