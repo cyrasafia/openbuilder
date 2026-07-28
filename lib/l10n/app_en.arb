@@ -107,6 +107,8 @@
   "fileNoMatch": "No matching files",
   "fileViewDiff": "View Diff",
   "fileBinaryHint": "Binary file, can't preview",
+  "fileWrapOff": "Disable wrap",
+  "fileWrapOn": "Enable wrap",
   "diffNoChanges": "No changes",
   "diffViewFullFile": "View full file",
   "createFailed": "Failed to create: {detail}",

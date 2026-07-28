@@ -521,13 +521,23 @@ class FileContent {
   final String type; // text | binary
   final String content;
   final String? mimeType;
-  const FileContent({required this.type, required this.content, this.mimeType});
+  final String? encoding;
+  const FileContent({
+    required this.type,
+    required this.content,
+    this.mimeType,
+    this.encoding,
+  });
 
   factory FileContent.fromJson(Map<String, dynamic> j) => FileContent(
     type: (j['type'] ?? 'text').toString(),
     content: (j['content'] ?? '').toString(),
     mimeType: j['mimeType']?.toString(),
+    encoding: j['encoding']?.toString(),
   );
+
+  bool get isBinary => type == 'binary';
+  bool get isBase64 => encoding == 'base64';
 }
 
 class FileDiff {

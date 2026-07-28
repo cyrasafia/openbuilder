@@ -107,6 +107,8 @@
   "fileNoMatch": "无匹配文件",
   "fileViewDiff": "查看 Diff",
   "fileBinaryHint": "二进制文件，无法预览",
+  "fileWrapOff": "关闭换行",
+  "fileWrapOn": "开启换行",
   "diffNoChanges": "无变更",
   "diffViewFullFile": "查看完整文件",
   "createFailed": "创建失败：{detail}",

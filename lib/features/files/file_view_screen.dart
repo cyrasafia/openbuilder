@@ -6,6 +6,8 @@ import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import 'code_view.dart';
+import 'highlight_theme.dart';
 
 class FileViewScreen extends StatefulWidget {
   final String sessionId;
@@ -27,6 +29,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
   bool _hasDiff = false;
   bool _loading = true;
   Object? _error;
+  bool _wrap = true;
 
   @override
   void initState() {
@@ -46,7 +49,6 @@ class _FileViewScreenState extends State<FileViewScreen> {
         directory: widget.directory ?? '',
         path: widget.path,
       );
-      // Whether this file has a diff (controls the "查看该文件 Diff" action).
       try {
         final diffs = await c.diff(
           widget.sessionId,
@@ -64,6 +66,22 @@ class _FileViewScreenState extends State<FileViewScreen> {
     }
   }
 
+  bool get _isTextLike =>
+      !_loading && _error == null && _content != null && !_content!.isBinary;
+
+  void _onMenuAction(_MenuAction value) {
+    switch (value) {
+      case _MenuAction.wrap:
+        setState(() => _wrap = !_wrap);
+      case _MenuAction.diff:
+        context.push(
+          '/session/${widget.sessionId}/diff/file'
+          '?path=${Uri.encodeQueryComponent(widget.path)}'
+          '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -75,15 +93,24 @@ class _FileViewScreenState extends State<FileViewScreen> {
           style: const TextStyle(fontSize: 16),
         ),
         actions: [
-          if (_hasDiff)
-            TextButton(
-              onPressed: () => context.push(
-                '/session/${widget.sessionId}/diff/file'
-                '?path=${Uri.encodeQueryComponent(widget.path)}'
-                '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
-              ),
-              child: Text(l(context).fileViewDiff),
-            ),
+          PopupMenuButton<_MenuAction>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: _onMenuAction,
+            itemBuilder: (_) => [
+              if (_isTextLike)
+                PopupMenuItem(
+                  value: _MenuAction.wrap,
+                  child: Text(
+                    _wrap ? l(context).fileWrapOff : l(context).fileWrapOn,
+                  ),
+                ),
+              if (_hasDiff)
+                PopupMenuItem(
+                  value: _MenuAction.diff,
+                  child: Text(l(context).fileViewDiff),
+                ),
+            ],
+          ),
         ],
       ),
       body: _body(),
@@ -112,7 +139,12 @@ class _FileViewScreenState extends State<FileViewScreen> {
         ),
       );
     }
-    if (_content!.type == 'binary') {
+    return _dispatch();
+  }
+
+  Widget _dispatch() {
+    final file = _content!;
+    if (file.isBinary) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -124,33 +156,12 @@ class _FileViewScreenState extends State<FileViewScreen> {
         ),
       );
     }
-    final lines = _content!.content.split('\n');
-    final muted = Theme.of(context).colorScheme.outline;
-    return ListView.builder(
-      itemCount: lines.length,
-      itemBuilder: (_, i) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 48,
-            child: Text(
-              '${i + 1}',
-              style: AppTheme.mono.copyWith(fontSize: 12, color: muted),
-              textAlign: TextAlign.right,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SelectableText(
-                lines[i],
-                style: AppTheme.mono.copyWith(fontSize: 12.5),
-              ),
-            ),
-          ),
-        ],
-      ),
+    return CodeView(
+      content: file.content,
+      language: languageForPath(widget.path),
+      wrap: _wrap,
     );
   }
 }
+
+enum _MenuAction { wrap, diff }
