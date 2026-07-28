@@ -8,6 +8,8 @@ import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import 'code_view.dart';
 import 'highlight_theme.dart';
+import 'image_view.dart';
+import 'markdown_view.dart';
 
 class FileViewScreen extends StatefulWidget {
   final String sessionId;
@@ -30,6 +32,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
   bool _loading = true;
   Object? _error;
   bool _wrap = true;
+  bool _mdShowSource = false;
 
   @override
   void initState() {
@@ -93,6 +96,13 @@ class _FileViewScreenState extends State<FileViewScreen> {
           style: const TextStyle(fontSize: 16),
         ),
         actions: [
+          if (_isMarkdown)
+            TextButton(
+              onPressed: () => setState(() => _mdShowSource = !_mdShowSource),
+              child: Text(
+                _mdShowSource ? l(context).filePreview : l(context).fileSource,
+              ),
+            ),
           PopupMenuButton<_MenuAction>(
             icon: const Icon(Icons.more_vert),
             onSelected: _onMenuAction,
@@ -144,23 +154,59 @@ class _FileViewScreenState extends State<FileViewScreen> {
 
   Widget _dispatch() {
     final file = _content!;
-    if (file.isBinary) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.file_present, size: 48, color: Colors.grey),
-            const SizedBox(height: 12),
-            Text(l(context).fileBinaryHint),
-          ],
-        ),
+    final ext = _extension(widget.path);
+
+    if (file.isBinary &&
+        file.isBase64 &&
+        (file.mimeType?.startsWith('image/') ?? false) &&
+        file.mimeType != 'image/svg+xml') {
+      return ImageView(file: file, isSvg: false);
+    }
+    if (!file.isBinary && ext == '.svg') {
+      return ImageView(file: file, isSvg: true);
+    }
+    if (_isMarkdown) {
+      return MarkdownView(
+        content: file.content,
+        showSource: _mdShowSource,
+        wrap: _wrap,
+        sessionId: widget.sessionId,
+        path: widget.path,
+        directory: widget.directory,
       );
     }
-    return CodeView(
-      content: file.content,
-      language: languageForPath(widget.path),
-      wrap: _wrap,
+    if (!file.isBinary) {
+      return CodeView(
+        content: file.content,
+        language: languageForPath(widget.path),
+        wrap: _wrap,
+      );
+    }
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.file_present, size: 48, color: Colors.grey),
+          const SizedBox(height: 12),
+          Text(l(context).fileBinaryHint),
+        ],
+      ),
     );
+  }
+
+  bool get _isMarkdown {
+    if (_loading || _error != null || _content == null || _content!.isBinary) {
+      return false;
+    }
+    final ext = _extension(widget.path);
+    return ext == '.md' || ext == '.markdown';
+  }
+
+  String _extension(String path) {
+    final name = path.split('/').last;
+    final dot = name.lastIndexOf('.');
+    if (dot < 0) return '';
+    return name.substring(dot).toLowerCase();
   }
 }
 

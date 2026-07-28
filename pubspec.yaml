@@ -54,6 +54,8 @@ dependencies:
   url_launcher: ^6.3.0
   cross_file: ^0.3.4+2
   re_highlight: ^0.0.3
+  flutter_svg: ^2.0.10
+  markdown: ^7.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
