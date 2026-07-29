@@ -27,8 +27,6 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 /// [SingleChildScrollView].
 const double _kFooterCardContentHeightFactor = 0.3;
 
-const double _kFollowBottomThreshold = 50.0;
-
 class ConversationScreen extends StatefulWidget {
   final String sessionId;
   const ConversationScreen({super.key, required this.sessionId});
@@ -276,7 +274,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final list = ListView(
             reverse: true,
             controller: _scrollController,
-            physics: const _PositionRetainedScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             children: [
               const SizedBox(height: 8),
@@ -791,7 +788,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!_scrollController.hasClients) return;
       final pos = _scrollController.position;
       // Reversed list: the newest (bottom) is at offset 0.
-      final atBottom = pos.pixels <= _kFollowBottomThreshold;
+      final atBottom = pos.pixels <= 50;
       if (atBottom) {
         _scrollController.jumpTo(pos.minScrollExtent);
       }
@@ -1074,30 +1071,14 @@ class _FooterPanelState extends State<_FooterPanel> {
   }
 }
 
-class _PositionRetainedScrollPhysics extends ScrollPhysics {
-  const _PositionRetainedScrollPhysics({super.parent});
-
-  @override
-  _PositionRetainedScrollPhysics applyTo(ScrollPhysics? ancestor) =>
-      _PositionRetainedScrollPhysics(parent: buildParent(ancestor));
-
-  @override
-  double adjustPositionForNewDimensions({
-    required ScrollMetrics oldPosition,
-    required ScrollMetrics newPosition,
-    required bool isScrolling,
-    required double velocity,
-  }) {
-    final position = super.adjustPositionForNewDimensions(
-      oldPosition: oldPosition,
-      newPosition: newPosition,
-      isScrolling: isScrolling,
-      velocity: velocity,
-    );
-    if (oldPosition.pixels <= _kFollowBottomThreshold) return position;
-    return position +
-        (newPosition.maxScrollExtent - oldPosition.maxScrollExtent);
-  }
+void _syncReversedScroll(BuildContext context, GlobalKey key, double dv) {
+  if (dv == 0) return;
+  final h =
+      (key.currentContext?.findRenderObject() as RenderBox?)?.size.height;
+  if (h == null || h <= 0) return;
+  final pos = context.findAncestorStateOfType<ScrollableState>()?.position;
+  if (pos == null || !pos.hasContentDimensions) return;
+  pos.correctPixels(pos.pixels + h * dv);
 }
 
 class _Reasoning extends StatefulWidget {
@@ -1111,12 +1092,12 @@ class _Reasoning extends StatefulWidget {
 class _ReasoningState extends State<_Reasoning>
     with SingleTickerProviderStateMixin {
   bool _expanded = false;
+  final GlobalKey _contentKey = GlobalKey();
+  double _lastV = 0;
   late final AnimationController _ctrl = AnimationController(
     duration: const Duration(milliseconds: 150),
     vsync: this,
-  )..addStatusListener((status) {
-      if (status == AnimationStatus.dismissed && mounted) setState(() {});
-    });
+  )..addListener(_onAnimate);
   late final Animation<double> _curved =
       _ctrl.drive(CurveTween(curve: Curves.easeOut));
 
@@ -1124,6 +1105,12 @@ class _ReasoningState extends State<_Reasoning>
   void dispose() {
     _ctrl.dispose();
     super.dispose();
+  }
+
+  void _onAnimate() {
+    final v = _ctrl.value;
+    _syncReversedScroll(context, _contentKey, v - _lastV);
+    _lastV = v;
   }
 
   void _toggle() {
@@ -1190,20 +1177,19 @@ class _ReasoningState extends State<_Reasoning>
               SizeTransition(
                 sizeFactor: _curved,
                 alignment: Alignment.topCenter,
-                child: _expanded || !_ctrl.isDismissed
-                    ? Padding(
-                        padding: const EdgeInsets.only(top: 6),
-                        child: Text(
-                          widget.text,
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            color: muted,
-                            fontStyle: FontStyle.italic,
-                            height: 1.45,
-                          ),
-                        ),
-                      )
-                    : const SizedBox.shrink(),
+                child: Padding(
+                  key: _contentKey,
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    widget.text,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: muted,
+                      fontStyle: FontStyle.italic,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
@@ -1224,12 +1210,12 @@ class _ToolChip extends StatefulWidget {
 class _ToolChipState extends State<_ToolChip>
     with SingleTickerProviderStateMixin {
   bool _expanded = false;
+  final GlobalKey _contentKey = GlobalKey();
+  double _lastV = 0;
   late final AnimationController _ctrl = AnimationController(
     duration: const Duration(milliseconds: 150),
     vsync: this,
-  )..addStatusListener((status) {
-      if (status == AnimationStatus.dismissed && mounted) setState(() {});
-    });
+  )..addListener(_onAnimate);
   late final Animation<double> _curved =
       _ctrl.drive(CurveTween(curve: Curves.easeOut));
 
@@ -1237,6 +1223,12 @@ class _ToolChipState extends State<_ToolChip>
   void dispose() {
     _ctrl.dispose();
     super.dispose();
+  }
+
+  void _onAnimate() {
+    final v = _ctrl.value;
+    _syncReversedScroll(context, _contentKey, v - _lastV);
+    _lastV = v;
   }
 
   void _toggle() {
@@ -1303,13 +1295,12 @@ class _ToolChipState extends State<_ToolChip>
               SizeTransition(
                 sizeFactor: _curved,
                 alignment: Alignment.topCenter,
-                child: _expanded || !_ctrl.isDismissed
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: _expandedChildren(part, theme),
-                      )
-                    : const SizedBox.shrink(),
+                child: Column(
+                  key: _contentKey,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: _expandedChildren(part, theme),
+                ),
               ),
             ],
           ),
