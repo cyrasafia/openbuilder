@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
+import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
@@ -371,8 +372,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _loadCommands() async {
     if (_cmdLoaded || _cmdLoading) return;
     final client = serverStore.client;
-    if (client == null) return;
-    final dir = serverStore.sessionById(widget.sessionId)?.directory;
+    if (client == null) {
+      AppLogger.I.w('CmdLoad', 'abort: client is null');
+      return;
+    }
+    final session = serverStore.sessionById(widget.sessionId);
+    final dir = session?.directory;
+    AppLogger.I.i('CmdLoad',
+        'start sid=${widget.sessionId} sessionFound=${session != null} '
+        'dir="${dir ?? '(null)'}" sessions=${serverStore.sessions.length}');
     setState(() => _cmdLoading = true);
     try {
       final results = await Future.wait([
@@ -390,6 +398,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
       for (final c in results[2]) {
         if (existing.add(c.name.toLowerCase())) merged = [...merged, c];
       }
+      AppLogger.I.i('CmdLoad',
+          'done commands=${cmds.length} skills=${results[1].length} '
+          'config=${results[2].length} merged=${merged.length} '
+          'names=${merged.map((c) => c.slash).toList()}');
       if (mounted) {
         setState(() {
           _commands = merged;
@@ -398,6 +410,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         });
       }
     } catch (e) {
+      AppLogger.I.e('CmdLoad', 'error: $e');
       if (mounted) {
         setState(() {
           _cmdError = e.toString();
