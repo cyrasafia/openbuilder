@@ -27,6 +27,8 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 /// [SingleChildScrollView].
 const double _kFooterCardContentHeightFactor = 0.3;
 
+const double _kFollowBottomThreshold = 50.0;
+
 class ConversationScreen extends StatefulWidget {
   final String sessionId;
   const ConversationScreen({super.key, required this.sessionId});
@@ -274,6 +276,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final list = ListView(
             reverse: true,
             controller: _scrollController,
+            physics: const _PositionRetainedScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             children: [
               const SizedBox(height: 8),
@@ -788,7 +791,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!_scrollController.hasClients) return;
       final pos = _scrollController.position;
       // Reversed list: the newest (bottom) is at offset 0.
-      final atBottom = pos.pixels <= 50;
+      final atBottom = pos.pixels <= _kFollowBottomThreshold;
       if (atBottom) {
         _scrollController.jumpTo(pos.minScrollExtent);
       }
@@ -1071,6 +1074,32 @@ class _FooterPanelState extends State<_FooterPanel> {
   }
 }
 
+class _PositionRetainedScrollPhysics extends ScrollPhysics {
+  const _PositionRetainedScrollPhysics({super.parent});
+
+  @override
+  _PositionRetainedScrollPhysics applyTo(ScrollPhysics? ancestor) =>
+      _PositionRetainedScrollPhysics(parent: buildParent(ancestor));
+
+  @override
+  double adjustPositionForNewDimensions({
+    required ScrollMetrics oldPosition,
+    required ScrollMetrics newPosition,
+    required bool isScrolling,
+    required double velocity,
+  }) {
+    final position = super.adjustPositionForNewDimensions(
+      oldPosition: oldPosition,
+      newPosition: newPosition,
+      isScrolling: isScrolling,
+      velocity: velocity,
+    );
+    if (oldPosition.pixels <= _kFollowBottomThreshold) return position;
+    return position +
+        (newPosition.maxScrollExtent - oldPosition.maxScrollExtent);
+  }
+}
+
 class _Reasoning extends StatefulWidget {
   final String text;
   const _Reasoning({required this.text});
@@ -1079,8 +1108,34 @@ class _Reasoning extends StatefulWidget {
   State<_Reasoning> createState() => _ReasoningState();
 }
 
-class _ReasoningState extends State<_Reasoning> {
+class _ReasoningState extends State<_Reasoning>
+    with SingleTickerProviderStateMixin {
   bool _expanded = false;
+  late final AnimationController _ctrl = AnimationController(
+    duration: const Duration(milliseconds: 150),
+    vsync: this,
+  )..addStatusListener((status) {
+      if (status == AnimationStatus.dismissed && mounted) setState(() {});
+    });
+  late final Animation<double> _curved =
+      _ctrl.drive(CurveTween(curve: Curves.easeOut));
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    setState(() {
+      _expanded = !_expanded;
+      if (_expanded) {
+        _ctrl.forward();
+      } else {
+        _ctrl.reverse();
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1094,7 +1149,7 @@ class _ReasoningState extends State<_Reasoning> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () => setState(() => _expanded = !_expanded),
+        onTap: _toggle,
         onLongPress: () {
           if (widget.text.isEmpty) return;
           Clipboard.setData(ClipboardData(text: widget.text));
@@ -1132,12 +1187,10 @@ class _ReasoningState extends State<_Reasoning> {
                   ),
                 ],
               ),
-              AnimatedSize(
-                duration: const Duration(milliseconds: 150),
-                curve: Curves.easeOut,
+              SizeTransition(
+                sizeFactor: _curved,
                 alignment: Alignment.topCenter,
-                clipBehavior: Clip.hardEdge,
-                child: _expanded
+                child: _expanded || !_ctrl.isDismissed
                     ? Padding(
                         padding: const EdgeInsets.only(top: 6),
                         child: Text(
@@ -1168,8 +1221,34 @@ class _ToolChip extends StatefulWidget {
   State<_ToolChip> createState() => _ToolChipState();
 }
 
-class _ToolChipState extends State<_ToolChip> {
+class _ToolChipState extends State<_ToolChip>
+    with SingleTickerProviderStateMixin {
   bool _expanded = false;
+  late final AnimationController _ctrl = AnimationController(
+    duration: const Duration(milliseconds: 150),
+    vsync: this,
+  )..addStatusListener((status) {
+      if (status == AnimationStatus.dismissed && mounted) setState(() {});
+    });
+  late final Animation<double> _curved =
+      _ctrl.drive(CurveTween(curve: Curves.easeOut));
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    setState(() {
+      _expanded = !_expanded;
+      if (_expanded) {
+        _ctrl.forward();
+      } else {
+        _ctrl.reverse();
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1189,7 +1268,7 @@ class _ToolChipState extends State<_ToolChip> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () => setState(() => _expanded = !_expanded),
+        onTap: _toggle,
         onLongPress: () => _copyContent(part),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1221,12 +1300,10 @@ class _ToolChipState extends State<_ToolChip> {
                   ),
                 ],
               ),
-              AnimatedSize(
-                duration: const Duration(milliseconds: 150),
-                curve: Curves.easeOut,
+              SizeTransition(
+                sizeFactor: _curved,
                 alignment: Alignment.topCenter,
-                clipBehavior: Clip.hardEdge,
-                child: _expanded
+                child: _expanded || !_ctrl.isDismissed
                     ? Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
