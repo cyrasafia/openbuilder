@@ -106,6 +106,46 @@ class ServerStore extends ChangeNotifier {
   final LinkedHashMap<String, ConversationStore> _conversations =
       LinkedHashMap<String, ConversationStore>();
   static const _kMaxConversations = 20;
+
+  final ValueNotifier<List<CommandInfo>> commandsNotifier =
+      ValueNotifier(const []);
+  bool _commandsRefreshing = false;
+  String? _commandsRefreshDir;
+  bool get commandsRefreshing => _commandsRefreshing;
+
+  Future<void> refreshCommands({String? directory}) async {
+    final c = client;
+    if (c == null) return;
+    if (_commandsRefreshing && _commandsRefreshDir == directory) return;
+    _commandsRefreshing = true;
+    _commandsRefreshDir = directory;
+    try {
+      final results = await Future.wait([
+        c.getCommands(directory: directory),
+        c.getSkills(directory: directory).catchError((_) => <CommandInfo>[]),
+        c.getConfigCommands().catchError((_) => <CommandInfo>[]),
+      ]);
+      final cmds = results[0];
+      final existing = cmds.map((e) => e.name.toLowerCase()).toSet();
+      var merged = [...cmds];
+      for (final s in results[1]) {
+        if (s.description.trim().isEmpty) continue;
+        if (existing.add(s.name.toLowerCase())) merged = [...merged, s];
+      }
+      for (final cc in results[2]) {
+        if (existing.add(cc.name.toLowerCase())) merged = [...merged, cc];
+      }
+      AppLogger.I.i(_tag,
+          'commands refreshed: commands=${cmds.length} skills=${results[1].length} '
+          'config=${results[2].length} merged=${merged.length}');
+      commandsNotifier.value = merged;
+    } catch (e) {
+      AppLogger.I.e(_tag, 'commands refresh failed: $e');
+    } finally {
+      _commandsRefreshing = false;
+    }
+  }
+
   bool connected = false;
 
   /// Whether the global watchdog SSE is actively connected (for status indicator).
@@ -575,6 +615,7 @@ class ServerStore extends ChangeNotifier {
       _lastActivityByKey.clear();
       _workspaceEnabled.clear();
       _projectsFetched = false;
+      commandsNotifier.value = const [];
       // Load cached data first for instant offline UI, then _bootstrap refreshes.
       await _loadCache();
       final dio = dioFor(profile);
@@ -1539,6 +1580,7 @@ class ServerStore extends ChangeNotifier {
     _pendingQuestions.clear();
     _recentlyResolvedQuestions.clear();
     _recentlyResolvedPermissions.clear();
+    commandsNotifier.value = const [];
     client = null;
     _profile = null;
     notifyListeners();
@@ -1553,6 +1595,7 @@ class ServerStore extends ChangeNotifier {
     _previewNotifyTimer = null;
     _cacheSaveTimer?.cancel();
     _cacheSaveTimer = null;
+    commandsNotifier.dispose();
     super.dispose();
   }
 

@@ -9,7 +9,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
-import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
@@ -74,10 +73,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _cmdMode = false;
   bool _shellMode = false;
   final List<AttachmentPreview> _attachments = [];
-  List<CommandInfo> _commands = const [];
-  bool _cmdLoaded = false;
-  bool _cmdLoading = false;
-  String? _cmdError;
+  bool _cmdRefreshTriggered = false;
   bool _didForceReload = false;
   bool _didRestoreDraft = false;
   int _lastMsgCount = 0;
@@ -87,6 +83,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    serverStore.commandsNotifier.addListener(_onCommandsChanged);
     final conv = serverStore.conversationFor(widget.sessionId);
     if (conv != null) {
       conv.addListener(_onDraftChange);
@@ -102,11 +99,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
       conv.setDraft(_ctl.text, shell: _shellMode);
       conv.persistDraft(); // unawaited，尽力而为（硬杀靠 pause flush 兜底）
     }
+    serverStore.commandsNotifier.removeListener(_onCommandsChanged);
     serverStore.setActiveConversation(null);
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _ctl.dispose();
     super.dispose();
+  }
+
+  void _onCommandsChanged() {
+    if (mounted && _cmdMode) setState(() {});
   }
 
   /// Reactive 恢复：conv notifyListeners（含 loadDraftOnly 完成）后触发。
@@ -128,8 +130,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _ctl.text = c.draftText;
       _shellMode = c.draftShell;
       _cmdMode = cmdMode;
-      if (cmdMode && !_cmdLoaded && !_cmdLoading) {
-        _loadCommands(); // CD-17：恢复 / 命令草稿时加载命令列表，避免面板空载
+      if (cmdMode && !_cmdRefreshTriggered) {
+        _cmdRefreshTriggered = true;
+        _triggerCommandRefresh();
       }
       if (allowSetState && mounted) setState(() {});
     }
@@ -312,9 +315,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
               if (_cmdMode)
                 _CommandHints(
                   query: _ctl.text,
-                  commands: _commands,
-                  loading: _cmdLoading,
-                  error: _cmdError,
+                  commands: serverStore.commandsNotifier.value,
+                  loading: serverStore.commandsRefreshing &&
+                      serverStore.commandsNotifier.value.isEmpty,
                   onPick: _pickCommand,
                 ),
               _BottomBar(
@@ -335,8 +338,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     return;
                   }
                   final mode = t.startsWith('/') && !t.contains(' ');
-                  if (mode && !_cmdLoaded && !_cmdLoading) {
-                    _loadCommands();
+                  if (mode && !_cmdRefreshTriggered) {
+                    _cmdRefreshTriggered = true;
+                    _triggerCommandRefresh();
                   }
                   if (t == '!') {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -370,56 +374,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     setState(() => _cmdMode = false);
   }
 
-  Future<void> _loadCommands() async {
-    if (_cmdLoaded || _cmdLoading) return;
-    final client = serverStore.client;
-    if (client == null) {
-      AppLogger.I.w('CmdLoad', 'abort: client is null');
-      return;
-    }
-    final session = serverStore.sessionById(widget.sessionId);
-    final dir = session?.directory;
-    AppLogger.I.i('CmdLoad',
-        'start sid=${widget.sessionId} sessionFound=${session != null} '
-        'dir="${dir ?? '(null)'}" sessions=${serverStore.sessions.length}');
-    setState(() => _cmdLoading = true);
-    try {
-      final results = await Future.wait([
-        client.getCommands(directory: dir),
-        client.getSkills(directory: dir).catchError((_) => <CommandInfo>[]),
-        client.getConfigCommands().catchError((_) => <CommandInfo>[]),
-      ]);
-      final cmds = results[0];
-      final existing = cmds.map((c) => c.name.toLowerCase()).toSet();
-      var merged = [...cmds];
-      for (final s in results[1]) {
-        if (s.description.trim().isEmpty) continue;
-        if (existing.add(s.name.toLowerCase())) merged = [...merged, s];
-      }
-      for (final c in results[2]) {
-        if (existing.add(c.name.toLowerCase())) merged = [...merged, c];
-      }
-      AppLogger.I.i('CmdLoad',
-          'done commands=${cmds.length} skills=${results[1].length} '
-          'config=${results[2].length} merged=${merged.length} '
-          'names=${merged.map((c) => c.slash).toList()}');
-      if (mounted) {
-        setState(() {
-          _commands = merged;
-          _cmdLoaded = true;
-          _cmdLoading = false;
-        });
-      }
-    } catch (e) {
-      AppLogger.I.e('CmdLoad', 'error: $e');
-      if (mounted) {
-        setState(() {
-          _cmdError = e.toString();
-          _cmdLoaded = true;
-          _cmdLoading = false;
-        });
-      }
-    }
+  void _triggerCommandRefresh() {
+    final dir = serverStore.sessionById(widget.sessionId)?.directory;
+    serverStore.refreshCommands(directory: dir);
   }
 
   Future<void> _pickAttachments() async {
@@ -527,14 +484,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
         String? agent = session?.agent;
         var isCommand = false;
         if (text.startsWith('/')) {
-          await _loadCommands();
+          await serverStore.refreshCommands(directory: directory);
           final firstSpace = text.indexOf(' ');
           final cmdToken =
               (firstSpace == -1
                       ? text.substring(1)
                       : text.substring(1, firstSpace))
                   .toLowerCase();
-          final matched = _commands.firstWhere(
+          final matched = serverStore.commandsNotifier.value.firstWhere(
             (c) => c.slash.toLowerCase() == '/$cmdToken',
             orElse: () => const CommandInfo(name: ''),
           );
@@ -2447,13 +2404,11 @@ class _CommandHints extends StatelessWidget {
   final String query;
   final List<CommandInfo> commands;
   final bool loading;
-  final String? error;
   final ValueChanged<String> onPick;
   const _CommandHints({
     required this.query,
     required this.commands,
     required this.loading,
-    this.error,
     required this.onPick,
   });
 
