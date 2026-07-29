@@ -1071,28 +1071,6 @@ class _FooterPanelState extends State<_FooterPanel> {
   }
 }
 
-void _keepTopOnResize(BuildContext context, VoidCallback toggle) {
-  final box = context.findRenderObject() as RenderBox?;
-  final before = box?.localToGlobal(Offset.zero).dy;
-  toggle();
-  if (before == null) return;
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (!context.mounted) return;
-    final box2 = context.findRenderObject() as RenderBox?;
-    final after = box2?.localToGlobal(Offset.zero).dy;
-    if (after == null) return;
-    final delta = before - after;
-    if (delta.abs() < 0.5) return;
-    final pos = context.findAncestorStateOfType<ScrollableState>()?.position;
-    if (pos == null || !pos.hasContentDimensions) return;
-    final target = (pos.pixels + delta)
-        .clamp(pos.minScrollExtent, pos.maxScrollExtent)
-        .toDouble();
-    if ((target - pos.pixels).abs() < 0.5) return;
-    pos.jumpTo(target);
-  });
-}
-
 class _Reasoning extends StatefulWidget {
   final String text;
   const _Reasoning({required this.text});
@@ -1116,7 +1094,7 @@ class _ReasoningState extends State<_Reasoning> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () => _keepTopOnResize(context, () => setState(() => _expanded = !_expanded)),
+        onTap: () => setState(() => _expanded = !_expanded),
         onLongPress: () {
           if (widget.text.isEmpty) return;
           Clipboard.setData(ClipboardData(text: widget.text));
@@ -1154,18 +1132,26 @@ class _ReasoningState extends State<_Reasoning> {
                   ),
                 ],
               ),
-              if (_expanded) ...[
-                const SizedBox(height: 6),
-                Text(
-                  widget.text,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: muted,
-                    fontStyle: FontStyle.italic,
-                    height: 1.45,
-                  ),
-                ),
-              ],
+              AnimatedSize(
+                duration: const Duration(milliseconds: 150),
+                curve: Curves.easeOut,
+                alignment: Alignment.topCenter,
+                clipBehavior: Clip.hardEdge,
+                child: _expanded
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          widget.text,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: muted,
+                            fontStyle: FontStyle.italic,
+                            height: 1.45,
+                          ),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
             ],
           ),
         ),
@@ -1203,7 +1189,7 @@ class _ToolChipState extends State<_ToolChip> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () => _keepTopOnResize(context, () => setState(() => _expanded = !_expanded)),
+        onTap: () => setState(() => _expanded = !_expanded),
         onLongPress: () => _copyContent(part),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1235,9 +1221,19 @@ class _ToolChipState extends State<_ToolChip> {
                   ),
                 ],
               ),
-              if (_expanded) ...[
-                ..._expandedChildren(part, theme),
-              ],
+              AnimatedSize(
+                duration: const Duration(milliseconds: 150),
+                curve: Curves.easeOut,
+                alignment: Alignment.topCenter,
+                clipBehavior: Clip.hardEdge,
+                child: _expanded
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: _expandedChildren(part, theme),
+                      )
+                    : const SizedBox.shrink(),
+              ),
             ],
           ),
         ),
