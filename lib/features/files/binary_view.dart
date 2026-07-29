@@ -29,6 +29,16 @@ class BinaryView extends StatefulWidget {
 class _BinaryViewState extends State<BinaryView> {
   static const _filesChannel = MethodChannel('com.openbuilder.app/files');
   bool _busy = false;
+  String? _downloadedUri;
+
+  @override
+  void didUpdateWidget(covariant BinaryView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filename != widget.filename ||
+        oldWidget.base64Content != widget.base64Content) {
+      _downloadedUri = null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,15 +64,15 @@ class _BinaryViewState extends State<BinaryView> {
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
-              onPressed: _busy ? null : _onDownload,
+              onPressed: _busy ? null : (_downloadedUri != null ? _openFile : _onDownload),
               icon: _busy
                   ? const SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.download),
-              label: Text(l(context).fileDownload),
+                  : Icon(_downloadedUri != null ? Icons.open_in_new : Icons.download),
+              label: Text(_downloadedUri != null ? l(context).fileOpen : l(context).fileDownload),
             ),
           ],
         ),
@@ -129,17 +139,35 @@ class _BinaryViewState extends State<BinaryView> {
 
   Future<void> _saveToDownloads(File file) async {
     try {
-      await _filesChannel.invokeMethod<String>('saveToDownloads', {
+      final uri = await _filesChannel.invokeMethod<String>('saveToDownloads', {
         'srcPath': file.path,
         'displayName': widget.filename,
         'mimeType': widget.mimeType,
       });
       if (!mounted) return;
+      setState(() => _downloadedUri = uri);
       _snack(l(context).fileDownloadSuccess);
     } catch (e) {
       AppLogger.I.w('BinaryView', 'saveToDownloads failed: $e');
       if (!mounted) return;
       _snack(l(context).fileDownloadFailed(e.toString()));
+    }
+  }
+
+  Future<void> _openFile() async {
+    setState(() => _busy = true);
+    try {
+      await _filesChannel.invokeMethod<void>('openFile', {
+        'uri': _downloadedUri,
+        'displayName': widget.filename,
+        'mimeType': widget.mimeType,
+      });
+    } catch (e) {
+      AppLogger.I.w('BinaryView', 'openFile failed: $e');
+      if (!mounted) return;
+      _snack(l(context).fileOpenFailed(e.toString()));
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 

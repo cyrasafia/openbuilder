@@ -1,6 +1,8 @@
 package com.openbuilder.app
 
 import android.content.ContentValues
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -50,6 +52,21 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
+                    "openFile" -> {
+                        val uri = call.argument<String>("uri")
+                        val displayName = call.argument<String>("displayName")
+                        val mimeType = call.argument<String>("mimeType")
+                        if (uri == null) {
+                            result.error("invalid_args", "missing uri", null)
+                        } else {
+                            try {
+                                openFile(uri, resolveMimeType(displayName ?: "", mimeType, "*/*"))
+                                result.success(null)
+                            } catch (e: Exception) {
+                                result.error("open_failed", e.message, null)
+                            }
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -92,16 +109,25 @@ class MainActivity : FlutterActivity() {
         return uri.toString()
     }
 
+    private fun openFile(uriString: String, mimeType: String) {
+        val uri = Uri.parse(uriString)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, null))
+    }
+
     /// Prefer an explicit [mimeType]; else derive from the file extension;
-    /// fall back to text/plain to preserve legacy log-export behavior.
-    private fun resolveMimeType(displayName: String, mimeType: String?): String {
+    /// fall back to [fallback] (default text/plain for log-export, */* for open).
+    private fun resolveMimeType(displayName: String, mimeType: String?, fallback: String = "text/plain"): String {
         if (!mimeType.isNullOrEmpty()) return mimeType
         val ext = displayName.substringAfterLast('.', "").lowercase()
         if (ext.isNotEmpty()) {
             val fromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
             if (!fromExt.isNullOrEmpty()) return fromExt
         }
-        return "text/plain"
+        return fallback
     }
 
     /// Attempt to read the system font weight.
