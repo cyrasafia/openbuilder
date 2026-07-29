@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import '../../ui/theme.dart';
 import 'highlight_theme.dart';
 
-const _gutterGap = 8.0;
-const _gutterPad = 8.0;
+const _gutterGap = 6.0;
+const _gutterPad = 4.0;
 const _fontSize = 12.5;
 const _asyncThreshold = 2000;
 
@@ -105,6 +105,7 @@ class _CodeViewState extends State<CodeView> {
       final span = (_lineSpans != null && i < _lineSpans!.length)
           ? _lineSpans![i]
           : _plainSpan(i);
+      final rich = TextSpan(children: [span], style: _base);
       return Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -119,7 +120,8 @@ class _CodeViewState extends State<CodeView> {
           const SizedBox(width: _gutterGap),
           Expanded(
             child: SelectableText.rich(
-              TextSpan(children: [span], style: _base),
+              rich,
+              maxLines: widget.wrap ? null : 1,
             ),
           ),
         ],
@@ -127,7 +129,7 @@ class _CodeViewState extends State<CodeView> {
     }
 
     final listView = ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
       itemCount: _lines.length,
       itemBuilder: rowBuilder,
     );
@@ -138,7 +140,7 @@ class _CodeViewState extends State<CodeView> {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SizedBox(
-        width: gutterWidth + _gutterGap + contentWidth + 24,
+        width: gutterWidth + _gutterGap + contentWidth + 16,
         child: listView,
       ),
     );

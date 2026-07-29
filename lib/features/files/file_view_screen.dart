@@ -32,7 +32,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
   bool _hasDiff = false;
   bool _loading = true;
   Object? _error;
-  bool _wrap = true;
+  bool _wrap = false;
   bool _mdShowSource = false;
 
   @override
