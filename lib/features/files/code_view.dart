@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import '../../ui/theme.dart';
 import 'highlight_theme.dart';
 
-const _gutterWidth = 48.0;
 const _gutterGap = 8.0;
+const _gutterPad = 8.0;
 const _fontSize = 12.5;
 const _asyncThreshold = 2000;
 
@@ -31,6 +31,8 @@ class _CodeViewState extends State<CodeView> {
   Brightness? _highlightedBrightness;
   int _highlightGen = 0;
   double? _maxWidthCache;
+  double? _gutterWidthCache;
+  TextScaler _textScaler = TextScaler.noScaling;
 
   @override
   void initState() {
@@ -46,6 +48,7 @@ class _CodeViewState extends State<CodeView> {
       _lines = widget.content.split('\n');
       _lineSpans = null;
       _maxWidthCache = null;
+      _gutterWidthCache = null;
       final brightness = Theme.of(context).brightness;
       _highlightedBrightness = brightness;
       _beginHighlight(brightness);
@@ -59,6 +62,12 @@ class _CodeViewState extends State<CodeView> {
     if (_highlightedBrightness != brightness) {
       _highlightedBrightness = brightness;
       _beginHighlight(brightness);
+    }
+    final scaler = MediaQuery.textScalerOf(context);
+    if (_textScaler != scaler) {
+      _textScaler = scaler;
+      _maxWidthCache = null;
+      _gutterWidthCache = null;
     }
   }
 
@@ -90,6 +99,7 @@ class _CodeViewState extends State<CodeView> {
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.outline;
     final gutterStyle = _base.copyWith(color: muted);
+    final gutterWidth = _gutterWidth();
 
     Widget rowBuilder(BuildContext _, int i) {
       final span = (_lineSpans != null && i < _lineSpans!.length)
@@ -99,7 +109,7 @@ class _CodeViewState extends State<CodeView> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: _gutterWidth,
+            width: gutterWidth,
             child: Text(
               '${i + 1}',
               style: gutterStyle,
@@ -128,17 +138,36 @@ class _CodeViewState extends State<CodeView> {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SizedBox(
-        width: _gutterWidth + _gutterGap + contentWidth + 24,
+        width: gutterWidth + _gutterGap + contentWidth + 24,
         child: listView,
       ),
     );
+  }
+
+  double _gutterWidth() {
+    final cached = _gutterWidthCache;
+    if (cached != null) return cached;
+    final digits = _lines.length.toString().length;
+    final tp = TextPainter(
+      text: TextSpan(text: '0' * digits, style: _base),
+      textDirection: TextDirection.ltr,
+      textScaler: _textScaler,
+      maxLines: 1,
+    )..layout();
+    final w = tp.width;
+    tp.dispose();
+    return _gutterWidthCache = w + _gutterPad;
   }
 
   double _maxContentWidth() {
     final cached = _maxWidthCache;
     if (cached != null) return cached;
     final style = _base;
-    final tp = TextPainter(textDirection: TextDirection.ltr, maxLines: 1);
+    final tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      textScaler: _textScaler,
+      maxLines: 1,
+    );
     var widest = 0.0;
     for (final l in _lines) {
       tp.text = TextSpan(text: l, style: style);
@@ -148,6 +177,7 @@ class _CodeViewState extends State<CodeView> {
     final pad = TextPainter(
       text: TextSpan(text: '0', style: style),
       textDirection: TextDirection.ltr,
+      textScaler: _textScaler,
       maxLines: 1,
     )..layout();
     final padW = pad.width;
