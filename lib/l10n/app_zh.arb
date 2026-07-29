@@ -180,8 +180,7 @@
   "abortFailed": "终止失败：{detail}",
   "@abortFailed": {"placeholders": {"detail": {"type": "String"}}},
   "todoTitle": "任务",
-  "reasoningCollapse": "收起思考",
-  "reasoningExpand": "展开思考",
+  "reasoning": "思考",
   "linkOpenFailed": "无法打开链接",
   "linkOpenFailedDetail": "无法打开链接：{detail}",
   "@linkOpenFailedDetail": {"placeholders": {"detail": {"type": "String"}}},
@@ -242,5 +241,6 @@
   "notifQuestionTitle": "需要回答",
   "notifQuestionBody": "「{title}」: {detail}",
   "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
-  "notifQuestionDefaultHeader": "问题"
+  "notifQuestionDefaultHeader": "问题",
+  "copied": "已复制"
 }

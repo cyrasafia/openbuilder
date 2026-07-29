@@ -180,8 +180,7 @@
   "abortFailed": "Failed to abort: {detail}",
   "@abortFailed": {"placeholders": {"detail": {"type": "String"}}},
   "todoTitle": "Tasks",
-  "reasoningCollapse": "Collapse reasoning",
-  "reasoningExpand": "Expand reasoning",
+  "reasoning": "Reasoning",
   "linkOpenFailed": "Unable to open link",
   "linkOpenFailedDetail": "Unable to open link: {detail}",
   "@linkOpenFailedDetail": {"placeholders": {"detail": {"type": "String"}}},
@@ -242,5 +241,6 @@
   "notifQuestionTitle": "Answer needed",
   "notifQuestionBody": "\"{title}\": {detail}",
   "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
-  "notifQuestionDefaultHeader": "Question"
+  "notifQuestionDefaultHeader": "Question",
+  "copied": "Copied"
 }

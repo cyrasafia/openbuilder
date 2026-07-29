@@ -20,10 +20,11 @@ import '../../ui/widgets.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 /// Max height of a footer card's scrollable content, as a fraction of the
-/// screen height. Each card bounds its own scroll region with a
-/// [ConstrainedBox] using this factor; the card must NOT rely on the footer's
-/// flex allocation, because a vertical [Column] gives its non-flex children an
-/// unbounded main-axis constraint, which would defeat [SingleChildScrollView].
+/// screen height. Footer cards (todo / permission / question) bound their
+/// scroll region with a [ConstrainedBox] using this factor; the card must NOT
+/// rely on the footer's flex allocation, because a vertical [Column] gives its
+/// non-flex children an unbounded main-axis constraint, which would defeat
+/// [SingleChildScrollView].
 const double _kFooterCardContentHeightFactor = 0.3;
 
 class ConversationScreen extends StatefulWidget {
@@ -1070,6 +1071,28 @@ class _FooterPanelState extends State<_FooterPanel> {
   }
 }
 
+void _keepTopOnResize(BuildContext context, VoidCallback toggle) {
+  final box = context.findRenderObject() as RenderBox?;
+  final before = box?.localToGlobal(Offset.zero).dy;
+  toggle();
+  if (before == null) return;
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!context.mounted) return;
+    final box2 = context.findRenderObject() as RenderBox?;
+    final after = box2?.localToGlobal(Offset.zero).dy;
+    if (after == null) return;
+    final delta = before - after;
+    if (delta.abs() < 0.5) return;
+    final pos = context.findAncestorStateOfType<ScrollableState>()?.position;
+    if (pos == null || !pos.hasContentDimensions) return;
+    final target = (pos.pixels + delta)
+        .clamp(pos.minScrollExtent, pos.maxScrollExtent)
+        .toDouble();
+    if ((target - pos.pixels).abs() < 0.5) return;
+    pos.jumpTo(target);
+  });
+}
+
 class _Reasoning extends StatefulWidget {
   final String text;
   const _Reasoning({required this.text});
@@ -1079,37 +1102,59 @@ class _Reasoning extends StatefulWidget {
 }
 
 class _ReasoningState extends State<_Reasoning> {
-  bool expanded = false;
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final muted = Theme.of(context).colorScheme.outline;
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.outline;
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: InkWell(
-        onTap: () => setState(() => expanded = !expanded),
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-          ),
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => _keepTopOnResize(context, () => setState(() => _expanded = !_expanded)),
+        onLongPress: () {
+          if (widget.text.isEmpty) return;
+          Clipboard.setData(ClipboardData(text: widget.text));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l(context).copied)),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Row(
                 children: [
                   Icon(Icons.psychology_outlined, size: 14, color: muted),
                   const SizedBox(width: 6),
-                  Text(
-                    expanded
-                        ? l(context).reasoningCollapse
-                        : l(context).reasoningExpand,
-                    style: TextStyle(fontSize: 11.5, color: muted),
+                  Flexible(
+                    child: Text(
+                      l(context).reasoning,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w400,
+                        color: muted,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: muted,
                   ),
                 ],
               ),
-              if (expanded) ...[
+              if (_expanded) ...[
                 const SizedBox(height: 6),
                 Text(
                   widget.text,
@@ -1152,44 +1197,50 @@ class _ToolChipState extends State<_ToolChip> {
     };
     return Container(
       margin: const EdgeInsets.only(top: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 15, color: color),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    part.toolSummary,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppTheme.mono.copyWith(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w400,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => _keepTopOnResize(context, () => setState(() => _expanded = !_expanded)),
+        onLongPress: () => _copyContent(part),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, size: 15, color: color),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      part.toolSummary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w400,
+                        color: theme.colorScheme.outline,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 6),
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: theme.colorScheme.outline,
-                ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: theme.colorScheme.outline,
+                  ),
+                ],
+              ),
+              if (_expanded) ...[
+                ..._expandedChildren(part, theme),
               ],
-            ),
+            ],
           ),
-          if (_expanded) ..._expandedChildren(part, theme),
-        ],
+        ),
       ),
     );
   }
@@ -1216,7 +1267,7 @@ class _ToolChipState extends State<_ToolChip> {
     if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
       children.add(const SizedBox(height: 8));
       children.add(
-        SelectableText(
+        Text(
           error,
           style: const TextStyle(
             fontSize: 12,
@@ -1230,26 +1281,47 @@ class _ToolChipState extends State<_ToolChip> {
   }
 
   Widget _codeBlock(String body, AppColors appColors) {
-    return ConstrainedBox(
-      constraints: BoxConstraints(
-        maxHeight:
-            MediaQuery.sizeOf(context).height * _kFooterCardContentHeightFactor,
+    var text = body;
+    if (text.endsWith('\n')) text = text.substring(0, text.length - 1);
+    return Container(
+      width: double.infinity,
+      clipBehavior: Clip.hardEdge,
+      decoration: BoxDecoration(
+        color: appColors.codeBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: appColors.border),
       ),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: appColors.codeBackground,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: appColors.border),
-        ),
-        child: SingleChildScrollView(
-          child: SelectableText(
-            body,
-            style: AppTheme.mono.copyWith(fontSize: 12.5, height: 1.45),
-          ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.all(12),
+        child: Text(
+          text,
+          style: AppTheme.mono.copyWith(fontSize: 13, color: appColors.code),
         ),
       ),
+    );
+  }
+
+  void _copyContent(DisplayPart part) {
+    final buf = StringBuffer();
+    final input = part.toolInput;
+    if (input != null && input.isNotEmpty) {
+      buf.writeln(const JsonEncoder.withIndent('  ').convert(input));
+    }
+    final output = part.toolOutput;
+    if (output != null && output.isNotEmpty) {
+      if (buf.isNotEmpty) buf.writeln();
+      buf.write(output);
+    }
+    final error = part.toolError;
+    if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
+      if (buf.isNotEmpty) buf.writeln();
+      buf.write(error);
+    }
+    if (buf.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: buf.toString()));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(l(context).copied)),
     );
   }
 }
