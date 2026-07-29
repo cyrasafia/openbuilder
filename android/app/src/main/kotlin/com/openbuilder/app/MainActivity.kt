@@ -6,8 +6,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Log
 import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -67,6 +69,30 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
+                    "canInstallPackages" -> {
+                        result.success(canInstallPackages())
+                    }
+                    "openInstallSettings" -> {
+                        try {
+                            openInstallSettings()
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("settings_failed", e.message, null)
+                        }
+                    }
+                    "installApk" -> {
+                        val filePath = call.argument<String>("filePath")
+                        if (filePath == null) {
+                            result.error("invalid_args", "missing filePath", null)
+                        } else {
+                            try {
+                                installApk(filePath)
+                                result.success(null)
+                            } catch (e: Exception) {
+                                result.error("install_failed", e.message, null)
+                            }
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -116,6 +142,35 @@ class MainActivity : FlutterActivity() {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivity(Intent.createChooser(intent, null))
+    }
+
+    private fun canInstallPackages(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+    }
+
+    private fun openInstallSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        }
+    }
+
+    private fun installApk(filePath: String) {
+        val file = File(filePath)
+        if (!file.exists()) throw java.io.FileNotFoundException("APK not found: $filePath")
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     /// Prefer an explicit [mimeType]; else derive from the file extension;
