@@ -781,9 +781,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return _markdownPart(p.text, user: user);
       case 'reasoning':
         if (!showThinking.value) return const SizedBox.shrink();
-        return _Reasoning(text: p.text);
+        return _Reasoning(key: PageStorageKey(p.id), text: p.text);
       case 'tool':
-        return _ToolChip(part: p);
+        return _ToolChip(key: PageStorageKey(p.id), part: p);
       case 'file':
         return _FileChip(part: p, user: user);
       default:
@@ -1040,7 +1040,7 @@ void _syncReversedScroll(BuildContext context, GlobalKey key, double dv) {
 
 class _Reasoning extends StatefulWidget {
   final String text;
-  const _Reasoning({required this.text});
+  const _Reasoning({super.key, required this.text});
 
   @override
   State<_Reasoning> createState() => _ReasoningState();
@@ -1059,13 +1059,23 @@ class _ReasoningState extends State<_Reasoning>
       _ctrl.drive(CurveTween(curve: Curves.easeOut));
 
   @override
+  void initState() {
+    super.initState();
+    _expanded = PageStorage.maybeOf(context)?.readState(context) == true;
+    if (_expanded) {
+      _lastV = 1.0;
+      _ctrl.value = 1.0;
+    }
+  }
+
+  @override
   void dispose() {
     _ctrl.dispose();
     super.dispose();
   }
 
   void _onAnimate() {
-    final v = _ctrl.value;
+    final v = _curved.value;
     _syncReversedScroll(context, _contentKey, v - _lastV);
     _lastV = v;
   }
@@ -1079,6 +1089,7 @@ class _ReasoningState extends State<_Reasoning>
         _ctrl.reverse();
       }
     });
+    PageStorage.maybeOf(context)?.writeState(context, _expanded);
   }
 
   @override
@@ -1158,7 +1169,7 @@ class _ReasoningState extends State<_Reasoning>
 
 class _ToolChip extends StatefulWidget {
   final DisplayPart part;
-  const _ToolChip({required this.part});
+  const _ToolChip({super.key, required this.part});
 
   @override
   State<_ToolChip> createState() => _ToolChipState();
@@ -1177,13 +1188,23 @@ class _ToolChipState extends State<_ToolChip>
       _ctrl.drive(CurveTween(curve: Curves.easeOut));
 
   @override
+  void initState() {
+    super.initState();
+    _expanded = PageStorage.maybeOf(context)?.readState(context) == true;
+    if (_expanded) {
+      _lastV = 1.0;
+      _ctrl.value = 1.0;
+    }
+  }
+
+  @override
   void dispose() {
     _ctrl.dispose();
     super.dispose();
   }
 
   void _onAnimate() {
-    final v = _ctrl.value;
+    final v = _curved.value;
     _syncReversedScroll(context, _contentKey, v - _lastV);
     _lastV = v;
   }
@@ -1197,6 +1218,7 @@ class _ToolChipState extends State<_ToolChip>
         _ctrl.reverse();
       }
     });
+    PageStorage.maybeOf(context)?.writeState(context, _expanded);
   }
 
   @override
