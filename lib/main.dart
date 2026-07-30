@@ -20,6 +20,10 @@ void main() {
     FlutterError.onError = (details) {
       AppLogger.I.e('Flutter', '${details.exceptionAsString()}\n${details.stack}');
     };
+    ErrorWidget.builder = (details) {
+      AppLogger.I.e('Render', '${details.exceptionAsString()}\n${details.stack}');
+      return ErrorWidget(details.exception);
+    };
     await AppLogger.I.init();
     await connectionStore.load();
     await modelHideStore.load();

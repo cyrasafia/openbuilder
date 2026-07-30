@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
+import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
@@ -1223,6 +1224,14 @@ class _ToolChipState extends State<_ToolChip>
       }
     });
     PageStorage.maybeOf(context)?.writeState(context, _expanded);
+    final p = widget.part;
+    AppLogger.I.d(
+      'ToolChip',
+      '${_expanded ? "expand" : "collapse"} tool=${p.tool} status=${p.toolStatus} '
+          'inLen=${p.toolInput?.length ?? -1} outLen=${p.toolOutput?.length ?? -1} '
+          'outLines=${p.toolOutput == null ? -1 : "\n".allMatches(p.toolOutput!).length + 1} '
+          'errLen=${p.toolError?.length ?? -1}',
+    );
   }
 
   @override
