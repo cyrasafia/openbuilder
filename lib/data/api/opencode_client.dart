@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../core/net/raw_download.dart'
+    if (dart.library.html) '../../core/net/raw_download_web.dart'
+    as raw_download;
 import '../../domain/models.dart';
 
 /// Paginated message window from `GET /session/:id/message?limit=&before=`.
@@ -575,9 +578,11 @@ class OpencodeClient {
   /// to bytes; text is returned as a string. `type`/`mimeType` are the server's
   /// authoritative values used for render dispatch.
   ///
-  /// `Content-Length` is sent by the server (verified empirically), so
-  /// [onProgress] receives concrete `received`/`total`. Falls back gracefully if
-  /// absent (total == 0).
+  /// Progress accuracy: the request runs on a client whose transparent gzip
+  /// decompression is disabled (see `raw_download`). dio's `onReceiveProgress`
+  /// therefore counts pre-decompression bytes, which match the `Content-Length`
+  /// header — so `received/total` is an accurate transfer ratio whether or not
+  /// the server gzips. The body is gunzipped afterwards before parsing.
   ///
   /// Bodies under [_inlineParseLimit] are parsed on the calling thread to avoid
   /// per-open isolate-spawn latency for the common small-file case.
@@ -587,16 +592,24 @@ class OpencodeClient {
     void Function(int received, int total)? onProgress,
     CancelToken? cancelToken,
   }) async {
-    final r = await dio.get<dynamic>(
-      '/file/content',
-      queryParameters: {'directory': directory, 'path': path},
-      options: Options(responseType: ResponseType.bytes),
-      onReceiveProgress: onProgress,
-      cancelToken: cancelToken,
-    );
-    final body = r.data as Uint8List;
-    if (body.length < _inlineParseLimit) return parseStreamedFile(body);
-    return compute(parseStreamedFile, body);
+    final raw = raw_download.rawDownloadDio(dio);
+    try {
+      final r = await raw.get<dynamic>(
+        '/file/content',
+        queryParameters: {'directory': directory, 'path': path},
+        options: Options(responseType: ResponseType.bytes),
+        onReceiveProgress: onProgress,
+        cancelToken: cancelToken,
+      );
+      final body = raw_download.decodeDownloadBody(
+        r.data as Uint8List,
+        r.headers.value('content-encoding'),
+      );
+      if (body.length < _inlineParseLimit) return parseStreamedFile(body);
+      return compute(parseStreamedFile, body);
+    } finally {
+      raw.close(force: true);
+    }
   }
 
   /// `GET /find/file?query=` — search files within [directory].
