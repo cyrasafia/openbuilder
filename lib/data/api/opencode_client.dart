@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../domain/models.dart';
 
@@ -569,16 +570,33 @@ class OpencodeClient {
     return _getModelsFromData(r.data, FileNode.fromJson);
   }
 
-  /// `GET /file/content` — read a file's full content.
-  Future<FileContent> readFile({
+  /// `GET /file/content` streamed, with download progress and off-main-isolate
+  /// parsing. Returns a [StreamedFile] where binary base64 is already decoded
+  /// to bytes; text is returned as a string. `type`/`mimeType` are the server's
+  /// authoritative values used for render dispatch.
+  ///
+  /// `Content-Length` is sent by the server (verified empirically), so
+  /// [onProgress] receives concrete `received`/`total`. Falls back gracefully if
+  /// absent (total == 0).
+  ///
+  /// Bodies under [_inlineParseLimit] are parsed on the calling thread to avoid
+  /// per-open isolate-spawn latency for the common small-file case.
+  Future<StreamedFile> readFileStream({
     required String directory,
     required String path,
+    void Function(int received, int total)? onProgress,
+    CancelToken? cancelToken,
   }) async {
-    final r = await dio.get<dynamic>('/file/content', queryParameters: {
-      'directory': directory,
-      'path': path,
-    });
-    return FileContent.fromJson(_asMap(r.data));
+    final r = await dio.get<dynamic>(
+      '/file/content',
+      queryParameters: {'directory': directory, 'path': path},
+      options: Options(responseType: ResponseType.bytes),
+      onReceiveProgress: onProgress,
+      cancelToken: cancelToken,
+    );
+    final body = r.data as Uint8List;
+    if (body.length < _inlineParseLimit) return parseStreamedFile(body);
+    return compute(parseStreamedFile, body);
   }
 
   /// `GET /find/file?query=` — search files within [directory].
@@ -632,4 +650,31 @@ class OpencodeClient {
     }
     return const {};
   }
+}
+
+/// Bodies below this many bytes are parsed on the calling thread instead of
+/// spawning an isolate, avoiding per-open spawn latency for the common
+/// small-file case (mirrors the old ImageView `_syncDecodeLimit` threshold).
+const int _inlineParseLimit = 500 * 1024;
+
+/// Parses a streamed `/file/content` JSON body (received as raw bytes) into a
+/// [StreamedFile]. Top-level so it can run via `compute`. Binary base64 content
+/// is decoded to bytes here, off the main isolate.
+@visibleForTesting
+StreamedFile parseStreamedFile(Uint8List body) {
+  final j = jsonDecode(utf8.decode(body)) as Map<String, dynamic>;
+  final type = (j['type'] ?? 'text').toString();
+  final mime = j['mimeType']?.toString();
+  if (type == 'binary' && (j['encoding'] ?? '').toString() == 'base64') {
+    return StreamedFile(
+      type: type,
+      mimeType: mime,
+      bytes: base64Decode(j['content'].toString()),
+    );
+  }
+  return StreamedFile(
+    type: type,
+    mimeType: mime,
+    text: j['content']?.toString() ?? '',
+  );
 }

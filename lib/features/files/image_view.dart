@@ -1,116 +1,52 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 
-const _syncDecodeLimit = 500 * 1024;
+/// Max pinch-zoom scale. [cacheWidth] is sized to stay crisp up to this factor,
+/// which also bounds decoded-bitmap memory for pathological source sizes.
+const _maxScale = 5.0;
 
-class ImageView extends StatefulWidget {
-  final FileContent file;
+class ImageView extends StatelessWidget {
+  final Uint8List? bytes;
+  final String? text;
   final bool isSvg;
 
-  const ImageView({super.key, required this.file, required this.isSvg});
-
-  @override
-  State<ImageView> createState() => _ImageViewState();
-}
-
-class _ImageViewState extends State<ImageView> {
-  Uint8List? _bytes;
-  bool _decoding = false;
-  bool _cancelled = false;
-  bool _failed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    if (!widget.isSvg) _decode();
-  }
-
-  @override
-  void dispose() {
-    _cancelled = true;
-    super.dispose();
-  }
-
-  Future<void> _decode() async {
-    final raw = widget.file.content;
-    if (raw.length < _syncDecodeLimit) {
-      try {
-        _bytes = base64Decode(raw);
-      } catch (_) {
-        _failed = true;
-      }
-      return;
-    }
-    _decoding = true;
-    try {
-      final result = await compute(_decodeBase64, raw);
-      if (!mounted || _cancelled) return;
-      setState(() {
-        _bytes = result;
-        _decoding = false;
-      });
-    } catch (_) {
-      if (!mounted || _cancelled) return;
-      setState(() {
-        _decoding = false;
-        _failed = true;
-      });
-    }
-  }
+  const ImageView({super.key, Uint8List? bytes, String? text, required this.isSvg})
+      : assert(bytes != null || text != null),
+        bytes = bytes,
+        text = text;
 
   @override
   Widget build(BuildContext context) {
-    if (widget.isSvg) {
+    if (isSvg) {
       return InteractiveViewer(
         minScale: 0.5,
-        maxScale: 5.0,
+        maxScale: _maxScale,
         child: Center(
           child: SvgPicture.string(
-            widget.file.content,
+            text!,
             errorBuilder: (ctx, _, _) => _errorPlaceholder(ctx),
           ),
         ),
       );
     }
-    final bytes = _bytes;
-    if (bytes != null) {
-      return InteractiveViewer(
-        minScale: 0.5,
-        maxScale: 5.0,
-        child: Center(
-          child: Image.memory(
-            bytes,
-            errorBuilder: (ctx, _, _) => _errorPlaceholder(ctx),
-          ),
+    final b = bytes;
+    if (b == null) return _errorPlaceholder(context);
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final cacheWidth = (MediaQuery.sizeOf(context).width * dpr * _maxScale).toInt();
+    return InteractiveViewer(
+      minScale: 0.5,
+      maxScale: _maxScale,
+      child: Center(
+        child: Image.memory(
+          b,
+          cacheWidth: cacheWidth,
+          errorBuilder: (ctx, _, _) => _errorPlaceholder(ctx),
         ),
-      );
-    }
-    if (_decoding) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: () => setState(() {
-                _cancelled = true;
-                _decoding = false;
-              }),
-              child: Text(l(context).fileLoadCancel),
-            ),
-          ],
-        ),
-      );
-    }
-    if (_failed) return _errorPlaceholder(context);
-    return const SizedBox.shrink();
+      ),
+    );
   }
 
   Widget _errorPlaceholder(BuildContext context) {
@@ -130,5 +66,3 @@ class _ImageViewState extends State<ImageView> {
     );
   }
 }
-
-Uint8List _decodeBase64(String raw) => base64Decode(raw);

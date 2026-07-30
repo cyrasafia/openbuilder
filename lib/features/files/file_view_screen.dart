@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -8,6 +9,7 @@ import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import 'binary_view.dart';
 import 'code_view.dart';
+import 'download_policy.dart';
 import 'highlight_theme.dart';
 import 'image_view.dart';
 import 'markdown_view.dart';
@@ -28,50 +30,90 @@ class FileViewScreen extends StatefulWidget {
 }
 
 class _FileViewScreenState extends State<FileViewScreen> {
-  FileContent? _content;
+  late final DownloadPolicy _policy = inferDownloadPolicy(widget.path);
+
+  StreamedFile? _file;
   bool _hasDiff = false;
-  bool _loading = true;
+  bool _downloading = false;
+  double? _progress;
   Object? _error;
   bool _wrap = false;
   bool _mdShowSource = false;
+  CancelToken? _cancelToken;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (_policy == DownloadPolicy.immediate) _download();
   }
 
-  Future<void> _load() async {
+  @override
+  void dispose() {
+    _cancelToken?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _download() async {
     final c = serverStore.client;
     if (c == null) {
       setState(() => _error = const KnownError(FriendlyErrorKind.notConnected));
       return;
     }
-    setState(() => _loading = true);
+    _cancelToken?.cancel();
+    final token = CancelToken();
+    _cancelToken = token;
+    setState(() {
+      _downloading = true;
+      _progress = null;
+      _error = null;
+      _file = null;
+    });
     try {
-      _content = await c.readFile(
+      _file = await c.readFileStream(
         directory: widget.directory ?? '',
         path: widget.path,
+        onProgress: (r, t) {
+          // Ignore progress from a superseded/cancelled download so it can't
+          // overwrite the active token's percentage (mirrors the finally guard).
+          if (_cancelToken != token) return;
+          if (t > 0 && mounted) setState(() => _progress = r / t);
+        },
+        cancelToken: token,
       );
-      try {
-        final diffs = await c.diff(
-          widget.sessionId,
-          directory: widget.directory,
-        );
-        _hasDiff = diffs.any((d) => d.file == widget.path);
-      } catch (_) {
-        _hasDiff = false;
-      }
-      _error = null;
+      if (!_file!.isBinary) _loadDiff();
+    } on DioException catch (e) {
+      if (e.type == DioExceptionType.cancel) return;
+      _error = e;
     } catch (e) {
       _error = e;
     } finally {
-      if (mounted) setState(() => _loading = false);
+      // Only clear the downloading state if this call is still the active
+      // download — a later _download() (retry/open) cancels this token and
+      // supersedes it; letting the superseded call clear the flag would drop
+      // the progress UI mid-download.
+      if (mounted && _cancelToken == token) setState(() => _downloading = false);
     }
   }
 
+  Future<void> _loadDiff() async {
+    try {
+      final diffs = await serverStore.client!.diff(
+        widget.sessionId,
+        directory: widget.directory,
+      );
+      if (mounted) setState(() => _hasDiff = diffs.any((d) => d.file == widget.path));
+    } catch (_) {
+      // diff is best-effort; absence just hides the menu item
+    }
+  }
+
+  void _cancelDownload() {
+    _cancelToken?.cancel();
+    if (mounted) setState(() => _downloading = false);
+  }
+
   bool get _isTextLike =>
-      !_loading && _error == null && _content != null && !_content!.isBinary;
+      !_downloading && _error == null && _file != null && !_file!.isBinary;
 
   void _onMenuAction(_MenuAction value) {
     switch (value) {
@@ -115,7 +157,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
                     _wrap ? l(context).fileWrapOff : l(context).fileWrapOn,
                   ),
                 ),
-              if (_hasDiff)
+              if (_hasDiff && _isTextLike)
                 PopupMenuItem(
                   value: _MenuAction.diff,
                   child: Text(l(context).fileViewDiff),
@@ -129,46 +171,107 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 
   Widget _body() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) {
-      return Center(
+    if (_error != null) return _errorView();
+    if (_downloading) return _progressView();
+    if (_file != null) return _contentDispatch();
+    return _onDemandPlaceholder();
+  }
+
+  Widget _progressView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 48),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              l(context).loadFailed,
-              style: Theme.of(context).textTheme.titleMedium,
+            if (_progress != null)
+              LinearProgressIndicator(value: _progress)
+            else
+              const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            if (_progress != null)
+              Text('${(_progress! * 100).round()}%'),
+            if (_progress != null) const SizedBox(height: 16),
+            TextButton(
+              onPressed: _cancelDownload,
+              child: Text(l(context).fileLoadCancel),
             ),
-            const SizedBox(height: 8),
-            Text(
-              friendlyMessage(l(context), _error!),
-              style: AppTheme.mono.copyWith(fontSize: 12),
-            ),
-            const SizedBox(height: 12),
-            FilledButton(onPressed: _load, child: Text(l(context).retry)),
           ],
         ),
-      );
-    }
-    return _dispatch();
+      ),
+    );
   }
 
-  Widget _dispatch() {
-    final file = _content!;
-    final ext = _extension(widget.path);
+  Widget _onDemandPlaceholder() {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.insert_drive_file_outlined,
+              size: 64,
+              color: scheme.outline,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              widget.path.split('/').last,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 14),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: _download,
+              icon: const Icon(Icons.download),
+              label: Text(l(context).fileOpen),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-    if (file.isBinary &&
-        file.isBase64 &&
-        (file.mimeType?.startsWith('image/') ?? false) &&
-        file.mimeType != 'image/svg+xml') {
-      return ImageView(file: file, isSvg: false);
+  Widget _errorView() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            l(context).loadFailed,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            friendlyMessage(l(context), _error!),
+            style: AppTheme.mono.copyWith(fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          FilledButton(onPressed: _download, child: Text(l(context).retry)),
+        ],
+      ),
+    );
+  }
+
+  Widget _contentDispatch() {
+    final f = _file!;
+    final ext = extensionOf(widget.path);
+
+    if (f.isBinary &&
+        f.bytes != null &&
+        (f.mimeType?.startsWith('image/') ?? false) &&
+        f.mimeType != 'image/svg+xml') {
+      return ImageView(bytes: f.bytes!, isSvg: false);
     }
-    if (!file.isBinary && ext == '.svg') {
-      return ImageView(file: file, isSvg: true);
+    if (!f.isBinary && ext == '.svg') {
+      return ImageView(text: f.text!, isSvg: true);
     }
     if (_isMarkdown) {
       return MarkdownView(
-        content: file.content,
+        content: f.text!,
         showSource: _mdShowSource,
         wrap: _wrap,
         sessionId: widget.sessionId,
@@ -176,33 +279,26 @@ class _FileViewScreenState extends State<FileViewScreen> {
         directory: widget.directory,
       );
     }
-    if (!file.isBinary) {
+    if (!f.isBinary) {
       return CodeView(
-        content: file.content,
+        content: f.text!,
         language: languageForPath(widget.path),
         wrap: _wrap,
       );
     }
     return BinaryView(
       filename: widget.path.split('/').last,
-      base64Content: file.content,
-      mimeType: file.mimeType,
+      mimeType: f.mimeType,
+      downloadedBytes: f.bytes,
     );
   }
 
   bool get _isMarkdown {
-    if (_loading || _error != null || _content == null || _content!.isBinary) {
+    if (_downloading || _error != null || _file == null || _file!.isBinary) {
       return false;
     }
-    final ext = _extension(widget.path);
+    final ext = extensionOf(widget.path);
     return ext == '.md' || ext == '.markdown';
-  }
-
-  String _extension(String path) {
-    final name = path.split('/').last;
-    final dot = name.lastIndexOf('.');
-    if (dot < 0) return '';
-    return name.substring(dot).toLowerCase();
   }
 }
 

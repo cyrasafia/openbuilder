@@ -517,27 +517,25 @@ class FileNode {
   bool get isDir => type == 'directory';
 }
 
-class FileContent {
-  final String type; // text | binary
-  final String content;
+/// Parsed result of a streamed `/file/content` download.
+///
+/// The base64 payload is already decoded to [bytes] off the main isolate, so
+/// the UI never holds the full base64 string. `type`/`mimeType` come from the
+/// server and are the render authority (see `design-file-streaming.md`).
+class StreamedFile {
+  final String type;
   final String? mimeType;
-  final String? encoding;
-  const FileContent({
+  final String? text;
+  final Uint8List? bytes;
+
+  const StreamedFile({
     required this.type,
-    required this.content,
     this.mimeType,
-    this.encoding,
+    this.text,
+    this.bytes,
   });
 
-  factory FileContent.fromJson(Map<String, dynamic> j) => FileContent(
-    type: (j['type'] ?? 'text').toString(),
-    content: (j['content'] ?? '').toString(),
-    mimeType: j['mimeType']?.toString(),
-    encoding: j['encoding']?.toString(),
-  );
-
   bool get isBinary => type == 'binary';
-  bool get isBase64 => encoding == 'base64';
 }
 
 class FileDiff {

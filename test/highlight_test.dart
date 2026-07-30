@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_builder/domain/models.dart';
 import 'package:open_builder/features/files/highlight_theme.dart';
 
 void main() {
@@ -16,27 +15,6 @@ void main() {
     test('returns null for unknown / no extension', () {
       expect(languageForPath('README.xyz'), isNull);
       expect(languageForPath('Makefile'), isNull);
-    });
-  });
-
-  group('FileContent', () {
-    test('fromJson maps encoding + derives accessors', () {
-      final f = FileContent.fromJson({
-        'type': 'binary',
-        'content': 'AAA',
-        'encoding': 'base64',
-        'mimeType': 'image/jpeg',
-      });
-      expect(f.isBinary, isTrue);
-      expect(f.isBase64, isTrue);
-      expect(f.mimeType, 'image/jpeg');
-    });
-
-    test('defaults: text file is neither binary nor base64', () {
-      final f = FileContent.fromJson({'type': 'text', 'content': 'hi'});
-      expect(f.isBinary, isFalse);
-      expect(f.isBase64, isFalse);
-      expect(f.encoding, isNull);
     });
   });
 

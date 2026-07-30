@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -12,14 +11,14 @@ import '../../ui/l10n_ext.dart';
 
 class BinaryView extends StatefulWidget {
   final String filename;
-  final String base64Content;
   final String? mimeType;
+  final Uint8List? downloadedBytes;
 
   const BinaryView({
     super.key,
     required this.filename,
-    required this.base64Content,
     this.mimeType,
+    this.downloadedBytes,
   });
 
   @override
@@ -35,7 +34,7 @@ class _BinaryViewState extends State<BinaryView> {
   void didUpdateWidget(covariant BinaryView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.filename != widget.filename ||
-        oldWidget.base64Content != widget.base64Content) {
+        oldWidget.downloadedBytes != widget.downloadedBytes) {
       _downloadedUri = null;
     }
   }
@@ -63,17 +62,23 @@ class _BinaryViewState extends State<BinaryView> {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: _busy ? null : (_downloadedUri != null ? _openFile : _onDownload),
-              icon: _busy
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(_downloadedUri != null ? Icons.open_in_new : Icons.download),
-              label: Text(_downloadedUri != null ? l(context).fileOpen : l(context).fileDownload),
-            ),
+            if (widget.downloadedBytes == null)
+              Text(
+                l(context).loadFailed,
+                style: const TextStyle(fontSize: 12),
+              )
+            else
+              FilledButton.icon(
+                onPressed: _busy ? null : (_downloadedUri != null ? _openFile : _onDownload),
+                icon: _busy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(_downloadedUri != null ? Icons.open_in_new : Icons.download),
+                label: Text(_downloadedUri != null ? l(context).fileOpen : l(context).fileDownload),
+              ),
           ],
         ),
       ),
@@ -107,10 +112,9 @@ class _BinaryViewState extends State<BinaryView> {
   }
 
   Future<File> _materializeFile() async {
-    final bytes = await compute(_decodeBase64, widget.base64Content);
     final dir = await getTemporaryDirectory();
     final file = File('${dir.path}/${widget.filename}');
-    await file.writeAsBytes(bytes, flush: true);
+    await file.writeAsBytes(widget.downloadedBytes!, flush: true);
     return file;
   }
 
@@ -186,7 +190,5 @@ class _BinaryViewState extends State<BinaryView> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 }
-
-Uint8List _decodeBase64(String raw) => base64Decode(raw);
 
 enum _DownloadChoice { save, share }
