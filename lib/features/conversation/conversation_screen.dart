@@ -1048,6 +1048,28 @@ void _syncReversedScroll(BuildContext context, GlobalKey key, double dv) {
   pos.correctPixels(pos.pixels + h * dv);
 }
 
+class _CollapsibleReveal extends StatelessWidget {
+  final Animation<double> sizeFactor;
+  final Widget child;
+  const _CollapsibleReveal({required this.sizeFactor, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: SizeTransition(
+        sizeFactor: sizeFactor,
+        axis: Axis.horizontal,
+        alignment: Alignment.centerLeft,
+        child: SizeTransition(
+          sizeFactor: sizeFactor,
+          alignment: Alignment.topCenter,
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 class _Reasoning extends StatefulWidget {
   final String text;
   const _Reasoning({super.key, required this.text});
@@ -1155,9 +1177,8 @@ class _ReasoningState extends State<_Reasoning>
                   ),
                 ],
               ),
-              SizeTransition(
+              _CollapsibleReveal(
                 sizeFactor: _curved,
-                alignment: Alignment.topCenter,
                 child: Padding(
                   key: _contentKey,
                   padding: const EdgeInsets.only(top: 6),
@@ -1311,9 +1332,8 @@ class _ToolChipState extends State<_ToolChip>
                   );
                 },
               ),
-              SizeTransition(
+              _CollapsibleReveal(
                 sizeFactor: _curved,
-                alignment: Alignment.topCenter,
                 child: Column(
                   key: _contentKey,
                   crossAxisAlignment: CrossAxisAlignment.start,
