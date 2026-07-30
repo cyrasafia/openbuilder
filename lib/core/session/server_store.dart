@@ -112,6 +112,21 @@ class ServerStore extends ChangeNotifier {
   bool _commandsRefreshing = false;
   String? _commandsRefreshDir;
   bool get commandsRefreshing => _commandsRefreshing;
+  /// The directory the current [commandsNotifier] value was resolved for.
+  /// Degraded refreshes only retain the cache when it belongs to the *same*
+  /// directory, so a failed fetch in project B never surfaces project A's
+  /// commands (the notifier is a single global cache).
+  String? _commandsCacheDir;
+  /// Whether the current [commandsNotifier] value came from a fully-successful
+  /// (non-degraded) fetch. Only a known-complete list is worth protecting from
+  /// a transient blip; a degraded partial is never retained over a fresh fetch.
+  bool _commandsCacheComplete = false;
+  /// True when the most recent [refreshCommands] produced a degraded or
+  /// incomplete result (a server source errored, or the whole refresh threw).
+  /// The conversation screen uses this to re-fetch on the next `/` input
+  /// instead of giving up after one failed attempt.
+  bool _commandsDegraded = false;
+  bool get commandsDegraded => _commandsDegraded;
 
   Future<void> refreshCommands({String? directory}) async {
     final c = client;
@@ -120,29 +135,76 @@ class ServerStore extends ChangeNotifier {
     _commandsRefreshing = true;
     _commandsRefreshDir = directory;
     try {
-      final results = await Future.wait([
-        c.getCommands(directory: directory),
-        c.getSkills(directory: directory).catchError((_) => <CommandInfo>[]),
-        c.getConfigCommands().catchError((_) => <CommandInfo>[]),
-      ]);
-      final cmds = results[0];
-      final existing = cmds.map((e) => e.name.toLowerCase()).toSet();
-      var merged = [...cmds];
-      for (final s in results[1]) {
+      // Fire all three concurrently; capture per-source success/failure so a
+      // transient blip (e.g. during SSE reconnect) can't replace a good cached
+      // list with an incomplete one. Errors used to be swallowed by
+      // `.catchError`, making a degraded fetch indistinguishable from a genuine
+      // empty result.
+      final cmdsF = _tryFetchCommands(c.getCommands(directory: directory));
+      final skillsF = _tryFetchCommands(c.getSkills(directory: directory));
+      final configF = _tryFetchCommands(c.getConfigCommands());
+      final cmds = await cmdsF;
+      final skills = await skillsF;
+      final config = await configF;
+
+      // A refresh is degraded only when the per-directory command or skill
+      // source actually failed. A genuinely empty directory (server returns 200
+      // with no commands/skills) is NOT degraded — trusting it avoids
+      // cross-project command leakage and lets deletions reflect. The one
+      // caveat: if a deletion lands on the same refresh where skills blips, the
+      // emptied commands are briefly masked by the retained cache until the next
+      // fully-clean refresh.
+      //
+      // On a degraded fetch, keep a *known-complete* cache for the same
+      // directory so a transient blip can't wipe a good list. Never retain a
+      // degraded partial — it may be worse than the fresh (also-degraded)
+      // result, so fall through and apply that instead.
+      final degraded = cmds.failed || skills.failed;
+      final canRetain = commandsNotifier.value.isNotEmpty &&
+          _commandsCacheDir == directory &&
+          _commandsCacheComplete;
+      if (degraded && canRetain) {
+        _commandsDegraded = true;
+        AppLogger.I.w(_tag,
+            'commands refresh degraded (cmds=${cmds.value.length}/${cmds.failed ? 'err' : 'ok'} '
+            'skills=${skills.value.length}/${skills.failed ? 'err' : 'ok'} '
+            'config=${config.value.length}); keeping cache of ${commandsNotifier.value.length}');
+        return;
+      }
+
+      final existing = cmds.value.map((e) => e.name.toLowerCase()).toSet();
+      var merged = [...cmds.value];
+      for (final s in skills.value) {
         if (s.description.trim().isEmpty) continue;
         if (existing.add(s.name.toLowerCase())) merged = [...merged, s];
       }
-      for (final cc in results[2]) {
+      for (final cc in config.value) {
         if (existing.add(cc.name.toLowerCase())) merged = [...merged, cc];
       }
+      _commandsDegraded = degraded;
+      _commandsCacheDir = directory;
+      _commandsCacheComplete = !degraded;
       AppLogger.I.i(_tag,
-          'commands refreshed: commands=${cmds.length} skills=${results[1].length} '
-          'config=${results[2].length} merged=${merged.length}');
+          'commands refreshed: commands=${cmds.value.length} skills=${skills.value.length} '
+          'config=${config.value.length} merged=${merged.length}'
+          '${degraded ? ' (degraded, no usable cache)' : ''}');
       commandsNotifier.value = merged;
     } catch (e) {
+      _commandsDegraded = true;
       AppLogger.I.e(_tag, 'commands refresh failed: $e');
     } finally {
       _commandsRefreshing = false;
+    }
+  }
+
+  /// Runs [future], capturing its result or the failure so a per-source fetch
+  /// error is observable instead of silently turning into an empty list.
+  Future<({List<CommandInfo> value, bool failed})> _tryFetchCommands(
+      Future<List<CommandInfo>> future) async {
+    try {
+      return (value: await future, failed: false);
+    } catch (_) {
+      return (value: const <CommandInfo>[], failed: true);
     }
   }
 
@@ -616,6 +678,9 @@ class ServerStore extends ChangeNotifier {
       _workspaceEnabled.clear();
       _projectsFetched = false;
       commandsNotifier.value = const [];
+      _commandsDegraded = false;
+      _commandsCacheDir = null;
+      _commandsCacheComplete = false;
       // Load cached data first for instant offline UI, then _bootstrap refreshes.
       await _loadCache();
       final dio = dioFor(profile);
@@ -1581,6 +1646,9 @@ class ServerStore extends ChangeNotifier {
     _recentlyResolvedQuestions.clear();
     _recentlyResolvedPermissions.clear();
     commandsNotifier.value = const [];
+    _commandsDegraded = false;
+    _commandsCacheDir = null;
+    _commandsCacheComplete = false;
     client = null;
     _profile = null;
     notifyListeners();

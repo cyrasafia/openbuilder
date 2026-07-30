@@ -132,7 +132,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _ctl.text = c.draftText;
       _shellMode = c.draftShell;
       _cmdMode = cmdMode;
-      if (cmdMode && !_cmdRefreshTriggered) {
+      if (cmdMode && (!_cmdRefreshTriggered || serverStore.commandsDegraded)) {
         _cmdRefreshTriggered = true;
         _triggerCommandRefresh();
       }
@@ -340,7 +340,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     return;
                   }
                   final mode = t.startsWith('/') && !t.contains(' ');
-                  if (mode && !_cmdRefreshTriggered) {
+                  // Only (re)fetch when transitioning into command mode, not on
+                  // every keystroke while typing — a degraded result retries on
+                  // the next `/` input rather than hammering a flaky server.
+                  if (mode &&
+                      !_cmdMode &&
+                      (!_cmdRefreshTriggered ||
+                          serverStore.commandsDegraded)) {
                     _cmdRefreshTriggered = true;
                     _triggerCommandRefresh();
                   }
