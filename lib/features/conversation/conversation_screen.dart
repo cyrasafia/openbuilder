@@ -764,12 +764,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
       Theme.of(context).extension<AppColors>()!.userBubble;
 
   Widget _parts(List<DisplayPart> parts, {required bool user}) {
-    final children = <Widget>[];
+    final visible = <DisplayPart>[];
     for (final p in parts) {
       if (user && p.type != 'text' && p.type != 'file' && p.type != 'subtask') {
         continue;
       }
-      children.add(_part(p, user: user));
+      visible.add(p);
+    }
+    final children = <Widget>[];
+    for (var i = 0; i < visible.length; i++) {
+      children.add(_part(visible[i], user: user, isFirst: i == 0));
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -777,7 +781,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Widget _part(DisplayPart p, {required bool user}) {
+  Widget _part(DisplayPart p, {required bool user, bool isFirst = false}) {
     switch (p.type) {
       case 'subtask':
         final commandName = p.command ?? 'subtask';
@@ -793,7 +797,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       case 'tool':
         return _ToolChip(key: PageStorageKey(p.id), part: p);
       case 'file':
-        return _FileChip(part: p, user: user);
+        return _FileChip(part: p, user: user, isFirst: isFirst);
       default:
         return const SizedBox.shrink();
     }
@@ -1432,7 +1436,8 @@ class _ToolChipState extends State<_ToolChip>
 class _FileChip extends StatelessWidget {
   final DisplayPart part;
   final bool user;
-  const _FileChip({required this.part, this.user = false});
+  final bool isFirst;
+  const _FileChip({required this.part, this.user = false, this.isFirst = false});
 
   bool get _isHttpUrl {
     final url = part.fileUrl;
@@ -1444,27 +1449,23 @@ class _FileChip extends StatelessWidget {
   Widget build(BuildContext context) {
     // CR-2：仅乐观侧有 96px previewThumb；接收侧不解码 data URL（避免内存膨胀/首帧掉帧）
     final thumb = part.previewThumb;
+    final Widget content;
     if (thumb != null) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: GestureDetector(
-          onTap: () => _showFullScreen(context),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.memory(
-              thumb,
-              width: 120,
-              height: 120,
-              fit: BoxFit.cover,
-            ),
+      content = GestureDetector(
+        onTap: () => _showFullScreen(context),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.memory(
+            thumb,
+            width: 120,
+            height: 120,
+            fit: BoxFit.cover,
           ),
         ),
       );
-    }
-    final p = _messagePalette(context, user);
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
-      child: Row(
+    } else {
+      final p = _messagePalette(context, user);
+      content = Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.insert_drive_file, size: 16, color: p.outline),
@@ -1484,8 +1485,11 @@ class _FileChip extends StatelessWidget {
             ),
           ],
         ],
-      ),
-    );
+      );
+    }
+    return isFirst
+        ? content
+        : Padding(padding: const EdgeInsets.only(top: 6), child: content);
   }
 
   // CR-5：launchUrl 失败提示 + try/catch
