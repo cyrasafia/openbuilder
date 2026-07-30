@@ -76,7 +76,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
           // Ignore progress from a superseded/cancelled download so it can't
           // overwrite the active token's percentage (mirrors the finally guard).
           if (_cancelToken != token) return;
-          if (t > 0 && mounted) setState(() => _progress = r / t);
+          if (t > 0 && mounted) {
+            final p = (r / t).clamp(0.0, 1.0);
+            if (p != _progress) setState(() => _progress = p);
+          }
         },
         cancelToken: token,
       );
