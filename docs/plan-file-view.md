@@ -392,7 +392,7 @@ AppBar(
 | `fileWrapOff` | 关闭换行 | Disable wrap |
 | `fileWrapOn` | 开启换行 | Enable wrap |
 | `fileDownload` | 下载 | Download |
-| `fileSaveToDownloads` | 保存到下载 | Save to Downloads |
+| `save` | 保存 | Save |
 | `fileShare` | 分享 | Share |
 | `fileDownloadSuccess` | 已保存到下载目录 | Saved to Downloads |
 | `fileDownloadFailed` | 保存失败：{error} | Save failed: {error} |

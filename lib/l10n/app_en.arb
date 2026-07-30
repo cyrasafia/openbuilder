@@ -112,7 +112,6 @@
   "filePreview": "Preview",
   "fileLoadCancel": "Cancel",
   "fileDownload": "Download",
-  "fileSaveToDownloads": "Save to Downloads",
   "fileShare": "Share",
   "fileDownloadSuccess": "Saved to Downloads",
   "fileDownloadFailed": "Save failed: {error}",

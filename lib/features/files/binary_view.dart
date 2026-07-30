@@ -27,7 +27,7 @@ class BinaryView extends StatefulWidget {
 
 class _BinaryViewState extends State<BinaryView> {
   static const _filesChannel = MethodChannel('com.openbuilder.app/files');
-  bool _busy = false;
+  _Action? _busy;
   String? _downloadedUri;
 
   @override
@@ -68,47 +68,51 @@ class _BinaryViewState extends State<BinaryView> {
                 style: const TextStyle(fontSize: 12),
               )
             else
-              FilledButton.icon(
-                onPressed: _busy ? null : (_downloadedUri != null ? _openFile : _onDownload),
-                icon: _busy
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(_downloadedUri != null ? Icons.open_in_new : Icons.download),
-                label: Text(_downloadedUri != null ? l(context).fileOpen : l(context).fileDownload),
-              ),
+              _actions(),
           ],
         ),
       ),
     );
   }
 
-  Future<void> _onDownload() async {
-    setState(() => _busy = true);
-    try {
-      final file = await _materializeFile();
-      if (!mounted) return;
-      if (!kIsWeb && Platform.isAndroid) {
-        final choice = await _showDownloadSheet();
-        if (!mounted || choice == null) return;
-        switch (choice) {
-          case _DownloadChoice.save:
-            await _saveToDownloads(file);
-          case _DownloadChoice.share:
-            await _share(file);
-        }
-      } else {
-        await _share(file);
-      }
-    } catch (e) {
-      AppLogger.I.w('BinaryView', 'download failed: $e');
-      if (!mounted) return;
-      _snack(l(context).fileDownloadFailed(e.toString()));
-    } finally {
-      if (mounted) setState(() => _busy = false);
+  Widget _actions() {
+    final loc = l(context);
+    final isAndroid = !kIsWeb && Platform.isAndroid;
+    final saved = _downloadedUri != null;
+    final primaryAction = saved ? _Action.open : _Action.save;
+    final spinner = const SizedBox(
+      width: 16,
+      height: 16,
+      child: CircularProgressIndicator(strokeWidth: 2),
+    );
+
+    if (isAndroid) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          FilledButton.icon(
+            onPressed: _busy == null ? (saved ? _openFile : _onSave) : null,
+            icon: _busy == primaryAction
+                ? spinner
+                : Icon(saved ? Icons.open_in_new : Icons.save_alt),
+            label: Text(saved ? loc.fileOpen : loc.save),
+          ),
+          const SizedBox(width: 12),
+          TextButton.icon(
+            onPressed: _busy == null ? _onShare : null,
+            icon: _busy == _Action.share
+                ? spinner
+                : const Icon(Icons.share_outlined),
+            label: Text(loc.fileShare),
+          ),
+        ],
+      );
     }
+    return FilledButton.icon(
+      onPressed: _busy == null ? _onShare : null,
+      icon: _busy == _Action.share ? spinner : const Icon(Icons.share_outlined),
+      label: Text(loc.fileShare),
+    );
   }
 
   Future<File> _materializeFile() async {
@@ -118,31 +122,10 @@ class _BinaryViewState extends State<BinaryView> {
     return file;
   }
 
-  Future<_DownloadChoice?> _showDownloadSheet() {
-    return showModalBottomSheet<_DownloadChoice>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.save_alt),
-              title: Text(l(ctx).fileSaveToDownloads),
-              onTap: () => Navigator.pop(ctx, _DownloadChoice.save),
-            ),
-            ListTile(
-              leading: const Icon(Icons.share_outlined),
-              title: Text(l(ctx).fileShare),
-              onTap: () => Navigator.pop(ctx, _DownloadChoice.share),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _saveToDownloads(File file) async {
+  Future<void> _onSave() async {
+    setState(() => _busy = _Action.save);
     try {
+      final file = await _materializeFile();
       final uri = await _filesChannel.invokeMethod<String>('saveToDownloads', {
         'srcPath': file.path,
         'displayName': widget.filename,
@@ -155,11 +138,13 @@ class _BinaryViewState extends State<BinaryView> {
       AppLogger.I.w('BinaryView', 'saveToDownloads failed: $e');
       if (!mounted) return;
       _snack(l(context).fileDownloadFailed(e.toString()));
+    } finally {
+      if (mounted) setState(() => _busy = null);
     }
   }
 
   Future<void> _openFile() async {
-    setState(() => _busy = true);
+    setState(() => _busy = _Action.open);
     try {
       await _filesChannel.invokeMethod<void>('openFile', {
         'uri': _downloadedUri,
@@ -171,18 +156,23 @@ class _BinaryViewState extends State<BinaryView> {
       if (!mounted) return;
       _snack(l(context).fileOpenFailed(e.toString()));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _busy = null);
     }
   }
 
-  Future<void> _share(File file) async {
+  Future<void> _onShare() async {
+    setState(() => _busy = _Action.share);
     try {
+      final file = await _materializeFile();
       await SharePlus.instance.share(
         ShareParams(files: [XFile(file.path)]),
       );
     } catch (e) {
+      AppLogger.I.w('BinaryView', 'share failed: $e');
       if (!mounted) return;
       _snack(l(context).fileShareFailed(e.toString()));
+    } finally {
+      if (mounted) setState(() => _busy = null);
     }
   }
 
@@ -191,4 +181,4 @@ class _BinaryViewState extends State<BinaryView> {
   }
 }
 
-enum _DownloadChoice { save, share }
+enum _Action { save, open, share }

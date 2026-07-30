@@ -230,7 +230,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
             FilledButton.icon(
               onPressed: _download,
               icon: const Icon(Icons.download),
-              label: Text(l(context).fileOpen),
+              label: Text(l(context).fileDownload),
             ),
           ],
         ),

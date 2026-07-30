@@ -112,7 +112,6 @@
   "filePreview": "预览",
   "fileLoadCancel": "取消",
   "fileDownload": "下载",
-  "fileSaveToDownloads": "保存到下载",
   "fileShare": "分享",
   "fileDownloadSuccess": "已保存到下载目录",
   "fileDownloadFailed": "保存失败：{error}",
