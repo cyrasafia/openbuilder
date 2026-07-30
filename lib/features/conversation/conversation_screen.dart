@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1119,11 +1120,13 @@ class _ReasoningState extends State<_Reasoning>
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(
+                mainAxisSize:
+                    _expanded ? MainAxisSize.max : MainAxisSize.min,
                 children: [
                   Icon(Icons.psychology_outlined, size: 14, color: muted),
                   const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
+                  Builder(builder: (context) {
+                    final label = Text(
                       l(context).reasoning,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -1132,8 +1135,9 @@ class _ReasoningState extends State<_Reasoning>
                         fontWeight: FontWeight.w400,
                         color: muted,
                       ),
-                    ),
-                  ),
+                    );
+                    return _expanded ? Flexible(child: label) : label;
+                  }),
                   const SizedBox(width: 6),
                   Icon(
                     _expanded ? Icons.expand_less : Icons.expand_more,
@@ -1247,29 +1251,48 @@ class _ToolChipState extends State<_ToolChip>
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
-                children: [
-                  Icon(icon, size: 15, color: color),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      part.toolSummary,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w400,
+              LayoutBuilder(
+                builder: (context, c) {
+                  final summaryStyle = TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                    color: theme.colorScheme.outline,
+                  );
+                  return Row(
+                    mainAxisSize:
+                        _expanded ? MainAxisSize.max : MainAxisSize.min,
+                    children: [
+                      Icon(icon, size: 15, color: color),
+                      const SizedBox(width: 6),
+                      _expanded
+                          ? Flexible(
+                              child: Text(
+                                part.toolSummary,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: summaryStyle,
+                              ),
+                            )
+                          : ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: math.max(0.0, c.maxWidth - 45),
+                              ),
+                              child: Text(
+                                part.toolSummary,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: summaryStyle,
+                              ),
+                            ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        _expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
                         color: theme.colorScheme.outline,
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Icon(
-                    _expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 18,
-                    color: theme.colorScheme.outline,
-                  ),
-                ],
+                    ],
+                  );
+                },
               ),
               SizeTransition(
                 sizeFactor: _curved,
