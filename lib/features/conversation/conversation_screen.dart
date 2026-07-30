@@ -793,7 +793,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return _markdownPart(p.text, user: user);
       case 'reasoning':
         if (!showThinking.value) return const SizedBox.shrink();
-        return _Reasoning(key: PageStorageKey(p.id), text: p.text);
+        return _Reasoning(key: PageStorageKey(p.id), text: p.text, partId: p.id);
       case 'tool':
         return _ToolChip(key: PageStorageKey(p.id), part: p);
       case 'file':
@@ -1076,7 +1076,8 @@ class _CollapsibleReveal extends StatelessWidget {
 
 class _Reasoning extends StatefulWidget {
   final String text;
-  const _Reasoning({super.key, required this.text});
+  final String partId;
+  const _Reasoning({super.key, required this.text, required this.partId});
 
   @override
   State<_Reasoning> createState() => _ReasoningState();
@@ -1094,10 +1095,13 @@ class _ReasoningState extends State<_Reasoning>
   late final Animation<double> _curved =
       _ctrl.drive(CurveTween(curve: Curves.easeOut));
 
+  Object get _expansionStorageKey => 'reasoning_expanded:${widget.partId}';
+
   @override
   void initState() {
     super.initState();
-    _expanded = PageStorage.maybeOf(context)?.readState(context) == true;
+    _expanded =
+        PageStorage.maybeOf(context)?.readState(context, identifier: _expansionStorageKey) == true;
     if (_expanded) {
       _lastV = 1.0;
       _ctrl.value = 1.0;
@@ -1125,7 +1129,7 @@ class _ReasoningState extends State<_Reasoning>
         _ctrl.reverse();
       }
     });
-    PageStorage.maybeOf(context)?.writeState(context, _expanded);
+    PageStorage.maybeOf(context)?.writeState(context, _expanded, identifier: _expansionStorageKey);
   }
 
   @override
