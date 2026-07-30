@@ -18,7 +18,7 @@ import '../../ui/l10n_ext.dart';
 import '../../l10n/gen/app_localizations.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 /// Max height of a footer card's scrollable content, as a fraction of the
 /// screen height. Footer cards (todo / permission / question) bound their

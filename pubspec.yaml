@@ -41,7 +41,7 @@ dependencies:
   flutter_secure_storage: ^10.3.1
   bonsoir: ^7.1.4
   dio: ^5.10.0
-  flutter_markdown: ^0.7.7
+  flutter_markdown_plus: ^1.0.12
   package_info_plus: ^9.0.0
   flutter_local_notifications: ^18.0.1
   shared_preferences: ^2.3.3
@@ -55,7 +55,7 @@ dependencies:
   cross_file: ^0.3.4+2
   re_highlight: ^0.0.3
   flutter_svg: ^2.0.10
-  markdown: ^7.0.0
+  markdown: ^7.3.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

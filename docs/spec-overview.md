@@ -30,7 +30,7 @@
 > - **API client**：不生成，手写 `OpencodeClient`（见 §3.1）；生成器仅产 `.gen_ref/` 参考。
 > - **本地存储**：无 `isar` / SQLite；纯在线瘦客户端，连接配置仅存 `flutter_secure_storage`。离线回看未实现（见 plan §3）。
 > - **模型**：不引入 `freezed` / `json_serializable`，手写 `fromJson`（`lib/domain/models.dart`）。
-> - **语法高亮**：不引入 `flutter_highlight` / `highlight.js`；diff / 代码块用 `flutter_markdown` 默认样式。
+> - **语法高亮**：不引入 `flutter_highlight` / `highlight.js`；diff / 代码块用 `flutter_markdown_plus` 默认样式。
 > - **Repository 层**：未抽独立 `repositories/` 包；`OpencodeClient` 提供原始方法，`*Store` 直接调用并聚合状态（§4.2 的 `Repo.*` 仅为规划命名）。
 
 ---
@@ -76,7 +76,7 @@ openbuilder/
 | 状态管理 | Flutter 原生 `ChangeNotifier` / `ListenableBuilder`（无第三方状态库） |
 | 安全存储 | `flutter_secure_storage`（连接配置/口令） |
 | mDNS 发现 | `bonsoir`（iOS Bonjour + Android NSD） |
-| Markdown | `flutter_markdown`（默认 code builder，无独立高亮库） |
+| Markdown | `flutter_markdown_plus`（默认 code builder，无独立高亮库） |
 | Diff | 自实现 unified diff 解析（基于 `FileContent.patch.hunks` 或 `FileDiff`） |
 | 通知 | `flutter_local_notifications`（Phase 3 待引入，尚未依赖） |
 | 模型 | 手写 `fromJson`（无 `freezed` / `json_serializable`） |
@@ -224,7 +224,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 ## 9. Diff 查看器（只读）
 
 - 数据源：`FileDiff{file, before, after, additions, deletions}` 或 `FileContent.patch.hunks[]`
-- 渲染：`ListView.builder` 行级 diff（增绿/删红/行号），代码块用 `flutter_markdown` 默认等宽样式（无独立高亮库）
+- 渲染：`ListView.builder` 行级 diff（增绿/删红/行号），代码块用 `flutter_markdown_plus` 默认等宽样式（无独立高亮库）
 - 布局：默认「堆叠」（手机），横屏/大屏自动「分栏」；顶部统计 `+N / -M`、文件切换 chip
 - 性能：仅渲染可视区，大 diff 按文件懒加载；不做语法树分析（够用即止）
 
@@ -251,7 +251,7 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 ## 12. 主题
 
 - Material 3，跟随系统深浅色；暗色为主（代码阅读友好）
-- 代码块沿用 `flutter_markdown` 默认等宽样式（无 `highlight.js` 依赖）
+- 代码块沿用 `flutter_markdown_plus` 默认等宽样式（无 `highlight.js` 依赖）
 
 ---
 

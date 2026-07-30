@@ -30,7 +30,7 @@
 - `re_highlight`：highlight.js 正则引擎本地高亮，全量 `highlightAuto(code, languages)` → 单棵 TextSpan 树。覆盖设计要求的 13 种语言。theme key 需从包内置 style map（如 `rainbowTheme`）确认实际键名。
 - `flutter_svg`：SVG 矢量渲染（服务端对 `.svg` 返回 `type: text`，客户端按扩展名判定后走 SVG 渲染）。
 
-已有可复用：`flutter_markdown`（Markdown 渲染）、`url_launcher`（外部链接）、`share_plus`（分享）、`path_provider`（临时文件）。
+已有可复用：`flutter_markdown_plus`（Markdown 渲染）、`url_launcher`（外部链接）、`share_plus`（分享）、`path_provider`（临时文件）。
 
 **验收**：
 - `flutter pub get` 成功
@@ -175,7 +175,7 @@ class CodeView extends StatefulWidget {
 
 ### 预览态
 
-复用 `flutter_markdown` 的 `MarkdownBody`，样式参考 `conversation_screen.dart:799-849` 已有的 `MarkdownStyleSheet` 配置（表格、列表、代码块、链接色）。
+复用 `flutter_markdown_plus` 的 `MarkdownBody`，样式参考 `conversation_screen.dart:799-849` 已有的 `MarkdownStyleSheet` 配置（表格、列表、代码块、链接色）。
 
 代码块高亮：自定义 `MarkdownElementBuilder` 拦截 `pre > code`，提取 language hint（` ```dart `），用 `HighlightPainter` 着色后返回 `RichText`。
 

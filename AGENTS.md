@@ -146,3 +146,4 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `design-file-view.md` | FileView 重构（渲染路由、语法高亮、Markdown 预览、图片预览、二进制下载） |
 | `design-file-streaming.md` | 文件内容下载层修订（零下载路由 + 统一进度 + 内容驱动渲染，修订 design-file-view 的下载模型） |
 | `design-v2-migration.md` | **前瞻记录（未来迁移，暂不动）** OpenCode V2 差异与迁移路线 |
+| `design-migrate-flutter-markdown-plus.md` | 迁移 flutter_markdown → flutter_markdown_plus（已停用包替换，drop-in） |
