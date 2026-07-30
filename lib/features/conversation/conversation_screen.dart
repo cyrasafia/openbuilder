@@ -824,7 +824,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           tableBody: mdBase.tableBody?.copyWith(color: p.text),
           tableBorder: TableBorder.all(color: p.border),
           tableColumnWidth: const IntrinsicColumnWidth(),
-          tableScrollbarThumbVisibility: true,
+          tableScrollbarThumbVisibility: false,
           horizontalRuleDecoration: BoxDecoration(
             border: Border(top: BorderSide(color: p.border, width: 1)),
           ),
