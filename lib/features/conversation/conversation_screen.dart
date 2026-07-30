@@ -1225,10 +1225,13 @@ class _ToolChipState extends State<_ToolChip>
   late final Animation<double> _curved =
       _ctrl.drive(CurveTween(curve: Curves.easeOut));
 
+  Object get _expansionStorageKey => 'toolchip_expanded:${widget.part.id}';
+
   @override
   void initState() {
     super.initState();
-    _expanded = PageStorage.maybeOf(context)?.readState(context) == true;
+    _expanded =
+        PageStorage.maybeOf(context)?.readState(context, identifier: _expansionStorageKey) == true;
     if (_expanded) {
       _lastV = 1.0;
       _ctrl.value = 1.0;
@@ -1256,7 +1259,7 @@ class _ToolChipState extends State<_ToolChip>
         _ctrl.reverse();
       }
     });
-    PageStorage.maybeOf(context)?.writeState(context, _expanded);
+    PageStorage.maybeOf(context)?.writeState(context, _expanded, identifier: _expansionStorageKey);
     final p = widget.part;
     AppLogger.I.d(
       'ToolChip',
