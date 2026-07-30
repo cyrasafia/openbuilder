@@ -66,6 +66,8 @@ class MarkdownView extends StatelessWidget {
           tableHead: mdBase.tableHead?.copyWith(color: baseColor),
           tableBody: mdBase.tableBody?.copyWith(color: baseColor),
           tableBorder: TableBorder.all(color: appColors.border),
+          tableColumnWidth: const IntrinsicColumnWidth(),
+          tableScrollbarThumbVisibility: true,
           horizontalRuleDecoration: BoxDecoration(
             border: Border(top: BorderSide(color: appColors.border, width: 1)),
           ),
