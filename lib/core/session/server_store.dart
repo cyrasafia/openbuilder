@@ -442,6 +442,55 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
+  /// `DELETE /experimental/worktree` — delete a worktree and do targeted local
+  /// cleanup in one step. After the server confirms deletion, the worktree is
+  /// removed from the project's `sandboxes`, all sessions in that directory are
+  /// dropped from `_sessions` (plus their conversation / preview / status
+  /// caches), and the directory's SSE connection is closed — all without a full
+  /// `refresh()`. Callers should `await` this so the UI behind a confirmation
+  /// dialog is already in its final state when the dialog closes.
+  Future<void> removeWorktree(
+    String projectWorktree, {
+    required String worktreeDir,
+  }) async {
+    final c = client;
+    if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
+    try {
+      await c.removeWorktree(projectWorktree, worktreeDir: worktreeDir);
+    } catch (e) {
+      throw OperationException('删除工作区', cause: e);
+    }
+    final idx = _projects.indexWhere((p) => p.worktree == projectWorktree);
+    if (idx >= 0) {
+      final p = _projects[idx];
+      _projects[idx] = ProjectModel(
+        id: p.id,
+        worktree: p.worktree,
+        vcs: p.vcs,
+        name: p.name,
+        icon: p.icon,
+        commands: p.commands,
+        sandboxes: p.sandboxes
+            .where((d) => d != worktreeDir)
+            .toList(growable: false),
+        created: p.created,
+      );
+    }
+    final removedIds = _sessions
+        .where((s) => s.directory == worktreeDir)
+        .map((s) => s.id)
+        .toSet();
+    _sessions.removeWhere((s) => s.directory == worktreeDir);
+    for (final sid in removedIds) {
+      _conversations.remove(sid);
+      _lastMessage.remove(sid);
+      _statusMap.remove(sid);
+    }
+    _trimSse();
+    _scheduleCacheSave();
+    notifyListeners();
+  }
+
   void _inferWorkspaceForNewProjects() {
     final hasWorkspaceSession = <String>{};
     for (final s in _sessions) {
@@ -766,7 +815,7 @@ class ServerStore extends ChangeNotifier {
   Future<bool> _bootstrap() async {
     try {
       final projects = await client!.projects();
-      final sessions = await _fetchAllSessions();
+      final sessions = await _fetchAllSessions(projects: projects);
       final fetchedDirs = <String>{};
       final status = await _fetchAllStatuses(
           projects: projects, sessions: sessions, fetchedDirs: fetchedDirs);
@@ -853,9 +902,12 @@ class ServerStore extends ChangeNotifier {
   /// All per-project and per-worktree requests run concurrently via
   /// [Future.wait] (instead of N×M serial round-trips), so a large server with
   /// many projects/worktrees doesn't stall the first screen.
-  Future<List<SessionModel>> _fetchAllSessions() async {
+  Future<List<SessionModel>> _fetchAllSessions({
+    List<ProjectModel>? projects,
+  }) async {
+    final ps = projects ?? _projects;
     final futures = <Future<List<SessionModel>>>[];
-    for (final p in _projects) {
+    for (final p in ps) {
       if (p.id == 'global') {
         futures.add(client!.sessions());
       } else {
@@ -934,14 +986,15 @@ class ServerStore extends ChangeNotifier {
       if (force || !_sseByDir.containsKey(_kGlobalWatchdog)) {
         _startSse(_kGlobalWatchdog);
       }
-      if (force || !_projectsFetched) {
-        _projects = await client!.projects();
-        _projectsFetched = true;
-      }
-      final sessions = await _fetchAllSessions();
+      final newProjects = (force || !_projectsFetched)
+          ? await client!.projects()
+          : _projects;
+      _projectsFetched = true;
+      final sessions = await _fetchAllSessions(projects: newProjects);
       final fetchedDirs = <String>{};
       final status = await _fetchAllStatuses(
-          projects: _projects, sessions: sessions, fetchedDirs: fetchedDirs);
+          projects: newProjects, sessions: sessions, fetchedDirs: fetchedDirs);
+      _projects = newProjects;
       _sessions = sessions;
       _mergeStatus(fresh: status, sessions: sessions, fetchedDirs: fetchedDirs);
       _inferWorkspaceForNewProjects();
@@ -1227,6 +1280,12 @@ class ServerStore extends ChangeNotifier {
   /// `_eventDirectories` / `sessionById`) without going through SSE.
   @visibleForTesting
   void upsertSessionForTesting(SessionModel s) => _upsertSession(s);
+
+  /// Test seam: set `_projects` directly (needed by `removeWorktree` which
+  /// looks up the project by worktree path).
+  @visibleForTesting
+  void setProjectsForTesting(List<ProjectModel> projects) =>
+      _projects = projects;
 
   /// Test seam for the in-memory status-cache merge. Seeds `_statusMap` first
   /// via `session.status` events, then call this to assert the resume-time

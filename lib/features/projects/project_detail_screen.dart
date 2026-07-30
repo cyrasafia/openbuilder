@@ -357,19 +357,13 @@ class ProjectDetailScreen extends StatelessWidget {
                 onPressed: deleting
                     ? null
                     : () async {
-                        final client = serverStore.client;
-                        if (client == null) {
-                          if (ctx.mounted) Navigator.pop(ctx);
-                          return;
-                        }
                         setState(() => deleting = true);
                         try {
-                          await client.removeWorktree(
+                          await serverStore.removeWorktree(
                             projectWorktree,
                             worktreeDir: worktreeDir,
                           );
                           if (ctx.mounted) Navigator.pop(ctx);
-                          unawaited(serverStore.refresh());
                           if (ctx.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
