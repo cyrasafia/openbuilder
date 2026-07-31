@@ -94,47 +94,63 @@ class _FileListScreenState extends State<FileListScreen> {
   String _prefixPath(int segmentIndex) =>
       _segments.take(segmentIndex).join('/');
 
+  void _goUp() {
+    final segs = _segments;
+    if (segs.isEmpty) return;
+    setState(() => _path = segs.take(segs.length - 1).join('/'));
+    _load();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(l(context).fileTitle, style: const TextStyle(fontSize: 16)),
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-            child: TextField(
-              controller: _searchCtl,
-              decoration: InputDecoration(
-                hintText: l(context).fileSearchHint,
-                prefixIcon: const Icon(Icons.search, size: 20),
-                isDense: true,
-                suffixIcon: _searchCtl.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.close, size: 18),
-                        onPressed: () {
-                          _searchCtl.clear();
-                          setState(() => _query = '');
-                          _load();
-                        },
-                      )
-                    : null,
-              ),
-              onChanged: (v) {
-                if (v.isEmpty && _query.isNotEmpty) {
-                  setState(() => _query = '');
-                  _load();
-                } else if (v.isNotEmpty) {
-                  _search(v);
-                }
-              },
-            ),
+    return PopScope(
+      canPop: _path.isEmpty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _goUp();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(
+            l(context).fileTitle,
+            style: const TextStyle(fontSize: 16),
           ),
-          if (_query.isEmpty) _breadcrumb(),
-          const Divider(height: 1),
-          Expanded(child: _body()),
-        ],
+        ),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+              child: TextField(
+                controller: _searchCtl,
+                decoration: InputDecoration(
+                  hintText: l(context).fileSearchHint,
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  isDense: true,
+                  suffixIcon: _searchCtl.text.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () {
+                            _searchCtl.clear();
+                            setState(() => _query = '');
+                            _load();
+                          },
+                        )
+                      : null,
+                ),
+                onChanged: (v) {
+                  if (v.isEmpty && _query.isNotEmpty) {
+                    setState(() => _query = '');
+                    _load();
+                  } else if (v.isNotEmpty) {
+                    _search(v);
+                  }
+                },
+              ),
+            ),
+            if (_query.isEmpty) _breadcrumb(),
+            const Divider(height: 1),
+            Expanded(child: _body()),
+          ],
+        ),
       ),
     );
   }
