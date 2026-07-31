@@ -1343,16 +1343,13 @@ class _ToolChipState extends State<_ToolChip>
                   );
                 },
               ),
-              ClipRect(
-                child: SizeTransition(
-                  sizeFactor: _curved,
-                  alignment: Alignment.topCenter,
-                  child: Column(
-                    key: _contentKey,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: _expandedChildren(part, theme),
-                  ),
+              _CollapsibleReveal(
+                sizeFactor: _curved,
+                child: Column(
+                  key: _contentKey,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: _expandedChildren(part, theme),
                 ),
               ),
             ],

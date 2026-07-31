@@ -231,3 +231,108 @@ Container(
 | 编号 | 优先级 | 问题 | 处置 |
 |------|--------|------|------|
 | TC-4 | 🟡 中 | `InkWell` 原本包整个 chip（含展开后的 `SelectableText`）。移动端轻点正文不消费手势 → 冒泡到 `InkWell` → 误把 chip 收起；用户刚展开想看内容却被收起 | `InkWell` 收窄到只包摘要 `Row`，展开区置于 `InkWell` 之外（结构对齐 `_TodoCard`）；详见“为什么 InkWell 只包摘要行”小节 |
+
+## 三次迭代：代码块撑满行宽 → 收起态宽度回归 + 从左到右揭示动画
+
+### 背景
+
+某次改动把工具 chip 展开区的代码块（`_codeBlock`，`conversation_screen.dart:1400`）改为 `width: double.infinity`，使代码块撑满行宽（便于横向滚动长命令/输出）。引入两个回归：
+
+1. **收起态 chip 也被撑满**：预期收起态宽度跟随摘要内容，展开才撑满。
+2. **代码块展开无可见的从左到右动画**：chip 整体有高度展开动画，但代码块缺少水平方向的揭示效果。
+
+### 问题分析
+
+#### 1. 收起态撑满的根因：单轴 SizeTransition + infinity child
+
+修复前 `_ToolChip` 展开区用 `ClipRect + SizeTransition(vertical)`（单轴垂直）：
+
+```
+Column (chip 内容, cross start)
+  ├─ Row (header, 收起 min / 展开 max)
+  └─ ClipRect
+       └─ SizeTransition(axis: vertical, sizeFactor)   ← 垂直单轴
+            └─ Column (展开区, 内含 _codeBlock width:infinity)
+```
+
+关键：**垂直 `SizeTransition` 自身宽度 = child 宽度**——`sizeFactor` 只缩放其所在 axis 维度（高度），宽度透传 child。
+
+- 展开区的 `_codeBlock`（`width: double.infinity`）撑满传入 maxWidth。
+- → 展开 `Column` 宽度 = maxWidth。
+- → 垂直 `SizeTransition` 自身宽度 = maxWidth。
+- → 父 `Column` 宽度 = max(header 宽, maxWidth) = maxWidth。
+
+收起时 `sizeFactor=0`，`SizeTransition` **高度归零但宽度仍是 maxWidth**（垂直 `SizeTransition` 不缩宽度）。父 `Column` 测量子元素宽度仍取到 maxWidth → chip 始终撑满。即“高度看不见了，宽度却还在占位”。
+
+对比 `_Reasoning`（思考块，`:1077`）无此问题：它的展开区 child 是 `Text`（跟随内容宽度、不 `infinity`），故收起时父 `Column` 宽度 = header 宽度。
+
+#### 2. 缺少从左到右动画的根因：只有垂直轴
+
+`SizeTransition(vertical)` 只动画高度（从上到下揭示），没有水平轴 `SizeTransition`，故代码块展开时无宽度方向（从左到右）的揭示。
+
+### 解决方案：复用 `_CollapsibleReveal`（水平 + 垂直双轴）
+
+项目内已有 `_CollapsibleReveal`（`conversation_screen.dart:1055`），被 `_Reasoning` 使用，结构为：
+
+```dart
+ClipRect(
+  child: SizeTransition(axis: Axis.horizontal, alignment: Alignment.centerLeft, sizeFactor,  // 外层：水平 + 左对齐 → 从左到右揭示
+    child: SizeTransition(alignment: Alignment.topCenter, sizeFactor,                          // 内层：垂直 + 顶对齐 → 从上到下揭示
+      child: child,
+    ),
+  ),
+)
+```
+
+把 `_ToolChip` 展开区的 `ClipRect + 单轴 SizeTransition`（约 `:1346`）替换为 `_CollapsibleReveal`，一处改动同时解决两个回归：
+
+| 回归 | 解决机制 |
+|------|----------|
+| 收起撑满 | 外层水平 `SizeTransition` 自身宽度 = child 宽度 × sizeFactor。收起(factor=0)时宽度=0，父 `Column` 不再取到代码块的 infinity 宽度 → chip 收起跟随摘要内容 |
+| 缺少从左到右动画 | 外层水平 `SizeTransition` + `centerLeft`：展开 factor 0→1 时宽度从 0→满，从左侧逐步揭示 |
+
+```diff
+- ClipRect(
+-   child: SizeTransition(
+-     sizeFactor: _curved,
+-     alignment: Alignment.topCenter,
+-     child: Column(
+-       key: _contentKey,
+-       ...
+-     ),
+-   ),
+- ),
++ _CollapsibleReveal(
++   sizeFactor: _curved,
++   child: Column(
++     key: _contentKey,
++     ...
++   ),
++ ),
+```
+
+### 场景验证
+
+| 状态 | 布局结果 |
+|------|----------|
+| 收起 (factor=0) | 水平 SizeTransition 宽度=0；父 `Column` 宽度 = max(header min 宽, 0) = header 摘要宽 → chip 跟随内容 ✓ |
+| 展开 (factor 0→1) | 水平宽度 0→maxWidth（从左揭示），内层垂直高度 0→满（从上揭示），代码块 `width:infinity` 在 maxWidth 内撑满 ✓ |
+| `_syncReversedScroll` / `_contentKey` | `_contentKey` 放在 `_CollapsibleReveal` 的 child（展开区 `Column`）上，其 layout 高度为完整自然高度（`SizeTransition` 让 child 用自然约束布局、只缩放自身 size），与 `_Reasoning` 一致，滚动像素补偿计算不变 ✓ |
+
+### 设计决策变更：取消“不加展开动画”
+
+原“不做的事”明确写了“不加展开动画：对齐现有 3 处折叠先例（瞬时切换）”。实际演进中 `_ToolChip` / `_Reasoning` 都已引入 `SizeTransition` 动画（150ms easeOut），与该条已不符。本次进一步统一为双轴揭示（与 `_Reasoning` 完全一致），将该“不做”条目作废，保持两个折叠 chip 动效同构。
+
+### 为什么不另起方案
+
+| 备选 | 取舍 |
+|------|------|
+| 只给 `_codeBlock` 内部包一个水平 SizeTransition | 能解决从左到右动画，但 header 区仍单轴、整体动效不一致，且 error 文本段不受水平轴约束 |
+| 收起完全后用 `showExpanded = _expanded \|\| _ctrl.value > 0` 卸载展开区 + statusListener | 能彻底解决撑满，但引入额外 rebuild 时机与状态监听，复杂度高 |
+| **采用：复用 `_CollapsibleReveal`** | 零新代码（组件已存在）、两回归一处修复、与 `_Reasoning` 风格同构、`_contentKey` 放置与 `_Reasoning` 一致无副作用。最优 |
+
+### 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `lib/features/conversation/conversation_screen.dart` | `_ToolChip` build 展开区（约 `:1346`）：`ClipRect + SizeTransition(vertical)` → `_CollapsibleReveal(sizeFactor: _curved, ...)` |
