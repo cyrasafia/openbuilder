@@ -459,3 +459,40 @@ LayoutBuilder(
 | 文件 | 改动 |
 |------|------|
 | `lib/features/conversation/conversation_screen.dart` | `_ToolChip` build 展开区（约 `:1373`）：四次迭代的 `Align(widthFactor 离散)` → `LayoutBuilder + AnimatedBuilder + SizedBox(width: maxWidth × factor) + SizeTransition(vertical)` |
+
+## 六次迭代：代码块宽度从 header 宽插值到满宽，与 chip 同宽双向展开
+
+### 背景
+
+五次迭代后症状仍存：chip 双向展开正常，但代码块有可观察的横向展开动画。根因有两层：
+
+1. **header 宽度离散跳变**：864ba79 引入的 header `Row(mainAxisSize: _expanded ? max : min)` 在点击瞬间立即翻转——展开首帧 header 即占满 `maxWidth`，chip 背景瞬间满宽，而代码块宽度从 0 开始长，两层宽度不同步（箭头也瞬移到右边缘）。
+2. **代码块初始宽度为 0**：`SizedBox(width: maxWidth × factor)` 使代码块从 0 → maxWidth 全程扫过，横向动画幅度远大于 chip 实际宽度变化，格外扎眼。
+
+诉求：代码块初始宽度 = chip 收起时宽度、初始高度 0；展开时代码块跟随 chip 双向展开（右边缘始终贴着 chip 右边缘）。
+
+### 解决方案
+
+- **header 恒为内容宽**：去掉 `_expanded` 对 `mainAxisSize` / `Flexible` 的分支，恒用 `MainAxisSize.min` + `ConstrainedBox(maxWidth: maxWidth - 45)`。header 宽度两态一致，不再抢跑；展开态 chip 满宽由代码块 `infinity` 宽度保证（864ba79 意图不回退，仅箭头回到跟在摘要文字后，与初版设计稿一致）。
+- **代码块宽度插值起点改为 header 宽**：header `Row` 挂 `_headerKey`，动画 builder 内读 `_headerKey.currentContext?.size?.width`（收起态已布局完成，读取稳定），展开区宽度为 `headerW + (maxWidth - headerW) × factor`。
+
+布局恒等式：展开区宽度 ≥ header 宽恒成立 → chip 宽 = max(header, 展开区) = 展开区宽 → 代码块（紧约束下 `infinity`）右边缘与 chip 右边缘逐帧对齐，宽度动画与 chip 完全同步。
+
+| 状态 | 布局结果 |
+|------|----------|
+| 收起 (factor=0) | 展开区宽 = header 宽 = chip 宽；高 0 ✓ |
+| 动画中 (factor∈(0,1)) | 代码块宽 = chip 宽 = headerW + (maxWidth − headerW) × f，双向连续 ✓ |
+| 展开完成 (factor=1) | 满宽 + 自然高度，与旧行为一致 ✓ |
+| 长摘要（header 已封顶 maxWidth−45+45=maxWidth） | headerW = maxWidth，宽度插值退化为恒等，仅高度动画 ✓ |
+| `_syncReversedScroll` / `_contentKey` | 各 child 高度不随宽度变化（代码块横滚、error 定宽 maxWidth 揭示），补偿精确不变 ✓ |
+
+### 已知取舍
+
+- 动画 builder 内跨 widget 读 header render 尺寸：header 在收起态已完成布局且两态宽度恒定，读到的是上一帧稳定值，无脏布局风险。
+- 展开态箭头不再贴右边缘，跟在摘要文字后（同初版设计稿与 `_Reasoning`）。
+
+### 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `lib/features/conversation/conversation_screen.dart` | `_ToolChip` header `Row`：去掉 `_expanded` 宽度分支，恒 `MainAxisSize.min` + `ConstrainedBox`，挂 `_headerKey`；展开区 `SizedBox` 宽度 `maxWidth × factor` → `headerW + (maxWidth − headerW) × factor` |

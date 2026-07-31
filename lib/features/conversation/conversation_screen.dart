@@ -1465,6 +1465,7 @@ class _ToolChipState extends State<_ToolChip>
     with SingleTickerProviderStateMixin {
   bool _expanded = false;
   final GlobalKey _contentKey = GlobalKey();
+  final GlobalKey _headerKey = GlobalKey();
   double _lastV = 0;
   late final AnimationController _ctrl = AnimationController(
     duration: const Duration(milliseconds: 150),
@@ -1552,31 +1553,22 @@ class _ToolChipState extends State<_ToolChip>
                     color: theme.colorScheme.outline,
                   );
                   return Row(
-                    mainAxisSize:
-                        _expanded ? MainAxisSize.max : MainAxisSize.min,
+                    key: _headerKey,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(icon, size: 15, color: color),
                       const SizedBox(width: 6),
-                      _expanded
-                          ? Flexible(
-                              child: Text(
-                                part.toolSummary,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: summaryStyle,
-                              ),
-                            )
-                          : ConstrainedBox(
-                              constraints: BoxConstraints(
-                                maxWidth: math.max(0.0, c.maxWidth - 45),
-                              ),
-                              child: Text(
-                                part.toolSummary,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: summaryStyle,
-                              ),
-                            ),
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: math.max(0.0, c.maxWidth - 45),
+                        ),
+                        child: Text(
+                          part.toolSummary,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: summaryStyle,
+                        ),
+                      ),
                       const SizedBox(width: 6),
                       Icon(
                         _expanded ? Icons.expand_less : Icons.expand_more,
@@ -1592,8 +1584,11 @@ class _ToolChipState extends State<_ToolChip>
                   return AnimatedBuilder(
                     animation: _curved,
                     builder: (context, child) {
+                      final headerW =
+                          _headerKey.currentContext?.size?.width ?? 0.0;
                       return SizedBox(
-                        width: c.maxWidth * _curved.value,
+                        width: headerW +
+                            (c.maxWidth - headerW) * _curved.value,
                         child: SizeTransition(
                           sizeFactor: _curved,
                           alignment: Alignment.topCenter,
