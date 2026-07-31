@@ -812,6 +812,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         data: data,
         selectable: true,
         softLineBreak: user,
+        onTapLink: (text, href, title) => _openExternalLink(href),
         styleSheet: mdBase.copyWith(
           p: TextStyle(fontSize: 14, height: 1.45, color: p.text),
           pPadding: const EdgeInsets.only(bottom: 6),
@@ -855,6 +856,32 @@ class _ConversationScreenState extends State<ConversationScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _openExternalLink(String? href) async {
+    if (href == null || href.isEmpty) return;
+    if (href.startsWith('#')) return;
+    final uri = Uri.tryParse(href);
+    if (uri == null) return;
+    try {
+      final ok = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l(context).linkOpenFailed)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l(context).linkOpenFailedDetail(e.toString())),
+          ),
+        );
+      }
+    }
   }
 }
 
