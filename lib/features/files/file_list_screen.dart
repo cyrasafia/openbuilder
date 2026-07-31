@@ -108,79 +108,79 @@ class _FileListScreenState extends State<FileListScreen> {
     _load();
   }
 
+  void _collapseSearch() {
+    _searchCtl.clear();
+    setState(() {
+      _searchExpanded = false;
+      _query = '';
+    });
+    _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: _path.isEmpty,
+      canPop: _path.isEmpty && !_searchExpanded,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _goUp();
+        if (didPop) return;
+        if (_searchExpanded) {
+          _collapseSearch();
+        } else {
+          _goUp();
+        }
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(l(context).fileTitle, style: const TextStyle(fontSize: 16)),
+          leading: _searchExpanded
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back, size: 20),
+                  tooltip: l(context).fileSearchHint,
+                  onPressed: _collapseSearch,
+                )
+              : null,
+          title: _searchExpanded
+              ? TextField(
+                  controller: _searchCtl,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    hintText: l(context).fileSearchHint,
+                    isDense: true,
+                    border: InputBorder.none,
+                    suffixIcon: _searchCtl.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () {
+                              _searchCtl.clear();
+                              setState(() => _query = '');
+                              _load();
+                            },
+                          )
+                        : null,
+                  ),
+                  onChanged: (v) {
+                    if (v.isEmpty && _query.isNotEmpty) {
+                      setState(() => _query = '');
+                      _load();
+                    } else if (v.isNotEmpty) {
+                      _search(v);
+                    }
+                  },
+                )
+              : Text(
+                  l(context).fileTitle,
+                  style: const TextStyle(fontSize: 16),
+                ),
+          actions: [
+            if (!_searchExpanded)
+              IconButton(
+                icon: const Icon(Icons.search, size: 20),
+                tooltip: l(context).fileSearchHint,
+                onPressed: () => setState(() => _searchExpanded = true),
+              ),
+          ],
         ),
         body: Column(
           children: [
-            if (_searchExpanded)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(4, 10, 12, 6),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back, size: 20),
-                      tooltip: l(context).fileSearchHint,
-                      onPressed: () {
-                        _searchCtl.clear();
-                        setState(() {
-                          _searchExpanded = false;
-                          _query = '';
-                        });
-                        _load();
-                      },
-                    ),
-                    Expanded(
-                      child: TextField(
-                        controller: _searchCtl,
-                        autofocus: true,
-                        decoration: InputDecoration(
-                          hintText: l(context).fileSearchHint,
-                          isDense: true,
-                          suffixIcon: _searchCtl.text.isNotEmpty
-                              ? IconButton(
-                                  icon: const Icon(Icons.close, size: 18),
-                                  onPressed: () {
-                                    _searchCtl.clear();
-                                    setState(() => _query = '');
-                                    _load();
-                                  },
-                                )
-                              : null,
-                        ),
-                        onChanged: (v) {
-                          if (v.isEmpty && _query.isNotEmpty) {
-                            setState(() => _query = '');
-                            _load();
-                          } else if (v.isNotEmpty) {
-                            _search(v);
-                          }
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-                  child: IconButton(
-                    icon: const Icon(Icons.search, size: 20),
-                    tooltip: l(context).fileSearchHint,
-                    onPressed: () => setState(() => _searchExpanded = true),
-                  ),
-                ),
-              ),
             if (_query.isEmpty) _breadcrumb(),
             const Divider(height: 1),
             Expanded(child: _body()),
