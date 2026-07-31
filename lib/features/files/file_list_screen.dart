@@ -29,6 +29,8 @@ class _FileListScreenState extends State<FileListScreen> {
   Object? _error;
   String _query = '';
   final _searchCtl = TextEditingController();
+  final _crumbScrollCtl = ScrollController();
+  String? _lastCrumbPath;
   bool _searchExpanded = false;
 
   @override
@@ -41,6 +43,7 @@ class _FileListScreenState extends State<FileListScreen> {
   @override
   void dispose() {
     _searchCtl.dispose();
+    _crumbScrollCtl.dispose();
     super.dispose();
   }
 
@@ -90,6 +93,7 @@ class _FileListScreenState extends State<FileListScreen> {
     setState(() {
       _loading = true;
       _query = q;
+      _lastCrumbPath = null;
     });
     try {
       _nodes = await c.findFiles(
@@ -233,7 +237,16 @@ class _FileListScreenState extends State<FileListScreen> {
         ),
       );
     }
+    if (_lastCrumbPath != _path) {
+      _lastCrumbPath = _path;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_crumbScrollCtl.hasClients) {
+          _crumbScrollCtl.jumpTo(_crumbScrollCtl.position.maxScrollExtent);
+        }
+      });
+    }
     return SingleChildScrollView(
+      controller: _crumbScrollCtl,
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       child: Row(children: items),
