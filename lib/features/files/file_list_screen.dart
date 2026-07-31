@@ -29,12 +29,19 @@ class _FileListScreenState extends State<FileListScreen> {
   Object? _error;
   String _query = '';
   final _searchCtl = TextEditingController();
+  bool _searchExpanded = false;
 
   @override
   void initState() {
     super.initState();
     _path = widget.initialPath ?? '';
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchCtl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -110,42 +117,70 @@ class _FileListScreenState extends State<FileListScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(
-            l(context).fileTitle,
-            style: const TextStyle(fontSize: 16),
-          ),
+          title: Text(l(context).fileTitle, style: const TextStyle(fontSize: 16)),
         ),
         body: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-              child: TextField(
-                controller: _searchCtl,
-                decoration: InputDecoration(
-                  hintText: l(context).fileSearchHint,
-                  prefixIcon: const Icon(Icons.search, size: 20),
-                  isDense: true,
-                  suffixIcon: _searchCtl.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: () {
-                            _searchCtl.clear();
+            if (_searchExpanded)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 10, 12, 6),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, size: 20),
+                      tooltip: l(context).fileSearchHint,
+                      onPressed: () {
+                        _searchCtl.clear();
+                        setState(() {
+                          _searchExpanded = false;
+                          _query = '';
+                        });
+                        _load();
+                      },
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _searchCtl,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          hintText: l(context).fileSearchHint,
+                          isDense: true,
+                          suffixIcon: _searchCtl.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.close, size: 18),
+                                  onPressed: () {
+                                    _searchCtl.clear();
+                                    setState(() => _query = '');
+                                    _load();
+                                  },
+                                )
+                              : null,
+                        ),
+                        onChanged: (v) {
+                          if (v.isEmpty && _query.isNotEmpty) {
                             setState(() => _query = '');
                             _load();
-                          },
-                        )
-                      : null,
+                          } else if (v.isNotEmpty) {
+                            _search(v);
+                          }
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-                onChanged: (v) {
-                  if (v.isEmpty && _query.isNotEmpty) {
-                    setState(() => _query = '');
-                    _load();
-                  } else if (v.isNotEmpty) {
-                    _search(v);
-                  }
-                },
+              )
+            else
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+                  child: IconButton(
+                    icon: const Icon(Icons.search, size: 20),
+                    tooltip: l(context).fileSearchHint,
+                    onPressed: () => setState(() => _searchExpanded = true),
+                  ),
+                ),
               ),
-            ),
             if (_query.isEmpty) _breadcrumb(),
             const Divider(height: 1),
             Expanded(child: _body()),
