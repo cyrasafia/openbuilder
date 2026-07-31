@@ -612,16 +612,47 @@ class OpencodeClient {
     }
   }
 
-  /// `GET /find/file?query=` — search files within [directory].
+  /// `GET /find/file?query=` — search files within [directory]/[path].
+  ///
+  /// Unlike `GET /file`, the server returns a plain array of relative path
+  /// strings (directories carry a trailing `/`), not [FileNode] objects, so we
+  /// derive the node fields from each path here. The endpoint has no `path`
+  /// param — it scopes by `directory` only — so [path] is composed into the
+  /// search root, and each server-returned path (relative to that root) is
+  /// re-prefixed with [path] so results stay relative to [directory].
   Future<List<FileNode>> findFiles({
     required String directory,
+    required String path,
     required String query,
   }) async {
+    final base = directory.endsWith('/')
+        ? directory.substring(0, directory.length - 1)
+        : directory;
+    final searchRoot = path.isEmpty
+        ? base
+        : base.isEmpty
+            ? path
+            : '$base/$path';
     final r = await dio.get<dynamic>('/find/file', queryParameters: {
-      'directory': directory,
+      'directory': searchRoot,
       'query': query,
     });
-    return _getModelsFromData(r.data, FileNode.fromJson);
+    final data = r.data;
+    List<dynamic> raw;
+    if (data is List) {
+      raw = data;
+    } else if (data is String && data.trim().isNotEmpty) {
+      final d = jsonDecode(data);
+      raw = d is List ? d : const [];
+    } else {
+      raw = const [];
+    }
+    String toRel(String s) => path.isEmpty ? s : '$path/$s';
+    return raw
+        .whereType<String>()
+        .where((s) => s.isNotEmpty)
+        .map((s) => FileNode.fromSearchPath(toRel(s)))
+        .toList();
   }
 
   // ---- helpers ----

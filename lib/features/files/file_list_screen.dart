@@ -73,6 +73,14 @@ class _FileListScreenState extends State<FileListScreen> {
     return list;
   }
 
+  String _parentPath(String relPath) {
+    final p = relPath.endsWith('/')
+        ? relPath.substring(0, relPath.length - 1)
+        : relPath;
+    final idx = p.lastIndexOf('/');
+    return idx <= 0 ? '' : p.substring(0, idx);
+  }
+
   Future<void> _search(String q) async {
     final c = serverStore.client;
     if (c == null || q.trim().isEmpty) {
@@ -84,7 +92,11 @@ class _FileListScreenState extends State<FileListScreen> {
       _query = q;
     });
     try {
-      _nodes = await c.findFiles(directory: widget.directory ?? '', query: q);
+      _nodes = await c.findFiles(
+        directory: widget.directory ?? '',
+        path: _segments.join('/'),
+        query: q,
+      );
       _nodes = _sortNodes(_nodes);
       _error = null;
     } catch (e) {
@@ -290,7 +302,17 @@ class _FileListScreenState extends State<FileListScreen> {
                     color: Theme.of(context).colorScheme.outline,
                   ),
                 )
-              : null,
+              : (_query.isNotEmpty && _parentPath(n.path).isNotEmpty)
+                  ? Text(
+                      _parentPath(n.path),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    )
+                  : null,
           trailing: n.isDir ? const Icon(Icons.chevron_right) : null,
           onTap: () {
             if (n.isDir) {

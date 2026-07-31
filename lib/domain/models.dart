@@ -514,6 +514,19 @@ class FileNode {
     ignored: j['ignored'] == true,
   );
 
+  factory FileNode.fromSearchPath(String relPath) {
+    final isDir = relPath.endsWith('/');
+    final withoutSlash = isDir ? relPath.substring(0, relPath.length - 1) : relPath;
+    final segs = withoutSlash.split('/').where((s) => s.isNotEmpty).toList();
+    return FileNode(
+      name: segs.isEmpty ? relPath : segs.last,
+      path: relPath,
+      absolute: '',
+      type: isDir ? 'directory' : 'file',
+      ignored: false,
+    );
+  }
+
   bool get isDir => type == 'directory';
 }
 
