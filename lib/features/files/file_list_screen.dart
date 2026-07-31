@@ -101,7 +101,6 @@ class _FileListScreenState extends State<FileListScreen> {
         path: _segments.join('/'),
         query: q,
       );
-      _nodes = _sortNodes(_nodes);
       _error = null;
     } catch (e) {
       _error = e;
