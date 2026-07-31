@@ -36,6 +36,27 @@ class ConversationScreen extends StatefulWidget {
   State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
+class _TurnTarget {
+  final String firstMessageId;
+  const _TurnTarget(this.firstMessageId);
+}
+
+bool _listEquals(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+bool _isPrefix(List<String> list, List<String> prefix) {
+  if (prefix.length > list.length) return false;
+  for (var i = 0; i < prefix.length; i++) {
+    if (list[i] != prefix[i]) return false;
+  }
+  return true;
+}
+
 ({
   Color text,
   Color outline,
@@ -81,6 +102,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
   int _lastMsgCount = 0;
   static const _kScrollThreshold = 200.0;
 
+  final _listKey = GlobalKey();
+  final _msgKeys = <String, GlobalKey>{};
+  final _rectCache =
+      <String, ({double top, double bottom, double pixelsAtMeasure})>{};
+  final _backToTopTarget = ValueNotifier<_TurnTarget?>(null);
+  double? _lastViewportH;
+  bool _backToTopScheduled = false;
+  bool _cacheUntrusted = false;
+  List<String> _prevIds = const [];
+  int _prevBottomRow = 0;
+
   @override
   void initState() {
     super.initState();
@@ -105,6 +137,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     serverStore.setActiveConversation(null);
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    _backToTopTarget.dispose();
     _ctl.dispose();
     super.dispose();
   }
@@ -148,6 +181,174 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (pos.pixels >= pos.maxScrollExtent - _kScrollThreshold) {
       _maybeLoadEarlier();
     }
+    _scheduleBackToTopUpdate();
+  }
+
+  void _scheduleBackToTopUpdate() {
+    if (_backToTopScheduled) return;
+    _backToTopScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _backToTopScheduled = false;
+      if (mounted) _updateBackToTop();
+    });
+  }
+
+  ({double top, double bottom})? _rectOf(String id, {bool allowCache = true}) {
+    final box = _msgKeys[id]?.currentContext?.findRenderObject();
+    final listBox = _listKey.currentContext?.findRenderObject();
+    if (box is RenderBox &&
+        box.attached &&
+        box.hasSize &&
+        listBox is RenderBox &&
+        listBox.attached) {
+      final top =
+          box.localToGlobal(Offset.zero).dy -
+          listBox.localToGlobal(Offset.zero).dy;
+      return (top: top, bottom: top + box.size.height);
+    }
+    if (!allowCache) return null;
+    final cached = _rectCache[id];
+    if (cached == null || !_scrollController.hasClients) return null;
+    final d = _scrollController.position.pixels - cached.pixelsAtMeasure;
+    return (top: cached.top + d, bottom: cached.bottom + d);
+  }
+
+  void _updateBackToTop() {
+    if (!mounted || !_scrollController.hasClients) return;
+    final conv = serverStore.conversationForRead(widget.sessionId);
+    final listBox = _listKey.currentContext?.findRenderObject();
+    if (conv == null ||
+        listBox is! RenderBox ||
+        !listBox.attached ||
+        !listBox.hasSize) {
+      return;
+    }
+    final h = listBox.size.height;
+    if (h <= 0) return;
+    if (_lastViewportH != null && (_lastViewportH! - h).abs() > 0.5) {
+      _rectCache.clear();
+    }
+    _lastViewportH = h;
+    final listTop = listBox.localToGlobal(Offset.zero).dy;
+    final pixels = _scrollController.position.pixels;
+    final msgs = conv.renderableMessages;
+    final newIds = msgs.map((m) => m.info.id).toList(growable: false);
+    final bottomRow =
+        (conv.isRetry &&
+            conv.retryMessage != null &&
+            conv.retryMessage!.isNotEmpty)
+        ? 1000000 + conv.retryMessage!.length
+        : (conv.busy || conv.loading)
+        ? 1
+        : 0;
+    if (bottomRow != _prevBottomRow) {
+      _rectCache.clear();
+      _prevBottomRow = bottomRow;
+    }
+    if (!_listEquals(newIds, _prevIds)) {
+      final idSet = newIds.toSet();
+      _msgKeys.removeWhere((id, _) => !idSet.contains(id));
+      if (_isPrefix(newIds, _prevIds)) {
+        _rectCache.removeWhere((id, _) => !idSet.contains(id));
+      } else {
+        _rectCache.clear();
+      }
+      _prevIds = newIds;
+    }
+
+    final indexOf = <String, int>{
+      for (var k = 0; k < msgs.length; k++) msgs[k].info.id: k,
+    };
+    final measured = <String>{};
+    for (var i = 0; i < msgs.length; i++) {
+      final id = msgs[i].info.id;
+      final box = _msgKeys[id]?.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero).dy - listTop;
+      final bottom = top + box.size.height;
+      final cached = _rectCache[id];
+      if (cached != null) {
+        final dh = (bottom - top) - (cached.bottom - cached.top);
+        if (dh.abs() > 0.5) {
+          _rectCache.forEach((key, entry) {
+            final idx = indexOf[key];
+            if (idx != null && idx > i) {
+              _rectCache[key] = (
+                top: entry.top - dh,
+                bottom: entry.bottom - dh,
+                pixelsAtMeasure: entry.pixelsAtMeasure,
+              );
+            }
+          });
+        }
+      }
+      _rectCache[id] = (
+        top: top,
+        bottom: bottom,
+        pixelsAtMeasure: pixels,
+      );
+      measured.add(id);
+    }
+
+    final untrusted =
+        conv.busy && msgs.isNotEmpty && !measured.contains(msgs.first.info.id);
+    _cacheUntrusted = untrusted;
+
+    _TurnTarget? target;
+    var i = 0;
+    while (i < msgs.length) {
+      final role = msgs[i].info.role;
+      var j = i + 1;
+      if (role != 'user') {
+        while (j < msgs.length && msgs[j].info.role != 'user') {
+          j++;
+        }
+      }
+      var top = double.infinity;
+      var bottom = double.negativeInfinity;
+      var complete = true;
+      for (var k = i; k < j; k++) {
+        final rect = _rectOf(msgs[k].info.id, allowCache: !untrusted);
+        if (rect == null) {
+          complete = false;
+          break;
+        }
+        top = math.min(top, rect.top);
+        bottom = math.max(bottom, rect.bottom);
+      }
+      if (complete &&
+          top < -1.0 &&
+          bottom > h + 1.0 &&
+          bottom - top >= 2 * h) {
+        target = _TurnTarget(msgs[j - 1].info.id);
+        break;
+      }
+      i = j;
+    }
+    if (target?.firstMessageId != _backToTopTarget.value?.firstMessageId) {
+      _backToTopTarget.value = target;
+    }
+  }
+
+  void _scrollToTurnTop(_TurnTarget t) {
+    if (!_scrollController.hasClients) return;
+    final rect = _rectOf(t.firstMessageId, allowCache: !_cacheUntrusted);
+    if (rect == null) {
+      _updateBackToTop();
+      return;
+    }
+    final pos = _scrollController.position;
+    final target = (pos.pixels - rect.top)
+        .clamp(pos.minScrollExtent, pos.maxScrollExtent)
+        .toDouble();
+    final h = _lastViewportH ?? 0.0;
+    final distance = (target - pos.pixels).abs();
+    final ms = h > 0 ? (250 * distance / h).clamp(250, 500).round() : 300;
+    _scrollController.animateTo(
+      target,
+      duration: Duration(milliseconds: ms),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   void _maybeLoadEarlier() {
@@ -277,6 +478,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           // Todos/permissions live in a separate footer pinned to the page
           // bottom (see _FooterPanel), out of the scrolling message stream.
           final list = ListView(
+            key: _listKey,
             reverse: true,
             controller: _scrollController,
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -300,13 +502,28 @@ class _ConversationScreenState extends State<ConversationScreen> {
             _lastMsgCount = msgCount;
             _scheduleAutoScroll();
           }
+          _scheduleBackToTopUpdate();
           final showFooter =
               conv.permissions.isNotEmpty ||
               conv.questions.isNotEmpty ||
               conv.todos.any((t) => !t.done);
           return Column(
             children: [
-              Expanded(child: list),
+              Expanded(
+                child: Stack(
+                  children: [
+                    list,
+                    Positioned(
+                      right: 12,
+                      bottom: 12,
+                      child: _BackToTurnTopButton(
+                        target: _backToTopTarget,
+                        onTap: _scrollToTurnTop,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
               if (showFooter)
                 _FooterPanel(
                   todos: conv.todos,
@@ -656,7 +873,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _message(DisplayMessage m) {
     if (m.info.role == 'user') {
       return Padding(
-        key: ValueKey(m.info.id),
+        key: _msgKeys.putIfAbsent(m.info.id, GlobalKey.new),
         padding: const EdgeInsets.only(left: 40, top: 10, bottom: 10),
         child: Align(
           alignment: Alignment.centerRight,
@@ -673,7 +890,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       );
     }
     return Padding(
-      key: ValueKey(m.info.id),
+      key: _msgKeys.putIfAbsent(m.info.id, GlobalKey.new),
       padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2332,6 +2549,50 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
 
 /// Combined bottom bar: agent/model chips row + compose input row,
 /// sharing a single background and bottom safe-area padding.
+class _BackToTurnTopButton extends StatelessWidget {
+  final ValueNotifier<_TurnTarget?> target;
+  final void Function(_TurnTarget) onTap;
+  const _BackToTurnTopButton({required this.target, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<_TurnTarget?>(
+      valueListenable: target,
+      builder: (context, t, _) {
+        final visible = t != null;
+        return IgnorePointer(
+          ignoring: !visible,
+          child: AnimatedOpacity(
+            opacity: visible ? 1 : 0,
+            duration: const Duration(milliseconds: 150),
+            child: AnimatedScale(
+              scale: visible ? 1 : 0.8,
+              duration: const Duration(milliseconds: 150),
+              child: Material(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                shape: CircleBorder(
+                  side: BorderSide(
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: visible ? () => onTap(t) : null,
+                  child: const SizedBox(
+                    width: 36,
+                    height: 36,
+                    child: Icon(Icons.vertical_align_top, size: 18),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _BottomBar extends StatelessWidget {
   final String sessionId;
   final String directory;
