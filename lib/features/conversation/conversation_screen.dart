@@ -1370,14 +1370,28 @@ class _ToolChipState extends State<_ToolChip>
                   );
                 },
               ),
-              _CollapsibleReveal(
-                sizeFactor: _curved,
-                child: Column(
-                  key: _contentKey,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: _expandedChildren(part, theme),
-                ),
+              LayoutBuilder(
+                builder: (context, c) {
+                  return AnimatedBuilder(
+                    animation: _curved,
+                    builder: (context, child) {
+                      return SizedBox(
+                        width: c.maxWidth * _curved.value,
+                        child: SizeTransition(
+                          sizeFactor: _curved,
+                          alignment: Alignment.topCenter,
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: Column(
+                      key: _contentKey,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: _expandedChildren(part, theme, c.maxWidth),
+                    ),
+                  );
+                },
               ),
             ],
           ),
@@ -1386,7 +1400,11 @@ class _ToolChipState extends State<_ToolChip>
     );
   }
 
-  List<Widget> _expandedChildren(DisplayPart part, ThemeData theme) {
+  List<Widget> _expandedChildren(
+    DisplayPart part,
+    ThemeData theme,
+    double maxWidth,
+  ) {
     final appColors = theme.extension<AppColors>()!;
     final input = part.toolInput;
     final output = part.toolOutput;
@@ -1408,12 +1426,19 @@ class _ToolChipState extends State<_ToolChip>
     if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
       children.add(const SizedBox(height: 8));
       children.add(
-        Text(
-          error,
-          style: const TextStyle(
-            fontSize: 12,
-            color: Color(0xFFF85149),
-            height: 1.4,
+        UnconstrainedBox(
+          alignment: Alignment.centerLeft,
+          clipBehavior: Clip.hardEdge,
+          child: SizedBox(
+            width: maxWidth,
+            child: Text(
+              error,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFFF85149),
+                height: 1.4,
+              ),
+            ),
           ),
         ),
       );
