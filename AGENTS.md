@@ -143,6 +143,8 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `design-optimistic-messages.md` | 乐观消息插入 |
 | `design-session-status.md` | 会话状态同步 |
 | `design-agent-model-switch.md` | Agent/Model 切换 |
+| `design-slash-command-refresh.md` | 斜杠命令列表刷新缓存（三源合并 + 可疑空保留 + 连击，含桌面端对比与根因调研） |
+| `design-slash-command-echo.md` | 斜杠命令回显（subtask prompt 展开、乐观消息→SSE 确认） |
 | `design-file-view.md` | FileView 重构（渲染路由、语法高亮、Markdown 预览、图片预览、二进制下载） |
 | `design-file-streaming.md` | 文件内容下载层修订（零下载路由 + 统一进度 + 内容驱动渲染，修订 design-file-view 的下载模型） |
 | `design-v2-migration.md` | **前瞻记录（未来迁移，暂不动）** OpenCode V2 差异与迁移路线 |

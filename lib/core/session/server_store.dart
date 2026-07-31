@@ -127,6 +127,18 @@ class ServerStore extends ChangeNotifier {
   /// instead of giving up after one failed attempt.
   bool _commandsDegraded = false;
   bool get commandsDegraded => _commandsDegraded;
+  /// Consecutive "suspicious empty" refreshes (both `/api/command` and
+  /// `/api/skill` returned 200-OK with zero entries). Right after a network
+  /// recovery the connection pool can serve a stale/empty response that does
+  /// NOT throw, so without protection it would be trusted as a genuinely empty
+  /// directory and wipe a known-good cache (surfacing only the `/config`
+  /// commands, e.g. just `/goal`). We retain the cache while this streak is
+  /// under [_kMaxSuspiciousRetries]; once exhausted a persistent empty is
+  /// treated as authoritative so a directory that truly lost its commands is
+  /// eventually reflected.
+  int _suspiciousEmptyStreak = 0;
+  @visibleForTesting
+  static const int kMaxSuspiciousRetries = 3;
 
   Future<void> refreshCommands({String? directory}) async {
     final c = client;
@@ -147,28 +159,42 @@ class ServerStore extends ChangeNotifier {
       final skills = await skillsF;
       final config = await configF;
 
-      // A refresh is degraded only when the per-directory command or skill
-      // source actually failed. A genuinely empty directory (server returns 200
-      // with no commands/skills) is NOT degraded — trusting it avoids
-      // cross-project command leakage and lets deletions reflect. The one
-      // caveat: if a deletion lands on the same refresh where skills blips, the
-      // emptied commands are briefly masked by the retained cache until the next
-      // fully-clean refresh.
+      // A refresh is degraded when the per-directory command or skill source
+      // actually failed. A genuinely empty directory (server returns 200 with
+      // no commands/skills) is NOT degraded by itself — trusting it avoids
+      // cross-project command leakage and lets deletions reflect.
       //
-      // On a degraded fetch, keep a *known-complete* cache for the same
-      // directory so a transient blip can't wipe a good list. Never retain a
-      // degraded partial — it may be worse than the fresh (also-degraded)
-      // result, so fall through and apply that instead.
+      // BUT: right after a network recovery the connection pool can serve a
+      // 200-OK response with an empty body for BOTH sources (no exception), so
+      // the per-source `failed` flags stay false. Without protection that
+      // "suspicious empty" is trusted as genuine and wipes a known-good cache
+      // (leaving only the /config commands, e.g. just /goal). We therefore also
+      // treat a suspicious empty as retain-worthy while a streak of them is
+      // under [kMaxSuspiciousRetries]; once exhausted a persistent empty is
+      // accepted as authoritative.
+      //
+      // On a retain-worthy (degraded or suspicious) fetch, keep a
+      // *known-complete* cache for the same directory so a transient blip can't
+      // wipe a good list. Never retain a degraded partial — it may be worse than
+      // the fresh result, so fall through and apply that instead.
       final degraded = cmds.failed || skills.failed;
-      final canRetain = commandsNotifier.value.isNotEmpty &&
+      final suspiciousEmpty = !cmds.failed &&
+          !skills.failed &&
+          cmds.value.isEmpty &&
+          skills.value.isEmpty;
+      final haveGoodCache = commandsNotifier.value.isNotEmpty &&
           _commandsCacheDir == directory &&
           _commandsCacheComplete;
-      if (degraded && canRetain) {
+      final withinStreak = _suspiciousEmptyStreak < kMaxSuspiciousRetries;
+      if ((degraded || (suspiciousEmpty && withinStreak)) && haveGoodCache) {
+        if (suspiciousEmpty) _suspiciousEmptyStreak++;
         _commandsDegraded = true;
         AppLogger.I.w(_tag,
-            'commands refresh degraded (cmds=${cmds.value.length}/${cmds.failed ? 'err' : 'ok'} '
+            'commands refresh ${suspiciousEmpty ? 'suspicious-empty' : 'degraded'} '
+            '(cmds=${cmds.value.length}/${cmds.failed ? 'err' : 'ok'} '
             'skills=${skills.value.length}/${skills.failed ? 'err' : 'ok'} '
-            'config=${config.value.length}); keeping cache of ${commandsNotifier.value.length}');
+            'config=${config.value.length}); keeping cache of ${commandsNotifier.value.length} '
+            '(streak $_suspiciousEmptyStreak)');
         return;
       }
 
@@ -181,13 +207,23 @@ class ServerStore extends ChangeNotifier {
       for (final cc in config.value) {
         if (existing.add(cc.name.toLowerCase())) merged = [...merged, cc];
       }
-      _commandsDegraded = degraded;
+      // A suspicious empty with no cache to protect still isn't authoritative —
+      // mark degraded so the next `/` retries. Once the streak is exhausted the
+      // empty is treated as genuine (not degraded).
+      final trustEmpty = suspiciousEmpty && !withinStreak;
+      if (suspiciousEmpty) {
+        _suspiciousEmptyStreak++;
+      } else {
+        _suspiciousEmptyStreak = 0;
+      }
+      _commandsDegraded = degraded || (suspiciousEmpty && !trustEmpty);
       _commandsCacheDir = directory;
       _commandsCacheComplete = !degraded;
       AppLogger.I.i(_tag,
           'commands refreshed: commands=${cmds.value.length} skills=${skills.value.length} '
           'config=${config.value.length} merged=${merged.length}'
-          '${degraded ? ' (degraded, no usable cache)' : ''}');
+          '${degraded ? ' (degraded, no usable cache)' : ''}'
+          '${suspiciousEmpty && !trustEmpty ? ' (suspicious-empty, no cache)' : ''}');
       commandsNotifier.value = merged;
     } catch (e) {
       _commandsDegraded = true;
@@ -730,6 +766,7 @@ class ServerStore extends ChangeNotifier {
       _commandsDegraded = false;
       _commandsCacheDir = null;
       _commandsCacheComplete = false;
+      _suspiciousEmptyStreak = 0;
       // Load cached data first for instant offline UI, then _bootstrap refreshes.
       await _loadCache();
       final dio = dioFor(profile);
@@ -1009,6 +1046,13 @@ class ServerStore extends ChangeNotifier {
       _lastFullRefreshAt = DateTime.now();
       connected = true;
       _scheduleCacheSave();
+      // server.connected → reconcile → here: re-pull commands so a transient
+      // empty (network-recovery blip) gets overwritten, mirroring desktop's
+      // bootstrap re-run on server.connected.
+      final activeId = _activeSessionId;
+      if (activeId != null) {
+        unawaited(refreshCommands(directory: sessionById(activeId)?.directory));
+      }
     } catch (_) {
       // REST failed — return false so manual refresh shows toast.
       notifyListeners();
@@ -1497,6 +1541,18 @@ class ServerStore extends ChangeNotifier {
           _conversations[sid]?.onQuestionReplied(qid);
         }
         break;
+      case 'catalog.updated':
+      case 'mcp.tools.changed':
+        // Command/skill catalog or MCP tools changed on the server — re-pull
+        // so new/deleted slash commands reflect without waiting for the next
+        // `/` input (mirrors desktop's command.updated / mcp.status.changed →
+        // bootstrap re-run). Uses the active session's directory; refreshCommands
+        // guards against duplicate in-flight refreshes for the same directory.
+        final activeId = _activeSessionId;
+        if (activeId != null) {
+          unawaited(refreshCommands(directory: sessionById(activeId)?.directory));
+        }
+        break;
     }
     notifyListeners();
   }
@@ -1708,6 +1764,7 @@ class ServerStore extends ChangeNotifier {
     _commandsDegraded = false;
     _commandsCacheDir = null;
     _commandsCacheComplete = false;
+    _suspiciousEmptyStreak = 0;
     client = null;
     _profile = null;
     notifyListeners();
