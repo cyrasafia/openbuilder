@@ -444,7 +444,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         wt.isEmpty ? project : '$project › $wt',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: AppTheme.mono.copyWith(
+                        style: TextStyle(
                           fontSize: 11,
                           color: Theme.of(context).colorScheme.outline,
                         ),
@@ -2951,7 +2951,7 @@ class _CommandHints extends StatelessWidget {
                 leading: const Icon(Icons.terminal, size: 18),
                 title: Text(
                   c.slash,
-                  style: AppTheme.mono.copyWith(fontSize: 13),
+                  style: const TextStyle(fontSize: 13),
                 ),
                 subtitle: c.description.isNotEmpty
                     ? Text(
