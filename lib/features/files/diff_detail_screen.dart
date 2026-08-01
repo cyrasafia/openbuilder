@@ -22,7 +22,7 @@ class DiffDetailScreen extends StatefulWidget {
   State<DiffDetailScreen> createState() => _DiffDetailScreenState();
 }
 
-class _DiffDetailScreenState extends State<DiffDetailScreen> {
+class _DiffDetailScreenState extends State<DiffDetailScreen> with RouteAware {
   FileDiff? _diff;
   bool _loading = true;
   Object? _error;
@@ -31,6 +31,29 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) fileRouteObserver.subscribe(this, route);
+  }
+
+  @override
+  void dispose() {
+    fileRouteObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  @override
+  void didPopNext() {
+    if (serverStore.fileBrowsing
+        .isCollapsing(widget.sessionId, widget.directory)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.pop();
+      });
+    }
   }
 
   Future<void> _load() async {

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/net/net_error.dart';
+import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -18,18 +19,20 @@ class FileViewScreen extends StatefulWidget {
   final String sessionId;
   final String path;
   final String? directory;
+  final OpenFileEntry? restore;
   const FileViewScreen({
     super.key,
     required this.sessionId,
     required this.path,
     this.directory,
+    this.restore,
   });
 
   @override
   State<FileViewScreen> createState() => _FileViewScreenState();
 }
 
-class _FileViewScreenState extends State<FileViewScreen> {
+class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
   late final DownloadPolicy _policy = inferDownloadPolicy(widget.path);
 
   StreamedFile? _file;
@@ -40,17 +43,90 @@ class _FileViewScreenState extends State<FileViewScreen> {
   bool _wrap = false;
   bool _mdShowSource = false;
   CancelToken? _cancelToken;
+  final _scrollCtl = ScrollController();
+  double? _pendingScrollRestore;
 
   @override
   void initState() {
     super.initState();
+    _loadDiff();
+    final r = widget.restore;
+    if (r != null) {
+      _wrap = r.wrap;
+      _mdShowSource = r.mdShowSource;
+      _pendingScrollRestore = r.scrollOffset;
+      final cached = serverStore.fileBrowsing
+          .cachedContent(widget.sessionId, widget.directory, widget.path);
+      if (cached != null) {
+        _file = cached;
+        _scheduleScrollRestore();
+        return;
+      }
+      if (_policy == DownloadPolicy.immediate || r.hadContent) _download();
+      return;
+    }
     if (_policy == DownloadPolicy.immediate) _download();
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) fileRouteObserver.subscribe(this, route);
+  }
+
+  @override
   void dispose() {
+    fileRouteObserver.unsubscribe(this);
     _cancelToken?.cancel();
+    _scrollCtl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didPopNext() {
+    final store = serverStore.fileBrowsing;
+    if (store.isCollapsing(widget.sessionId, widget.directory)) {
+      _collectSelf();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.pop();
+      });
+    }
+  }
+
+  void _collectSelf() {
+    serverStore.fileBrowsing.collectFile(
+      widget.sessionId,
+      widget.directory,
+      OpenFileEntry(
+        path: widget.path,
+        scrollOffset: _scrollCtl.hasClients ? _scrollCtl.position.pixels : 0,
+        wrap: _wrap,
+        mdShowSource: _mdShowSource,
+        hadContent: _file != null,
+      ),
+    );
+  }
+
+  void _collapse() {
+    final store = serverStore.fileBrowsing;
+    store.beginCollapse(widget.sessionId, widget.directory);
+    _collectSelf();
+    context.pop();
+  }
+
+  void _scheduleScrollRestore() {
+    if (_pendingScrollRestore == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final pending = _pendingScrollRestore;
+      _pendingScrollRestore = null;
+      if (pending == null || !_scrollCtl.hasClients) return;
+      final pos = _scrollCtl.position;
+      _scrollCtl.jumpTo(
+        pending.clamp(pos.minScrollExtent, pos.maxScrollExtent).toDouble(),
+      );
+    });
   }
 
   Future<void> _download() async {
@@ -83,7 +159,13 @@ class _FileViewScreenState extends State<FileViewScreen> {
         },
         cancelToken: token,
       );
-      if (!_file!.isBinary) _loadDiff();
+      serverStore.fileBrowsing.cacheContent(
+        widget.sessionId,
+        widget.directory,
+        widget.path,
+        _file!,
+      );
+      _scheduleScrollRestore();
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) return;
       _error = e;
@@ -99,8 +181,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 
   Future<void> _loadDiff() async {
+    final c = serverStore.client;
+    if (c == null) return;
     try {
-      final diffs = await serverStore.client!.diff(
+      final diffs = await c.diff(
         widget.sessionId,
         directory: widget.directory,
       );
@@ -142,6 +226,13 @@ class _FileViewScreenState extends State<FileViewScreen> {
           style: const TextStyle(fontSize: 16),
         ),
         actions: [
+          if (serverStore.fileBrowsing
+              .hasListAnchor(widget.sessionId, widget.directory))
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+              tooltip: l(context).fileCollapse,
+              onPressed: _collapse,
+            ),
           if (_isMarkdown)
             TextButton(
               onPressed: () => setState(() => _mdShowSource = !_mdShowSource),
@@ -280,6 +371,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
         sessionId: widget.sessionId,
         path: widget.path,
         directory: widget.directory,
+        scrollController: _scrollCtl,
       );
     }
     if (!f.isBinary) {
@@ -287,6 +379,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
         content: f.text!,
         language: languageForPath(widget.path),
         wrap: _wrap,
+        scrollController: _scrollCtl,
       );
     }
     return BinaryView(

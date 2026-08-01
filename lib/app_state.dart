@@ -19,6 +19,8 @@ final ModelHideStore modelHideStore = ModelHideStore();
 final DefaultAgentModelStore defaultAgentModelStore = DefaultAgentModelStore();
 final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 final ValueNotifier<Locale?> localeMode = ValueNotifier(null);
+final RouteObserver<PageRoute<dynamic>> fileRouteObserver =
+    RouteObserver<PageRoute<dynamic>>();
 
 int _localeLogSeq = 0;
 

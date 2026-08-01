@@ -102,6 +102,7 @@
   "serverAdd": "Add",
   "fileTitle": "Files",
   "fileSearchHint": "Search files…",
+  "fileCollapse": "Collapse",
   "fileWorkspace": "Workspace",
   "fileEmptyDir": "Empty folder",
   "fileNoMatch": "No matching files",

@@ -15,12 +15,14 @@ class CodeView extends StatefulWidget {
   final String content;
   final String? language;
   final bool wrap;
+  final ScrollController? scrollController;
 
   const CodeView({
     super.key,
     required this.content,
     this.language,
     required this.wrap,
+    this.scrollController,
   });
 
   @override
@@ -131,6 +133,7 @@ class _CodeViewState extends State<CodeView> {
     }
 
     final listView = ListView.builder(
+      controller: widget.scrollController,
       padding: const EdgeInsets.only(left: _padLeft, right: _padRight, top: 8, bottom: 8),
       itemCount: _lines.length,
       itemBuilder: rowBuilder,

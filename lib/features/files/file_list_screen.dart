@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/net/net_error.dart';
+import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -11,18 +12,20 @@ class FileListScreen extends StatefulWidget {
   final String sessionId;
   final String? directory;
   final String? initialPath;
+  final FileListRestore? restore;
   const FileListScreen({
     super.key,
     required this.sessionId,
     this.directory,
     this.initialPath,
+    this.restore,
   });
 
   @override
   State<FileListScreen> createState() => _FileListScreenState();
 }
 
-class _FileListScreenState extends State<FileListScreen> {
+class _FileListScreenState extends State<FileListScreen> with RouteAware {
   String _path = '';
   List<FileNode> _nodes = [];
   bool _loading = true;
@@ -30,21 +33,103 @@ class _FileListScreenState extends State<FileListScreen> {
   String _query = '';
   final _searchCtl = TextEditingController();
   final _crumbScrollCtl = ScrollController();
+  final _scrollCtl = ScrollController();
   String? _lastCrumbPath;
   bool _searchExpanded = false;
+  bool _restoring = false;
+  bool _poppingForCollapse = false;
+  double? _pendingScrollRestore;
 
   @override
   void initState() {
     super.initState();
     _path = widget.initialPath ?? '';
-    _load();
+    serverStore.fileBrowsing
+        .registerListAnchor(widget.sessionId, widget.directory);
+    final r = widget.restore;
+    if (r != null) {
+      _restoring = true;
+      _searchExpanded = r.searchExpanded;
+      _query = r.searchQuery;
+      _searchCtl.text = r.searchQuery;
+      _pendingScrollRestore = r.scrollOffset;
+      if (r.searchQuery.isNotEmpty) {
+        _search(r.searchQuery);
+      } else {
+        _load();
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _restoring = false;
+      });
+    } else {
+      _load();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) fileRouteObserver.subscribe(this, route);
   }
 
   @override
   void dispose() {
+    fileRouteObserver.unsubscribe(this);
+    serverStore.fileBrowsing
+        .unregisterListAnchor(widget.sessionId, widget.directory);
     _searchCtl.dispose();
     _crumbScrollCtl.dispose();
+    _scrollCtl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didPopNext() {
+    final store = serverStore.fileBrowsing;
+    if (store.isCollapsing(widget.sessionId, widget.directory)) {
+      _collectSelf();
+      _poppingForCollapse = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.pop();
+      });
+    }
+  }
+
+  double get _listScrollOffset =>
+      _scrollCtl.hasClients ? _scrollCtl.position.pixels : 0;
+
+  void _collectSelf() {
+    serverStore.fileBrowsing.collectList(
+      widget.sessionId,
+      widget.directory,
+      path: _path,
+      scrollOffset: _listScrollOffset,
+      searchQuery: _query,
+      searchExpanded: _searchExpanded,
+    );
+  }
+
+  void _collapse() {
+    final store = serverStore.fileBrowsing;
+    store.beginCollapse(widget.sessionId, widget.directory);
+    _collectSelf();
+    _poppingForCollapse = true;
+    context.pop();
+  }
+
+  void _scheduleScrollRestore() {
+    if (_pendingScrollRestore == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final pending = _pendingScrollRestore;
+      _pendingScrollRestore = null;
+      if (pending == null || !_scrollCtl.hasClients) return;
+      final pos = _scrollCtl.position;
+      _scrollCtl.jumpTo(
+        pending.clamp(pos.minScrollExtent, pos.maxScrollExtent).toDouble(),
+      );
+    });
   }
 
   Future<void> _load() async {
@@ -65,6 +150,7 @@ class _FileListScreenState extends State<FileListScreen> {
       _error = e;
     } finally {
       if (mounted) setState(() => _loading = false);
+      if (_error == null) _scheduleScrollRestore();
     }
   }
 
@@ -106,6 +192,7 @@ class _FileListScreenState extends State<FileListScreen> {
       _error = e;
     } finally {
       if (mounted) setState(() => _loading = false);
+      if (_error == null) _scheduleScrollRestore();
     }
   }
 
@@ -137,7 +224,14 @@ class _FileListScreenState extends State<FileListScreen> {
     return PopScope(
       canPop: _path.isEmpty && !_searchExpanded,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
+        if (didPop) {
+          final store = serverStore.fileBrowsing;
+          if (!_poppingForCollapse &&
+              !store.isCollapsing(widget.sessionId, widget.directory)) {
+            store.clearSnapshot(widget.sessionId, widget.directory);
+          }
+          return;
+        }
         if (_searchExpanded) {
           _collapseSearch();
         } else {
@@ -173,6 +267,7 @@ class _FileListScreenState extends State<FileListScreen> {
                         : null,
                   ),
                   onChanged: (v) {
+                    if (_restoring) return;
                     if (v.isEmpty && _query.isNotEmpty) {
                       setState(() => _query = '');
                       _load();
@@ -186,6 +281,11 @@ class _FileListScreenState extends State<FileListScreen> {
                   style: const TextStyle(fontSize: 16),
                 ),
           actions: [
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+              tooltip: l(context).fileCollapse,
+              onPressed: _collapse,
+            ),
             if (!_searchExpanded)
               IconButton(
                 icon: const Icon(Icons.search, size: 20),
@@ -239,7 +339,8 @@ class _FileListScreenState extends State<FileListScreen> {
     if (_lastCrumbPath != _path) {
       _lastCrumbPath = _path;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_crumbScrollCtl.hasClients) {
+        if (_crumbScrollCtl.hasClients &&
+            _crumbScrollCtl.position.hasContentDimensions) {
           _crumbScrollCtl.jumpTo(_crumbScrollCtl.position.maxScrollExtent);
         }
       });
@@ -286,6 +387,7 @@ class _FileListScreenState extends State<FileListScreen> {
       );
     }
     return ListView.separated(
+      controller: _scrollCtl,
       itemCount: _nodes.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (_, i) {

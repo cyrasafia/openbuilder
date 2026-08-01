@@ -14,6 +14,7 @@ import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
+import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../l10n/gen/app_localizations.dart';
@@ -333,6 +334,35 @@ class _ConversationScreenState extends State<ConversationScreen> {
     });
   }
 
+  void _openFiles(BuildContext context, String directory) {
+    final store = serverStore.fileBrowsing;
+    store.resetCollapse();
+    final dir = Uri.encodeQueryComponent(directory);
+    final snap = store.snapshotFor(widget.sessionId, directory);
+    if (snap == null) {
+      context.push('/session/${widget.sessionId}/files?directory=$dir');
+      return;
+    }
+    context.push(
+      '/session/${widget.sessionId}/files'
+      '?directory=$dir'
+      '&path=${Uri.encodeQueryComponent(snap.listPath)}',
+      extra: FileListRestore(
+        scrollOffset: snap.listScrollOffset,
+        searchQuery: snap.searchQuery,
+        searchExpanded: snap.searchExpanded,
+      ),
+    );
+    for (final e in snap.openFiles) {
+      context.push(
+        '/session/${widget.sessionId}/file'
+        '?path=${Uri.encodeQueryComponent(e.path)}'
+        '&directory=$dir',
+        extra: e,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     serverStore.setActiveConversation(widget.sessionId);
@@ -398,10 +428,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             tooltip: l(context).fileTitle,
-            onPressed: () => context.push(
-              '/session/${widget.sessionId}/files'
-              '?directory=${Uri.encodeQueryComponent(directory)}',
-            ),
+            onPressed: () => _openFiles(context, directory),
           ),
           IconButton(
             icon: const Icon(Icons.compare),

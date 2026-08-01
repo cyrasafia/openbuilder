@@ -15,6 +15,7 @@ import '../net/net_error.dart';
 import '../notifications/notification_service.dart';
 import '../sse/sse_client.dart';
 import 'conversation_store.dart';
+import 'file_browsing_store.dart';
 
 const _tag = 'Server';
 
@@ -106,6 +107,9 @@ class ServerStore extends ChangeNotifier {
   final LinkedHashMap<String, ConversationStore> _conversations =
       LinkedHashMap<String, ConversationStore>();
   static const _kMaxConversations = 20;
+
+  /// File browsing snapshots + content cache (design-file-browser-collapse).
+  final FileBrowsingStore fileBrowsing = FileBrowsingStore();
 
   final ValueNotifier<List<CommandInfo>> commandsNotifier =
       ValueNotifier(const []);
@@ -1420,7 +1424,11 @@ class ServerStore extends ChangeNotifier {
         break;
       case 'session.deleted':
         final info = ev.properties['info'];
-        if (info is Map) _removeSession((info['id'] ?? '').toString());
+        if (info is Map) {
+          final sid = (info['id'] ?? '').toString();
+          _removeSession(sid);
+          fileBrowsing.removeSessionData(sid);
+        }
         break;
       case 'session.error':
         final sid = ev.properties['sessionID']?.toString();
@@ -1439,6 +1447,9 @@ class ServerStore extends ChangeNotifier {
         break;
       case 'message.updated':
         AppLogger.I.d(_tag, 'message.updated.raw role=${ev.properties['info']?['role']} id=${ev.properties['info']?['id']}');
+        final msgInfo = ev.properties['info'];
+        final msgSid = msgInfo is Map ? msgInfo['sessionID']?.toString() : null;
+        if (msgSid != null) fileBrowsing.invalidateContentForSession(msgSid);
         unawaited(_onMessageUpdated(ev.properties));
         return;
       case 'message.part.updated':
@@ -1446,6 +1457,7 @@ class ServerStore extends ChangeNotifier {
         final sid = part is Map ? part['sessionID']?.toString() : null;
         final delta = ev.properties['delta']?.toString();
         final ptype = part is Map ? part['type']?.toString() : null;
+        if (sid != null) fileBrowsing.invalidateContentForSession(sid);
         if (sid != null && part is Map) {
           final conv = ensureConversation(sid);
           if (conv != null) {

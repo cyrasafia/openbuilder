@@ -102,6 +102,7 @@
   "serverAdd": "添加",
   "fileTitle": "文件",
   "fileSearchHint": "搜索文件…",
+  "fileCollapse": "收起",
   "fileWorkspace": "工作区",
   "fileEmptyDir": "空目录",
   "fileNoMatch": "无匹配文件",

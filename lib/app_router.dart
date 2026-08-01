@@ -1,6 +1,8 @@
 import 'package:go_router/go_router.dart';
 
+import 'app_state.dart';
 import 'core/connection/connection_store.dart';
+import 'core/session/file_browsing_store.dart';
 import 'features/conversation/conversation_screen.dart';
 import 'features/files/diff_detail_screen.dart';
 import 'features/files/diff_list_screen.dart';
@@ -20,6 +22,7 @@ import 'features/shell/swipeable_shell_container.dart';
 GoRouter buildRouter(ConnectionStore store) {
   return GoRouter(
     refreshListenable: store,
+    observers: [fileRouteObserver],
     initialLocation: '/sessions',
     redirect: (context, state) {
       final loc = state.matchedLocation;
@@ -73,6 +76,7 @@ GoRouter buildRouter(ConnectionStore store) {
           sessionId: s.pathParameters['id']!,
           directory: s.uri.queryParameters['directory'],
           initialPath: s.uri.queryParameters['path'],
+          restore: s.extra is FileListRestore ? s.extra as FileListRestore : null,
         ),
       ),
       GoRoute(
@@ -81,6 +85,7 @@ GoRouter buildRouter(ConnectionStore store) {
           sessionId: s.pathParameters['id']!,
           path: s.uri.queryParameters['path'] ?? '',
           directory: s.uri.queryParameters['directory'],
+          restore: s.extra is OpenFileEntry ? s.extra as OpenFileEntry : null,
         ),
       ),
       GoRoute(

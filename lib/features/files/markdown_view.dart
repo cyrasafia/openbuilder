@@ -15,6 +15,7 @@ class MarkdownView extends StatelessWidget {
   final String sessionId;
   final String path;
   final String? directory;
+  final ScrollController? scrollController;
 
   const MarkdownView({
     super.key,
@@ -24,12 +25,18 @@ class MarkdownView extends StatelessWidget {
     required this.sessionId,
     required this.path,
     this.directory,
+    this.scrollController,
   });
 
   @override
   Widget build(BuildContext context) {
     if (showSource) {
-      return CodeView(content: content, language: 'markdown', wrap: wrap);
+      return CodeView(
+        content: content,
+        language: 'markdown',
+        wrap: wrap,
+        scrollController: scrollController,
+      );
     }
     return _preview(context);
   }
@@ -40,6 +47,7 @@ class MarkdownView extends StatelessWidget {
     final appColors = theme.extension<AppColors>()!;
     final mdBase = MarkdownStyleSheet.fromTheme(theme);
     return SingleChildScrollView(
+      controller: scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       child: MarkdownBody(
         data: content,
