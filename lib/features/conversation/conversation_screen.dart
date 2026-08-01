@@ -124,6 +124,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     serverStore.commandsNotifier.removeListener(_onCommandsChanged);
     serverStore.setActiveConversation(null);
     _itemPositionsListener.itemPositions.removeListener(_onPositions);
+    _positionsTrailing?.cancel();
     unawaited(_offsetSub?.cancel());
     _backToTopTarget.dispose();
     _farFromBottom.dispose();
@@ -178,7 +179,32 @@ class _ConversationScreenState extends State<ConversationScreen> {
   /// Reversed ScrollablePositionedList: index 0 is the visual bottom (newest).
   /// Driven by ItemPositionsListener (layout changes, scrolling) — evaluates
   /// both back-pagination triggering and the back-to-turn-top button target.
+  /// Time-based leading+trailing throttle (≥16ms): a per-frame cap is no
+  /// throttle on 120Hz displays. Unchanged-position frames (e.g. streaming
+  /// rebuilds while idle) early-exit on a cheap signature.
   void _onPositions() {
+    final now = DateTime.now();
+    final elapsed = now.difference(_lastPositionsEval);
+    if (elapsed >= _kPositionsThrottle) {
+      _lastPositionsEval = now;
+      _positionsTrailing?.cancel();
+      _positionsTrailing = null;
+      _evaluatePositions();
+    } else {
+      _positionsTrailing ??= Timer(_kPositionsThrottle - elapsed, () {
+        _positionsTrailing = null;
+        _lastPositionsEval = DateTime.now();
+        if (mounted) _evaluatePositions();
+      });
+    }
+  }
+
+  static const _kPositionsThrottle = Duration(milliseconds: 16);
+  DateTime _lastPositionsEval = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _positionsTrailing;
+  int _positionsSig = -1;
+
+  void _evaluatePositions() {
     if (!mounted) return;
     final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv == null) return;
@@ -186,6 +212,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final msgCount = msgs.length;
     final footer = _footerRows(conv);
     final positions = _itemPositionsListener.itemPositions.value;
+
+    final listBox = _listKey.currentContext?.findRenderObject();
+    final lh = (listBox is RenderBox && listBox.attached && listBox.hasSize)
+        ? listBox.size.height
+        : 0.0;
+    var sig = msgCount * 31 +
+        footer * 7 +
+        _headerRows(conv) * 3 +
+        (conv.hasMore ? 1 : 0) +
+        (conv.loadingEarlier ? 2 : 0) +
+        lh.round();
+    for (final p in positions) {
+      sig = sig * 31 +
+          p.index +
+          (p.itemLeadingEdge * 10).round() * 3 +
+          (p.itemTrailingEdge * 10).round() * 5;
+    }
+    if (sig == _positionsSig) return;
+    _positionsSig = sig;
 
     if (msgCount > 0 && conv.hasMore && !conv.loadingEarlier) {
       final lastMsgIndex = msgCount - 1 + footer;
@@ -198,15 +243,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
       }
     }
 
-    final listBox = _listKey.currentContext?.findRenderObject();
-    if (listBox is! RenderBox ||
-        !listBox.attached ||
-        !listBox.hasSize ||
-        listBox.size.height <= 0) {
+    if (listBox is! RenderBox || lh <= 0) {
       _setBackToTopTarget(null);
       return;
     }
-    final h = listBox.size.height;
+    final h = lh;
     _listHeight = h;
     _updateFarFromBottom();
     final eps = 1.0 / h;
@@ -488,7 +529,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 return const _TypingDots();
               }
               final m = index - footer;
-              if (m < msgs.length) return _message(msgs[m]);
+              if (m < msgs.length) {
+                final msg = msgs[m];
+                return _KeepAliveMessage(
+                  key: ValueKey(msg.info.id),
+                  child: _message(msg),
+                );
+              }
               if (conv.loadingEarlier) return const _LoadingEarlierRow();
               return _LoadEarlierErrorRow(onRetry: _maybeLoadEarlier);
             },
@@ -1015,9 +1062,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  MarkdownStyleSheet? _mdStyleUser;
+  MarkdownStyleSheet? _mdStyleAssistant;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _mdStyleUser = _buildMdStyle(user: true);
+    _mdStyleAssistant = _buildMdStyle(user: false);
+  }
+
   Widget _markdownPart(String data, {required bool user}) {
-    final p = _messagePalette(context, user);
-    final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
+    final sheet = user ? _mdStyleUser : _mdStyleAssistant;
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: MarkdownBody(
@@ -1025,48 +1081,54 @@ class _ConversationScreenState extends State<ConversationScreen> {
         selectable: true,
         softLineBreak: user,
         onTapLink: (text, href, title) => _openExternalLink(href),
-        styleSheet: mdBase.copyWith(
-          p: TextStyle(fontSize: 14, height: 1.45, color: p.text),
-          pPadding: const EdgeInsets.only(bottom: 6),
-          strong: TextStyle(fontWeight: FontWeight.w600, color: p.text),
-          h1: mdBase.h1?.copyWith(color: p.text),
-          h2: mdBase.h2?.copyWith(color: p.text),
-          h3: mdBase.h3?.copyWith(color: p.text),
-          h4: mdBase.h4?.copyWith(color: p.text),
-          h5: mdBase.h5?.copyWith(color: p.text),
-          h6: mdBase.h6?.copyWith(color: p.text),
-          em: mdBase.em?.copyWith(color: p.text),
-          del: mdBase.del?.copyWith(color: p.text),
-          tableHead: mdBase.tableHead?.copyWith(color: p.text),
-          tableBody: mdBase.tableBody?.copyWith(color: p.text),
-          tableBorder: TableBorder.all(color: p.border),
-          tableColumnWidth: const IntrinsicColumnWidth(),
-          tableScrollbarThumbVisibility: false,
-          horizontalRuleDecoration: BoxDecoration(
-            border: Border(top: BorderSide(color: p.border, width: 1)),
-          ),
-          a: TextStyle(color: p.link),
-          code: TextStyle(
-            fontSize: 13,
-            fontFamily: 'monospace',
-            color: p.code,
-          ),
-          codeblockDecoration: BoxDecoration(
-            color: p.codeBackground,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: p.border),
-          ),
-          codeblockPadding: const EdgeInsets.all(12),
-          listBullet: TextStyle(color: p.text),
-          blockquote: TextStyle(color: p.text, fontStyle: FontStyle.italic),
-          blockquoteDecoration: BoxDecoration(
-            border: Border(
-              left: BorderSide(color: p.quoteBar, width: 3),
-            ),
-          ),
-          blockquotePadding: const EdgeInsets.only(left: 12),
+        styleSheet: sheet ?? _buildMdStyle(user: user),
+      ),
+    );
+  }
+
+  MarkdownStyleSheet _buildMdStyle({required bool user}) {
+    final p = _messagePalette(context, user);
+    final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
+    return mdBase.copyWith(
+      p: TextStyle(fontSize: 14, height: 1.45, color: p.text),
+      pPadding: const EdgeInsets.only(bottom: 6),
+      strong: TextStyle(fontWeight: FontWeight.w600, color: p.text),
+      h1: mdBase.h1?.copyWith(color: p.text),
+      h2: mdBase.h2?.copyWith(color: p.text),
+      h3: mdBase.h3?.copyWith(color: p.text),
+      h4: mdBase.h4?.copyWith(color: p.text),
+      h5: mdBase.h5?.copyWith(color: p.text),
+      h6: mdBase.h6?.copyWith(color: p.text),
+      em: mdBase.em?.copyWith(color: p.text),
+      del: mdBase.del?.copyWith(color: p.text),
+      tableHead: mdBase.tableHead?.copyWith(color: p.text),
+      tableBody: mdBase.tableBody?.copyWith(color: p.text),
+      tableBorder: TableBorder.all(color: p.border),
+      tableColumnWidth: const IntrinsicColumnWidth(),
+      tableScrollbarThumbVisibility: false,
+      horizontalRuleDecoration: BoxDecoration(
+        border: Border(top: BorderSide(color: p.border, width: 1)),
+      ),
+      a: TextStyle(color: p.link),
+      code: TextStyle(
+        fontSize: 13,
+        fontFamily: 'monospace',
+        color: p.code,
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: p.codeBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: p.border),
+      ),
+      codeblockPadding: const EdgeInsets.all(12),
+      listBullet: TextStyle(color: p.text),
+      blockquote: TextStyle(color: p.text, fontStyle: FontStyle.italic),
+      blockquoteDecoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(color: p.quoteBar, width: 3),
         ),
       ),
+      blockquotePadding: const EdgeInsets.only(left: 12),
     );
   }
 
@@ -2534,6 +2596,26 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
         );
       },
     );
+  }
+}
+
+class _KeepAliveMessage extends StatefulWidget {
+  final Widget child;
+  const _KeepAliveMessage({super.key, required this.child});
+
+  @override
+  State<_KeepAliveMessage> createState() => _KeepAliveMessageState();
+}
+
+class _KeepAliveMessageState extends State<_KeepAliveMessage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }
 

@@ -265,21 +265,33 @@ class ConversationStore extends ChangeNotifier {
   /// newest-first (for the reversed ListView). Messages above an unbridged
   /// gap ([_segments] 1+) are in memory but not rendered — they become
   /// reachable only after the gap is bridged by upward scrolling.
+  int _messagesVersion = 0;
+  int _renderableVersion = -1;
+  List<DisplayMessage> _renderableCache = const [];
+
+  void _touchMessages() => _messagesVersion++;
+
   List<DisplayMessage> get renderableMessages {
+    if (_renderableVersion == _messagesVersion) return _renderableCache;
+    final List<DisplayMessage> result;
     if (_segments.isEmpty) {
-      return _messages.reversed
+      result = _messages.reversed
           .where((m) => !_isEmptyUser(m))
           .toList(growable: false);
+    } else {
+      final seg = _segments.first;
+      final list = <DisplayMessage>[];
+      for (var i = _messages.length - 1; i >= 0; i--) {
+        final m = _messages[i];
+        // Exclude empty real user messages (e.g. the server's synthetic
+        // shell-command message) so they don't render as empty bubbles.
+        if (!_isEmptyUser(m)) list.add(m);
+        if (m.info.id == seg.oldestId) break;
+      }
+      result = list;
     }
-    final seg = _segments.first;
-    final result = <DisplayMessage>[];
-    for (var i = _messages.length - 1; i >= 0; i--) {
-      final m = _messages[i];
-      // Exclude empty real user messages (e.g. the server's synthetic
-      // shell-command message) so they don't render as empty bubbles.
-      if (!_isEmptyUser(m)) result.add(m);
-      if (m.info.id == seg.oldestId) break;
-    }
+    _renderableCache = result;
+    _renderableVersion = _messagesVersion;
     return result;
   }
 
@@ -393,6 +405,7 @@ class ConversationStore extends ChangeNotifier {
   /// Remove optimistic messages — called when authoritative data replaces
   /// the local guess (reload, onMessageUpdated with a real user message).
   void _pruneOptimistic() {
+    _touchMessages();
     _messages.removeWhere((m) => m.optimistic);
   }
 
@@ -641,6 +654,7 @@ class ConversationStore extends ChangeNotifier {
   /// Upsert REST entries into `_messages` by id. Existing → replace info
   /// (REST authoritative) + field-level part merge. New → convert + insert.
   void _upsertEntries(List<MessageEntry> entries) {
+    if (entries.isNotEmpty) _touchMessages();
     for (final e in entries) {
       final existing = _findMessage(e.info.id);
       if (existing != null) {
@@ -667,6 +681,7 @@ class ConversationStore extends ChangeNotifier {
     final hi = entries.last.info.created;
     if (lo == null || hi == null || lo >= hi) return;
     final ids = {for (final e in entries) e.info.id};
+    _touchMessages();
     _messages.removeWhere((m) =>
         !m.optimistic &&
         m.info.created != null &&
@@ -807,6 +822,7 @@ class ConversationStore extends ChangeNotifier {
   /// Does NOT check the MA-2 guard (caller is responsible). Used by both
   /// offline fallback ([_loadCache]) and online preheat ([_maybePreheatCache]).
   void _loadCacheFromJson(Map<String, dynamic> j) {
+    _touchMessages();
     final msgs = j['messages'] as List? ?? [];
     _messages.clear();
     for (final m in msgs) {
@@ -1042,6 +1058,7 @@ class ConversationStore extends ChangeNotifier {
         }
         break;
     }
+    _touchMessages();
     notifyListeners();
   }
 
@@ -1168,6 +1185,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   void _sort() {
+    _touchMessages();
     _messages.sort((a, b) => (a.info.created ?? 0).compareTo(b.info.created ?? 0));
   }
 
