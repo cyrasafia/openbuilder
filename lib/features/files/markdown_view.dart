@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:go_router/go_router.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../ui/theme.dart';
 import 'code_view.dart';
+import 'file_browsing_container.dart';
 import 'highlight_theme.dart';
 
 class MarkdownView extends StatelessWidget {
@@ -86,12 +86,11 @@ class MarkdownView extends StatelessWidget {
             color: appColors.code,
           ),
           listBullet: TextStyle(color: baseColor),
-          blockquote: TextStyle(
-            color: baseColor,
-            fontStyle: FontStyle.italic,
-          ),
+          blockquote: TextStyle(color: baseColor, fontStyle: FontStyle.italic),
           blockquoteDecoration: BoxDecoration(
-            border: Border(left: BorderSide(color: appColors.quoteBar, width: 3)),
+            border: Border(
+              left: BorderSide(color: appColors.quoteBar, width: 3),
+            ),
           ),
           blockquotePadding: const EdgeInsets.only(left: 12),
         ),
@@ -108,11 +107,7 @@ class MarkdownView extends StatelessWidget {
       return;
     }
     final resolved = _resolvePath(href);
-    context.push(
-      '/session/$sessionId/file'
-      '?path=${Uri.encodeQueryComponent(resolved)}'
-      '&directory=${Uri.encodeQueryComponent(directory ?? '')}',
-    );
+    FileBrowsingContainer.maybeOf(context)?.openFile(resolved);
   }
 
   Future<void> _launchExternal(Uri uri) async {
@@ -125,8 +120,9 @@ class MarkdownView extends StatelessWidget {
     if (href.startsWith('/')) {
       return Uri.parse(href).normalizePath().path.replaceFirst('/', '');
     }
-    final parent =
-        path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+    final parent = path.contains('/')
+        ? path.substring(0, path.lastIndexOf('/'))
+        : '';
     final joined = parent.isEmpty ? href : '$parent/$href';
     return Uri.parse(joined).normalizePath().path;
   }
@@ -163,7 +159,12 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
     if (code.endsWith('\n')) code = code.substring(0, code.length - 1);
 
     final base = AppTheme.mono.copyWith(fontSize: 13);
-    final spans = HighlightPainter.highlight(code, lang ?? '', base, brightness);
+    final spans = HighlightPainter.highlight(
+      code,
+      lang ?? '',
+      base,
+      brightness,
+    );
     final inline = <InlineSpan>[];
     for (var i = 0; i < spans.length; i++) {
       if (i > 0) inline.add(TextSpan(text: '\n', style: base));

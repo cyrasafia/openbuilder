@@ -11,6 +11,7 @@ import '../../ui/theme.dart';
 import 'binary_view.dart';
 import 'code_view.dart';
 import 'download_policy.dart';
+import 'file_browsing_container.dart';
 import 'highlight_theme.dart';
 import 'image_view.dart';
 import 'markdown_view.dart';
@@ -32,7 +33,7 @@ class FileViewScreen extends StatefulWidget {
   State<FileViewScreen> createState() => _FileViewScreenState();
 }
 
-class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
+class _FileViewScreenState extends State<FileViewScreen> {
   late final DownloadPolicy _policy = inferDownloadPolicy(widget.path);
 
   StreamedFile? _file;
@@ -55,8 +56,11 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
       _wrap = r.wrap;
       _mdShowSource = r.mdShowSource;
       _pendingScrollRestore = r.scrollOffset;
-      final cached = serverStore.fileBrowsing
-          .cachedContent(widget.sessionId, widget.directory, widget.path);
+      final cached = serverStore.fileBrowsing.cachedContent(
+        widget.sessionId,
+        widget.directory,
+        widget.path,
+      );
       if (cached != null) {
         _file = cached;
         _scheduleScrollRestore();
@@ -68,30 +72,23 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
     if (_policy == DownloadPolicy.immediate) _download();
   }
 
+  FileBrowsingContainerState? _container;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final route = ModalRoute.of(context);
-    if (route is PageRoute) fileRouteObserver.subscribe(this, route);
+    _container = FileBrowsingContainer.maybeOf(context);
+    _container?.registerCollector(this, _collectSelf);
+    _container?.registerFile(widget.path);
   }
 
   @override
   void dispose() {
-    fileRouteObserver.unsubscribe(this);
+    _container?.unregisterCollector(this);
+    _container?.unregisterFile(widget.path);
     _cancelToken?.cancel();
     _scrollCtl.dispose();
     super.dispose();
-  }
-
-  @override
-  void didPopNext() {
-    final store = serverStore.fileBrowsing;
-    if (store.isCollapsing(widget.sessionId, widget.directory)) {
-      _collectSelf();
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) context.pop();
-      });
-    }
   }
 
   void _collectSelf() {
@@ -109,10 +106,7 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
   }
 
   void _collapse() {
-    final store = serverStore.fileBrowsing;
-    store.beginCollapse(widget.sessionId, widget.directory);
-    _collectSelf();
-    context.pop();
+    _container?.collapse();
   }
 
   void _scheduleScrollRestore() {
@@ -176,7 +170,9 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
       // download — a later _download() (retry/open) cancels this token and
       // supersedes it; letting the superseded call clear the flag would drop
       // the progress UI mid-download.
-      if (mounted && _cancelToken == token) setState(() => _downloading = false);
+      if (mounted && _cancelToken == token) {
+        setState(() => _downloading = false);
+      }
     }
   }
 
@@ -184,11 +180,10 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
     final c = serverStore.client;
     if (c == null) return;
     try {
-      final diffs = await c.diff(
-        widget.sessionId,
-        directory: widget.directory,
-      );
-      if (mounted) setState(() => _hasDiff = diffs.any((d) => d.file == widget.path));
+      final diffs = await c.diff(widget.sessionId, directory: widget.directory);
+      if (mounted) {
+        setState(() => _hasDiff = diffs.any((d) => d.file == widget.path));
+      }
     } catch (_) {
       // diff is best-effort; absence just hides the menu item
     }
@@ -226,13 +221,6 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
           style: const TextStyle(fontSize: 16),
         ),
         actions: [
-          if (serverStore.fileBrowsing
-              .hasListAnchor(widget.sessionId, widget.directory))
-            IconButton(
-              icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-              tooltip: l(context).fileCollapse,
-              onPressed: _collapse,
-            ),
           if (_isMarkdown)
             TextButton(
               onPressed: () => setState(() => _mdShowSource = !_mdShowSource),
@@ -240,6 +228,11 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
                 _mdShowSource ? l(context).filePreview : l(context).fileSource,
               ),
             ),
+          IconButton(
+            icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+            tooltip: l(context).fileCollapse,
+            onPressed: _collapse,
+          ),
           PopupMenuButton<_MenuAction>(
             icon: const Icon(Icons.more_vert),
             onSelected: _onMenuAction,
@@ -283,8 +276,7 @@ class _FileViewScreenState extends State<FileViewScreen> with RouteAware {
             else
               const CircularProgressIndicator(),
             const SizedBox(height: 16),
-            if (_progress != null)
-              Text('${(_progress! * 100).round()}%'),
+            if (_progress != null) Text('${(_progress! * 100).round()}%'),
             if (_progress != null) const SizedBox(height: 16),
             TextButton(
               onPressed: _cancelDownload,

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/net/net_error.dart';
@@ -7,6 +6,7 @@ import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import 'file_browsing_container.dart';
 
 class FileListScreen extends StatefulWidget {
   final String sessionId;
@@ -25,7 +25,7 @@ class FileListScreen extends StatefulWidget {
   State<FileListScreen> createState() => _FileListScreenState();
 }
 
-class _FileListScreenState extends State<FileListScreen> with RouteAware {
+class _FileListScreenState extends State<FileListScreen> {
   String _path = '';
   List<FileNode> _nodes = [];
   bool _loading = true;
@@ -37,15 +37,12 @@ class _FileListScreenState extends State<FileListScreen> with RouteAware {
   String? _lastCrumbPath;
   bool _searchExpanded = false;
   bool _restoring = false;
-  bool _poppingForCollapse = false;
   double? _pendingScrollRestore;
 
   @override
   void initState() {
     super.initState();
     _path = widget.initialPath ?? '';
-    serverStore.fileBrowsing
-        .registerListAnchor(widget.sessionId, widget.directory);
     final r = widget.restore;
     if (r != null) {
       _restoring = true;
@@ -66,34 +63,36 @@ class _FileListScreenState extends State<FileListScreen> with RouteAware {
     }
   }
 
+  FileBrowsingContainerState? _container;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final route = ModalRoute.of(context);
-    if (route is PageRoute) fileRouteObserver.subscribe(this, route);
+    _container = FileBrowsingContainer.maybeOf(context);
+    _container?.registerCollector(this, _collectSelf);
+    _container?.registerBackInterceptor(_interceptBack);
   }
 
   @override
   void dispose() {
-    fileRouteObserver.unsubscribe(this);
-    serverStore.fileBrowsing
-        .unregisterListAnchor(widget.sessionId, widget.directory);
+    _container?.unregisterCollector(this);
+    _container?.unregisterBackInterceptor(_interceptBack);
     _searchCtl.dispose();
     _crumbScrollCtl.dispose();
     _scrollCtl.dispose();
     super.dispose();
   }
 
-  @override
-  void didPopNext() {
-    final store = serverStore.fileBrowsing;
-    if (store.isCollapsing(widget.sessionId, widget.directory)) {
-      _collectSelf();
-      _poppingForCollapse = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) context.pop();
-      });
+  bool _interceptBack() {
+    if (_searchExpanded) {
+      _collapseSearch();
+      return true;
     }
+    if (_path.isNotEmpty) {
+      _goUp();
+      return true;
+    }
+    return false;
   }
 
   double get _listScrollOffset =>
@@ -111,11 +110,7 @@ class _FileListScreenState extends State<FileListScreen> with RouteAware {
   }
 
   void _collapse() {
-    final store = serverStore.fileBrowsing;
-    store.beginCollapse(widget.sessionId, widget.directory);
-    _collectSelf();
-    _poppingForCollapse = true;
-    context.pop();
+    _container?.collapse();
   }
 
   void _scheduleScrollRestore() {
@@ -221,86 +216,69 @@ class _FileListScreenState extends State<FileListScreen> with RouteAware {
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: _path.isEmpty && !_searchExpanded,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) {
-          final store = serverStore.fileBrowsing;
-          if (!_poppingForCollapse &&
-              !store.isCollapsing(widget.sessionId, widget.directory)) {
-            store.clearSnapshot(widget.sessionId, widget.directory);
-          }
-          return;
-        }
-        if (_searchExpanded) {
-          _collapseSearch();
-        } else {
-          _goUp();
-        }
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          leading: _searchExpanded
-              ? IconButton(
-                  icon: const Icon(Icons.arrow_back, size: 20),
-                  tooltip: l(context).fileSearchHint,
-                  onPressed: _collapseSearch,
-                )
-              : null,
-          title: _searchExpanded
-              ? TextField(
-                  controller: _searchCtl,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    hintText: l(context).fileSearchHint,
-                    isDense: true,
-                    border: InputBorder.none,
-                    suffixIcon: _searchCtl.text.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.close, size: 18),
-                            onPressed: () {
-                              _searchCtl.clear();
-                              setState(() => _query = '');
-                              _load();
-                            },
-                          )
-                        : null,
-                  ),
-                  onChanged: (v) {
-                    if (_restoring) return;
-                    if (v.isEmpty && _query.isNotEmpty) {
-                      setState(() => _query = '');
-                      _load();
-                    } else if (v.isNotEmpty) {
-                      _search(v);
-                    }
-                  },
-                )
-              : Text(
-                  l(context).fileTitle,
-                  style: const TextStyle(fontSize: 16),
+    return Scaffold(
+      appBar: AppBar(
+        leading: _searchExpanded
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back, size: 20),
+                tooltip: l(context).fileSearchHint,
+                onPressed: _collapseSearch,
+              )
+            : IconButton(
+                icon: const Icon(Icons.arrow_back, size: 20),
+                onPressed: () => _container?.handleBack(),
+              ),
+        title: _searchExpanded
+            ? TextField(
+                controller: _searchCtl,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: l(context).fileSearchHint,
+                  isDense: true,
+                  border: InputBorder.none,
+                  suffixIcon: _searchCtl.text.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () {
+                            _searchCtl.clear();
+                            setState(() => _query = '');
+                            _load();
+                          },
+                        )
+                      : null,
                 ),
-          actions: [
+                onChanged: (v) {
+                  if (_restoring) return;
+                  if (v.isEmpty && _query.isNotEmpty) {
+                    setState(() => _query = '');
+                    _load();
+                  } else if (v.isNotEmpty) {
+                    _search(v);
+                  }
+                },
+              )
+            : Text(l(context).fileTitle, style: const TextStyle(fontSize: 16)),
+        actions: [
+          if (!_searchExpanded)
+            IconButton(
+              icon: const Icon(Icons.search, size: 20),
+              tooltip: l(context).fileSearchHint,
+              onPressed: () => setState(() => _searchExpanded = true),
+            ),
+          if (!_searchExpanded)
             IconButton(
               icon: const Icon(Icons.keyboard_arrow_down, size: 20),
               tooltip: l(context).fileCollapse,
               onPressed: _collapse,
             ),
-            if (!_searchExpanded)
-              IconButton(
-                icon: const Icon(Icons.search, size: 20),
-                tooltip: l(context).fileSearchHint,
-                onPressed: () => setState(() => _searchExpanded = true),
-              ),
-          ],
-        ),
-        body: Column(
-          children: [
-            if (_query.isEmpty) _breadcrumb(),
-            const Divider(height: 1),
-            Expanded(child: _body()),
-          ],
-        ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (_query.isEmpty) _breadcrumb(),
+          const Divider(height: 1),
+          Expanded(child: _body()),
+        ],
       ),
     );
   }
@@ -425,11 +403,7 @@ class _FileListScreenState extends State<FileListScreen> with RouteAware {
               setState(() => _path = n.path);
               _load();
             } else {
-              context.push(
-                '/session/${widget.sessionId}/file'
-                '?path=${Uri.encodeQueryComponent(n.path)}'
-                '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
-              );
+              _container?.openFile(n.path);
             }
           },
         );

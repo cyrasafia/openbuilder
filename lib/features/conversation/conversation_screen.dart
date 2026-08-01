@@ -14,7 +14,6 @@ import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
-import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../l10n/gen/app_localizations.dart';
@@ -46,7 +45,8 @@ class ConversationScreen extends StatefulWidget {
   Color border,
   Color quoteBar,
   Color codeBackground,
-}) _messagePalette(BuildContext context, bool user) {
+})
+_messagePalette(BuildContext context, bool user) {
   final theme = Theme.of(context);
   final a = theme.extension<AppColors>()!;
   if (user) {
@@ -217,14 +217,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final lh = (listBox is RenderBox && listBox.attached && listBox.hasSize)
         ? listBox.size.height
         : 0.0;
-    var sig = msgCount * 31 +
+    var sig =
+        msgCount * 31 +
         footer * 7 +
         _headerRows(conv) * 3 +
         (conv.hasMore ? 1 : 0) +
         (conv.loadingEarlier ? 2 : 0) +
         lh.round();
     for (final p in positions) {
-      sig = sig * 31 +
+      sig =
+          sig * 31 +
           p.index +
           (p.itemLeadingEdge * 10).round() * 3 +
           (p.itemTrailingEdge * 10).round() * 5;
@@ -295,8 +297,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           final hiddenBottom = posB == null
               ? null
               : math.max(0.0, -posB.itemLeadingEdge) * h;
-          final longEnough =
-              (hiddenTop != null && hiddenBottom != null)
+          final longEnough = (hiddenTop != null && hiddenBottom != null)
               ? hiddenTop + hiddenBottom >= h
               : (hiddenTop == null && hiddenBottom == null)
               ? true
@@ -362,8 +363,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (!mounted) return;
         final c = serverStore.conversationForRead(widget.sessionId);
         if (c == null || !c.hasMore || c.loadingEarlier) return;
-        final lastMsgIndex =
-            c.renderableMessages.length - 1 + _footerRows(c);
+        final lastMsgIndex = c.renderableMessages.length - 1 + _footerRows(c);
         var maxIndex = -1;
         for (final p in _itemPositionsListener.itemPositions.value) {
           if (p.index > maxIndex) maxIndex = p.index;
@@ -380,28 +380,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     store.resetCollapse();
     final dir = Uri.encodeQueryComponent(directory);
     final snap = store.snapshotFor(widget.sessionId, directory);
-    if (snap == null) {
-      context.push('/session/${widget.sessionId}/files?directory=$dir');
-      return;
-    }
     context.push(
-      '/session/${widget.sessionId}/files'
-      '?directory=$dir'
-      '&path=${Uri.encodeQueryComponent(snap.listPath)}',
-      extra: FileListRestore(
-        scrollOffset: snap.listScrollOffset,
-        searchQuery: snap.searchQuery,
-        searchExpanded: snap.searchExpanded,
-      ),
+      '/session/${widget.sessionId}/files?directory=$dir',
+      extra: snap,
     );
-    for (final e in snap.openFiles) {
-      context.push(
-        '/session/${widget.sessionId}/file'
-        '?path=${Uri.encodeQueryComponent(e.path)}'
-        '&directory=$dir',
-        extra: e,
-      );
-    }
   }
 
   @override
@@ -577,7 +559,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 _CommandHints(
                   query: _ctl.text,
                   commands: serverStore.commandsNotifier.value,
-                  loading: serverStore.commandsRefreshing &&
+                  loading:
+                      serverStore.commandsRefreshing &&
                       serverStore.commandsNotifier.value.isEmpty,
                   onPick: _pickCommand,
                 ),
@@ -604,8 +587,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   // the next `/` input rather than hammering a flaky server.
                   if (mode &&
                       !_cmdMode &&
-                      (!_cmdRefreshTriggered ||
-                          serverStore.commandsDegraded)) {
+                      (!_cmdRefreshTriggered || serverStore.commandsDegraded)) {
                     _cmdRefreshTriggered = true;
                     _triggerCommandRefresh();
                   }
@@ -1052,7 +1034,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return _markdownPart(p.text, user: user);
       case 'reasoning':
         if (!showThinking.value) return const SizedBox.shrink();
-        return _Reasoning(key: PageStorageKey(p.id), text: p.text, partId: p.id);
+        return _Reasoning(
+          key: PageStorageKey(p.id),
+          text: p.text,
+          partId: p.id,
+        );
       case 'tool':
         return _ToolChip(key: PageStorageKey(p.id), part: p);
       case 'file':
@@ -1110,11 +1096,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         border: Border(top: BorderSide(color: p.border, width: 1)),
       ),
       a: TextStyle(color: p.link),
-      code: TextStyle(
-        fontSize: 13,
-        fontFamily: 'monospace',
-        color: p.code,
-      ),
+      code: TextStyle(fontSize: 13, fontFamily: 'monospace', color: p.code),
       codeblockDecoration: BoxDecoration(
         color: p.codeBackground,
         borderRadius: BorderRadius.circular(8),
@@ -1124,9 +1106,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       listBullet: TextStyle(color: p.text),
       blockquote: TextStyle(color: p.text, fontStyle: FontStyle.italic),
       blockquoteDecoration: BoxDecoration(
-        border: Border(
-          left: BorderSide(color: p.quoteBar, width: 3),
-        ),
+        border: Border(left: BorderSide(color: p.quoteBar, width: 3)),
       ),
       blockquotePadding: const EdgeInsets.only(left: 12),
     );
@@ -1138,14 +1118,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final uri = Uri.tryParse(href);
     if (uri == null) return;
     try {
-      final ok = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!ok && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l(context).linkOpenFailed)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
       }
     } catch (e) {
       if (mounted) {
@@ -1345,8 +1322,7 @@ class _FooterPanelState extends State<_FooterPanel> {
 
 void _syncReversedScroll(BuildContext context, GlobalKey key, double dv) {
   if (dv == 0) return;
-  final h =
-      (key.currentContext?.findRenderObject() as RenderBox?)?.size.height;
+  final h = (key.currentContext?.findRenderObject() as RenderBox?)?.size.height;
   if (h == null || h <= 0) return;
   final pos = context.findAncestorStateOfType<ScrollableState>()?.position;
   if (pos == null || !pos.hasContentDimensions) return;
@@ -1393,8 +1369,9 @@ class _ReasoningState extends State<_Reasoning>
     duration: const Duration(milliseconds: 150),
     vsync: this,
   )..addListener(_onAnimate);
-  late final Animation<double> _curved =
-      _ctrl.drive(CurveTween(curve: Curves.easeOut));
+  late final Animation<double> _curved = _ctrl.drive(
+    CurveTween(curve: Curves.easeOut),
+  );
 
   Object get _expansionStorageKey => 'reasoning_expanded:${widget.partId}';
 
@@ -1402,7 +1379,10 @@ class _ReasoningState extends State<_Reasoning>
   void initState() {
     super.initState();
     _expanded =
-        PageStorage.maybeOf(context)?.readState(context, identifier: _expansionStorageKey) == true;
+        PageStorage.maybeOf(
+          context,
+        )?.readState(context, identifier: _expansionStorageKey) ==
+        true;
     if (_expanded) {
       _lastV = 1.0;
       _ctrl.value = 1.0;
@@ -1430,7 +1410,9 @@ class _ReasoningState extends State<_Reasoning>
         _ctrl.reverse();
       }
     });
-    PageStorage.maybeOf(context)?.writeState(context, _expanded, identifier: _expansionStorageKey);
+    PageStorage.maybeOf(
+      context,
+    )?.writeState(context, _expanded, identifier: _expansionStorageKey);
   }
 
   @override
@@ -1449,9 +1431,9 @@ class _ReasoningState extends State<_Reasoning>
         onLongPress: () {
           if (widget.text.isEmpty) return;
           Clipboard.setData(ClipboardData(text: widget.text));
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l(context).copied)),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(l(context).copied)));
         },
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1460,24 +1442,25 @@ class _ReasoningState extends State<_Reasoning>
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(
-                mainAxisSize:
-                    _expanded ? MainAxisSize.max : MainAxisSize.min,
+                mainAxisSize: _expanded ? MainAxisSize.max : MainAxisSize.min,
                 children: [
                   Icon(Icons.psychology_outlined, size: 14, color: muted),
                   const SizedBox(width: 6),
-                  Builder(builder: (context) {
-                    final label = Text(
-                      l(context).reasoning,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w400,
-                        color: muted,
-                      ),
-                    );
-                    return _expanded ? Flexible(child: label) : label;
-                  }),
+                  Builder(
+                    builder: (context) {
+                      final label = Text(
+                        l(context).reasoning,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w400,
+                          color: muted,
+                        ),
+                      );
+                      return _expanded ? Flexible(child: label) : label;
+                    },
+                  ),
                   const SizedBox(width: 6),
                   Icon(
                     _expanded ? Icons.expand_less : Icons.expand_more,
@@ -1528,8 +1511,9 @@ class _ToolChipState extends State<_ToolChip>
     duration: const Duration(milliseconds: 150),
     vsync: this,
   )..addListener(_onAnimate);
-  late final Animation<double> _curved =
-      _ctrl.drive(CurveTween(curve: Curves.easeOut));
+  late final Animation<double> _curved = _ctrl.drive(
+    CurveTween(curve: Curves.easeOut),
+  );
 
   Object get _expansionStorageKey => 'toolchip_expanded:${widget.part.id}';
 
@@ -1537,7 +1521,10 @@ class _ToolChipState extends State<_ToolChip>
   void initState() {
     super.initState();
     _expanded =
-        PageStorage.maybeOf(context)?.readState(context, identifier: _expansionStorageKey) == true;
+        PageStorage.maybeOf(
+          context,
+        )?.readState(context, identifier: _expansionStorageKey) ==
+        true;
     if (_expanded) {
       _lastV = 1.0;
       _ctrl.value = 1.0;
@@ -1565,7 +1552,9 @@ class _ToolChipState extends State<_ToolChip>
         _ctrl.reverse();
       }
     });
-    PageStorage.maybeOf(context)?.writeState(context, _expanded, identifier: _expansionStorageKey);
+    PageStorage.maybeOf(
+      context,
+    )?.writeState(context, _expanded, identifier: _expansionStorageKey);
     final p = widget.part;
     AppLogger.I.d(
       'ToolChip',
@@ -1644,8 +1633,7 @@ class _ToolChipState extends State<_ToolChip>
                       final headerW =
                           _headerKey.currentContext?.size?.width ?? 0.0;
                       return SizedBox(
-                        width: headerW +
-                            (c.maxWidth - headerW) * _curved.value,
+                        width: headerW + (c.maxWidth - headerW) * _curved.value,
                         child: SizeTransition(
                           sizeFactor: _curved,
                           alignment: Alignment.topCenter,
@@ -1755,9 +1743,9 @@ class _ToolChipState extends State<_ToolChip>
     }
     if (buf.isEmpty) return;
     Clipboard.setData(ClipboardData(text: buf.toString()));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(l(context).copied)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(l(context).copied)));
   }
 }
 
@@ -1765,7 +1753,11 @@ class _FileChip extends StatelessWidget {
   final DisplayPart part;
   final bool user;
   final bool isFirst;
-  const _FileChip({required this.part, this.user = false, this.isFirst = false});
+  const _FileChip({
+    required this.part,
+    this.user = false,
+    this.isFirst = false,
+  });
 
   bool get _isHttpUrl {
     final url = part.fileUrl;

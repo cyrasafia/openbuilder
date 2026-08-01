@@ -1,13 +1,12 @@
+import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import 'app_state.dart';
 import 'core/connection/connection_store.dart';
 import 'core/session/file_browsing_store.dart';
 import 'features/conversation/conversation_screen.dart';
 import 'features/files/diff_detail_screen.dart';
 import 'features/files/diff_list_screen.dart';
-import 'features/files/file_list_screen.dart';
-import 'features/files/file_view_screen.dart';
+import 'features/files/file_browsing_container.dart';
 import 'features/models/model_management_screen.dart';
 import 'features/projects/project_detail_screen.dart';
 import 'features/servers/server_form_screen.dart';
@@ -19,29 +18,36 @@ import 'features/shell/projects_tab.dart';
 import 'features/shell/sessions_tab.dart';
 import 'features/shell/swipeable_shell_container.dart';
 
+CustomTransitionPage<void> _slideUpPage(GoRouterState state, Widget child) {
+  return CustomTransitionPage(
+    key: state.pageKey,
+    child: child,
+    transitionsBuilder: (_, animation, _, child) => SlideTransition(
+      position: CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      ).drive(Tween(begin: const Offset(0, 1), end: Offset.zero)),
+      child: child,
+    ),
+  );
+}
+
 GoRouter buildRouter(ConnectionStore store) {
   return GoRouter(
     refreshListenable: store,
-    observers: [fileRouteObserver],
     initialLocation: '/sessions',
     redirect: (context, state) {
       final loc = state.matchedLocation;
-      final isPublic = loc == '/welcome' ||
-          loc == '/servers/new' ||
-          loc.endsWith('/edit');
+      final isPublic =
+          loc == '/welcome' || loc == '/servers/new' || loc.endsWith('/edit');
       if (store.isEmpty && !isPublic) return '/welcome';
       if (!store.isEmpty && loc == '/welcome') return '/sessions';
       return null;
     },
     routes: [
-      GoRoute(
-        path: '/welcome',
-        builder: (_, _) => const WelcomeScreen(),
-      ),
-      GoRoute(
-        path: '/servers',
-        builder: (_, _) => const ServersScreen(),
-      ),
+      GoRoute(path: '/welcome', builder: (_, _) => const WelcomeScreen()),
+      GoRoute(path: '/servers', builder: (_, _) => const ServersScreen()),
       GoRoute(
         path: '/servers/new',
         builder: (_, _) => const ServerFormScreen(),
@@ -72,20 +78,15 @@ GoRouter buildRouter(ConnectionStore store) {
       ),
       GoRoute(
         path: '/session/:id/files',
-        builder: (_, s) => FileListScreen(
-          sessionId: s.pathParameters['id']!,
-          directory: s.uri.queryParameters['directory'],
-          initialPath: s.uri.queryParameters['path'],
-          restore: s.extra is FileListRestore ? s.extra as FileListRestore : null,
-        ),
-      ),
-      GoRoute(
-        path: '/session/:id/file',
-        builder: (_, s) => FileViewScreen(
-          sessionId: s.pathParameters['id']!,
-          path: s.uri.queryParameters['path'] ?? '',
-          directory: s.uri.queryParameters['directory'],
-          restore: s.extra is OpenFileEntry ? s.extra as OpenFileEntry : null,
+        pageBuilder: (_, s) => _slideUpPage(
+          s,
+          FileBrowsingContainer(
+            sessionId: s.pathParameters['id']!,
+            directory: s.uri.queryParameters['directory'],
+            initial: s.extra is FileBrowsingSnapshot
+                ? s.extra as FileBrowsingSnapshot
+                : null,
+          ),
         ),
       ),
       GoRoute(

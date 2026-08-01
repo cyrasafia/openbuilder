@@ -19,8 +19,6 @@ final ModelHideStore modelHideStore = ModelHideStore();
 final DefaultAgentModelStore defaultAgentModelStore = DefaultAgentModelStore();
 final ValueNotifier<ThemeMode> themeMode = ValueNotifier(ThemeMode.system);
 final ValueNotifier<Locale?> localeMode = ValueNotifier(null);
-final RouteObserver<PageRoute<dynamic>> fileRouteObserver =
-    RouteObserver<PageRoute<dynamic>>();
 
 int _localeLogSeq = 0;
 
@@ -30,8 +28,8 @@ int _localeLogSeq = 0;
 /// Falls back to `en` for unsupported device locales — this effort adds
 /// English, so an unknown-locale user should see English rather than Chinese.
 Locale resolveActiveLocale() {
-  final chosen = localeMode.value ??
-      WidgetsBinding.instance.platformDispatcher.locale;
+  final chosen =
+      localeMode.value ?? WidgetsBinding.instance.platformDispatcher.locale;
   Locale result = const Locale('en');
   for (final s in const [Locale('zh'), Locale('en')]) {
     if (s.languageCode == chosen.languageCode) {
@@ -40,13 +38,17 @@ Locale resolveActiveLocale() {
     }
   }
   final pd = WidgetsBinding.instance.platformDispatcher;
-  AppLogger.I.i('Locale', '#${_localeLogSeq++} localeMode=${localeMode.value} '
-      'platformDispatcher.locale=${pd.locale} '
-      'platformDispatcher.locales=${pd.locales} '
-      'dart.io.Platform.localeName=${kIsWeb ? 'n/a(web)' : Platform.localeName} '
-      'chosen=$chosen resolved=$result');
+  AppLogger.I.i(
+    'Locale',
+    '#${_localeLogSeq++} localeMode=${localeMode.value} '
+        'platformDispatcher.locale=${pd.locale} '
+        'platformDispatcher.locales=${pd.locales} '
+        'dart.io.Platform.localeName=${kIsWeb ? 'n/a(web)' : Platform.localeName} '
+        'chosen=$chosen resolved=$result',
+  );
   return result;
 }
+
 final ValueNotifier<bool> showThinking = ValueNotifier(false);
 
 /// Resolve the persisted locale string. On native it reads from the durable
@@ -57,7 +59,9 @@ final ValueNotifier<bool> showThinking = ValueNotifier(false);
 /// otherwise re-selecting "System" could be resurrected by re-migration if
 /// the legacy `prefs.remove('locale')` failed to persist.
 Future<String?> resolvePersistedLocale(
-    SharedPreferences prefs, bool useFile) async {
+  SharedPreferences prefs,
+  bool useFile,
+) async {
   if (!useFile) return prefs.getString('locale');
   final fileValue = SyncSettings.I.getString('locale');
   if (fileValue != null) return fileValue;
@@ -116,9 +120,12 @@ Future<void> initSettings() async {
     // instead of showing stale-language text.
     serverStore.activeLoc = lookupAppLocalizations(resolveActiveLocale());
   });
-  showThinking.addListener(() => prefs.setBool('showThinking', showThinking.value));
   showThinking.addListener(
-      () => serverStore.reasoningVisibleInPreview = showThinking.value);
+    () => prefs.setBool('showThinking', showThinking.value),
+  );
+  showThinking.addListener(
+    () => serverStore.reasoningVisibleInPreview = showThinking.value,
+  );
 }
 
 /// Bind the active server in [connectionStore] to [serverStore] (connect on

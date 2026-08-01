@@ -3,9 +3,11 @@ import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/net/net_error.dart';
+import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import 'file_browsing_container.dart';
 
 class DiffDetailScreen extends StatefulWidget {
   final String sessionId;
@@ -22,7 +24,7 @@ class DiffDetailScreen extends StatefulWidget {
   State<DiffDetailScreen> createState() => _DiffDetailScreenState();
 }
 
-class _DiffDetailScreenState extends State<DiffDetailScreen> with RouteAware {
+class _DiffDetailScreenState extends State<DiffDetailScreen> {
   FileDiff? _diff;
   bool _loading = true;
   Object? _error;
@@ -31,29 +33,6 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> with RouteAware {
   void initState() {
     super.initState();
     _load();
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final route = ModalRoute.of(context);
-    if (route is PageRoute) fileRouteObserver.subscribe(this, route);
-  }
-
-  @override
-  void dispose() {
-    fileRouteObserver.unsubscribe(this);
-    super.dispose();
-  }
-
-  @override
-  void didPopNext() {
-    if (serverStore.fileBrowsing
-        .isCollapsing(widget.sessionId, widget.directory)) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) context.pop();
-      });
-    }
   }
 
   Future<void> _load() async {
@@ -80,6 +59,41 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> with RouteAware {
     }
   }
 
+  Future<void> _openFullFile() async {
+    final store = serverStore.fileBrowsing;
+    final container = store.containerFor<FileBrowsingContainerState>(
+      widget.sessionId,
+      widget.directory,
+    );
+    if (container != null) {
+      final popped = ModalRoute.of(context)?.popped;
+      Navigator.of(context, rootNavigator: true).pop();
+      await popped;
+      if (container.mounted) container.openFile(widget.path);
+      return;
+    }
+    final existing = store.snapshotFor(widget.sessionId, widget.directory);
+    final entry = OpenFileEntry(
+      path: widget.path,
+      scrollOffset: 0,
+      wrap: false,
+      mdShowSource: false,
+    );
+    if (existing != null) {
+      existing.openFiles.removeWhere((e) => e.path == entry.path);
+      existing.openFiles.add(entry);
+      if (existing.openFiles.length > FileBrowsingStore.maxOpenFiles) {
+        existing.openFiles.removeAt(0);
+      }
+    }
+    if (!mounted) return;
+    context.push(
+      '/session/${widget.sessionId}/files'
+      '?directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
+      extra: existing ?? FileBrowsingSnapshot(openFiles: [entry]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -102,13 +116,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> with RouteAware {
         ),
         actions: [
           TextButton(
-            onPressed: _diff == null
-                ? null
-                : () => context.push(
-                    '/session/${widget.sessionId}/file'
-                    '?path=${Uri.encodeQueryComponent(widget.path)}'
-                    '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
-                  ),
+            onPressed: _diff == null ? null : _openFullFile,
             child: Text(l(context).diffViewFullFile),
           ),
         ],

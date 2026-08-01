@@ -75,6 +75,30 @@ class FileBrowsingStore {
 
   final Map<String, int> _listAnchors = {};
 
+  final Map<String, Object> _containers = {};
+
+  void registerContainer(
+    String sessionId,
+    String? directory,
+    Object container,
+  ) {
+    _containers[_key(sessionId, directory)] = container;
+  }
+
+  void unregisterContainer(
+    String sessionId,
+    String? directory,
+    Object container,
+  ) {
+    final k = _key(sessionId, directory);
+    if (_containers[k] == container) _containers.remove(k);
+  }
+
+  T? containerFor<T>(String sessionId, String? directory) {
+    final c = _containers[_key(sessionId, directory)];
+    return c is T ? c : null;
+  }
+
   void registerListAnchor(String sessionId, String? directory) {
     final k = _key(sessionId, directory);
     _listAnchors[k] = (_listAnchors[k] ?? 0) + 1;
@@ -113,15 +137,21 @@ class FileBrowsingStore {
 
   void removeSessionData(String sessionId) {
     final prefix = '$sessionId|';
-    for (final k in _snapshots.keys.where((k) => k.startsWith(prefix)).toList()) {
+    for (final k
+        in _snapshots.keys.where((k) => k.startsWith(prefix)).toList()) {
       _snapshots.remove(k);
     }
     for (final k in _content.keys.where((k) => k.startsWith(prefix)).toList()) {
       final e = _content.remove(k);
       _contentBytes -= e?.bytes ?? 0;
     }
-    for (final k in _listAnchors.keys.where((k) => k.startsWith(prefix)).toList()) {
+    for (final k
+        in _listAnchors.keys.where((k) => k.startsWith(prefix)).toList()) {
       _listAnchors.remove(k);
+    }
+    for (final k
+        in _containers.keys.where((k) => k.startsWith(prefix)).toList()) {
+      _containers.remove(k);
     }
     if (_collapseKey?.startsWith(prefix) ?? false) resetCollapse();
   }

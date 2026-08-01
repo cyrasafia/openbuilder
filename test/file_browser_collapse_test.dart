@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_builder/app_state.dart';
 import 'package:open_builder/core/session/file_browsing_store.dart';
+import 'package:open_builder/features/files/file_browsing_container.dart';
 import 'package:open_builder/features/files/file_list_screen.dart';
 import 'package:open_builder/features/files/file_view_screen.dart';
 import 'package:open_builder/l10n/gen/app_localizations.dart';
@@ -10,7 +11,6 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 GoRouter _buildTestRouter() {
   return GoRouter(
     initialLocation: '/',
-    observers: [fileRouteObserver],
     routes: [
       GoRoute(
         path: '/',
@@ -18,20 +18,12 @@ GoRouter _buildTestRouter() {
       ),
       GoRoute(
         path: '/session/:id/files',
-        builder: (_, s) => FileListScreen(
+        builder: (_, s) => FileBrowsingContainer(
           sessionId: s.pathParameters['id']!,
           directory: s.uri.queryParameters['directory'],
-          initialPath: s.uri.queryParameters['path'],
-          restore: s.extra is FileListRestore ? s.extra as FileListRestore : null,
-        ),
-      ),
-      GoRoute(
-        path: '/session/:id/file',
-        builder: (_, s) => FileViewScreen(
-          sessionId: s.pathParameters['id']!,
-          path: s.uri.queryParameters['path'] ?? '',
-          directory: s.uri.queryParameters['directory'],
-          restore: s.extra is OpenFileEntry ? s.extra as OpenFileEntry : null,
+          initial: s.extra is FileBrowsingSnapshot
+              ? s.extra as FileBrowsingSnapshot
+              : null,
         ),
       ),
     ],
@@ -57,117 +49,170 @@ Future<void> _flush(WidgetTester tester) async {
   }
 }
 
+FileBrowsingSnapshot _seal(
+  String sid, {
+  String listPath = 'a/b',
+  List<OpenFileEntry> openFiles = const [],
+}) {
+  final store = serverStore.fileBrowsing;
+  store.beginCollapse(sid, '');
+  for (final e in openFiles.reversed) {
+    store.collectFile(sid, '', e);
+  }
+  store.collectList(
+    sid,
+    '',
+    path: listPath,
+    scrollOffset: 0,
+    searchQuery: '',
+    searchExpanded: false,
+  );
+  return store.snapshotFor(sid, '')!;
+}
+
 void main() {
-  testWidgets('collapse from file view pops whole chain and seals snapshot',
-      (tester) async {
-    final router = await _pumpApp(tester);
-    const sid = 'collapse-s1';
-    router.push('/session/$sid/files?directory=&path=a/b');
-    await _flush(tester);
-    router.push('/session/$sid/file?path=a/b/c.txt&directory=');
-    await _flush(tester);
-    expect(find.byType(FileViewScreen), findsOneWidget);
+  testWidgets(
+    'collapse from file view pops whole container and seals snapshot',
+    (tester) async {
+      final router = await _pumpApp(tester);
+      const sid = 'collapse-s1';
+      final snap = _seal(
+        sid,
+        openFiles: const [
+          OpenFileEntry(
+            path: 'a/b/c.txt',
+            scrollOffset: 0,
+            wrap: false,
+            mdShowSource: false,
+          ),
+        ],
+      );
+      router.push('/session/$sid/files?directory=', extra: snap);
+      await _flush(tester);
+      expect(find.byType(FileViewScreen), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
-    await _flush(tester);
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
+      await _flush(tester);
 
-    expect(find.text('home'), findsOneWidget);
-    expect(find.byType(FileListScreen), findsNothing);
-    final snap = serverStore.fileBrowsing.snapshotFor(sid, '');
-    expect(snap, isNotNull);
-    expect(snap!.listPath, 'a/b');
-    expect(snap.openFiles.map((e) => e.path).toList(), ['a/b/c.txt']);
-  });
+      expect(find.text('home'), findsOneWidget);
+      expect(find.byType(FileListScreen), findsNothing);
+      final sealed = serverStore.fileBrowsing.snapshotFor(sid, '');
+      expect(sealed, isNotNull);
+      expect(sealed!.listPath, 'a/b');
+      expect(sealed.openFiles.map((e) => e.path).toList(), ['a/b/c.txt']);
+    },
+  );
 
   testWidgets(
-      'collapse tapped on FileListScreen in subdirectory bypasses PopScope '
-      'and keeps the sealed snapshot', (tester) async {
-    final router = await _pumpApp(tester);
-    const sid = 'collapse-s2';
-    router.push('/session/$sid/files?directory=&path=a/b');
-    await _flush(tester);
-    expect(find.byType(FileListScreen), findsOneWidget);
+    'collapse tapped on FileListScreen in subdirectory pops container '
+    'and keeps the sealed snapshot',
+    (tester) async {
+      final router = await _pumpApp(tester);
+      const sid = 'collapse-s2';
+      final snap = _seal(sid);
+      router.push('/session/$sid/files?directory=', extra: snap);
+      await _flush(tester);
+      expect(find.byType(FileListScreen), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
-    await _flush(tester);
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
+      await _flush(tester);
 
-    expect(find.text('home'), findsOneWidget);
-    final snap = serverStore.fileBrowsing.snapshotFor(sid, '');
-    expect(snap, isNotNull);
-    expect(snap!.listPath, 'a/b');
-    expect(snap.openFiles, isEmpty);
-  });
+      expect(find.text('home'), findsOneWidget);
+      final sealed = serverStore.fileBrowsing.snapshotFor(sid, '');
+      expect(sealed, isNotNull);
+      expect(sealed!.listPath, 'a/b');
+      expect(sealed.openFiles, isEmpty);
+    },
+  );
 
-  testWidgets('system back at root list clears the sealed snapshot',
-      (tester) async {
+  testWidgets('system back at root list clears the sealed snapshot', (
+    tester,
+  ) async {
     final router = await _pumpApp(tester);
     const sid = 'collapse-s3';
-    final store = serverStore.fileBrowsing;
-    store.beginCollapse(sid, '');
-    store.collectList(sid, '',
-        path: 'x', scrollOffset: 0, searchQuery: '', searchExpanded: false);
-    expect(store.snapshotFor(sid, ''), isNotNull);
+    final snap = _seal(sid, listPath: '');
+    expect(serverStore.fileBrowsing.snapshotFor(sid, ''), isNotNull);
 
-    router.push('/session/$sid/files?directory=');
+    router.push('/session/$sid/files?directory=', extra: snap);
     await _flush(tester);
-    await tester.pageBack();
+    await tester.tap(find.byIcon(Icons.arrow_back));
     await _flush(tester);
 
     expect(find.text('home'), findsOneWidget);
-    expect(store.snapshotFor(sid, ''), isNull);
+    expect(serverStore.fileBrowsing.snapshotFor(sid, ''), isNull);
   });
 
-  testWidgets('collapse button hidden when chain has no list anchor',
-      (tester) async {
-    final router = await _pumpApp(tester);
-    const sid = 'collapse-s5';
-    router.push('/session/$sid/file?path=a/b/c.txt&directory=');
-    await _flush(tester);
-
-    expect(find.byType(FileViewScreen), findsOneWidget);
-    expect(find.byIcon(Icons.keyboard_arrow_down), findsNothing);
-  });
-
-  testWidgets('restore re-pushes list and open files from snapshot',
-      (tester) async {
+  testWidgets('restore builds list and open files from snapshot', (
+    tester,
+  ) async {
     final router = await _pumpApp(tester);
     const sid = 'collapse-s4';
     final store = serverStore.fileBrowsing;
-    final snap = store.snapshotFor(sid, '');
-    expect(snap, isNull);
-    store.beginCollapse(sid, '');
-    store.collectFile(
+    expect(store.snapshotFor(sid, ''), isNull);
+    final snap = _seal(
       sid,
-      '',
-      const OpenFileEntry(
-        path: 'a/b/c.txt',
-        scrollOffset: 10,
-        wrap: true,
-        mdShowSource: false,
-        hadContent: true,
-      ),
+      openFiles: const [
+        OpenFileEntry(
+          path: 'a/b/c.txt',
+          scrollOffset: 10,
+          wrap: true,
+          mdShowSource: false,
+          hadContent: true,
+        ),
+      ],
     );
-    store.collectList(sid, '',
-        path: 'a/b', scrollOffset: 5, searchQuery: '', searchExpanded: false);
 
-    final sealed = store.snapshotFor(sid, '')!;
-    router.push(
-      '/session/$sid/files?directory=&path=${Uri.encodeQueryComponent(sealed.listPath)}',
-      extra: FileListRestore(
-        scrollOffset: sealed.listScrollOffset,
-        searchQuery: sealed.searchQuery,
-        searchExpanded: sealed.searchExpanded,
-      ),
-    );
-    for (final e in sealed.openFiles) {
-      router.push(
-        '/session/$sid/file?path=${Uri.encodeQueryComponent(e.path)}&directory=',
-        extra: e,
-      );
-    }
+    router.push('/session/$sid/files?directory=', extra: snap);
     await _flush(tester);
 
     expect(find.byType(FileViewScreen), findsOneWidget);
     expect(find.byType(FileListScreen, skipOffstage: false), findsOneWidget);
+  });
+
+  testWidgets('openFile from list pushes detail with horizontal route', (
+    tester,
+  ) async {
+    final router = await _pumpApp(tester);
+    const sid = 'collapse-s5';
+    router.push('/session/$sid/files?directory=');
+    await _flush(tester);
+    expect(find.byType(FileListScreen), findsOneWidget);
+
+    final container = serverStore.fileBrowsing
+        .containerFor<FileBrowsingContainerState>(sid, '');
+    expect(container, isNotNull);
+    container!.openFile('a/b/c.txt');
+    await _flush(tester);
+
+    expect(find.byType(FileViewScreen), findsOneWidget);
+    expect(find.byType(FileListScreen, skipOffstage: false), findsOneWidget);
+
+    await tester.pageBack();
+    await _flush(tester);
+    expect(find.byType(FileViewScreen), findsNothing);
+    expect(find.byType(FileListScreen), findsOneWidget);
+  });
+
+  testWidgets('openFile with an already-open path pops back to it',
+      (tester) async {
+    final router = await _pumpApp(tester);
+    const sid = 'collapse-s6';
+    router.push('/session/$sid/files?directory=');
+    await _flush(tester);
+
+    final container = serverStore.fileBrowsing
+        .containerFor<FileBrowsingContainerState>(sid, '')!;
+    container.openFile('a/b/c.txt');
+    await _flush(tester);
+    container.openFile('a/b/d.txt');
+    await _flush(tester);
+    expect(find.byType(FileViewScreen, skipOffstage: false), findsNWidgets(2));
+
+    container.openFile('a/b/c.txt');
+    await _flush(tester);
+
+    expect(find.byType(FileViewScreen, skipOffstage: false), findsOneWidget);
+    final view = tester.widget<FileViewScreen>(find.byType(FileViewScreen));
+    expect(view.path, 'a/b/c.txt');
   });
 }
