@@ -3120,6 +3120,7 @@ class _AgentModelBar extends StatefulWidget {
 }
 
 class _AgentModelBarState extends State<_AgentModelBar> {
+  static const double _barHeight = 30;
   List<AgentInfo> _agents = const [];
   List<ModelInfo> _models = const [];
   bool _loading = false;
@@ -3334,17 +3335,25 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     final scheme = Theme.of(context).colorScheme;
     final muted = scheme.outline;
 
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(
+        textScaler: MediaQuery.textScalerOf(
+          context,
+        ).clamp(maxScaleFactor: 1.0),
+      ),
+      child: _buildBar(context, muted),
+    );
+  }
+
+  Widget _buildBar(BuildContext context, Color muted) {
     if (_loading) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        child: SizedBox(
-          height: 20,
-          child: Center(
-            child: SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2, color: muted),
-            ),
+      return SizedBox(
+        height: _barHeight,
+        child: Center(
+          child: SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2, color: muted),
           ),
         ),
       );
@@ -3382,50 +3391,54 @@ class _AgentModelBarState extends State<_AgentModelBar> {
         final hasVariants =
             currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
 
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                if (_agents.length == 2 &&
-                    _agents.any((a) => a.name == agentName))
-                  _AgentCapsuleToggle(
-                    agents: _agents,
-                    currentAgent: agentName,
-                    onSwitch: _switching ? null : _switchAgent,
-                  )
-                else
-                  _Chip(
-                    icon: Icons.smart_toy_outlined,
-                    label: agentName,
-                    onTap: (_switching || _agents.length <= 1)
-                        ? null
-                        : _showAgentSheet,
-                    muted: muted,
-                  ),
-                const SizedBox(width: 8),
-                _Chip(
-                  icon: Icons.memory,
-                  label: modelName,
-                  onTap: _switching ? null : _showModelSheet,
-                  muted: muted,
-                ),
-                if (hasVariants) ...[
+        return SizedBox(
+          height: _barHeight,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  if (_agents.length == 2 &&
+                      _agents.any((a) => a.name == agentName))
+                    _AgentCapsuleToggle(
+                      agents: _agents,
+                      currentAgent: agentName,
+                      onSwitch: _switching ? null : _switchAgent,
+                    )
+                  else
+                    _Chip(
+                      icon: Icons.smart_toy_outlined,
+                      label: agentName,
+                      onTap: (_switching || _agents.length <= 1)
+                          ? null
+                          : _showAgentSheet,
+                      muted: muted,
+                    ),
                   const SizedBox(width: 8),
                   _Chip(
-                    icon: Icons.psychology_outlined,
-                    label: session?.model?.variant ?? l(context).defaultLabel,
-                    onTap: _switching
-                        ? null
-                        : () => _showVariantSheet(
-                            currentModel.first,
-                            currentModel.first.variants,
-                          ),
+                    icon: Icons.memory,
+                    label: modelName,
+                    onTap: _switching ? null : _showModelSheet,
                     muted: muted,
                   ),
+                  if (hasVariants) ...[
+                    const SizedBox(width: 8),
+                    _Chip(
+                      icon: Icons.psychology_outlined,
+                      label:
+                          session?.model?.variant ?? l(context).defaultLabel,
+                      onTap: _switching
+                          ? null
+                          : () => _showVariantSheet(
+                              currentModel.first,
+                              currentModel.first.variants,
+                            ),
+                      muted: muted,
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         );
