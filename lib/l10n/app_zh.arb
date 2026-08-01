@@ -207,6 +207,7 @@
   "composeAttachment": "附件",
   "composeStop": "停止推理",
   "composeSend": "发送",
+  "scrollToBottom": "滚动到底部",
   "composeLoadingCommands": "加载可用命令…",
   "moreMenu": "更多",
   "convRefresh": "刷新",

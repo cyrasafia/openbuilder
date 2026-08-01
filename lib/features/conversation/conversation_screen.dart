@@ -89,9 +89,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   static const _kMinMemberHiddenBound = 48.0;
   static const _kMinVisibleFraction = 0.05;
   static const _kAutoScrollPixels = 50.0;
+  static const _kFarFromBottomScreens = 5.0;
 
   final _listKey = GlobalKey();
   final _backToTopTarget = ValueNotifier<int?>(null);
+  final _farFromBottom = ValueNotifier<bool>(false);
+  double _listHeight = 0;
 
   @override
   void initState() {
@@ -99,6 +102,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _itemPositionsListener.itemPositions.addListener(_onPositions);
     _offsetSub = _scrollOffsetListener.changes.listen((d) {
       _scrollPixels += d;
+      _updateFarFromBottom();
     });
     serverStore.commandsNotifier.addListener(_onCommandsChanged);
     final conv = serverStore.conversationFor(widget.sessionId);
@@ -121,6 +125,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _itemPositionsListener.itemPositions.removeListener(_onPositions);
     unawaited(_offsetSub?.cancel());
     _backToTopTarget.dispose();
+    _farFromBottom.dispose();
     _ctl.dispose();
     super.dispose();
   }
@@ -201,6 +206,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       return;
     }
     final h = listBox.size.height;
+    _listHeight = h;
+    _updateFarFromBottom();
     final eps = 1.0 / h;
 
     final byIndex = <int, ItemPosition>{};
@@ -261,6 +268,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   void _setBackToTopTarget(int? index) {
     if (_backToTopTarget.value != index) _backToTopTarget.value = index;
+  }
+
+  void _updateFarFromBottom() {
+    if (_listHeight <= 0) return;
+    final far = _scrollPixels > _kFarFromBottomScreens * _listHeight;
+    if (_farFromBottom.value != far) _farFromBottom.value = far;
+  }
+
+  void _scrollToBottom() {
+    unawaited(
+      _itemScrollController.scrollTo(
+        index: 0,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOutCubic,
+      ),
+    );
   }
 
   /// Scrolls so the run's top edge lands flush with the viewport top. The item
@@ -523,6 +546,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   setState(() => _cmdMode = mode);
                 },
                 onSend: _send,
+                farFromBottom: _farFromBottom,
+                onScrollToBottom: _scrollToBottom,
                 attachments: _attachments,
                 shellMode: _shellMode,
                 onExitShellMode: () => setState(() => _shellMode = false),
@@ -2537,6 +2562,8 @@ class _BottomBar extends StatelessWidget {
   final Future<bool> Function() onAbort;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
+  final ValueNotifier<bool> farFromBottom;
+  final VoidCallback onScrollToBottom;
   final List<AttachmentPreview> attachments;
   final bool shellMode;
   final VoidCallback onExitShellMode;
@@ -2551,6 +2578,8 @@ class _BottomBar extends StatelessWidget {
     required this.onAbort,
     required this.onChanged,
     required this.onSend,
+    required this.farFromBottom,
+    required this.onScrollToBottom,
     required this.attachments,
     required this.shellMode,
     required this.onExitShellMode,
@@ -2585,6 +2614,8 @@ class _BottomBar extends StatelessWidget {
             onAbort: onAbort,
             onChanged: onChanged,
             onSend: onSend,
+            farFromBottom: farFromBottom,
+            onScrollToBottom: onScrollToBottom,
             attachments: attachments,
             shellMode: shellMode,
             onExitShellMode: onExitShellMode,
@@ -2601,6 +2632,8 @@ class _ComposeBar extends StatefulWidget {
   final TextEditingController ctl;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
+  final ValueNotifier<bool> farFromBottom;
+  final VoidCallback onScrollToBottom;
   final bool busy;
   final Future<bool> Function() onAbort;
   final List<AttachmentPreview> attachments;
@@ -2611,6 +2644,8 @@ class _ComposeBar extends StatefulWidget {
     required this.ctl,
     required this.onChanged,
     required this.onSend,
+    required this.farFromBottom,
+    required this.onScrollToBottom,
     required this.busy,
     required this.onAbort,
     required this.attachments,
@@ -2713,8 +2748,21 @@ class _ComposeBarState extends State<_ComposeBar> {
             ),
           ),
           const SizedBox(width: 6),
-          showStop
-              ? IconButton.filled(
+          ValueListenableBuilder<bool>(
+            valueListenable: widget.farFromBottom,
+            builder: (context, far, _) {
+              final hasInput =
+                  widget.ctl.text.trim().isNotEmpty ||
+                  widget.attachments.isNotEmpty;
+              if (!hasInput && far) {
+                return IconButton.filled(
+                  onPressed: widget.onScrollToBottom,
+                  icon: const Icon(Icons.keyboard_double_arrow_down),
+                  tooltip: l(context).scrollToBottom,
+                );
+              }
+              if (showStop) {
+                return IconButton.filled(
                   onPressed: _onStopPressed,
                   icon: _aborting
                       ? const SizedBox(
@@ -2730,12 +2778,15 @@ class _ComposeBarState extends State<_ComposeBar> {
                   style: IconButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.error,
                   ),
-                )
-              : IconButton.filled(
-                  onPressed: widget.onSend,
-                  icon: const Icon(Icons.send),
-                  tooltip: l(context).composeSend,
-                ),
+                );
+              }
+              return IconButton.filled(
+                onPressed: widget.onSend,
+                icon: const Icon(Icons.send),
+                tooltip: l(context).composeSend,
+              );
+            },
+          ),
         ],
       ),
     );

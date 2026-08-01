@@ -207,6 +207,7 @@
   "composeAttachment": "Attachments",
   "composeStop": "Stop inference",
   "composeSend": "Send",
+  "scrollToBottom": "Scroll to bottom",
   "composeLoadingCommands": "Loading available commands…",
   "moreMenu": "More",
   "convRefresh": "Refresh",
