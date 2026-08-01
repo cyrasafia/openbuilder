@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cross_file/cross_file.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
@@ -34,27 +35,6 @@ class ConversationScreen extends StatefulWidget {
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
-}
-
-class _TurnTarget {
-  final String firstMessageId;
-  const _TurnTarget(this.firstMessageId);
-}
-
-bool _listEquals(List<String> a, List<String> b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
-}
-
-bool _isPrefix(List<String> list, List<String> prefix) {
-  if (prefix.length > list.length) return false;
-  for (var i = 0; i < prefix.length; i++) {
-    if (list[i] != prefix[i]) return false;
-  }
-  return true;
 }
 
 ({
@@ -91,7 +71,11 @@ bool _isPrefix(List<String> list, List<String> prefix) {
 }
 
 class _ConversationScreenState extends State<ConversationScreen> {
-  final _scrollController = ScrollController();
+  final _itemScrollController = ItemScrollController();
+  final _itemPositionsListener = ItemPositionsListener.create();
+  final _scrollOffsetListener = ScrollOffsetListener.create();
+  StreamSubscription<double>? _offsetSub;
+  double _scrollPixels = 0;
   final _ctl = TextEditingController();
   bool _cmdMode = false;
   bool _shellMode = false;
@@ -100,23 +84,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _didForceReload = false;
   bool _didRestoreDraft = false;
   int _lastMsgCount = 0;
-  static const _kScrollThreshold = 200.0;
+
+  static const _kPaginationLookahead = 2;
+  static const _kMinMemberHiddenBound = 48.0;
+  static const _kMinVisibleFraction = 0.05;
+  static const _kAutoScrollPixels = 50.0;
 
   final _listKey = GlobalKey();
-  final _msgKeys = <String, GlobalKey>{};
-  final _rectCache =
-      <String, ({double top, double bottom, double pixelsAtMeasure})>{};
-  final _backToTopTarget = ValueNotifier<_TurnTarget?>(null);
-  double? _lastViewportH;
-  bool _backToTopScheduled = false;
-  bool _cacheUntrusted = false;
-  List<String> _prevIds = const [];
-  int _prevBottomRow = 0;
+  final _backToTopTarget = ValueNotifier<int?>(null);
 
   @override
   void initState() {
     super.initState();
-    _scrollController.addListener(_onScroll);
+    _itemPositionsListener.itemPositions.addListener(_onPositions);
+    _offsetSub = _scrollOffsetListener.changes.listen((d) {
+      _scrollPixels += d;
+    });
     serverStore.commandsNotifier.addListener(_onCommandsChanged);
     final conv = serverStore.conversationFor(widget.sessionId);
     if (conv != null) {
@@ -135,8 +118,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
     serverStore.commandsNotifier.removeListener(_onCommandsChanged);
     serverStore.setActiveConversation(null);
-    _scrollController.removeListener(_onScroll);
-    _scrollController.dispose();
+    _itemPositionsListener.itemPositions.removeListener(_onPositions);
+    unawaited(_offsetSub?.cancel());
     _backToTopTarget.dispose();
     _ctl.dispose();
     super.dispose();
@@ -173,181 +156,131 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
-  /// Reversed ListView: visual top = maxScrollExtent. When near the top,
-  /// trigger lazy backward pagination.
-  void _onScroll() {
-    if (!_scrollController.hasClients) return;
-    final pos = _scrollController.position;
-    if (pos.pixels >= pos.maxScrollExtent - _kScrollThreshold) {
-      _maybeLoadEarlier();
-    }
-    _scheduleBackToTopUpdate();
-  }
+  bool _hasDynamicFooterRow(ConversationStore conv) =>
+      (conv.isRetry &&
+          conv.retryMessage != null &&
+          conv.retryMessage!.isNotEmpty) ||
+      conv.busy ||
+      conv.loading;
 
-  void _scheduleBackToTopUpdate() {
-    if (_backToTopScheduled) return;
-    _backToTopScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _backToTopScheduled = false;
-      if (mounted) _updateBackToTop();
-    });
-  }
+  int _footerRows(ConversationStore conv) =>
+      1 + (_hasDynamicFooterRow(conv) ? 1 : 0);
 
-  ({double top, double bottom})? _rectOf(String id, {bool allowCache = true}) {
-    final box = _msgKeys[id]?.currentContext?.findRenderObject();
-    final listBox = _listKey.currentContext?.findRenderObject();
-    if (box is RenderBox &&
-        box.attached &&
-        box.hasSize &&
-        listBox is RenderBox &&
-        listBox.attached) {
-      final top =
-          box.localToGlobal(Offset.zero).dy -
-          listBox.localToGlobal(Offset.zero).dy;
-      return (top: top, bottom: top + box.size.height);
-    }
-    if (!allowCache) return null;
-    final cached = _rectCache[id];
-    if (cached == null || !_scrollController.hasClients) return null;
-    final d = _scrollController.position.pixels - cached.pixelsAtMeasure;
-    return (top: cached.top + d, bottom: cached.bottom + d);
-  }
+  int _headerRows(ConversationStore conv) =>
+      (conv.loadingEarlier || (conv.loadEarlierError && conv.hasMore)) ? 1 : 0;
 
-  void _updateBackToTop() {
-    if (!mounted || !_scrollController.hasClients) return;
+  /// Reversed ScrollablePositionedList: index 0 is the visual bottom (newest).
+  /// Driven by ItemPositionsListener (layout changes, scrolling) — evaluates
+  /// both back-pagination triggering and the back-to-turn-top button target.
+  void _onPositions() {
+    if (!mounted) return;
     final conv = serverStore.conversationForRead(widget.sessionId);
+    if (conv == null) return;
+    final msgs = conv.renderableMessages;
+    final msgCount = msgs.length;
+    final footer = _footerRows(conv);
+    final positions = _itemPositionsListener.itemPositions.value;
+
+    if (msgCount > 0 && conv.hasMore && !conv.loadingEarlier) {
+      final lastMsgIndex = msgCount - 1 + footer;
+      var maxIndex = -1;
+      for (final p in positions) {
+        if (p.index > maxIndex) maxIndex = p.index;
+      }
+      if (maxIndex >= lastMsgIndex - _kPaginationLookahead) {
+        _maybeLoadEarlier();
+      }
+    }
+
     final listBox = _listKey.currentContext?.findRenderObject();
-    if (conv == null ||
-        listBox is! RenderBox ||
+    if (listBox is! RenderBox ||
         !listBox.attached ||
-        !listBox.hasSize) {
+        !listBox.hasSize ||
+        listBox.size.height <= 0) {
+      _setBackToTopTarget(null);
       return;
     }
     final h = listBox.size.height;
-    if (h <= 0) return;
-    if (_lastViewportH != null && (_lastViewportH! - h).abs() > 0.5) {
-      _rectCache.clear();
-    }
-    _lastViewportH = h;
-    final listTop = listBox.localToGlobal(Offset.zero).dy;
-    final pixels = _scrollController.position.pixels;
-    final msgs = conv.renderableMessages;
-    final newIds = msgs.map((m) => m.info.id).toList(growable: false);
-    final bottomRow =
-        (conv.isRetry &&
-            conv.retryMessage != null &&
-            conv.retryMessage!.isNotEmpty)
-        ? 1000000 + conv.retryMessage!.length
-        : (conv.busy || conv.loading)
-        ? 1
-        : 0;
-    if (bottomRow != _prevBottomRow) {
-      _rectCache.clear();
-      _prevBottomRow = bottomRow;
-    }
-    if (!_listEquals(newIds, _prevIds)) {
-      final idSet = newIds.toSet();
-      _msgKeys.removeWhere((id, _) => !idSet.contains(id));
-      if (_isPrefix(newIds, _prevIds)) {
-        _rectCache.removeWhere((id, _) => !idSet.contains(id));
-      } else {
-        _rectCache.clear();
-      }
-      _prevIds = newIds;
-    }
+    final eps = 1.0 / h;
 
-    final indexOf = <String, int>{
-      for (var k = 0; k < msgs.length; k++) msgs[k].info.id: k,
-    };
-    final measured = <String>{};
-    for (var i = 0; i < msgs.length; i++) {
-      final id = msgs[i].info.id;
-      final box = _msgKeys[id]?.currentContext?.findRenderObject();
-      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
-      final top = box.localToGlobal(Offset.zero).dy - listTop;
-      final bottom = top + box.size.height;
-      final cached = _rectCache[id];
-      if (cached != null) {
-        final dh = (bottom - top) - (cached.bottom - cached.top);
-        if (dh.abs() > 0.5) {
-          _rectCache.forEach((key, entry) {
-            final idx = indexOf[key];
-            if (idx != null && idx > i) {
-              _rectCache[key] = (
-                top: entry.top - dh,
-                bottom: entry.bottom - dh,
-                pixelsAtMeasure: entry.pixelsAtMeasure,
-              );
-            }
-          });
-        }
-      }
-      _rectCache[id] = (
-        top: top,
-        bottom: bottom,
-        pixelsAtMeasure: pixels,
-      );
-      measured.add(id);
-    }
-
-    final untrusted =
-        conv.busy && msgs.isNotEmpty && !measured.contains(msgs.first.info.id);
-    _cacheUntrusted = untrusted;
-
-    _TurnTarget? target;
-    var i = 0;
-    while (i < msgs.length) {
-      final role = msgs[i].info.role;
-      var j = i + 1;
-      if (role != 'user') {
-        while (j < msgs.length && msgs[j].info.role != 'user') {
-          j++;
-        }
-      }
-      var top = double.infinity;
-      var bottom = double.negativeInfinity;
-      var complete = true;
-      for (var k = i; k < j; k++) {
-        final rect = _rectOf(msgs[k].info.id, allowCache: !untrusted);
-        if (rect == null) {
-          complete = false;
-          break;
-        }
-        top = math.min(top, rect.top);
-        bottom = math.max(bottom, rect.bottom);
-      }
-      if (complete &&
-          top < -1.0 &&
-          bottom > h + 1.0 &&
-          bottom - top >= 2 * h) {
-        target = _TurnTarget(msgs[j - 1].info.id);
+    final byIndex = <int, ItemPosition>{};
+    var visMmin = 1 << 30;
+    var visMmax = -1;
+    var allVisibleAreMessages = true;
+    for (final p in positions) {
+      byIndex[p.index] = p;
+      final visible =
+          p.itemTrailingEdge > _kMinVisibleFraction &&
+          p.itemLeadingEdge < 1 - _kMinVisibleFraction;
+      if (!visible) continue;
+      final m = p.index - footer;
+      if (m < 0 || m >= msgCount) {
+        allVisibleAreMessages = false;
         break;
       }
-      i = j;
+      if (m < visMmin) visMmin = m;
+      if (m > visMmax) visMmax = m;
     }
-    if (target?.firstMessageId != _backToTopTarget.value?.firstMessageId) {
-      _backToTopTarget.value = target;
+
+    int? target;
+    if (allVisibleAreMessages && visMmax >= 0) {
+      var mStart = visMmax;
+      var mEnd = visMmax;
+      if (msgs[visMmax].info.role != 'user') {
+        while (mStart > 0 && msgs[mStart - 1].info.role != 'user') {
+          mStart--;
+        }
+        while (mEnd < msgCount - 1 && msgs[mEnd + 1].info.role != 'user') {
+          mEnd++;
+        }
+      }
+      if (visMmin >= mStart) {
+        final posT = byIndex[mEnd + footer];
+        final posB = byIndex[mStart + footer];
+        final topOut = posT == null || posT.itemTrailingEdge > 1 + eps;
+        final bottomOut = posB == null || posB.itemLeadingEdge < -eps;
+        if (topOut && bottomOut) {
+          final hiddenTop = posT == null
+              ? null
+              : math.max(0.0, posT.itemTrailingEdge - 1) * h;
+          final hiddenBottom = posB == null
+              ? null
+              : math.max(0.0, -posB.itemLeadingEdge) * h;
+          final longEnough =
+              (hiddenTop != null && hiddenBottom != null)
+              ? hiddenTop + hiddenBottom >= h
+              : (hiddenTop == null && hiddenBottom == null)
+              ? true
+              : (hiddenTop ?? hiddenBottom!) + _kMinMemberHiddenBound >= h;
+          if (longEnough) target = mEnd + footer;
+        }
+      }
     }
+    _setBackToTopTarget(target);
   }
 
-  void _scrollToTurnTop(_TurnTarget t) {
-    if (!_scrollController.hasClients) return;
-    final rect = _rectOf(t.firstMessageId, allowCache: !_cacheUntrusted);
-    if (rect == null) {
-      _updateBackToTop();
-      return;
-    }
-    final pos = _scrollController.position;
-    final target = (pos.pixels - rect.top)
-        .clamp(pos.minScrollExtent, pos.maxScrollExtent)
-        .toDouble();
-    final h = _lastViewportH ?? 0.0;
-    final distance = (target - pos.pixels).abs();
-    final ms = h > 0 ? (250 * distance / h).clamp(250, 500).round() : 300;
-    _scrollController.animateTo(
-      target,
-      duration: Duration(milliseconds: ms),
-      curve: Curves.easeOutCubic,
+  void _setBackToTopTarget(int? index) {
+    if (_backToTopTarget.value != index) _backToTopTarget.value = index;
+  }
+
+  /// Scrolls so the run's top edge lands flush with the viewport top. The item
+  /// above the run (runTopIndex + 1) has its bottom edge == the run's top edge,
+  /// so aligning it to the far edge (alignment 1) is height-independent. When
+  /// the run is the list's topmost item, the target clamps to itemCount - 1
+  /// and the scroll clamps to max extent — same landing.
+  void _scrollToRunTop(int runTopIndex) {
+    final conv = serverStore.conversationForRead(widget.sessionId);
+    if (conv == null) return;
+    final itemCount =
+        conv.renderableMessages.length + _footerRows(conv) + _headerRows(conv);
+    if (itemCount <= 0) return;
+    unawaited(
+      _itemScrollController.scrollTo(
+        index: math.min(runTopIndex + 1, itemCount - 1),
+        alignment: 1,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOutCubic,
+      ),
     );
   }
 
@@ -361,11 +294,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
       if (!mounted || !madeProgress) return;
       // Chain: if the viewport isn't filled yet (still at top), keep loading.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scrollController.hasClients) return;
-        final pos = _scrollController.position;
+        if (!mounted) return;
         final c = serverStore.conversationForRead(widget.sessionId);
         if (c == null || !c.hasMore || c.loadingEarlier) return;
-        if (pos.pixels >= pos.maxScrollExtent - _kScrollThreshold) {
+        final lastMsgIndex =
+            c.renderableMessages.length - 1 + _footerRows(c);
+        var maxIndex = -1;
+        for (final p in _itemPositionsListener.itemPositions.value) {
+          if (p.index > maxIndex) maxIndex = p.index;
+        }
+        if (maxIndex >= lastMsgIndex - _kPaginationLookahead) {
           _maybeLoadEarlier();
         }
       });
@@ -473,36 +411,43 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ),
             );
           }
-          // Reversed ListView pins to the newest message (bottom) on open,
-          // so we enter directly at the latest part with no top→bottom flash.
-          // Todos/permissions live in a separate footer pinned to the page
-          // bottom (see _FooterPanel), out of the scrolling message stream.
-          final list = ListView(
+          // Reversed ScrollablePositionedList pins to the newest message
+          // (bottom) on open, so we enter directly at the latest part with no
+          // top→bottom flash. Todos/permissions live in a separate footer
+          // pinned to the page bottom (see _FooterPanel), out of the scrolling
+          // message stream.
+          final msgs = conv.renderableMessages;
+          final footer = _footerRows(conv);
+          final header = _headerRows(conv);
+          final list = ScrollablePositionedList.builder(
             key: _listKey,
             reverse: true,
-            controller: _scrollController,
+            itemScrollController: _itemScrollController,
+            itemPositionsListener: _itemPositionsListener,
+            scrollOffsetListener: _scrollOffsetListener,
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-            children: [
-              const SizedBox(height: 8),
-              if (conv.isRetry &&
-                  conv.retryMessage != null &&
-                  conv.retryMessage!.isNotEmpty)
-                _RetryMessage(message: conv.retryMessage!)
-              else if (conv.busy || conv.loading)
-                const _TypingDots(),
-              ...conv.renderableMessages.map(_message),
-              if (conv.loadingEarlier)
-                const _LoadingEarlierRow()
-              else if (conv.loadEarlierError && conv.hasMore)
-                _LoadEarlierErrorRow(onRetry: _maybeLoadEarlier),
-            ],
+            itemCount: msgs.length + footer + header,
+            itemBuilder: (context, index) {
+              if (index == 0) return const SizedBox(height: 8);
+              if (index < footer) {
+                if (conv.isRetry &&
+                    conv.retryMessage != null &&
+                    conv.retryMessage!.isNotEmpty) {
+                  return _RetryMessage(message: conv.retryMessage!);
+                }
+                return const _TypingDots();
+              }
+              final m = index - footer;
+              if (m < msgs.length) return _message(msgs[m]);
+              if (conv.loadingEarlier) return const _LoadingEarlierRow();
+              return _LoadEarlierErrorRow(onRetry: _maybeLoadEarlier);
+            },
           );
-          final msgCount = conv.renderableMessages.length;
+          final msgCount = msgs.length;
           if (msgCount != _lastMsgCount) {
             _lastMsgCount = msgCount;
             _scheduleAutoScroll();
           }
-          _scheduleBackToTopUpdate();
           final showFooter =
               conv.permissions.isNotEmpty ||
               conv.questions.isNotEmpty ||
@@ -518,7 +463,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       bottom: 12,
                       child: _BackToTurnTopButton(
                         target: _backToTopTarget,
-                        onTap: _scrollToTurnTop,
+                        onTap: _scrollToRunTop,
                       ),
                     ),
                   ],
@@ -873,7 +818,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Widget _message(DisplayMessage m) {
     if (m.info.role == 'user') {
       return Padding(
-        key: _msgKeys.putIfAbsent(m.info.id, GlobalKey.new),
+        key: ValueKey(m.info.id),
         padding: const EdgeInsets.only(left: 40, top: 10, bottom: 10),
         child: Align(
           alignment: Alignment.centerRight,
@@ -890,7 +835,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       );
     }
     return Padding(
-      key: _msgKeys.putIfAbsent(m.info.id, GlobalKey.new),
+      key: ValueKey(m.info.id),
       padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -967,12 +912,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   void _scheduleAutoScroll() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      final pos = _scrollController.position;
+      if (!mounted) return;
       // Reversed list: the newest (bottom) is at offset 0.
-      final atBottom = pos.pixels <= 50;
-      if (atBottom) {
-        _scrollController.jumpTo(pos.minScrollExtent);
+      if (_scrollPixels <= _kAutoScrollPixels) {
+        _itemScrollController.jumpTo(index: 0);
       }
     });
   }
@@ -2542,16 +2485,14 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
   }
 }
 
-/// Combined bottom bar: agent/model chips row + compose input row,
-/// sharing a single background and bottom safe-area padding.
 class _BackToTurnTopButton extends StatelessWidget {
-  final ValueNotifier<_TurnTarget?> target;
-  final void Function(_TurnTarget) onTap;
+  final ValueNotifier<int?> target;
+  final void Function(int) onTap;
   const _BackToTurnTopButton({required this.target, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<_TurnTarget?>(
+    return ValueListenableBuilder<int?>(
       valueListenable: target,
       builder: (context, t, _) {
         final visible = t != null;
