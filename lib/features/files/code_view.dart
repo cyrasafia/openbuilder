@@ -6,6 +6,8 @@ import 'highlight_theme.dart';
 
 const _gutterGap = 6.0;
 const _gutterPad = 4.0;
+const _padLeft = 8.0;
+const _padRight = 20.0;
 const _fontSize = 12.5;
 const _asyncThreshold = 2000;
 
@@ -129,7 +131,7 @@ class _CodeViewState extends State<CodeView> {
     }
 
     final listView = ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      padding: const EdgeInsets.only(left: _padLeft, right: _padRight, top: 8, bottom: 8),
       itemCount: _lines.length,
       itemBuilder: rowBuilder,
     );
@@ -140,7 +142,7 @@ class _CodeViewState extends State<CodeView> {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SizedBox(
-        width: gutterWidth + _gutterGap + contentWidth + 16,
+        width: gutterWidth + _gutterGap + contentWidth + _padLeft + _padRight,
         child: listView,
       ),
     );
