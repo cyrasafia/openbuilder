@@ -306,25 +306,17 @@ class _FileListScreenState extends State<FileListScreen> {
                   )
                 : const TextStyle(fontSize: 14),
           ),
-          subtitle: n.ignored
+          subtitle: (_query.isNotEmpty && _parentPath(n.path).isNotEmpty)
               ? Text(
-                  '.gitignored',
+                  _parentPath(n.path),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11,
                     color: Theme.of(context).colorScheme.outline,
                   ),
                 )
-              : (_query.isNotEmpty && _parentPath(n.path).isNotEmpty)
-                  ? Text(
-                      _parentPath(n.path),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Theme.of(context).colorScheme.outline,
-                      ),
-                    )
-                  : null,
+              : null,
           trailing: n.isDir ? const Icon(Icons.chevron_right) : null,
           onTap: () {
             if (n.isDir) {
