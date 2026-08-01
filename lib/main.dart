@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'app_router.dart';
@@ -25,6 +27,13 @@ void main() {
       return ErrorWidget(details.exception);
     };
     await AppLogger.I.init();
+    if (Platform.isAndroid) {
+      try {
+        await FlutterDisplayMode.setHighRefreshRate();
+      } catch (e) {
+        AppLogger.I.e('DisplayMode', 'setHighRefreshRate failed: $e');
+      }
+    }
     await connectionStore.load();
     await modelHideStore.load();
     await defaultAgentModelStore.load();
