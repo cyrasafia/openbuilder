@@ -8,6 +8,7 @@ import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import '../../ui/widgets.dart';
 import 'binary_view.dart';
 import 'code_view.dart';
 import 'download_policy.dart';
@@ -247,6 +248,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
             ],
           ),
           const FileCollapseAction(),
+          appBarActionsTrailing,
         ],
       ),
       body: _body(),

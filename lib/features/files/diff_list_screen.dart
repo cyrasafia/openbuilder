@@ -6,6 +6,7 @@ import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import '../../ui/widgets.dart';
 
 class DiffListScreen extends StatefulWidget {
   final String sessionId;
@@ -73,6 +74,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
               padding: const EdgeInsets.only(right: 14),
               child: _DiffStat(add: _totalAdd, del: _totalDel),
             ),
+          appBarActionsTrailing,
         ],
       ),
       body: _body(context),

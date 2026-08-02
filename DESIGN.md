@@ -172,6 +172,7 @@ spacing:
   chip-gap-top: 6px
   chip-icon-label-gap: 6px
   code-block-padding: 12px
+  appbar-actions-trailing: 4px
 
 components:
   collapsible-chip:
@@ -191,6 +192,10 @@ components:
     rounded: "{rounded.code-block}"
     padding: "{spacing.code-block-padding}"
     scroll: 水平 SingleChildScrollView
+  appbar:
+    iconSize: 24px
+    actionsTrailing: "{spacing.appbar-actions-trailing}"
+    leadingTrailingSymmetry: actions 末尾加 {spacing.appbar-actions-trailing}(4px),与 leading 内边距抵消,使末位 icon 中心与 leading icon 中心关于屏幕中线对称
 ---
 
 ## 概述
@@ -360,6 +365,29 @@ Container(margin-top 6, surfaceContainerHighest, radius 8)
 | 工具代码块内部 | mono | 代码角色,对齐 Markdown codeblock |
 | 思考展开体 | sans italic | 与正文区分,表达"内部推理" |
 
+### AppBar (`{components.appbar}`)
+
+所有页面 AppBar 的 leading 与 actions 图标统一约束:
+
+| 属性 | 值 | 说明 |
+|------|-----|------|
+| 图标尺寸 | `{components.appbar.iconSize}` 24px | Material 默认,不显式写 `size`;禁用 20 等非标准值 |
+| 命中区 | IconButton 默认 48×48 | 不覆盖 `padding`/`constraints` |
+| 末尾间距 | `{components.appbar.actionsTrailing}` 4px | actions 列表末尾固定加 `appBarActionsTrailing`(`lib/ui/widgets.dart`) |
+| 左右对称 | 见 `leadingTrailingSymmetry` | 末位 icon 中心 = leading icon 中心关于屏幕中线对称 |
+
+**末尾间距的来源:** AppBar 的 `leading` 槽比 `actions` 槽多约 4px 内边距。在 `actions` 末尾补 4px 后,trailing icon 中心与 leading icon 中心到屏幕左/右边缘的距离相等(实测均 28px @ 800px 宽屏)。
+
+**实现:** 所有含 `actions` 的 AppBar 末尾加 `appBarActionsTrailing`(const `SizedBox(width: 4)`),从 `lib/ui/widgets.dart` 引入。禁止在各页面手写 `SizedBox(width: 4)`。
+
+**Do:**
+- AppBar 内 `Icon` 不写 `size`(继承默认 24)。
+- `actions` 末尾加 `appBarActionsTrailing`。
+
+**Don't:**
+- 不在 AppBar 的 leading/actions 写 `size: 20` 等非标准值。
+- 不手写 `SizedBox(width: 4)` 代替 `appBarActionsTrailing`。
+
 ## 系统字重联动
 
 在 Android(小米/HyperOS)上,应用会读取系统字重滑块值并以 `FontVariation('wght', n)` 注入变体字体轴。该机制独立于上述三档常量,属「跟随系统字重」的预期行为:
@@ -385,6 +413,7 @@ Container(margin-top 6, surfaceContainerHighest, radius 8)
 - 不用 Bold (700) 做加粗——移动端窄屏会发糊。
 - 不让次级标签与正文处于不同中间字重,制造无谓层级噪音。
 - 不在 chip header 使用 mono——mono 仅限代码块内部。
+- 不在 AppBar 手写 `Icon(size: 20)` 或 `SizedBox(width: 4)`,改用默认 24 + `appBarActionsTrailing`。
 
 ## 多语言 / i18n
 

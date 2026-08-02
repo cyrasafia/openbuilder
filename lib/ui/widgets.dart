@@ -536,3 +536,5 @@ Widget emptyScrollable(Widget child) {
     ),
   );
 }
+
+const appBarActionsTrailing = SizedBox(width: 4);

@@ -7,6 +7,7 @@ import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import '../../ui/widgets.dart';
 import 'file_browsing_container.dart';
 
 class DiffDetailScreen extends StatefulWidget {
@@ -119,6 +120,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
             onPressed: _diff == null ? null : _openFullFile,
             child: Text(l(context).diffViewFullFile),
           ),
+          appBarActionsTrailing,
         ],
       ),
       body: _body(context),

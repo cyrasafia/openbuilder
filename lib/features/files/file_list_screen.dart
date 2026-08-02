@@ -6,6 +6,7 @@ import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
+import '../../ui/widgets.dart';
 import 'file_browsing_container.dart';
 
 class FileListScreen extends StatefulWidget {
@@ -216,12 +217,12 @@ class _FileListScreenState extends State<FileListScreen> {
       appBar: AppBar(
         leading: _searchExpanded
             ? IconButton(
-                icon: const Icon(Icons.arrow_back, size: 20),
+                icon: const Icon(Icons.arrow_back),
                 tooltip: l(context).fileSearchHint,
                 onPressed: _collapseSearch,
               )
             : IconButton(
-                icon: const Icon(Icons.arrow_back, size: 20),
+                icon: const Icon(Icons.arrow_back),
                 onPressed: () => _container?.handleBack(),
               ),
         title: _searchExpanded
@@ -257,11 +258,12 @@ class _FileListScreenState extends State<FileListScreen> {
         actions: [
           if (!_searchExpanded)
             IconButton(
-              icon: const Icon(Icons.search, size: 20),
+              icon: const Icon(Icons.search),
               tooltip: l(context).fileSearchHint,
               onPressed: () => setState(() => _searchExpanded = true),
             ),
           if (!_searchExpanded) const FileCollapseAction(),
+          appBarActionsTrailing,
         ],
       ),
       body: Column(

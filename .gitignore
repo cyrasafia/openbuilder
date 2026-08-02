@@ -62,3 +62,6 @@ app.*.map.json
 
 # Flutter gen-l10n output (regenerated on pub get via generate: true)
 lib/l10n/gen/
+
+# Flutter golden test failure artifacts (regenerable diff images)
+test/failures/

@@ -649,7 +649,7 @@ class _ConversationScreenState extends State<ConversationScreen>
             directory: directory,
             session: session,
           ),
-          const SizedBox(width: 4),
+          appBarActionsTrailing,
         ],
       ),
       body: ListenableBuilder(
