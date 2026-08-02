@@ -205,3 +205,65 @@
 
 - `flutter analyze --fatal-infos` 无 issue；`flutter test` 260 全过（含 SSE smoke）。
 - 待补：真机 `--profile` 长会话 fling 前后对比（§2.5），keep-alive 内存实测。
+
+### 7.5 修复：键盘展开/收起掉帧（keep-alive 无界增长，方案 A 回归）
+
+#### 问题
+
+方案 A+B 落地后出现新回归：会话详情页键盘展开/收起掉帧严重，**向上滚动多屏之后更明显**。在底部未滚动时基本不卡。
+
+#### 根因分析（包源码核对）
+
+链条：**方案 A 的无限 keep-alive 使已访问消息永不 unmount** × **包内两条按注册元素数线性增长的路径** × **键盘动画每帧触发这两条路径**。
+
+1. **注册表无界增长（前置条件）**：包给每个条目包 `RegisteredElementWidget`，其 element 只在 `unmount()` 时从 `registeredElements` 注销（`element_registry.dart` `_RegisteredElement.unmount`）。keep-alive 前移出 cache 窗口即 unmount、注册表稳定在约 5 屏；keep-alive 后已访问消息全部常驻，**注册表随浏览量单调无界增长**。
+2. **路径一：每次 build 全量广播重建**。`_InheritedRegistryWidget.updateShouldNotify => true`（同文件）——`PositionedList` 每次 build 都给**全部**已注册 element 发 `didChangeDependencies` → `markNeedsBuild()` → 所有历史消息重建（styleSheet 缓存只挡 markdown 重解析，挡不住 widget 子树重建）。触发源：键盘动画每帧经包内 `LayoutBuilder`（constraints 变化）重建 `PositionedList`；流式 notify 触发的 body 重建同样命中——即 SP-2 修复后仍残留的一条 O(已访问) 重建路径。
+3. **路径二：每帧 O(已访问) 位置计算**。`_schedulePositionNotificationUpdate` post-frame 遍历全部已注册 element，逐个 `viewport.getOffsetToReveal(box, 0)`（`positioned_list.dart:308-369`）；由 scrollController listener + `didUpdateWidget` 双驱动，键盘动画期间每帧一次。app 侧 16ms 节流管不到包内部。
+4. **与症状的对应**：键盘动画 ≈ 250ms 连续每帧触发上述两条；在底部时已访问量 ≈ 挂载窗口（约 5 屏）开销可控；向上滚动多屏后已访问量数百，每帧远超 8.3ms（120Hz）帧预算——"滚动多屏后更严重"完全由此解释。
+
+#### 设计：有界 keep-alive（选择性 keep-alive）
+
+§6 风险表第 1 条预留的方向落地。核心：keep-alive 的收益（滑回零成本）只需要覆盖"最近浏览区"，无需无限保留。
+
+- **窗口维护**（`_ConversationScreenState`）：`_keepAliveIds`（`ValueNotifier<Set<String>>`）持有当前允许 keep-alive 的消息 id 集合。在 `_evaluatePositions`（已有 16ms 节流 + 签名门控，零新增回调）内按 **当前挂载 index 范围 ± `_kKeepAliveMargin`（24 条消息）** 重算窗口；分页导致的 index 平移用 msg id 天然免疫；集合未变不写回，避免无谓通知。
+- **逐条生效**（`_KeepAliveMessage`）：`wantKeepAlive => keepAliveIds.value.contains(msgId)`；State 监听集合变化调 `updateKeepAlive()`——mixin 直接改 renderObject parentData，**离屏 keep-alive bucket 内的条目无需经 itemBuilder 重建即可失效**，随后 sliver collectGarbage 将其 unmount → 从包注册表注销 → 上述两条路径降为 O(窗口)。
+- **为什么不用父级传参**：bucket 内离屏条目由 sliver 用缓存 widget 复挂，不经过 itemBuilder，父级改 flag 传不进去；必须由 State 自身经 `updateKeepAlive()` 驱动。
+
+#### 场景验证
+
+| 场景 | 预期 |
+|------|------|
+| 滚动多屏后键盘展开/收起 | 注册表只剩窗口规模（≈挂载范围 + 48 条），每帧重建/位置计算回到 keep-alive 前量级，不随浏览量增长 |
+| 窗口内滑回（≤24 条） | keep-alive 命中，零重建零解析（方案 A 收益保留） |
+| 滑回超出窗口的历史消息 | 重建 + markdown 重解析（方案 A 之前的既有成本，可接受） |
+| 快速 fling | 窗口随 positions 滑动，仅边缘条目 toggle；disposal 成本低于 build |
+| 流式中 body 重建 | 包广播重建范围 = 窗口，不再随已访问量增长 |
+| 长会话内存 | 常驻条目被窗口封顶，§6 风险 1 一并缓解 |
+
+#### 关键设计决策
+
+1. **限窗口而非去 keep-alive**：去掉 keep-alive 会回到滑回重解析的滚动卡顿（方案 A 的初衷）；markdown 解析产物难以外挂 LRU（解析挂在包 State 生命周期，SP-1），有界窗口是保留收益前提下唯一能同时压住两条包路径的手段。
+2. **窗口挂在既有节流回调上**：`_evaluatePositions` 已有节流 + 签名门控 + 全量 positions，复用它维护窗口不引入新的每帧开销。
+3. **count 窗口（24 条）而非像素窗口**：消息高度差异大，像素窗口需逐条测量，复杂度不值；24 条 ≈ 3–6 屏，覆盖正常滑回距离。
+4. **不修包**：`updateShouldNotify => true` 与注册表注销时机都是包内实现，fork/override 维护成本高；窗口化后包内路径已降为 O(窗口)，无需动包。方案 C（换包）仍为独立兜底，不因此次修复启动。
+
+#### 不做的事
+
+- 不改 `ScrollablePositionedList` 源码、不 fork、不新增依赖。
+- 不改窗口内条目的渲染与 markdown 解析逻辑。
+- 不为键盘动画做专项特判（如动画期间暂停 positions 更新）——窗口化后已无必要。
+
+#### 验证
+
+- `flutter analyze --fatal-infos` 无 issue；`flutter test` 282 全过（含 SSE smoke）。
+- 待补：真机 `--profile` 滚动多屏后键盘展开/收起的掉帧率对比（基线 = 方案 A 后未修复版本）。
+
+#### 补充根因与第二轮修复（小会话仍掉帧，实测 15 条 ≈1.5 屏）
+
+- **现象**：有界 keep-alive 落地后实测，仅 15 条消息（约 1.5 屏、全部挂载）时键盘展开/收起仍掉帧。说明除 O(已访问) 放大外，还存在与已访问量无关的**每帧固定成本**。
+- **根因**：键盘动画每帧 inset 变化 → 包内 `LayoutBuilder` constraints 变化 → `ScrollablePositionedList`/`PositionedList` 每帧重建 → sliver delegate 对全部挂载子项重跑 `itemBuilder` → **每条消息生成全新 widget 实例，element diff 无法剪枝 → 15 条重消息子树（markdown / 代码块 / tool 卡片，每棵数百节点）每帧全量重建**。layout/paint 反而是冤枉的：子项 BoxConstraints 未变（宽 tight 不变）走 `RenderObject.layout` 快路径跳过，repaint boundary 使光栅化 mostly 命中缓存——瓶颈在 UI 线程的 widget/element 重建。
+- **修复（widget 实例记忆化）**：`_ConversationScreenState` 增加 `_messageChildCache`（`Map<String, Widget>`，key = msg id）；itemBuilder 返回 `_messageChildCache[id] ??= _message(msg)`。**同一实例经 `Element.updateChild` 判等直接剪枝**，整棵消息子树跳过重建。缓存在 body builder 首行 `clear()`——body 由 `ListenableBuilder(conv, showThinking)` 驱动，即 conv / showThinking / theme / locale 任何变化都会失效重建，内容正确性不变；键盘动画期间这些 listenable 均不 notify，缓存全程命中，每帧列表重建成本 ≈ 15 次 map 查找 + proxy 更新。
+- **额外收益**：包的注册表广播（`updateShouldNotify => true` → `markNeedsBuild`）命中缓存实例后同样被剪枝为 no-op，§7.5 路径一的成本进一步归零（有界窗口仍保留，用于约束路径二 `getOffsetToReveal` 遍历与内存）。
+- **代价**：流式期间每次 conv notify 清全表 → 可视消息重建一次（= 现状，SP-2 已保证不触发 markdown 重解析）；per-message 版本号精细失效需 store 侧埋点，收益不值得复杂度。
+- **备选（未启用）**：`resizeToAvoidBottomInset: false` + 输入条自行避让 inset，列表完全不参与键盘动画布局。UX 变化大（列表被键盘遮挡的可见性需另行处理），仅当记忆化后 profile 仍不达标再评。
+- **验证**：`flutter analyze --fatal-infos` 无 issue；`flutter test` 282 全过。真机键盘动画掉帧率对比待补（需 profile）。

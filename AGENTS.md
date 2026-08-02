@@ -150,4 +150,5 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `design-v2-migration.md` | **前瞻记录（未来迁移，暂不动）** OpenCode V2 差异与迁移路线 |
 | `design-migrate-flutter-markdown-plus.md` | 迁移 flutter_markdown → flutter_markdown_plus（已停用包替换，drop-in） |
 | `design-scroll-to-turn-top.md` | 回到轮次顶部悬浮按钮（几何判定、run 合并、reversed 坐标偏移） |
-| `design-conversation-scroll-perf.md` | 会话列表滚动卡顿优化（根因记录：包 2 屏 cacheExtent × 重条目 × 每帧 O(N)，keep-alive/降频/控件收口三层方案） |
+| `design-conversation-scroll-perf.md` | 会话列表滚动卡顿优化（根因记录：包 2 屏 cacheExtent × 重条目 × 每帧 O(N)，keep-alive/降频/控件收口三层方案；§7.5 键盘掉帧两连修：有界 keep-alive + 消息 widget 实例记忆化） |
+| `design-run-assembly.md` | 会话列表按 run 组装重构（最终方案：弃 scrollable_positioned_list，原生 SliverList + run 渐进预组装 + 几何回顶；含方案演化史、备选对比、八轮评审） |

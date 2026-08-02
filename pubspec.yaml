@@ -56,7 +56,6 @@ dependencies:
   re_highlight: ^0.0.3
   flutter_svg: ^2.0.10
   markdown: ^7.3.1
-  scrollable_positioned_list: ^0.3.8
   flutter_displaymode: ^0.7.0
 dev_dependencies:
   flutter_test:

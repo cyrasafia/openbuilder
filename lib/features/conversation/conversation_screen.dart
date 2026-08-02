@@ -3,10 +3,11 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart'
+    show ScrollCacheExtent, SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cross_file/cross_file.dart';
-import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
@@ -71,12 +72,9 @@ _messagePalette(BuildContext context, bool user) {
   );
 }
 
-class _ConversationScreenState extends State<ConversationScreen> {
-  final _itemScrollController = ItemScrollController();
-  final _itemPositionsListener = ItemPositionsListener.create();
-  final _scrollOffsetListener = ScrollOffsetListener.create();
-  StreamSubscription<double>? _offsetSub;
-  double _scrollPixels = 0;
+class _ConversationScreenState extends State<ConversationScreen>
+    with WidgetsBindingObserver {
+  final _scrollController = ScrollController();
   final _ctl = TextEditingController();
   bool _cmdMode = false;
   bool _shellMode = false;
@@ -85,32 +83,60 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _didForceReload = false;
   bool _didRestoreDraft = false;
   int _lastMsgCount = 0;
+  bool _wasBusy = false;
 
-  static const _kPaginationLookahead = 2;
-  static const _kMinMemberHiddenBound = 48.0;
-  static const _kMinVisibleFraction = 0.05;
   static const _kAutoScrollPixels = 50.0;
   static const _kFarFromBottomScreens = 5.0;
+  static const _kPaginationScreens = 2.0;
+  static const _kKeepAliveWindow = 48;
+  static const _kCacheExtentBase = 250.0;
+  static const _kDriverStepScreens = 0.5;
+  static const _kDriverMaxScreens = 8.0;
+  static const _kDriverResetMaxScreens = 24.0;
 
   final _listKey = GlobalKey();
-  final _backToTopTarget = ValueNotifier<int?>(null);
+  final _backToTopTarget = ValueNotifier<double?>(null);
   final _farFromBottom = ValueNotifier<bool>(false);
-  double _listHeight = 0;
+  final _keepAliveIds = ValueNotifier<Set<String>>(const {});
+  final _messageChildCache = <String, Widget>{};
+
+  final _sizeKeys = <String, GlobalKey>{};
+  final _heightCache = <String, double>{};
+  final _footerSizeKey = GlobalKey();
+  double _footerRowHeight = 0;
+  double _viewportHeight = 0;
+  double? _widthBaseline;
+  TextScaler? _textScaleBaseline;
+
+  final _keepAliveLru = <String>{};
+  bool _keepAliveLruDirty = false;
+  bool _frameEvalScheduled = false;
+
+  double _cacheExtent = _kCacheExtentBase;
+  bool _driverActive = false;
+  bool _driverResetMode = false;
+
+  /// 距底基底 = 8(留白 sliver) + footer 动态行高 + 8(消息 SliverPadding 底侧)。
+  double get _footerHeight => 16 + _footerRowHeight;
 
   @override
   void initState() {
     super.initState();
-    _itemPositionsListener.itemPositions.addListener(_onPositions);
-    _offsetSub = _scrollOffsetListener.changes.listen((d) {
-      _scrollPixels += d;
-      _updateFarFromBottom();
-    });
+    WidgetsBinding.instance.addObserver(this);
+    _scrollController.addListener(_onScroll);
     serverStore.commandsNotifier.addListener(_onCommandsChanged);
     final conv = serverStore.conversationFor(widget.sessionId);
     if (conv != null) {
       conv.addListener(_onDraftChange);
       _tryRestoreDraft(conv, allowSetState: false); // 首帧 build 前，仅写字段
     }
+  }
+
+  @override
+  void didChangeMetrics() {
+    // 键盘/旋转/分屏：视口几何变化不一定伴随滚动事件，主动触发帧评估
+    // （宽度变化在评估内比对基线并清空高度缓存）。
+    _scheduleFrameEval();
   }
 
   @override
@@ -123,11 +149,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
     serverStore.commandsNotifier.removeListener(_onCommandsChanged);
     serverStore.setActiveConversation(null);
-    _itemPositionsListener.itemPositions.removeListener(_onPositions);
-    _positionsTrailing?.cancel();
-    unawaited(_offsetSub?.cancel());
+    WidgetsBinding.instance.removeObserver(this);
+    _scrollController.dispose();
     _backToTopTarget.dispose();
     _farFromBottom.dispose();
+    _keepAliveIds.dispose();
     _ctl.dispose();
     super.dispose();
   }
@@ -170,114 +196,132 @@ class _ConversationScreenState extends State<ConversationScreen> {
       conv.busy ||
       conv.loading;
 
-  int _footerRows(ConversationStore conv) =>
-      1 + (_hasDynamicFooterRow(conv) ? 1 : 0);
-
-  int _headerRows(ConversationStore conv) =>
-      (conv.loadingEarlier || (conv.loadEarlierError && conv.hasMore)) ? 1 : 0;
-
-  /// Reversed ScrollablePositionedList: index 0 is the visual bottom (newest).
-  /// Driven by ItemPositionsListener (layout changes, scrolling) — evaluates
-  /// both back-pagination triggering and the back-to-turn-top button target.
-  /// Time-based leading+trailing throttle (≥16ms): a per-frame cap is no
-  /// throttle on 120Hz displays. Unchanged-position frames (e.g. streaming
-  /// rebuilds while idle) early-exit on a cheap signature.
-  void _onPositions() {
-    final now = DateTime.now();
-    final elapsed = now.difference(_lastPositionsEval);
-    if (elapsed >= _kPositionsThrottle) {
-      _lastPositionsEval = now;
-      _positionsTrailing?.cancel();
-      _positionsTrailing = null;
-      _evaluatePositions();
-    } else {
-      _positionsTrailing ??= Timer(_kPositionsThrottle - elapsed, () {
-        _positionsTrailing = null;
-        _lastPositionsEval = DateTime.now();
-        if (mounted) _evaluatePositions();
-      });
-    }
+  void _onScroll() {
+    _updateFarFromBottom();
+    _maybeLoadEarlier();
+    _scheduleFrameEval();
   }
 
-  static const _kPositionsThrottle = Duration(milliseconds: 16);
-  DateTime _lastPositionsEval = DateTime.fromMillisecondsSinceEpoch(0);
-  Timer? _positionsTrailing;
-  int _positionsSig = -1;
+  void _scheduleFrameEval() {
+    if (_frameEvalScheduled) return;
+    _frameEvalScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _frameEvalScheduled = false;
+      if (!mounted) return;
+      if (_keepAliveLruDirty) {
+        _keepAliveLruDirty = false;
+        final next = Set<String>.of(_keepAliveLru);
+        final cur = _keepAliveIds.value;
+        if (next.length != cur.length || !next.containsAll(cur)) {
+          _keepAliveIds.value = next;
+        }
+      }
+      _evaluateFrame();
+    });
+  }
 
-  void _evaluatePositions() {
-    if (!mounted) return;
+  /// itemBuilder 运行在 buildScope 内，这里只做记录；集合更新与通知批处理
+  /// 到帧后（build 期间通知会让已挂载的 _KeepAliveMessage markNeedsBuild 抛异常）。
+  void _noteMessageBuilt(String id) {
+    final isNew = !_keepAliveLru.contains(id);
+    _keepAliveLru.remove(id);
+    _keepAliveLru.add(id);
+    var evicted = false;
+    while (_keepAliveLru.length > _kKeepAliveWindow) {
+      _keepAliveLru.remove(_keepAliveLru.first);
+      evicted = true;
+    }
+    if (isNew || evicted) _keepAliveLruDirty = true;
+  }
+
+  /// 找 render object 所属 sliver 直接子级的 parentData（中间隔着
+  /// RepaintBoundary 等 proxy，需向上走）。在 keep-alive 桶中的条目返回
+  /// keptAlive=true（其 rect 是过期布局位置，不可信）。
+  SliverMultiBoxAdaptorParentData? _sliverParentDataOf(RenderObject rb) {
+    RenderObject? node = rb;
+    while (node != null) {
+      final pd = node.parentData;
+      if (pd is SliverMultiBoxAdaptorParentData) return pd;
+      node = node.parent;
+    }
+    return null;
+  }
+
+  void _evaluateFrame() {
     final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv == null) return;
     final msgs = conv.renderableMessages;
     final msgCount = msgs.length;
-    final footer = _footerRows(conv);
-    final positions = _itemPositionsListener.itemPositions.value;
+
+    final w = MediaQuery.sizeOf(context).width;
+    final ts = MediaQuery.textScalerOf(context);
+    if (_widthBaseline == null) {
+      _widthBaseline = w;
+      _textScaleBaseline = ts;
+    } else if (w != _widthBaseline || ts != _textScaleBaseline) {
+      _widthBaseline = w;
+      _textScaleBaseline = ts;
+      _heightCache.clear();
+      _driverResetMode = true;
+      _driverAbortedRunTop = null; // 基线变化使先前中止失效，重置上限生效
+    }
 
     final listBox = _listKey.currentContext?.findRenderObject();
-    final lh = (listBox is RenderBox && listBox.attached && listBox.hasSize)
-        ? listBox.size.height
-        : 0.0;
-    var sig =
-        msgCount * 31 +
-        footer * 7 +
-        _headerRows(conv) * 3 +
-        (conv.hasMore ? 1 : 0) +
-        (conv.loadingEarlier ? 2 : 0) +
-        lh.round();
-    for (final p in positions) {
-      sig =
-          sig * 31 +
-          p.index +
-          (p.itemLeadingEdge * 10).round() * 3 +
-          (p.itemTrailingEdge * 10).round() * 5;
-    }
-    if (sig == _positionsSig) return;
-    _positionsSig = sig;
-
-    if (msgCount > 0 && conv.hasMore && !conv.loadingEarlier) {
-      final lastMsgIndex = msgCount - 1 + footer;
-      var maxIndex = -1;
-      for (final p in positions) {
-        if (p.index > maxIndex) maxIndex = p.index;
-      }
-      if (maxIndex >= lastMsgIndex - _kPaginationLookahead) {
-        _maybeLoadEarlier();
-      }
-    }
-
-    if (listBox is! RenderBox || lh <= 0) {
+    if (listBox is! RenderBox || !listBox.attached || !listBox.hasSize) {
       _setBackToTopTarget(null);
       return;
     }
-    final h = lh;
-    _listHeight = h;
+    final h = listBox.size.height;
+    _viewportHeight = h;
     _updateFarFromBottom();
-    final eps = 1.0 / h;
+    if (msgCount == 0 || !_scrollController.hasClients || h <= 0) {
+      _setBackToTopTarget(null);
+      _stopDriver();
+      return;
+    }
+    final pixels = _scrollController.position.pixels;
+    final listTop = listBox.localToGlobal(Offset.zero).dy;
+    final listBottom = listTop + h;
 
-    final byIndex = <int, ItemPosition>{};
-    var visMmin = 1 << 30;
-    var visMmax = -1;
-    var allVisibleAreMessages = true;
-    for (final p in positions) {
-      byIndex[p.index] = p;
-      final visible =
-          p.itemTrailingEdge > _kMinVisibleFraction &&
-          p.itemLeadingEdge < 1 - _kMinVisibleFraction;
-      if (!visible) continue;
-      final m = p.index - footer;
-      if (m < 0 || m >= msgCount) {
-        allVisibleAreMessages = false;
-        break;
+    var visLow = msgCount;
+    var visHigh = -1;
+    double? visLowBottom;
+    double? visHighTop;
+    if (_sizeKeys.isNotEmpty) {
+      for (var i = 0; i < msgCount; i++) {
+        final ctx = _sizeKeys[msgs[i].info.id]?.currentContext;
+        if (ctx == null) continue;
+        final rb = ctx.findRenderObject();
+        if (rb is! RenderBox || !rb.attached || !rb.hasSize) continue;
+        final pd = _sliverParentDataOf(rb);
+        if (pd == null || pd.keptAlive) continue;
+        final top = rb.localToGlobal(Offset.zero).dy;
+        final bottom = top + rb.size.height;
+        if (bottom <= listTop + 1 || top >= listBottom - 1) continue;
+        if (i < visLow) {
+          visLow = i;
+          visLowBottom = bottom;
+        }
+        if (i > visHigh) {
+          visHigh = i;
+          visHighTop = top;
+        }
       }
-      if (m < visMmin) visMmin = m;
-      if (m > visMmax) visMmax = m;
     }
 
-    int? target;
-    if (allVisibleAreMessages && visMmax >= 0) {
-      var mStart = visMmax;
-      var mEnd = visMmax;
-      if (msgs[visMmax].info.role != 'user') {
+    const eps = 1.0;
+    double? target;
+    final lowBottom = visLowBottom;
+    final highTop = visHighTop;
+    if (visHigh >= 0 &&
+        lowBottom != null &&
+        lowBottom >= listBottom - eps &&
+        !(visHigh == msgCount - 1 &&
+            highTop != null &&
+            highTop > listTop + eps)) {
+      var mStart = visHigh;
+      var mEnd = visHigh;
+      if (msgs[visHigh].info.role != 'user') {
         while (mStart > 0 && msgs[mStart - 1].info.role != 'user') {
           mStart--;
         }
@@ -285,66 +329,110 @@ class _ConversationScreenState extends State<ConversationScreen> {
           mEnd++;
         }
       }
-      if (visMmin >= mStart) {
-        final posT = byIndex[mEnd + footer];
-        final posB = byIndex[mStart + footer];
-        final topOut = posT == null || posT.itemTrailingEdge > 1 + eps;
-        final bottomOut = posB == null || posB.itemLeadingEdge < -eps;
-        if (topOut && bottomOut) {
-          final hiddenTop = posT == null
-              ? null
-              : math.max(0.0, posT.itemTrailingEdge - 1) * h;
-          final hiddenBottom = posB == null
-              ? null
-              : math.max(0.0, -posB.itemLeadingEdge) * h;
-          final longEnough = (hiddenTop != null && hiddenBottom != null)
-              ? hiddenTop + hiddenBottom >= h
-              : (hiddenTop == null && hiddenBottom == null)
-              ? true
-              : (hiddenTop ?? hiddenBottom!) + _kMinMemberHiddenBound >= h;
-          if (longEnough) target = mEnd + footer;
+      if (visLow >= mStart) {
+        final runTopId = msgs[mEnd].info.id;
+        var gap = false;
+        var runTopLB = _footerHeight;
+        for (var i = 0; i <= mEnd; i++) {
+          final mh = _heightCache[msgs[i].info.id];
+          if (mh == null) {
+            gap = true;
+          } else {
+            runTopLB += mh;
+          }
         }
+        if (!gap) {
+          _driverAbortedRunTop = null;
+          final topOut = runTopLB > pixels + h + eps;
+          if (topOut && runTopLB - _footerHeight >= 2 * h) {
+            target = runTopLB - h;
+          }
+        }
+        _drivePreAssembly(conv, gap: gap, runTopId: runTopId);
+      } else {
+        _stopDriver();
       }
+    } else {
+      _stopDriver();
     }
     _setBackToTopTarget(target);
+    _maybeLoadEarlier();
   }
 
-  void _setBackToTopTarget(int? index) {
-    if (_backToTopTarget.value != index) _backToTopTarget.value = index;
+  /// 预组装 driver：占满单一 run 且求和范围有缺口时，逐帧扩大 cacheExtent
+  /// 补测；缺口闭合后的下一帧评估走 _stopDriver 收回。触发只做"占满 + 缺口
+  /// + 非 busy"宽松判定——跨度/滚出下界在下方缺口场景会低估死锁（只约束按钮
+  /// 显隐，不约束补测）。
+  void _drivePreAssembly(
+    ConversationStore conv, {
+    required bool gap,
+    required String runTopId,
+  }) {
+    final h = _viewportHeight;
+    if (!gap || conv.busy || h <= 0) {
+      if (_driverActive) _stopDriver();
+      return;
+    }
+    if (_driverAbortedRunTop == runTopId) return;
+    final maxExtent =
+        (_driverResetMode ? _kDriverResetMaxScreens : _kDriverMaxScreens) * h;
+    if (_cacheExtent >= maxExtent) {
+      _stopDriver();
+      _driverAbortedRunTop = runTopId;
+      return;
+    }
+    final next = math.min(
+      (_driverActive ? _cacheExtent : _kCacheExtentBase) +
+          _kDriverStepScreens * h,
+      maxExtent,
+    );
+    _driverActive = true;
+    setState(() => _cacheExtent = next);
+  }
+
+  String? _driverAbortedRunTop;
+
+  void _stopDriver() {
+    _driverActive = false;
+    _driverResetMode = false;
+    if (_cacheExtent != _kCacheExtentBase) {
+      setState(() => _cacheExtent = _kCacheExtentBase);
+    }
+  }
+
+  void _setBackToTopTarget(double? target) {
+    if (_backToTopTarget.value != target) _backToTopTarget.value = target;
   }
 
   void _updateFarFromBottom() {
-    if (_listHeight <= 0) return;
-    final far = _scrollPixels > _kFarFromBottomScreens * _listHeight;
+    if (_viewportHeight <= 0 || !_scrollController.hasClients) return;
+    final far = _scrollController.position.pixels >
+        _kFarFromBottomScreens * _viewportHeight;
     if (_farFromBottom.value != far) _farFromBottom.value = far;
   }
 
   void _scrollToBottom() {
     unawaited(
-      _itemScrollController.scrollTo(
-        index: 0,
+      _scrollController.animateTo(
+        0,
         duration: const Duration(milliseconds: 400),
         curve: Curves.easeOutCubic,
       ),
     );
   }
 
-  /// Scrolls so the run's top edge lands flush with the viewport top. The item
-  /// above the run (runTopIndex + 1) has its bottom edge == the run's top edge,
-  /// so aligning it to the far edge (alignment 1) is height-independent. When
-  /// the run is the list's topmost item, the target clamps to itemCount - 1
-  /// and the scroll clamps to max extent — same landing.
-  void _scrollToRunTop(int runTopIndex) {
-    final conv = serverStore.conversationForRead(widget.sessionId);
-    if (conv == null) return;
-    final itemCount =
-        conv.renderableMessages.length + _footerRows(conv) + _headerRows(conv);
-    if (itemCount <= 0) return;
+  /// target 为 run 上边缘距底偏移 - 视口高（reversed 坐标系 pixels）。
+  void _scrollToRunTop(double target) {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    final t = target.clamp(pos.minScrollExtent, pos.maxScrollExtent);
+    final screens =
+        _viewportHeight > 0 ? (t - pos.pixels).abs() / _viewportHeight : 1.0;
+    final ms = (250 * screens).clamp(250.0, 500.0).round();
     unawaited(
-      _itemScrollController.scrollTo(
-        index: math.min(runTopIndex + 1, itemCount - 1),
-        alignment: 1,
-        duration: const Duration(milliseconds: 400),
+      _scrollController.animateTo(
+        t,
+        duration: Duration(milliseconds: ms),
         curve: Curves.easeOutCubic,
       ),
     );
@@ -354,25 +442,120 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv == null) return;
     if (!conv.hasMore || conv.loadingEarlier) return;
+    if (!_scrollController.hasClients || _viewportHeight <= 0) return;
+    final pos = _scrollController.position;
+    if (pos.pixels <
+        pos.maxScrollExtent - _kPaginationScreens * _viewportHeight) {
+      return;
+    }
     conv.loadOnePage().then((madeProgress) {
       // IR-1: stop the chain on failure (no progress) to prevent request
       // storms when offline. The user can retry by scrolling away and back.
       if (!mounted || !madeProgress) return;
       // Chain: if the viewport isn't filled yet (still at top), keep loading.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final c = serverStore.conversationForRead(widget.sessionId);
-        if (c == null || !c.hasMore || c.loadingEarlier) return;
-        final lastMsgIndex = c.renderableMessages.length - 1 + _footerRows(c);
-        var maxIndex = -1;
-        for (final p in _itemPositionsListener.itemPositions.value) {
-          if (p.index > maxIndex) maxIndex = p.index;
-        }
-        if (maxIndex >= lastMsgIndex - _kPaginationLookahead) {
-          _maybeLoadEarlier();
-        }
+        if (mounted) _maybeLoadEarlier();
       });
     });
+  }
+
+  Widget _measuredMessage(DisplayMessage msg) {
+    final id = msg.info.id;
+    _noteMessageBuilt(id);
+    final key = _sizeKeys.putIfAbsent(id, () => GlobalKey());
+    return NotificationListener<SizeChangedLayoutNotification>(
+      onNotification: (_) {
+        final h = key.currentContext?.size?.height;
+        if (h != null && h > 0 && _heightCache[id] != h) {
+          _heightCache[id] = h;
+          _scheduleFrameEval();
+        }
+        return false;
+      },
+      child: SizeChangedLayoutNotifier(
+        key: key,
+        // Memoized widget instance: keyboard-animation frames rebuild the
+        // list shell, re-running itemBuilder; returning the identical
+        // instance lets element diffing prune the whole (heavy) message
+        // subtree. Cache is cleared on every body build.
+        child: _KeepAliveMessage(
+          key: ValueKey(id),
+          msgId: id,
+          keepAliveIds: _keepAliveIds,
+          child: _messageChildCache[id] ??= _message(msg),
+        ),
+      ),
+    );
+  }
+
+  Widget _footerRow(ConversationStore conv) {
+    final Widget child;
+    if (conv.isRetry &&
+        conv.retryMessage != null &&
+        conv.retryMessage!.isNotEmpty) {
+      child = _RetryMessage(message: conv.retryMessage!);
+    } else if (_hasDynamicFooterRow(conv)) {
+      child = const _TypingDots();
+    } else {
+      child = const SizedBox.shrink();
+    }
+    return NotificationListener<SizeChangedLayoutNotification>(
+      onNotification: (_) {
+        final h = _footerSizeKey.currentContext?.size?.height ?? 0;
+        if (h != _footerRowHeight) {
+          _footerRowHeight = h;
+          _scheduleFrameEval();
+        }
+        return false;
+      },
+      child: SizeChangedLayoutNotifier(
+        key: _footerSizeKey,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Widget _headerRow(ConversationStore conv) {
+    final Widget child;
+    if (conv.loadingEarlier) {
+      child = const _LoadingEarlierRow();
+    } else if (conv.loadEarlierError && conv.hasMore) {
+      child = _LoadEarlierErrorRow(onRetry: _maybeLoadEarlier);
+    } else {
+      child = const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: child,
+    );
+  }
+
+  /// busy 结束：流式离屏期间长高的末 run 成员高度不可观测，驱逐未挂载成员
+  /// 的缓存项（按未测对待，由 driver 补测定终值）；已挂载成员的高度变化由
+  /// SizeChangedLayoutNotification 自动更新。注意 keep-alive 桶中的条目仍
+  /// 挂载但不参与 layout（高度是流式前的旧值），同样按未测驱逐。
+  void _onBusyEnd(List<DisplayMessage> msgs) {
+    for (final m in msgs) {
+      if (m.info.role == 'user') break;
+      final id = m.info.id;
+      final rb = _sizeKeys[id]?.currentContext?.findRenderObject();
+      final laidOut =
+          rb is RenderObject && !(_sliverParentDataOf(rb)?.keptAlive ?? true);
+      if (!laidOut) _heightCache.remove(id);
+    }
+  }
+
+  void _pruneMessageCaches(List<DisplayMessage> msgs) {
+    final ids = <String>{for (final m in msgs) m.info.id};
+    _sizeKeys.removeWhere((id, _) => !ids.contains(id));
+    _heightCache.removeWhere((id, _) => !ids.contains(id));
+    _keepAliveLru.removeWhere((id) => !ids.contains(id));
+    if (_driverAbortedRunTop != null && !ids.contains(_driverAbortedRunTop)) {
+      _driverAbortedRunTop = null;
+    }
   }
 
   void _openFiles(BuildContext context, String directory) {
@@ -472,6 +655,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       body: ListenableBuilder(
         listenable: Listenable.merge([conv, showThinking]),
         builder: (context, _) {
+          _messageChildCache.clear();
           if (conv.loading && !conv.loaded && conv.messages.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -484,43 +668,33 @@ class _ConversationScreenState extends State<ConversationScreen> {
               ),
             );
           }
-          // Reversed ScrollablePositionedList pins to the newest message
-          // (bottom) on open, so we enter directly at the latest part with no
-          // top→bottom flash. Todos/permissions live in a separate footer
-          // pinned to the page bottom (see _FooterPanel), out of the scrolling
-          // message stream.
+          // Reversed CustomScrollView pins to the newest message (bottom) on
+          // open. Slivers keep non-message rows out of the message index
+          // space: bottom spacing / dynamic footer / messages / header.
           final msgs = conv.renderableMessages;
-          final footer = _footerRows(conv);
-          final header = _headerRows(conv);
-          final list = ScrollablePositionedList.builder(
+          if (_wasBusy && !conv.busy) _onBusyEnd(msgs);
+          _wasBusy = conv.busy;
+          _pruneMessageCaches(msgs);
+          _scheduleFrameEval();
+          final list = CustomScrollView(
             key: _listKey,
             reverse: true,
-            itemScrollController: _itemScrollController,
-            itemPositionsListener: _itemPositionsListener,
-            scrollOffsetListener: _scrollOffsetListener,
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-            itemCount: msgs.length + footer + header,
-            itemBuilder: (context, index) {
-              if (index == 0) return const SizedBox(height: 8);
-              if (index < footer) {
-                if (conv.isRetry &&
-                    conv.retryMessage != null &&
-                    conv.retryMessage!.isNotEmpty) {
-                  return _RetryMessage(message: conv.retryMessage!);
-                }
-                return const _TypingDots();
-              }
-              final m = index - footer;
-              if (m < msgs.length) {
-                final msg = msgs[m];
-                return _KeepAliveMessage(
-                  key: ValueKey(msg.info.id),
-                  child: _message(msg),
-                );
-              }
-              if (conv.loadingEarlier) return const _LoadingEarlierRow();
-              return _LoadEarlierErrorRow(onRetry: _maybeLoadEarlier);
-            },
+            controller: _scrollController,
+            scrollCacheExtent: ScrollCacheExtent.pixels(_cacheExtent),
+            slivers: [
+              const SliverToBoxAdapter(child: SizedBox(height: 8)),
+              SliverToBoxAdapter(child: _footerRow(conv)),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, m) => _measuredMessage(msgs[m]),
+                    childCount: msgs.length,
+                  ),
+                ),
+              ),
+              SliverToBoxAdapter(child: _headerRow(conv)),
+            ],
           );
           final msgCount = msgs.length;
           if (msgCount != _lastMsgCount) {
@@ -993,10 +1167,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   void _scheduleAutoScroll() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      if (!mounted || !_scrollController.hasClients) return;
       // Reversed list: the newest (bottom) is at offset 0.
-      if (_scrollPixels <= _kAutoScrollPixels) {
-        _itemScrollController.jumpTo(index: 0);
+      if (_scrollController.position.pixels <= _kAutoScrollPixels) {
+        _scrollController.jumpTo(0);
       }
     });
   }
@@ -2592,8 +2766,15 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
 }
 
 class _KeepAliveMessage extends StatefulWidget {
+  final String msgId;
+  final ValueNotifier<Set<String>> keepAliveIds;
   final Widget child;
-  const _KeepAliveMessage({super.key, required this.child});
+  const _KeepAliveMessage({
+    super.key,
+    required this.msgId,
+    required this.keepAliveIds,
+    required this.child,
+  });
 
   @override
   State<_KeepAliveMessage> createState() => _KeepAliveMessageState();
@@ -2602,7 +2783,30 @@ class _KeepAliveMessage extends StatefulWidget {
 class _KeepAliveMessageState extends State<_KeepAliveMessage>
     with AutomaticKeepAliveClientMixin {
   @override
-  bool get wantKeepAlive => true;
+  bool get wantKeepAlive => widget.keepAliveIds.value.contains(widget.msgId);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.keepAliveIds.addListener(_onKeepAliveIdsChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _KeepAliveMessage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.keepAliveIds != widget.keepAliveIds) {
+      oldWidget.keepAliveIds.removeListener(_onKeepAliveIdsChanged);
+      widget.keepAliveIds.addListener(_onKeepAliveIdsChanged);
+    }
+  }
+
+  void _onKeepAliveIdsChanged() => updateKeepAlive();
+
+  @override
+  void dispose() {
+    widget.keepAliveIds.removeListener(_onKeepAliveIdsChanged);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2612,13 +2816,13 @@ class _KeepAliveMessageState extends State<_KeepAliveMessage>
 }
 
 class _BackToTurnTopButton extends StatelessWidget {
-  final ValueNotifier<int?> target;
-  final void Function(int) onTap;
+  final ValueNotifier<double?> target;
+  final void Function(double) onTap;
   const _BackToTurnTopButton({required this.target, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<int?>(
+    return ValueListenableBuilder<double?>(
       valueListenable: target,
       builder: (context, t, _) {
         final visible = t != null;
