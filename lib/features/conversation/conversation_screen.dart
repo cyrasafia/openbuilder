@@ -2762,9 +2762,26 @@ class _ComposeBar extends StatefulWidget {
 class _ComposeBarState extends State<_ComposeBar> {
   bool _aborting = false;
   final _kbFocus = FocusNode();
+  final _fieldFocus = FocusNode();
+  double _prevBottomInset = 0;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final inset = MediaQuery.viewInsetsOf(context).bottom;
+    if (_prevBottomInset > 0 &&
+        inset == 0 &&
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _fieldFocus.hasFocus) _fieldFocus.unfocus();
+      });
+    }
+    _prevBottomInset = inset;
+  }
 
   @override
   void dispose() {
+    _fieldFocus.dispose();
     _kbFocus.dispose();
     super.dispose();
   }
@@ -2807,6 +2824,7 @@ class _ComposeBarState extends State<_ComposeBar> {
               },
               child: TextField(
                 controller: widget.ctl,
+                focusNode: _fieldFocus,
                 onChanged: widget.onChanged,
                 onSubmitted: (_) => widget.onSend(),
                 minLines: 1,
