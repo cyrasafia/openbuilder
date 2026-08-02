@@ -119,6 +119,9 @@ class _ConversationScreenState extends State<ConversationScreen>
   /// 距底基底 = 8(留白 sliver) + footer 动态行高 + 8(消息 SliverPadding 底侧)。
   double get _footerHeight => 16 + _footerRowHeight;
 
+  /// 消息 SliverPadding 顶侧（与 _footerHeight 底侧 8 对称，用于占满判定上边界）。
+  static const _kTopPadding = 8.0;
+
   @override
   void initState() {
     super.initState();
@@ -313,12 +316,16 @@ class _ConversationScreenState extends State<ConversationScreen>
     double? target;
     final lowBottom = visLowBottom;
     final highTop = visHighTop;
+    // 视口上下边界需扣除非消息占用区：底部留白 sliver(8) + footer 动态行 +
+    // 消息 SliverPadding 底侧(8) = _footerHeight；顶部消息 SliverPadding 顶侧。
+    final bottomEdge = listBottom - _footerHeight;
+    final topEdge = listTop + _kTopPadding;
     if (visHigh >= 0 &&
         lowBottom != null &&
-        lowBottom >= listBottom - eps &&
+        lowBottom >= bottomEdge - eps &&
         !(visHigh == msgCount - 1 &&
             highTop != null &&
-            highTop > listTop + eps)) {
+            highTop > topEdge + eps)) {
       var mStart = visHigh;
       var mEnd = visHigh;
       if (msgs[visHigh].info.role != 'user') {
