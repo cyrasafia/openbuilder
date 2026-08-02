@@ -571,6 +571,81 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
+  Future<SessionModel> createSessionInNewWorktree(
+    String projectDir, {
+    bool reconcileFirst = false,
+  }) async {
+    final c = client;
+    if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
+    WorktreeResult? wt;
+    if (reconcileFirst) {
+      wt = await _recoverAmbiguousWorktree(c, projectDir);
+    }
+    if (wt == null) {
+      try {
+        wt = await c.createWorktree(projectDir);
+      } catch (e) {
+        final kind = friendlyErrorRaw(e);
+        if (kind == FriendlyErrorKind.timeout ||
+            kind == FriendlyErrorKind.connect) {
+          wt = await _recoverAmbiguousWorktree(c, projectDir);
+        }
+        if (wt == null) throw OperationException('创建工作区', cause: e);
+      }
+    }
+    final worktree = wt;
+    final idx = _projects.indexWhere((p) => p.worktree == projectDir);
+    if (idx >= 0 && !_projects[idx].sandboxes.contains(worktree.directory)) {
+      final p = _projects[idx];
+      _projects[idx] = ProjectModel(
+        id: p.id,
+        worktree: p.worktree,
+        vcs: p.vcs,
+        name: p.name,
+        icon: p.icon,
+        commands: p.commands,
+        sandboxes: [...p.sandboxes, worktree.directory],
+        created: p.created,
+      );
+      _scheduleCacheSave();
+      notifyListeners();
+    }
+    final SessionModel session;
+    try {
+      session = await c.createSession(worktree.directory);
+    } catch (e) {
+      throw SessionInWorktreeException(
+        '创建会话',
+        cause: e,
+        worktreeDirectory: worktree.directory,
+      );
+    }
+    _upsertSession(session);
+    _scheduleCacheSave();
+    notifyListeners();
+    return session;
+  }
+
+  Future<WorktreeResult?> _recoverAmbiguousWorktree(
+    OpencodeClient c,
+    String projectDir,
+  ) async {
+    try {
+      final remote = await c.worktrees(projectDir);
+      final idx = _projects.indexWhere((p) => p.worktree == projectDir);
+      final known = <String>{
+        projectDir,
+        if (idx >= 0) ..._projects[idx].sandboxes,
+      };
+      final candidates = remote.where((d) => !known.contains(d)).toList();
+      if (candidates.length != 1) return null;
+      final dir = candidates.single;
+      return WorktreeResult(name: dir.split('/').last, directory: dir);
+    } catch (_) {
+      return null;
+    }
+  }
+
   String projectDisplayOf(SessionModel s) {
     if (s.projectID == 'global') {
       return s.dirName.isEmpty ? 'global' : s.dirName;

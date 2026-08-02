@@ -11,6 +11,15 @@ class OperationException implements Exception {
   String toString() => '$operation: $cause';
 }
 
+class SessionInWorktreeException extends OperationException {
+  final String worktreeDirectory;
+  const SessionInWorktreeException(
+    super.operation, {
+    required super.cause,
+    required this.worktreeDirectory,
+  });
+}
+
 enum FriendlyErrorKind {
   authFailed,
   notFound,

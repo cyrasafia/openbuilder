@@ -183,11 +183,7 @@ class ProjectDetailScreen extends StatelessWidget {
     );
     if (!context.mounted || directory == null) return;
     if (directory.isEmpty) {
-      await _createWorktree(
-        context,
-        project.worktree,
-        createSessionAfterward: true,
-      );
+      _confirmCreateWorktreeSession(context, project);
       return;
     }
     await _createSession(context, directory);
@@ -267,66 +263,103 @@ class ProjectDetailScreen extends StatelessWidget {
     }
   }
 
-  Future<void> _createWorktree(
-    BuildContext context,
-    String projectDir, {
-    bool createSessionAfterward = false,
-  }) async {
-    final client = serverStore.client;
-    if (client == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(l(context).errorNotConnected)));
-      }
-      return;
-    }
-    showDialog<void>(
+  void _confirmCreateWorktreeSession(BuildContext context, ProjectModel project) {
+    var creating = false;
+    var worktreeStepFailed = false;
+    String? pendingWorktreeDir;
+    String? errorText;
+    showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => PopScope(
-        canPop: false,
-        child: AlertDialog(
-          content: Row(
-            children: [
-              const SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2.5),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => PopScope(
+          canPop: !creating,
+          child: AlertDialog(
+            title: Text(l(ctx).projectNewWorkspace),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  pendingWorktreeDir == null
+                      ? l(ctx).projectNewWorkspaceConfirm
+                      : l(ctx).projectWorkspaceCreatedRetry,
+                ),
+                if (errorText != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    errorText!,
+                    style: TextStyle(
+                      color: Theme.of(ctx).colorScheme.error,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: creating ? null : () => Navigator.pop(ctx),
+                child: Text(l(ctx).cancel),
               ),
-              const SizedBox(width: 16),
-              Text(l(ctx).projectCreatingWorkspace),
+              FilledButton(
+                onPressed: creating
+                    ? null
+                    : () async {
+                        setState(() {
+                          creating = true;
+                          errorText = null;
+                        });
+                        try {
+                          final pending = pendingWorktreeDir;
+                          final session = pending == null
+                              ? await serverStore.createSessionInNewWorktree(
+                                  project.worktree,
+                                  reconcileFirst: worktreeStepFailed,
+                                )
+                              : await serverStore.createSession(pending);
+                          unawaited(serverStore.refresh());
+                          unawaited(
+                            _applyDefaultAgentModel(
+                              session.id,
+                              session.directory,
+                            ),
+                          );
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (context.mounted) {
+                            context.push('/session/${session.id}');
+                          }
+                        } catch (e) {
+                          if (e is SessionInWorktreeException) {
+                            pendingWorktreeDir = e.worktreeDirectory;
+                          } else {
+                            final kind = friendlyErrorRaw(e);
+                            worktreeStepFailed =
+                                kind == FriendlyErrorKind.timeout ||
+                                kind == FriendlyErrorKind.connect;
+                          }
+                          if (ctx.mounted) {
+                            setState(() {
+                              creating = false;
+                              errorText = l(ctx).createFailed(
+                                friendlyMessage(l(ctx), e),
+                              );
+                            });
+                          }
+                        }
+                      },
+                child: creating
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(l(ctx).create),
+              ),
             ],
           ),
         ),
       ),
     );
-    try {
-      final result = await client.createWorktree(projectDir);
-      if (context.mounted) Navigator.of(context).pop();
-      unawaited(serverStore.refresh());
-      if (!createSessionAfterward && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l(context).projectWorktreeCreated(result.name)),
-          ),
-        );
-      }
-      if (context.mounted && createSessionAfterward) {
-        await _createSession(context, result.directory);
-      }
-    } catch (e) {
-      if (context.mounted) Navigator.of(context).pop();
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              l(context).createFailed(friendlyMessage(l(context), e)),
-            ),
-          ),
-        );
-      }
-    }
   }
 
   void _confirmRemoveWorktree(
