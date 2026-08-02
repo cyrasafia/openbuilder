@@ -24,7 +24,8 @@ ProjectModel _project({
       sandboxes: sandboxes,
     );
 
-SessionModel _session(String id, String dir, {int updated = 1000}) =>
+SessionModel _session(String id, String dir,
+        {int updated = 1000, int? archived}) =>
     SessionModel(
       id: id,
       projectID: _projectId,
@@ -32,6 +33,7 @@ SessionModel _session(String id, String dir, {int updated = 1000}) =>
       title: id,
       created: 0,
       updated: updated,
+      archived: archived,
     );
 
 /// Mock client whose `removeWorktree` outcome is controllable.
@@ -40,12 +42,30 @@ class _RemoveWorktreeMockClient extends OpencodeClient {
   int removeCalls = 0;
   String? lastDirectory;
   String? lastWorktreeDir;
+  List<SessionModel> directorySessions = const [];
+  final List<String> archivedIds = [];
+  final List<String> callOrder = [];
 
   _RemoveWorktreeMockClient() : super(_noopDio());
 
   @override
+  Future<List<SessionModel>> sessionsForDirectory(String directory,
+      {int limit = 1000}) async {
+    callOrder.add('list');
+    return directorySessions;
+  }
+
+  @override
+  Future<void> archive(String sessionId,
+      {String? directory, int? archived}) async {
+    callOrder.add('archive:$sessionId');
+    archivedIds.add(sessionId);
+  }
+
+  @override
   Future<void> removeWorktree(String directory,
       {required String worktreeDir}) async {
+    callOrder.add('remove');
     removeCalls++;
     lastDirectory = directory;
     lastWorktreeDir = worktreeDir;
@@ -123,6 +143,41 @@ void main() {
 
       expect(store.projectOf(_projectId)!.sandboxes, [_sandboxDir]);
       expect(store.sessions.any((s) => s.id == 'sb1'), isTrue);
+    });
+
+    test('archives worktree sessions before deleting the worktree', () async {
+      final client = _RemoveWorktreeMockClient()
+        ..directorySessions = [
+          _session('sb1', _sandboxDir),
+          _session('sb2', _sandboxDir),
+        ];
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project(sandboxes: [_sandboxDir])]);
+
+      await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
+
+      expect(client.archivedIds, containsAll(['sb1', 'sb2']));
+      expect(client.callOrder.first, 'list');
+      expect(client.callOrder.last, 'remove');
+      expect(client.callOrder.indexOf('remove'),
+          greaterThan(client.callOrder.indexOf('archive:sb1')));
+      expect(client.callOrder.indexOf('remove'),
+          greaterThan(client.callOrder.indexOf('archive:sb2')));
+    });
+
+    test('does not re-archive already archived sessions', () async {
+      final client = _RemoveWorktreeMockClient()
+        ..directorySessions = [
+          _session('sb1', _sandboxDir),
+          _session('sb2', _sandboxDir, archived: 1234),
+        ];
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project(sandboxes: [_sandboxDir])]);
+
+      await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
+
+      expect(client.archivedIds, ['sb1']);
+      expect(client.removeCalls, 1);
     });
 
     test('throws KnownError when client is null', () async {

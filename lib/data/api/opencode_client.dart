@@ -97,8 +97,8 @@ class OpencodeClient {
       _getModels('/session', SessionModel.fromJson);
 
   /// `GET /session?directory=<path>` — sessions scoped to one project directory.
-  /// Returns unarchived sessions by default (opencode's authoritative archive
-  /// filtering), unlike `/api/session` which under-reports `time.archived`.
+  /// Archived sessions are included (the server does not filter them on this
+  /// endpoint); callers must skip `time.archived != null` themselves.
   Future<List<SessionModel>> sessionsForDirectory(String directory,
       {int limit = 1000}) async {
     final r = await dio.get<dynamic>('/session', queryParameters: {
