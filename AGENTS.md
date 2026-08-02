@@ -39,6 +39,7 @@ openbuilder/
 ├─ test/                         # 单元 + widget + smoke 测试
 ├─ tool/
 │  └─ gen_client.sh              # 刷新 pin 住的 OpenAPI spec（--generate 仅产 .gen_ref/ 参考）
+├─ tmp/                          # 临时下载/生成的产物（图标预览图、调试截图等），内容不入库，仅 .gitkeep 保留目录
 ├─ android/                      # Android 平台配置（AGP 9.0.1, Kotlin 2.3.20, Java 17）
 ├─ ios/                          # iOS 平台配置
 ├─ web/                          # Web 平台配置

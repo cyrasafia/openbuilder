@@ -121,6 +121,19 @@ Future<void> handleBack() async {
 - 不改 diff 相关路由的转场（保持默认 Material）；
 - 不改快照 LRU、内容缓存、collapse 超时等既有策略。
 
+### 收起按钮 UI 规格统一
+
+收起是文件容器的整体行为，容器内任意页面的收起按钮在视觉与交互上须完全一致：
+
+- **统一组件**：`FileCollapseAction`（`file_browsing_container.dart`），`StatelessWidget`，内部从祖先 `FileBrowsingContainerState` 取 `collapse` 回调，无需各页面自备 `_collapse()` 或 `FileBrowsingContainer.maybeOf` 查找。
+- **位置**：恒置于所在页 `AppBar.actions` 的**最右**，无论该页有多少其它操作（搜索、markdown 切源、more_vert 菜单等），收起按钮始终在最右。
+- **分隔线**：与其它操作按钮之间以竖分隔线分离——组件内置 `Padding(vertical: 10) + VerticalDivider(width: 1)`，页面无需自行加分隔线。
+- **图标/尺寸**：`Icons.keyboard_arrow_down`，`size: 20`（与现有搜索图标同档），不改图标本身、不增大尺寸。
+- **tooltip**：`l(context).fileCollapse`（"收起" / "Collapse"）。
+- **接入约定**：容器内页面只需 `actions: [...其它按钮, const FileCollapseAction()]`，禁止再手写独立的 `IconButton(Icons.keyboard_arrow_down)`。
+
+容器外页面（`DiffListScreen` / `DiffDetailScreen` 等独立 go_router 路由）无容器收起语义，不使用此组件，其返回走普通 pop。
+
 ## 1次评审意见
 
 | 编号 | 优先级 | 问题 | 处理 |

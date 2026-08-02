@@ -109,10 +109,6 @@ class _FileListScreenState extends State<FileListScreen> {
     );
   }
 
-  void _collapse() {
-    _container?.collapse();
-  }
-
   void _scheduleScrollRestore() {
     if (_pendingScrollRestore == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -265,12 +261,7 @@ class _FileListScreenState extends State<FileListScreen> {
               tooltip: l(context).fileSearchHint,
               onPressed: () => setState(() => _searchExpanded = true),
             ),
-          if (!_searchExpanded)
-            IconButton(
-              icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-              tooltip: l(context).fileCollapse,
-              onPressed: _collapse,
-            ),
+          if (!_searchExpanded) const FileCollapseAction(),
         ],
       ),
       body: Column(

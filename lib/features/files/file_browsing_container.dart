@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../app_state.dart';
 import '../../core/session/file_browsing_store.dart';
+import '../../ui/l10n_ext.dart';
 import 'file_list_screen.dart';
 import 'file_view_screen.dart';
 
@@ -187,6 +188,31 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
         onGenerateInitialRoutes: (_, _) => _initialRoutes(),
         onGenerateRoute: (_) => null,
       ),
+    );
+  }
+}
+
+/// 文件容器统一收起按钮：置于 AppBar `actions` 末尾，以竖分隔线
+/// 与其它操作按钮分离。点击触发 [FileBrowsingContainerState.collapse]。
+class FileCollapseAction extends StatelessWidget {
+  const FileCollapseAction({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final container = FileBrowsingContainer.maybeOf(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: VerticalDivider(width: 1),
+        ),
+        IconButton(
+          icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+          tooltip: l(context).fileCollapse,
+          onPressed: container?.collapse,
+        ),
+      ],
     );
   }
 }

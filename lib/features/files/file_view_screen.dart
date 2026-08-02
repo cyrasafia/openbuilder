@@ -105,10 +105,6 @@ class _FileViewScreenState extends State<FileViewScreen> {
     );
   }
 
-  void _collapse() {
-    _container?.collapse();
-  }
-
   void _scheduleScrollRestore() {
     if (_pendingScrollRestore == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -228,11 +224,6 @@ class _FileViewScreenState extends State<FileViewScreen> {
                 _mdShowSource ? l(context).filePreview : l(context).fileSource,
               ),
             ),
-          IconButton(
-            icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-            tooltip: l(context).fileCollapse,
-            onPressed: _collapse,
-          ),
           PopupMenuButton<_MenuAction>(
             icon: const Icon(Icons.more_vert),
             onSelected: _onMenuAction,
@@ -251,6 +242,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
                 ),
             ],
           ),
+          const FileCollapseAction(),
         ],
       ),
       body: _body(),

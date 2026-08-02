@@ -52,6 +52,11 @@ app.*.map.json
 /android/**/*.keystore
 /android/**/*.jks
 
+# Temporary assets (icon previews, generated artifacts, etc.)
+# Keep the folder tracked, ignore its contents.
+/tmp/*
+!/tmp/.gitkeep
+
 # codegen reference output
 .gen_ref/
 
