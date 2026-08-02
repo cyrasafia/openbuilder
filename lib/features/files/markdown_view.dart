@@ -174,13 +174,19 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.all(12),
+      clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         color: appColors.codeBackground,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: appColors.border),
       ),
-      child: SelectableText.rich(TextSpan(children: inline, style: base)),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.all(12),
+        child: SelectableText.rich(
+          TextSpan(children: inline, style: base),
+        ),
+      ),
     );
   }
 }
