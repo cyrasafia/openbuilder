@@ -195,6 +195,8 @@ class _FileViewScreenState extends State<FileViewScreen> {
 
   void _onMenuAction(_MenuAction value) {
     switch (value) {
+      case _MenuAction.mdShowSource:
+        setState(() => _mdShowSource = !_mdShowSource);
       case _MenuAction.wrap:
         setState(() => _wrap = !_wrap);
       case _MenuAction.diff:
@@ -217,18 +219,20 @@ class _FileViewScreenState extends State<FileViewScreen> {
           style: const TextStyle(fontSize: 16),
         ),
         actions: [
-          if (_isMarkdown)
-            TextButton(
-              onPressed: () => setState(() => _mdShowSource = !_mdShowSource),
-              child: Text(
-                _mdShowSource ? l(context).filePreview : l(context).fileSource,
-              ),
-            ),
           PopupMenuButton<_MenuAction>(
             icon: const Icon(Icons.more_vert),
             onSelected: _onMenuAction,
             itemBuilder: (_) => [
-              if (_isTextLike)
+              if (_isMarkdown)
+                PopupMenuItem(
+                  value: _MenuAction.mdShowSource,
+                  child: Text(
+                    _mdShowSource
+                        ? l(context).filePreview
+                        : l(context).fileSource,
+                  ),
+                ),
+              if (_isTextLike && !_isMarkdownPreview)
                 PopupMenuItem(
                   value: _MenuAction.wrap,
                   child: Text(
@@ -380,6 +384,8 @@ class _FileViewScreenState extends State<FileViewScreen> {
     final ext = extensionOf(widget.path);
     return ext == '.md' || ext == '.markdown';
   }
+
+  bool get _isMarkdownPreview => _isMarkdown && !_mdShowSource;
 }
 
-enum _MenuAction { wrap, diff }
+enum _MenuAction { mdShowSource, wrap, diff }
