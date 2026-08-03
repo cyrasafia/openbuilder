@@ -2161,126 +2161,75 @@ class _FileChip extends StatelessWidget {
   }
 }
 
-class _AttachmentPreviewBar extends StatelessWidget {
+class _FilePreviewBar extends StatelessWidget {
   final List<AttachmentPreview> attachments;
-  final ValueChanged<int> onRemove;
-  const _AttachmentPreviewBar({
+  final List<FileRef> fileRefs;
+  final ValueChanged<int> onRemoveAttachment;
+  final ValueChanged<int> onRemoveFileRef;
+  const _FilePreviewBar({
     required this.attachments,
-    required this.onRemove,
+    required this.fileRefs,
+    required this.onRemoveAttachment,
+    required this.onRemoveFileRef,
   });
+
+  Widget _iconTile(BuildContext context, IconData icon) {
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(icon, size: 20),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final total = attachments.length + fileRefs.length;
     return SizedBox(
       height: 60,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        itemCount: attachments.length,
+        itemCount: total,
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (ctx, i) {
-          final a = attachments[i];
-          return Stack(
-            clipBehavior: Clip.none,
-            children: [
-              a.isImage && a.previewThumb != null
-                  ? ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.memory(
-                        a.previewThumb!,
-                        width: 48,
-                        height: 48,
-                        fit: BoxFit.cover,
-                      ),
-                    )
-                  : Container(
+          final bool isRef = i >= attachments.length;
+          final Widget tile;
+          final VoidCallback onClose;
+          if (!isRef) {
+            final a = attachments[i];
+            onClose = () => onRemoveAttachment(i);
+            tile = a.isImage && a.previewThumb != null
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.memory(
+                      a.previewThumb!,
                       width: 48,
                       height: 48,
-                      decoration: BoxDecoration(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Icon(Icons.insert_drive_file, size: 20),
+                      fit: BoxFit.cover,
                     ),
-              Positioned(
-                right: -2,
-                top: -2,
-                child: GestureDetector(
-                  onTap: () => onRemove(i),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface,
-                      shape: BoxShape.circle,
-                    ),
-                    padding: const EdgeInsets.all(2),
-                    child: const Icon(Icons.close, size: 14),
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _FileRefPreviewBar extends StatelessWidget {
-  final List<FileRef> fileRefs;
-  final ValueChanged<int> onRemove;
-  const _FileRefPreviewBar({
-    required this.fileRefs,
-    required this.onRemove,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 48,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        itemCount: fileRefs.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (ctx, i) {
-          final r = fileRefs[i];
+                  )
+                : _iconTile(context, Icons.insert_drive_file);
+          } else {
+            final r = fileRefs[i - attachments.length];
+            onClose = () => onRemoveFileRef(i - attachments.length);
+            tile = _iconTile(
+              context,
+              r.isDir ? Icons.folder_outlined : Icons.insert_drive_file,
+            );
+          }
           return Stack(
             clipBehavior: Clip.none,
             children: [
-              Container(
-                constraints: const BoxConstraints(maxWidth: 200),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      r.isDir ? Icons.folder_outlined : Icons.insert_drive_file,
-                      size: 16,
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      r.path,
-                      style: AppTheme.mono.copyWith(fontSize: 12),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
+              tile,
               Positioned(
                 right: -2,
                 top: -2,
                 child: GestureDetector(
-                  onTap: () => onRemove(i),
+                  onTap: onClose,
                   child: Container(
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surface,
@@ -3104,15 +3053,12 @@ class _BottomBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (attachments.isNotEmpty)
-            _AttachmentPreviewBar(
+          if (attachments.isNotEmpty || fileRefs.isNotEmpty)
+            _FilePreviewBar(
               attachments: attachments,
-              onRemove: onRemoveAttachment,
-            ),
-          if (fileRefs.isNotEmpty)
-            _FileRefPreviewBar(
               fileRefs: fileRefs,
-              onRemove: onRemoveFileRef,
+              onRemoveAttachment: onRemoveAttachment,
+              onRemoveFileRef: onRemoveFileRef,
             ),
           _ComposeBar(
             ctl: ctl,
