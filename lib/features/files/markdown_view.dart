@@ -112,13 +112,26 @@ class MarkdownView extends StatelessWidget {
 
   /// Splits optional YAML front matter (`---\n...\n---`) from the body.
   ///
-  /// Front matter must:
-  ///  - start at the very first byte (no leading whitespace / BOM),
-  ///  - be fenced by lines containing exactly `---`,
-  ///  - contain at least one `key: value` line,
-  /// otherwise the whole content is treated as the body. This is a minimal
-  /// parser: it does not support multi-line YAML values, quoted strings with
-  /// embedded colons are best-effort split on the first `:`.
+  /// Front matter is detected when the content:
+  ///  - starts at the very first byte (no leading whitespace / BOM),
+  ///  - is fenced by lines containing exactly `---`,
+  ///  - contains at least one `key: value` mapping line at any indent level
+  ///    (so a header that is only nested containers still counts, while a
+  ///    `---` horizontal-rule sandwich with no mappings does not).
+  /// Once detected the YAML header is always stripped from the body so it
+  /// never renders as raw YAML; the metadata card is best-effort and may be
+  /// omitted entirely (frontMatter == null) when no top-level scalar entries
+  /// could be extracted — the body is still stripped.
+  ///
+  /// Parsing notes:
+  ///  - block scalars (`|` / `>`) and their indented continuation lines are
+  ///    consumed and folded into the entry value,
+  ///  - indented lines (nested mappings / sequences) and colon-less lines are
+  ///    skipped rather than aborting the whole block,
+  ///  - container keys whose value is empty but that have indented children
+  ///    (e.g. `colors:`) are omitted from the metadata card to avoid noise,
+  ///  - quoted values are unwrapped; quoted strings with embedded colons are
+  ///    split on the first `:`.
   static ({List<({String key, String value})>? frontMatter, String body}) splitFrontMatter(
     String content,
   ) {
@@ -126,8 +139,9 @@ class MarkdownView extends StatelessWidget {
       return (frontMatter: null, body: content);
     }
     final lines = content.split('\n');
-    if (lines.length < 4) return (frontMatter: null, body: content);
-    if (lines.first.trim() != '---') return (frontMatter: null, body: content);
+    if (lines.isEmpty || lines.first.trim() != '---') {
+      return (frontMatter: null, body: content);
+    }
     var end = -1;
     for (var i = 1; i < lines.length; i++) {
       if (lines[i].trim() == '---') {
@@ -136,32 +150,106 @@ class MarkdownView extends StatelessWidget {
       }
     }
     if (end <= 1) return (frontMatter: null, body: content);
-    final rawEntries = <({String key, String value})>[];
-    for (var i = 1; i < end; i++) {
+    final entries = <({String key, String value})>[];
+    var sawMapping = false;
+    var i = 1;
+    while (i < end) {
       final line = lines[i];
-      if (line.trim().isEmpty) continue;
+      if (line.trim().isEmpty) {
+        i++;
+        continue;
+      }
+      final trimmed = line.trim();
+      final tcolon = trimmed.indexOf(':');
+      if (tcolon > 0) sawMapping = true;
+      if (_isIndented(line)) {
+        i++;
+        continue;
+      }
       final colon = line.indexOf(':');
       if (colon <= 0) {
-        return (frontMatter: null, body: content);
+        i++;
+        continue;
       }
-      var key = line.substring(0, colon).trim();
-      var value = line.substring(colon + 1).trim();
+      final key = line.substring(0, colon).trim();
+      final rawValue = line.substring(colon + 1).trim();
       if (key.isEmpty) {
-        return (frontMatter: null, body: content);
+        i++;
+        continue;
       }
-      if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
+      final block = _blockScalarKind(rawValue);
+      if (block != null) {
+        final buf = <String>[];
+        i++;
+        while (i < end) {
+          final l = lines[i];
+          if (l.trim().isEmpty) {
+            buf.add('');
+            i++;
+            continue;
+          }
+          if (!_isIndented(l)) break;
+          buf.add(l.trim());
+          i++;
+        }
+        final joined = buf
+            .where((s) => s.isNotEmpty)
+            .join(block == 'folded' ? ' ' : '\n');
+        entries.add((key: key, value: joined.isEmpty ? '—' : joined));
+        continue;
+      }
+      var value = rawValue;
+      if (value.length >= 2 &&
+          ((value.startsWith('"') && value.endsWith('"')) ||
+              (value.startsWith("'") && value.endsWith("'")))) {
         value = value.substring(1, value.length - 1);
       }
-      if (value.isEmpty) value = '—';
-      rawEntries.add((key: key, value: value));
+      if (value.isEmpty) {
+        var peek = i + 1;
+        while (peek < end && lines[peek].trim().isEmpty) {
+          peek++;
+        }
+        if (peek < end && _isIndented(lines[peek])) {
+          i++;
+          continue;
+        }
+        value = '—';
+      }
+      entries.add((key: key, value: value));
+      i++;
     }
-    if (rawEntries.isEmpty) return (frontMatter: null, body: content);
+    if (!sawMapping) return (frontMatter: null, body: content);
     final bodyStart = end + 1;
-    final body = bodyStart >= lines.length
-        ? ''
-        : (lines[bodyStart] == '' ? lines.sublist(bodyStart + 1) : lines.sublist(bodyStart)).join('\n');
-    return (frontMatter: rawEntries, body: body);
+    final String body;
+    if (bodyStart >= lines.length) {
+      body = '';
+    } else {
+      var s = bodyStart;
+      if (lines[s].isEmpty) s++;
+      body = lines.sublist(s).join('\n');
+    }
+    return (frontMatter: entries.isEmpty ? null : entries, body: body);
+  }
+
+  static bool _isIndented(String line) {
+    if (line.isEmpty) return false;
+    final c = line.codeUnitAt(0);
+    return c == 0x20 || c == 0x09;
+  }
+
+  static String? _blockScalarKind(String value) {
+    switch (value) {
+      case '|':
+      case '|-':
+      case '|+':
+        return 'literal';
+      case '>':
+      case '>-':
+      case '>+':
+        return 'folded';
+      default:
+        return null;
+    }
   }
 
   void _openLink(BuildContext context, String? href) {
