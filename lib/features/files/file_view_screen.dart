@@ -48,6 +48,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
   final _scrollCtl = ScrollController();
   double? _pendingScrollRestore;
 
+  Animation<double>? _routeAnimation;
+  bool _routeAnimInstalled = false;
+  bool _routeTransitionDone = false;
+
   /// Content-Length observed by the probe for a file that exceeded the
   /// threshold and was cancelled; shown on the oversized placeholder.
   int? _oversizedTotal;
@@ -93,15 +97,36 @@ class _FileViewScreenState extends State<FileViewScreen> {
     _container = FileBrowsingContainer.maybeOf(context);
     _container?.registerCollector(this, _collectSelf);
     _container?.registerFile(widget.path);
+    _installRouteAnimationListener();
   }
 
   @override
   void dispose() {
+    _routeAnimation?.removeStatusListener(_onRouteAnimationStatus);
     _container?.unregisterCollector(this);
     _container?.unregisterFile(widget.path);
     _cancelToken?.cancel();
     _scrollCtl.dispose();
     super.dispose();
+  }
+
+  void _installRouteAnimationListener() {
+    if (_routeAnimInstalled) return;
+    _routeAnimInstalled = true;
+    final anim = ModalRoute.of(context)?.animation;
+    if (anim == null || anim.status == AnimationStatus.completed) {
+      _routeTransitionDone = true;
+      return;
+    }
+    _routeAnimation = anim;
+    anim.addStatusListener(_onRouteAnimationStatus);
+  }
+
+  void _onRouteAnimationStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || !mounted) return;
+    _routeAnimation?.removeStatusListener(_onRouteAnimationStatus);
+    setState(() => _routeTransitionDone = true);
+    _scheduleScrollRestore();
   }
 
   void _collectSelf() {
@@ -122,9 +147,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
     if (_pendingScrollRestore == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final pending = _pendingScrollRestore;
+      if (_pendingScrollRestore == null) return;
+      if (!_scrollCtl.hasClients) return;
+      final pending = _pendingScrollRestore!;
       _pendingScrollRestore = null;
-      if (pending == null || !_scrollCtl.hasClients) return;
       final pos = _scrollCtl.position;
       _scrollCtl.jumpTo(
         pending.clamp(pos.minScrollExtent, pos.maxScrollExtent).toDouble(),
@@ -298,7 +324,12 @@ class _FileViewScreenState extends State<FileViewScreen> {
   Widget _body() {
     if (_error != null) return _errorView();
     if (_downloading) return _progressView();
-    if (_file != null) return _contentDispatch();
+    if (_file != null) {
+      if (!_routeTransitionDone) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      return _contentDispatch();
+    }
     // Probe cancelled an oversized download: show the placeholder with the
     // observed size. The only other way to reach here (no file, no error, not
     // downloading) is the brief window before initState's _download fires —
