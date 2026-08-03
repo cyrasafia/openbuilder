@@ -325,12 +325,20 @@ class _ConversationScreenState extends State<ConversationScreen>
     // 消息 SliverPadding 底侧(8) = _footerHeight；顶部消息 SliverPadding 顶侧。
     final bottomEdge = listBottom - _footerHeight;
     final topEdge = listTop + _kTopPadding;
+    final condNotLast = !(visHigh == msgCount - 1 &&
+        highTop != null &&
+        highTop > topEdge + eps);
+    var mStartEval = -1;
+    var mEndEval = -1;
+    var gapEval = false;
+    var runTopLBEval = 0.0;
+    var topOutEval = false;
+    var entered = false;
     if (visHigh >= 0 &&
         lowBottom != null &&
         lowBottom >= bottomEdge - eps &&
-        !(visHigh == msgCount - 1 &&
-            highTop != null &&
-            highTop > topEdge + eps)) {
+        condNotLast) {
+      entered = true;
       var mStart = visHigh;
       var mEnd = visHigh;
       if (msgs[visHigh].info.role != 'user') {
@@ -341,6 +349,8 @@ class _ConversationScreenState extends State<ConversationScreen>
           mEnd++;
         }
       }
+      mStartEval = mStart;
+      mEndEval = mEnd;
       if (visLow >= mStart) {
         final runTopId = msgs[mEnd].info.id;
         var gap = false;
@@ -353,9 +363,12 @@ class _ConversationScreenState extends State<ConversationScreen>
             runTopLB += mh;
           }
         }
+        gapEval = gap;
+        runTopLBEval = runTopLB;
         if (!gap) {
           _driverAbortedRunTop = null;
           final topOut = runTopLB > pixels + h + eps;
+          topOutEval = topOut;
           if (topOut && runTopLB - _footerHeight >= 2 * h) {
             target = runTopLB - h;
           }
@@ -367,6 +380,24 @@ class _ConversationScreenState extends State<ConversationScreen>
     } else {
       _stopDriver();
     }
+    AppLogger.I.d(
+      'BackToTop',
+      'eval entered=$entered pixels=$pixels h=$h msgCount=$msgCount '
+          'listTop=$listTop listBottom=$listBottom '
+          'footerH=$_footerHeight footerRowH=$_footerRowHeight '
+          'bottomEdge=$bottomEdge topEdge=$topEdge '
+          'visLow=$visLow visHigh=$visHigh '
+          'visLowBottom=$lowBottom visHighTop=$highTop '
+          'condVisHigh=${visHigh >= 0} '
+          'condLowBottom=${lowBottom != null && lowBottom >= bottomEdge - eps} '
+          'condNotLast=$condNotLast '
+          'visLowGE_mStart=${visLow >= mStartEval && mStartEval >= 0} '
+          'mStart=$mStartEval mEnd=$mEndEval '
+          'gap=$gapEval runTopLB=$runTopLBEval '
+          'topOut=$topOutEval '
+          'farEnough=${runTopLBEval > 0 ? (runTopLBEval - _footerHeight >= 2 * h) : null} '
+          'target=$target cur=${_backToTopTarget.value}',
+    );
     _setBackToTopTarget(target);
     _maybeLoadEarlier();
   }
