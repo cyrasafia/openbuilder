@@ -2970,28 +2970,39 @@ class _ComposeBar extends StatefulWidget {
   State<_ComposeBar> createState() => _ComposeBarState();
 }
 
-class _ComposeBarState extends State<_ComposeBar> {
+class _ComposeBarState extends State<_ComposeBar>
+    with WidgetsBindingObserver {
   bool _aborting = false;
   final _kbFocus = FocusNode();
   final _fieldFocus = FocusNode();
   double _prevBottomInset = 0;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final inset = MediaQuery.viewInsetsOf(context).bottom;
-    if (_prevBottomInset > 0 &&
-        inset == 0 &&
-        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _fieldFocus.hasFocus) _fieldFocus.unfocus();
-      });
-    }
-    _prevBottomInset = inset;
+  void initState() {
+    super.initState();
+    _prevBottomInset = View.of(context).viewInsets.bottom;
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final inset = View.of(context).viewInsets.bottom;
+      if (_prevBottomInset > 0 &&
+          inset == 0 &&
+          _fieldFocus.hasFocus &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        _fieldFocus.unfocus();
+      }
+      _prevBottomInset = inset;
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _fieldFocus.dispose();
     _kbFocus.dispose();
     super.dispose();
