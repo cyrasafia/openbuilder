@@ -439,6 +439,54 @@ class ConversationStore extends ChangeNotifier {
     if (had) notifyListeners();
   }
 
+  /// Prefix used for both optimistic message ids and the placeholder parts
+  /// bridged onto the authoritative message by [_bridgeOptimisticParts].
+  /// [onPartUpdated] / [_mergeParts] recognise it to evict a placeholder 1:1
+  /// once the authoritative part arrives, avoiding duplicate chips.
+  static const optimisticPartPrefix = 'optimistic_';
+
+  static bool _isPlaceholderPart(DisplayPart p) =>
+      p.id.startsWith(optimisticPartPrefix);
+
+  /// The oldest pending optimistic user message, or null. The server creates
+  /// messages in send order, so the authoritative `message.updated(user)`
+  /// arriving now corresponds to the FIRST (oldest) optimistic still pending —
+  /// FIFO. Picking the newest would lend a later send's content to an earlier
+  /// message in the send-while-busy edge case.
+  DisplayMessage? _firstOptimisticUser() {
+    for (var i = 0; i < _messages.length; i++) {
+      final m = _messages[i];
+      if (m.optimistic && m.info.role == 'user') return m;
+    }
+    return null;
+  }
+
+  /// Seed [m] with optimistic placeholder parts ([optParts]) for content not
+  /// yet mirrored by an authoritative part. Each placeholder is later evicted
+  /// 1:1 by type in [onPartUpdated] (or dropped in [_mergeParts] on reconcile).
+  /// Keeps attachments visible across the optimistic→authoritative transition
+  /// even when the server's `message.part.updated` lags — e.g. queued behind
+  /// the large synthetic inline-content parts generated for an @-file mention.
+  void _bridgeOptimisticParts(DisplayMessage m, List<DisplayPart> optParts) {
+    if (optParts.isEmpty) return;
+    final realByType = <String, int>{};
+    for (final p in m.parts) {
+      if (!_isPlaceholderPart(p)) {
+        realByType[p.type] = (realByType[p.type] ?? 0) + 1;
+      }
+    }
+    final covered = <String, int>{};
+    for (final op in optParts) {
+      final real = realByType[op.type] ?? 0;
+      final seen = covered[op.type] ?? 0;
+      if (seen < real) {
+        covered[op.type] = seen + 1;
+        continue;
+      }
+      if (!m.parts.any((p) => p.id == op.id)) m.parts.add(op);
+    }
+  }
+
   Future<void> reloadIfStale() async {
     if (!_stale || _reconciling || loading) return;
     if (_lastReloadAt != null &&
@@ -778,7 +826,14 @@ class ConversationStore extends ChangeNotifier {
     for (final sp in sse) {
       if (_hidden.contains(sp.type)) continue;
       if (hiddenIds.contains(sp.id)) continue;
-      if (!seen.contains(sp.id)) result.add(sp);
+      if (seen.contains(sp.id)) continue;
+      // Drop optimistic placeholders now superseded by an authoritative part
+      // of the same type from REST (carry-over from onMessageUpdated).
+      if (_isPlaceholderPart(sp) &&
+          result.any((r) => r.type == sp.type && !_isPlaceholderPart(r))) {
+        continue;
+      }
+      result.add(sp);
     }
     return result;
   }
@@ -809,6 +864,10 @@ class ConversationStore extends ChangeNotifier {
                             'toolError': p.toolError,
                             'toolInput': p.toolInput, // MA-5: 补存
                             'command': p.command,
+                            'fileMime': p.fileMime,
+                            'fileUrl': p.fileUrl,
+                            'filename': p.filename,
+                            'source': p.source,
                           })
                       .toList(),
                 })
@@ -867,6 +926,12 @@ class ConversationStore extends ChangeNotifier {
               ? (p2['toolInput'] as Map).cast<String, dynamic>()
               : null, // MA-5: 补读 toolInput
           command: p2['command']?.toString(),
+          fileMime: p2['fileMime']?.toString(),
+          fileUrl: p2['fileUrl']?.toString(),
+          filename: p2['filename']?.toString(),
+          source: p2['source'] is Map
+              ? (p2['source'] as Map).cast<String, dynamic>()
+              : null,
         ));
       }
       _messages.add(dm);
@@ -971,8 +1036,15 @@ class ConversationStore extends ChangeNotifier {
 
   void onMessageUpdated(MessageInfo info) {
     // When a real user message arrives from SSE, prune optimistic user
-    // messages (the authoritative one replaces the local guess).
+    // messages (the authoritative one replaces the local guess). Before
+    // pruning, bridge the optimistic message's parts onto the authoritative
+    // message so attachments stay visible until the server re-delivers them
+    // via part.updated. onPartUpdated evicts each placeholder 1:1 as the real
+    // part arrives, so no duplicates persist.
+    List<DisplayPart>? bridge;
     if (info.role == 'user') {
+      final opt = _firstOptimisticUser();
+      if (opt != null) bridge = List<DisplayPart>.of(opt.parts);
       _pruneOptimistic();
     }
     final existing = _findMessage(info.id);
@@ -996,9 +1068,12 @@ class ConversationStore extends ChangeNotifier {
           : info;
       final recreated = DisplayMessage(resolvedInfo);
       recreated.parts.addAll(existing.parts);
+      if (bridge != null) _bridgeOptimisticParts(recreated, bridge);
       _messages.add(recreated);
     } else {
-      _messages.add(DisplayMessage(info));
+      final m = DisplayMessage(info);
+      if (bridge != null) _bridgeOptimisticParts(m, bridge);
+      _messages.add(m);
     }
     _sort();
     AppLogger.I.d(_tag, 'onMessageUpdated id=${info.id} role=${info.role} created=${info.created} finish=${info.finish} → last=${_messages.last.info.id}(${_messages.last.info.role})');
@@ -1046,6 +1121,14 @@ class ConversationStore extends ChangeNotifier {
     if (idx == -1) {
       // Insert only renderable part types; skip hidden ones and synthetic text.
       if (_shouldHidePart(p.raw)) return;
+      // Evict one optimistic placeholder of the same type (FIFO): the
+      // authoritative part now replaces the carry-over guess seeded by
+      // onMessageUpdated, preventing duplicate chips once it arrives.
+      if (!p.id.startsWith(optimisticPartPrefix)) {
+        final ph = msg.parts
+            .indexWhere((x) => _isPlaceholderPart(x) && x.type == p.type);
+        if (ph != -1) msg.parts.removeAt(ph);
+      }
       dp = DisplayPart.from(p);
       msg.parts.add(dp);
     } else {

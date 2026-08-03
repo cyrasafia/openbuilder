@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/attachments/attachment_pipeline.dart';
+import 'package:open_builder/core/attachments/file_ref.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
 import 'package:open_builder/core/net/net_error.dart';
@@ -21,6 +23,46 @@ OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
       username: 'opencode',
       password: '',
     )));
+
+// Client whose messagesPage returns a fixed window — for reconcile (_mergeParts)
+// tests. todos() short-circuits to skip the second await in reconcile.
+class _MockClient extends OpencodeClient {
+  final List<MessageEntry> entries;
+  _MockClient(this.entries)
+      : super(Dio(BaseOptions(
+            connectTimeout: const Duration(milliseconds: 1),
+            receiveTimeout: const Duration(milliseconds: 1))));
+  @override
+  Future<MessagesPage> messagesPage(String sessionId,
+      {required int limit, String? before}) async {
+    if (before != null) return MessagesPage(const [], null);
+    return MessagesPage(entries, null);
+  }
+
+  @override
+  Future<List<Todo>> todos(String sessionId) async => const [];
+}
+
+const _fileRef = FileRef(
+  path: 'docs/design-run-assembly.md',
+  absolute: '/x/docs/design-run-assembly.md',
+  filename: 'design-run-assembly.md',
+  isDir: false,
+);
+
+Map<String, dynamic> _filePartRaw(String id, String mid) => {
+      'id': id,
+      'messageID': mid,
+      'type': 'file',
+      'mime': 'text/plain',
+      'filename': 'design-run-assembly.md',
+      'url': 'file:///x/docs/design-run-assembly.md',
+      'source': {
+        'type': 'file',
+        'path': 'docs/design-run-assembly.md',
+        'text': {'value': '', 'start': 0, 'end': 0},
+      },
+    };
 
 void main() {
   setUp(() {
@@ -886,6 +928,113 @@ void main() {
       expect(notifies, 1); // 完成后 notify → 页面 _onDraftChange 回填
       expect(conv.draftText, 'restored');
       expect(conv.draftShell, isTrue);
+    });
+  });
+
+  // 方案一：乐观 part 迁移到权威消息。附件在乐观→权威切换的空窗期不消失，
+  // 且权威 part 到达后按 type 1:1 去重，无重复。
+  group('optimistic→authoritative part bridging (option A)', () {
+    test('optimistic file part bridges onto authoritative user message', () {
+      final conv = ConversationStore('ob1', _fakeClient());
+      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
+      // message.updated(user) lands BEFORE any part.updated — the gap window.
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'm1', role: 'user', sessionID: 'ob1', created: 100));
+      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm1');
+      // File + text placeholders survive the prune: no disappearance gap.
+      expect(msg.parts.where((p) => p.type == 'file').length, 1);
+      expect(msg.parts.where((p) => p.type == 'file').single.id,
+          startsWith('optimistic_'));
+      expect(msg.parts.where((p) => p.type == 'text').length, 1);
+    });
+
+    test('file stays visible even if part.updated(file) is never delivered',
+        () {
+      // The original bug: optimistic pruned → file gone until reconcile.
+      // With bridging the placeholder persists, so the file never disappears.
+      final conv = ConversationStore('ob2', _fakeClient());
+      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'm2', role: 'user', sessionID: 'ob2', created: 100));
+      conv.onPartUpdated(
+          {'id': 'pt', 'messageID': 'm2', 'type': 'text', 'text': '看下这个文件'},
+          null);
+      // No part.updated(file) — placeholder must remain.
+      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm2');
+      expect(msg.parts.where((p) => p.type == 'file').length, 1);
+    });
+
+    test('authoritative part.updated evicts placeholder 1:1 (no duplicates)',
+        () {
+      final conv = ConversationStore('ob3', _fakeClient());
+      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'm3', role: 'user', sessionID: 'ob3', created: 100));
+      conv.onPartUpdated(
+          {'id': 'pt', 'messageID': 'm3', 'type': 'text', 'text': '看下这个文件'},
+          null);
+      conv.onPartUpdated(_filePartRaw('pf', 'm3'), null);
+      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm3');
+      final files = msg.parts.where((p) => p.type == 'file').toList();
+      expect(files.length, 1); // placeholder evicted, not duplicated
+      expect(files.single.id, 'pf'); // authoritative replaced the guess
+      expect(files.single.source?['path'], 'docs/design-run-assembly.md');
+      expect(msg.parts.where((p) => p.type == 'text').length, 1);
+    });
+
+    test('reconcile drops placeholder superseded by REST part', () async {
+      final entries = [
+        MessageEntry.fromJson({
+          'info': {
+            'id': 'm4',
+            'role': 'user',
+            'sessionID': 'ob4',
+            'time': {'created': 100},
+          },
+          'parts': [
+            {'id': 'pt', 'type': 'text', 'text': '看下这个文件'},
+            _filePartRaw('pf', 'm4'),
+          ],
+        }),
+      ];
+      final conv = ConversationStore('ob4', _MockClient(entries));
+      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'm4', role: 'user', sessionID: 'ob4', created: 100));
+      // Placeholder is now on the message; reconcile merges REST (real parts).
+      await conv.reload();
+      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm4');
+      expect(msg.parts.where((p) => p.type == 'file').length, 1);
+      expect(msg.parts.where((p) => p.type == 'file').single.id, 'pf');
+      expect(msg.parts.any((p) => p.id.startsWith('optimistic_')), isFalse);
+    });
+
+    test('cache round-trip preserves file fields', () async {
+      final conv = ConversationStore('ob5', _fakeClient());
+      conv.onPartUpdated(_filePartRaw('pf', 'm5'), null);
+      await conv.saveCacheForTest();
+      final restored = ConversationStore('ob5', _fakeClient());
+      await restored.loadCacheForTest();
+      final fp = restored.messages.single.parts.single;
+      expect(fp.type, 'file');
+      expect(fp.filename, 'design-run-assembly.md');
+      expect(fp.fileUrl, 'file:///x/docs/design-run-assembly.md');
+      expect(fp.source?['path'], 'docs/design-run-assembly.md');
+    });
+
+    test('bridges oldest (FIFO) optimistic when multiple sends are pending',
+        () {
+      // Send-while-busy edge: two optimistic user messages pending. The server
+      // creates in send order, so the first authoritative to land must pick up
+      // the FIRST optimistic's parts — not the newer send's.
+      final conv = ConversationStore('ob6', _fakeClient());
+      conv.addOptimisticUserMessage('A', fileRefs: const [_fileRef]);
+      conv.addOptimisticUserMessage('B');
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'mA', role: 'user', sessionID: 'ob6', created: 100));
+      final a = conv.renderableMessages.firstWhere((m) => m.info.id == 'mA');
+      expect(a.parts.where((p) => p.type == 'text').single.text, 'A');
+      expect(a.parts.where((p) => p.type == 'file').length, 1);
     });
   });
 }
