@@ -297,14 +297,17 @@ class _ConversationScreenState extends State<ConversationScreen>
     double? visHighTop;
     if (_sizeKeys.isNotEmpty) {
       for (var i = 0; i < msgCount; i++) {
-        final ctx = _sizeKeys[msgs[i].info.id]?.currentContext;
+        final id = msgs[i].info.id;
+        final ctx = _sizeKeys[id]?.currentContext;
         if (ctx == null) continue;
         final rb = ctx.findRenderObject();
         if (rb is! RenderBox || !rb.attached || !rb.hasSize) continue;
         final pd = _sliverParentDataOf(rb);
         if (pd == null || pd.keptAlive) continue;
+        final mh = rb.size.height;
+        if (mh > 0 && _heightCache[id] != mh) _heightCache[id] = mh;
         final top = rb.localToGlobal(Offset.zero).dy;
-        final bottom = top + rb.size.height;
+        final bottom = top + mh;
         if (bottom <= listTop + 1 || top >= listBottom - 1) continue;
         if (i < visLow) {
           visLow = i;
@@ -3119,12 +3122,21 @@ class _ComposeBarState extends State<_ComposeBar>
   final _kbFocus = FocusNode();
   final _fieldFocus = FocusNode();
   double _prevBottomInset = 0;
+  bool _didInitInset = false;
 
   @override
   void initState() {
     super.initState();
-    _prevBottomInset = View.of(context).viewInsets.bottom;
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_didInitInset) {
+      _didInitInset = true;
+      _prevBottomInset = View.of(context).viewInsets.bottom;
+    }
   }
 
   @override

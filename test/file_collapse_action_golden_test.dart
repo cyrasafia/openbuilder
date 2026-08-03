@@ -11,7 +11,7 @@ Widget _wrap(Widget child, {Widget? secondAction}) {
       appBar: AppBar(
         title: const Text('Files'),
         actions: [
-          if (secondAction != null) secondAction,
+          ?secondAction,
           child,
         ],
       ),
