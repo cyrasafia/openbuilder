@@ -112,10 +112,7 @@
   "fileWrapOn": "Enable wrap",
   "fileSource": "Source",
   "filePreview": "Preview",
-  "fileRefToSession": "Reference to conversation ({name})",
-  "@fileRefToSession": {
-    "placeholders": { "name": { "type": "String" } }
-  },
+  "fileMentionInConversation": "Mention in conversation",
   "fileRefNoAbsolutePath": "Cannot locate file absolute path",
   "fileLoadCancel": "Cancel",
   "fileDownload": "Download",

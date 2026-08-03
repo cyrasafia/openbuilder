@@ -213,31 +213,40 @@ class _FileListScreenState extends State<FileListScreen> {
   }
 
   Future<void> _showRefMenu(BuildContext context, FileNode n) async {
-    final action = await showModalBottomSheet<String>(
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox == null) {
+      _refNode(n);
+      return;
+    }
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final origin = renderBox.localToGlobal(Offset.zero, ancestor: overlay);
+    final cx = origin.dx + renderBox.size.width / 2;
+    final relative = RelativeRect.fromLTRB(
+      cx,
+      origin.dy,
+      overlay.size.width - cx,
+      overlay.size.height - origin.dy,
+    );
+    final action = await showMenu<String>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.insert_drive_file_outlined),
-              title: Text(l(ctx).fileRefToSession(n.name)),
-              onTap: () => Navigator.pop(ctx, 'ref'),
-            ),
-            if (!n.isDir)
-              ListTile(
-                leading: const Icon(Icons.visibility_outlined),
-                title: Text(l(ctx).filePreview),
-                onTap: () => Navigator.pop(ctx, 'view'),
-              ),
-          ],
+      position: relative,
+      items: [
+        PopupMenuItem<String>(
+          value: 'ref',
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.alternate_email, size: 20),
+              const SizedBox(width: 12),
+              Text(l(context).fileMentionInConversation),
+            ],
+          ),
         ),
-      ),
+      ],
     );
     if (action == 'ref') {
       _refNode(n);
-    } else if (action == 'view' && !n.isDir) {
-      _container?.openFile(n.path);
     }
   }
 
@@ -402,7 +411,7 @@ class _FileListScreenState extends State<FileListScreen> {
       controller: _scrollCtl,
       itemCount: _nodes.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
-      itemBuilder: (_, i) {
+      itemBuilder: (ctx, i) {
         final n = _nodes[i];
         return ListTile(
           leading: Icon(
@@ -440,7 +449,7 @@ class _FileListScreenState extends State<FileListScreen> {
               _container?.openFile(n.path);
             }
           },
-          onLongPress: () => _showRefMenu(context, n),
+          onLongPress: () => _showRefMenu(ctx, n),
         );
       },
     );

@@ -857,3 +857,73 @@ class _FileChip extends StatelessWidget {
 | 10R-A | 🟡 | ✅ 已修复 | 决策#3 改写为「经全局 `serverStore.fileBrowsing` 中转而非容器后代回调」：会话页非容器后代，`context.push` 后注册来不及；`dispatchReference`/`applyReference` 命名区分（R-1）；`dispose` 注销 + `removeSessionData` 清理（8R-B）；与 6R-B/R-1 一致。 |
 
 > **收敛判断**：十次评审 10R-A 已闭环。🟡 决策段旧架构描述已更新为全局 store 中转，与全文一致。设计文档经十轮评审，所有架构/控制流/边界/一致性/文档完整性问题均已闭环，可进入实现。
+
+## 修订记录：长按菜单改为悬浮小菜单（实现后 UI 调整）
+
+> 实现已落地。本节记录长按菜单交互的后续 UI 修订，**取代**正文「方法拆分 → 长按菜单」段（L144-194 snippet）、「UI」段（L446）、「l10n 新增 key」段（L451-469）中关于菜单形态/选项文案的部分。其余（`FileRef`/`_send`/`_FileChip`/回调链/守卫/失败重发等）不受影响。
+
+### 变更点
+
+1. **菜单形态**：底部 `showModalBottomSheet`（ActionSheet）→ 悬浮 popup menu（`showMenu`）。定位用被长按 `ListTile` 的 `RenderBox` 中心计算 `RelativeRect`（取 `Overlay` 作 ancestor），菜单贴着该行顶部居中浮出；`showMenu` 自带屏幕边界 clamp，无溢出风险。`itemBuilder` 传 item 自身 `ctx`（非 State 的 `context`）以拿到正确的 `RenderBox`。
+
+2. **选项精简为单一 Mention**：菜单只剩「Mention in conversation」一项（`@` 图标 `Icons.alternate_email` + 文案）。文案**不展示被引用的文件名**——引用目标由上下文（被长按的行）隐含，菜单只需确认意图。
+   - **移除「预览」选项**：原菜单对文件（`!n.isDir`）额外提供「预览」→ `_container?.openFile(n.path)`。该入口移除后**无功能损失**——`ListTile.onTap`（file_list_screen.dart 的 `onTap`）对文件仍直接 `openFile` 进 `FileViewScreen`，点按即预览。长按改专司「引用」，点按专司「打开」，职责分离更清晰。
+
+3. **l10n key 重命名**：`fileRefToSession`（带 `{name}` 参数 + `@fileRefToSession` placeholders metadata）→ `fileMentionInConversation`（无参数）。
+   - en: `Mention in conversation`；zh: `在会话中提及`。
+   - 删除 `{name}` 参数及 `@fileRefToSession` metadata（无参 key gen-l10n 不强制 metadata）。
+   - `filePreview`（复用）保留未删——`file_view_screen.dart` 仍在用（源码/预览切换）。`fileRefNoAbsolutePath` 保留——`_refNode` 兜底拦截仍用。
+
+### 实现 snippet（取代 L144-194）
+
+```dart
+// itemBuilder 传 item 自身 ctx（拿正确 RenderBox）
+itemBuilder: (ctx, i) {
+  final n = _nodes[i];
+  return ListTile(
+    // ...existing leading/title/subtitle/trailing...
+    onTap: () { /* 现有：目录进入 / 文件 openFile */ },
+    onLongPress: () => _showRefMenu(ctx, n),
+  );
+}
+
+Future<void> _showRefMenu(BuildContext context, FileNode n) async {
+  final renderBox = context.findRenderObject() as RenderBox?;
+  if (renderBox == null) { _refNode(n); return; }   // 兜底：渲染树未挂载则直发
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  final origin = renderBox.localToGlobal(Offset.zero, ancestor: overlay);
+  final cx = origin.dx + renderBox.size.width / 2;
+  final relative = RelativeRect.fromLTRB(
+    cx, origin.dy,
+    overlay.size.width - cx, overlay.size.height - origin.dy,
+  );
+  final action = await showMenu<String>(
+    context: context,
+    position: relative,
+    items: [
+      PopupMenuItem<String>(
+        value: 'ref',
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.alternate_email, size: 20),
+          const SizedBox(width: 12),
+          Text(l(context).fileMentionInConversation),   // 不含文件名
+        ]),
+      ),
+    ],
+  );
+  if (action == 'ref') _refNode(n);   // _refNode（含 DR-5 absolute 空拦截）不变
+}
+```
+
+### l10n 表（取代 L455-459）
+
+| key | en | zh |
+|-----|----|----|
+| `fileMentionInConversation` | `Mention in conversation` | `在会话中提及` |
+| `fileRefNoAbsolutePath`（保留） | `Cannot locate file absolute path` | `无法定位文件绝对路径` |
+
+> `filePreview` 复用、保留（`file_view_screen.dart` 仍用）。原 `fileRefToSession({name})` 已从 ARB 删除——菜单文案不再含文件名，参数无来源。
+
+### 不受影响
+
+`_refNode`（DR-5 absolute 空拦截 + 经容器 `applyReference`）、`FileRef.fromNode`、`_send` 三路守卫、失败重发、`_FileChip` 渲染、回调链架构均不变。本次仅改菜单 UI 层。
