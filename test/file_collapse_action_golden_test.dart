@@ -22,7 +22,7 @@ Widget _wrap(Widget child, {Widget? secondAction}) {
 
 void _dumpRects(WidgetTester tester, String label) {
   final actionRect = tester.getRect(find.byType(FileCollapseAction).last);
-  final iconRect = tester.getRect(find.byIcon(Icons.keyboard_arrow_down).last);
+  final iconRect = tester.getRect(find.byIcon(Icons.unfold_less).last);
   final dividerRect = tester.getRect(find.byType(VerticalDivider).last);
   final screenRight = tester.view.physicalSize.width;
   debugPrint('''
@@ -108,7 +108,7 @@ void main() {
     await tester.pumpAndSettle();
     _dumpRects(tester, 'collapse alone');
 
-    final collapseIcon = tester.getRect(find.byIcon(Icons.keyboard_arrow_down).last);
+    final collapseIcon = tester.getRect(find.byIcon(Icons.unfold_less).last);
     debugPrint('''
 [delta]
   moreVert center   = $moreVertCenter

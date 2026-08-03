@@ -214,7 +214,7 @@ class FileCollapseAction extends StatelessWidget {
           child: VerticalDivider(width: 1),
         ),
         IconButton(
-          icon: const Icon(Icons.keyboard_arrow_down),
+          icon: const Icon(Icons.unfold_less),
           tooltip: l(context).fileCollapse,
           onPressed: container?.collapse,
         ),

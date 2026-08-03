@@ -91,7 +91,7 @@ void main() {
       await _flush(tester);
       expect(find.byType(FileViewScreen), findsOneWidget);
 
-      await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
+      await tester.tap(find.byIcon(Icons.unfold_less));
       await _flush(tester);
 
       expect(find.text('home'), findsOneWidget);
@@ -114,7 +114,7 @@ void main() {
       await _flush(tester);
       expect(find.byType(FileListScreen), findsOneWidget);
 
-      await tester.tap(find.byIcon(Icons.keyboard_arrow_down));
+      await tester.tap(find.byIcon(Icons.unfold_less));
       await _flush(tester);
 
       expect(find.text('home'), findsOneWidget);
