@@ -9,6 +9,7 @@ import '../../../data/api/opencode_client.dart';
 import '../../../domain/models.dart';
 import '../../../l10n/gen/app_localizations.dart';
 import '../attachments/attachment_pipeline.dart';
+import '../attachments/file_ref.dart';
 import '../logging/app_logger.dart';
 import '../net/net_error.dart';
 
@@ -29,6 +30,7 @@ class DisplayPart {
   String? filename;
   String? command;
   Uint8List? previewThumb;
+  Map<String, dynamic>? source;
 
   DisplayPart({
     required this.id,
@@ -44,6 +46,7 @@ class DisplayPart {
     this.filename,
     this.command,
     this.previewThumb,
+    this.source,
   });
 
   /// One-line summary of what the tool is doing (e.g. "bash: ls -la").
@@ -127,6 +130,9 @@ class DisplayPart {
         fileMime: p.raw['mime']?.toString(),
         fileUrl: p.raw['url']?.toString() ?? '',
         filename: p.raw['filename']?.toString(),
+        source: p.raw['source'] is Map
+            ? (p.raw['source'] as Map).cast<String, dynamic>()
+            : null,
       );
     }
     if (p.type == 'subtask') {
@@ -370,7 +376,7 @@ class ConversationStore extends ChangeNotifier {
   /// authoritative message list arrives (reload) or when a matching user
   /// message.updated event arrives.
   void addOptimisticUserMessage(String text,
-      {List<AttachmentPreview>? attachments}) {
+      {List<AttachmentPreview>? attachments, List<FileRef>? fileRefs}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final msg = DisplayMessage(
       MessageInfo(id: 'optimistic_$now', role: 'user', created: now),
@@ -393,6 +399,23 @@ class ConversationStore extends ChangeNotifier {
           fileUrl: a.dataUrl,
           filename: a.filename,
           previewThumb: a.previewThumb,
+        ));
+        i++;
+      }
+    }
+    if (fileRefs != null) {
+      var i = 0;
+      for (final r in fileRefs) {
+        msg.parts.add(DisplayPart(
+          id: 'optimistic_ref_${now}_$i',
+          type: 'file',
+          filename: r.filename,
+          fileUrl: 'file://${r.absolute}',
+          source: {
+            'type': 'file',
+            'path': r.path,
+            'text': {'value': '', 'start': 0, 'end': 0},
+          },
         ));
         i++;
       }

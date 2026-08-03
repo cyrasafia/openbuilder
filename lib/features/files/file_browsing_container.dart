@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'package:flutter/material.dart';
 
 import '../../app_state.dart';
+import '../../core/attachments/file_ref.dart';
 import '../../core/session/file_browsing_store.dart';
 import '../../ui/l10n_ext.dart';
 import 'file_list_screen.dart';
@@ -128,6 +129,11 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
       collect();
     }
     Navigator.of(context, rootNavigator: true).pop();
+  }
+
+  void applyReference(FileRef ref) {
+    serverStore.fileBrowsing.dispatchReference(widget.sessionId, ref);
+    collapse();
   }
 
   void handleBack() {

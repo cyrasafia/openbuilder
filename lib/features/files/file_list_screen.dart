@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app_state.dart';
+import '../../core/attachments/file_ref.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
@@ -211,6 +212,46 @@ class _FileListScreenState extends State<FileListScreen> {
     _load();
   }
 
+  Future<void> _showRefMenu(BuildContext context, FileNode n) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.insert_drive_file_outlined),
+              title: Text(l(ctx).fileRefToSession(n.name)),
+              onTap: () => Navigator.pop(ctx, 'ref'),
+            ),
+            if (!n.isDir)
+              ListTile(
+                leading: const Icon(Icons.visibility_outlined),
+                title: Text(l(ctx).filePreview),
+                onTap: () => Navigator.pop(ctx, 'view'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'ref') {
+      _refNode(n);
+    } else if (action == 'view' && !n.isDir) {
+      _container?.openFile(n.path);
+    }
+  }
+
+  void _refNode(FileNode n) {
+    final ref = FileRef.fromNode(n, directory: widget.directory);
+    if (ref.absolute.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l(context).fileRefNoAbsolutePath)),
+      );
+      return;
+    }
+    _container?.applyReference(ref);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -399,6 +440,7 @@ class _FileListScreenState extends State<FileListScreen> {
               _container?.openFile(n.path);
             }
           },
+          onLongPress: () => _showRefMenu(context, n),
         );
       },
     );

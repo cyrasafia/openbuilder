@@ -12,12 +12,15 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
+import '../../core/attachments/file_ref.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../l10n/gen/app_localizations.dart';
+import '../files/file_browsing_container.dart';
+import '../files/file_view_screen.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -79,6 +82,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   bool _cmdMode = false;
   bool _shellMode = false;
   final List<AttachmentPreview> _attachments = [];
+  final List<FileRef> _fileRefs = [];
   bool _cmdRefreshTriggered = false;
   bool _didForceReload = false;
   bool _didRestoreDraft = false;
@@ -151,6 +155,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       conv.persistDraft(); // unawaited，尽力而为（硬杀靠 pause flush 兜底）
     }
     serverStore.commandsNotifier.removeListener(_onCommandsChanged);
+    serverStore.fileBrowsing.unregisterRefPicker(widget.sessionId);
     serverStore.setActiveConversation(null);
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
@@ -568,6 +573,9 @@ class _ConversationScreenState extends State<ConversationScreen>
   void _openFiles(BuildContext context, String directory) {
     final store = serverStore.fileBrowsing;
     store.resetCollapse();
+    store.registerRefPicker(widget.sessionId, (ref) {
+      if (mounted) setState(() => _fileRefs.add(ref));
+    });
     final dir = Uri.encodeQueryComponent(directory);
     final snap = store.snapshotFor(widget.sessionId, directory);
     context.push(
@@ -786,10 +794,12 @@ class _ConversationScreenState extends State<ConversationScreen>
                 farFromBottom: _farFromBottom,
                 onScrollToBottom: _scrollToBottom,
                 attachments: _attachments,
+                fileRefs: _fileRefs,
                 shellMode: _shellMode,
                 onExitShellMode: () => setState(() => _shellMode = false),
                 onPickAttachments: _pickAttachments,
                 onRemoveAttachment: _removeAttachment,
+                onRemoveFileRef: _removeFileRef,
               ),
             ],
           );
@@ -870,11 +880,12 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _removeAttachment(int i) => setState(() => _attachments.removeAt(i));
+  void _removeFileRef(int i) => setState(() => _fileRefs.removeAt(i));
 
   Future<void> _send() async {
     final text = _ctl.text.trim();
     final startsShell = text.startsWith('!') || _shellMode;
-    if (startsShell && _attachments.isNotEmpty) {
+    if (startsShell && (_attachments.isNotEmpty || _fileRefs.isNotEmpty)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(l(context).attachmentShellIgnore)),
@@ -882,7 +893,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       }
       return;
     }
-    if (text.isEmpty && _attachments.isEmpty) return;
+    if (text.isEmpty && _attachments.isEmpty && _fileRefs.isEmpty) return;
     final conv = serverStore.conversationFor(widget.sessionId);
     final client = serverStore.client;
     if (conv == null || client == null) return;
@@ -890,6 +901,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
     final attachments = List<AttachmentPreview>.from(_attachments);
+    final fileRefs = List<FileRef>.from(_fileRefs);
     final shellModeWas = _shellMode;
     final displayText = _shellMode ? '!$text' : text;
     _ctl.clear();
@@ -897,6 +909,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       _cmdMode = false;
       _shellMode = false;
       _attachments.clear();
+      _fileRefs.clear();
     });
     try {
       if (startsShell) {
@@ -940,8 +953,10 @@ class _ConversationScreenState extends State<ConversationScreen>
                   'url': a.dataUrl,
                   'filename': a.filename,
                 },
+              for (final r in fileRefs) r.toFilePart(),
             ];
-            conv.addOptimisticUserMessage(text, attachments: attachments);
+            conv.addOptimisticUserMessage(text,
+                attachments: attachments, fileRefs: fileRefs);
             serverStore.reflectPreviewFrom(widget.sessionId);
             if (matched.content != null && matched.content!.isNotEmpty) {
               final body = matched.content!;
@@ -1007,8 +1022,11 @@ class _ConversationScreenState extends State<ConversationScreen>
               'filename': a.filename,
             });
           }
-          if (parts.isEmpty) parts.add({'type': 'text', 'text': ''});
-          conv.addOptimisticUserMessage(text, attachments: attachments);
+          for (final r in fileRefs) {
+            parts.add(r.toFilePart());
+          }
+          conv.addOptimisticUserMessage(text,
+              attachments: attachments, fileRefs: fileRefs);
           serverStore.reflectPreviewFrom(widget.sessionId);
           final totalLen = parts.fold<int>(
             0,
@@ -1040,6 +1058,9 @@ class _ConversationScreenState extends State<ConversationScreen>
           _attachments
             ..clear()
             ..addAll(attachments);
+          _fileRefs
+            ..clear()
+            ..addAll(fileRefs);
         });
         conv.setDraft(shellModeWas ? text : displayText, shell: shellModeWas);
         conv.persistDraft(); // CD-2：失败回填草稿并落盘，与成功路径对称
@@ -1223,7 +1244,13 @@ class _ConversationScreenState extends State<ConversationScreen>
       case 'tool':
         return _ToolChip(key: PageStorageKey(p.id), part: p);
       case 'file':
-        return _FileChip(part: p, user: user, isFirst: isFirst);
+        return _FileChip(
+          part: p,
+          user: user,
+          isFirst: isFirst,
+          sessionId: widget.sessionId,
+          directory: serverStore.sessionById(widget.sessionId)?.directory,
+        );
       default:
         return const SizedBox.shrink();
     }
@@ -1934,10 +1961,14 @@ class _FileChip extends StatelessWidget {
   final DisplayPart part;
   final bool user;
   final bool isFirst;
+  final String? sessionId;
+  final String? directory;
   const _FileChip({
     required this.part,
     this.user = false,
     this.isFirst = false,
+    this.sessionId,
+    this.directory,
   });
 
   bool get _isHttpUrl {
@@ -1946,8 +1977,43 @@ class _FileChip extends StatelessWidget {
     return url.startsWith('http://') || url.startsWith('https://');
   }
 
+  bool get _isReference => part.source?['type'] == 'file';
+  String get _refPath => part.source?['path']?.toString() ?? part.filename ?? '';
+
   @override
   Widget build(BuildContext context) {
+    if (_isReference) {
+      final p = _messagePalette(context, user);
+      final isDirRef = _refPath.endsWith('/');
+      final Widget content = GestureDetector(
+        onTap: (isDirRef || sessionId == null)
+            ? null
+            : () => _openFileView(context),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isDirRef
+                  ? Icons.folder_outlined
+                  : Icons.insert_drive_file,
+              size: 16,
+              color: p.outline,
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                _refPath,
+                style: AppTheme.mono.copyWith(fontSize: 12, color: p.text),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      );
+      return isFirst
+          ? content
+          : Padding(padding: const EdgeInsets.only(top: 6), child: content);
+    }
     // CR-2：仅乐观侧有 96px previewThumb；接收侧不解码 data URL（避免内存膨胀/首帧掉帧）
     final thumb = part.previewThumb;
     final Widget content;
@@ -2015,6 +2081,22 @@ class _FileChip extends StatelessWidget {
         );
       }
     }
+  }
+
+  void _openFileView(BuildContext context) {
+    final sid = sessionId;
+    if (sid == null) return;
+    final path = _refPath;
+    if (path.isEmpty) return;
+    Navigator.of(context).push(
+      slideLeftRoute(
+        FileViewScreen(
+          sessionId: sid,
+          path: path,
+          directory: directory,
+        ),
+      ),
+    );
   }
 
   // CR-2(c)：全屏解码 part.fileUrl 全尺寸（点击一次性，不缓存进 previewThumb）
@@ -2091,6 +2173,78 @@ class _AttachmentPreviewBar extends StatelessWidget {
                       ),
                       child: const Icon(Icons.insert_drive_file, size: 20),
                     ),
+              Positioned(
+                right: -2,
+                top: -2,
+                child: GestureDetector(
+                  onTap: () => onRemove(i),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      shape: BoxShape.circle,
+                    ),
+                    padding: const EdgeInsets.all(2),
+                    child: const Icon(Icons.close, size: 14),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _FileRefPreviewBar extends StatelessWidget {
+  final List<FileRef> fileRefs;
+  final ValueChanged<int> onRemove;
+  const _FileRefPreviewBar({
+    required this.fileRefs,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 48,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        itemCount: fileRefs.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (ctx, i) {
+          final r = fileRefs[i];
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Container(
+                constraints: const BoxConstraints(maxWidth: 200),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      r.isDir ? Icons.folder_outlined : Icons.insert_drive_file,
+                      size: 16,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      r.path,
+                      style: AppTheme.mono.copyWith(fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
               Positioned(
                 right: -2,
                 top: -2,
@@ -2877,10 +3031,12 @@ class _BottomBar extends StatelessWidget {
   final ValueNotifier<bool> farFromBottom;
   final VoidCallback onScrollToBottom;
   final List<AttachmentPreview> attachments;
+  final List<FileRef> fileRefs;
   final bool shellMode;
   final VoidCallback onExitShellMode;
   final VoidCallback onPickAttachments;
   final ValueChanged<int> onRemoveAttachment;
+  final ValueChanged<int> onRemoveFileRef;
 
   const _BottomBar({
     required this.sessionId,
@@ -2893,10 +3049,12 @@ class _BottomBar extends StatelessWidget {
     required this.farFromBottom,
     required this.onScrollToBottom,
     required this.attachments,
+    required this.fileRefs,
     required this.shellMode,
     required this.onExitShellMode,
     required this.onPickAttachments,
     required this.onRemoveAttachment,
+    required this.onRemoveFileRef,
   });
 
   @override
@@ -2920,6 +3078,11 @@ class _BottomBar extends StatelessWidget {
               attachments: attachments,
               onRemove: onRemoveAttachment,
             ),
+          if (fileRefs.isNotEmpty)
+            _FileRefPreviewBar(
+              fileRefs: fileRefs,
+              onRemove: onRemoveFileRef,
+            ),
           _ComposeBar(
             ctl: ctl,
             busy: busy,
@@ -2929,6 +3092,7 @@ class _BottomBar extends StatelessWidget {
             farFromBottom: farFromBottom,
             onScrollToBottom: onScrollToBottom,
             attachments: attachments,
+            fileRefs: fileRefs,
             shellMode: shellMode,
             onExitShellMode: onExitShellMode,
             onPickAttachments: onPickAttachments,
@@ -2949,6 +3113,7 @@ class _ComposeBar extends StatefulWidget {
   final bool busy;
   final Future<bool> Function() onAbort;
   final List<AttachmentPreview> attachments;
+  final List<FileRef> fileRefs;
   final bool shellMode;
   final VoidCallback onExitShellMode;
   final VoidCallback onPickAttachments;
@@ -2961,6 +3126,7 @@ class _ComposeBar extends StatefulWidget {
     required this.busy,
     required this.onAbort,
     required this.attachments,
+    required this.fileRefs,
     required this.shellMode,
     required this.onExitShellMode,
     required this.onPickAttachments,
@@ -3028,7 +3194,8 @@ class _ComposeBarState extends State<_ComposeBar>
     final showStop =
         widget.busy &&
         widget.ctl.text.trim().isEmpty &&
-        widget.attachments.isEmpty;
+        widget.attachments.isEmpty &&
+        widget.fileRefs.isEmpty;
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 8, top: 8, bottom: 8),
       child: Row(

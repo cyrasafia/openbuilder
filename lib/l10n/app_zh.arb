@@ -112,6 +112,11 @@
   "fileWrapOn": "开启换行",
   "fileSource": "源码",
   "filePreview": "预览",
+  "fileRefToSession": "引用到会话（{name}）",
+  "@fileRefToSession": {
+    "placeholders": { "name": { "type": "String" } }
+  },
+  "fileRefNoAbsolutePath": "无法定位文件绝对路径",
   "fileLoadCancel": "取消",
   "fileDownload": "下载",
   "fileShare": "分享",

@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'package:flutter/foundation.dart';
 
 import '../../domain/models.dart';
+import '../attachments/file_ref.dart';
 
 class OpenFileEntry {
   final String path;
@@ -76,6 +77,16 @@ class FileBrowsingStore {
   final Map<String, int> _listAnchors = {};
 
   final Map<String, Object> _containers = {};
+
+  final Map<String, void Function(FileRef)> _refPickers = {};
+
+  void registerRefPicker(String sessionId, void Function(FileRef) cb) =>
+      _refPickers[sessionId] = cb;
+
+  void unregisterRefPicker(String sessionId) => _refPickers.remove(sessionId);
+
+  void dispatchReference(String sessionId, FileRef ref) =>
+      _refPickers[sessionId]?.call(ref);
 
   void registerContainer(
     String sessionId,
@@ -154,6 +165,7 @@ class FileBrowsingStore {
       _containers.remove(k);
     }
     if (_collapseKey?.startsWith(prefix) ?? false) resetCollapse();
+    _refPickers.remove(sessionId);
   }
 
   // ── collapse protocol ──
