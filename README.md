@@ -19,7 +19,9 @@ openBuilder 的目标是创造一个**面向所有 builder（而非仅 coder）*
 
 ### 功能简介
 
-![](assets/2026-07-21-17-17-00-image.png)
+![](/home/cyrasafia/projects/my-tools/openbuilder/assets/screenshots-zh-1.png)
+
+![](/home/cyrasafia/projects/my-tools/openbuilder/assets/screenshots-zh-2.png)
 
 openBuilder 是 opencode 远程服务器的**瘦客户端**（以只读 + 轻交互为主），通过局域网 mDNS / Tailscale 连接你自己的 opencode 服务。主要功能包括：
 
@@ -100,7 +102,9 @@ The current version only supports **opencode**, an open-source personal agent. I
 
 ### Features
 
-![](assets/2026-07-21-17-17-00-image.png)
+![](/home/cyrasafia/projects/my-tools/openbuilder/assets/screenshots-en-1.png)
+
+![](/home/cyrasafia/projects/my-tools/openbuilder/assets/screenshots-en-2.png)
 
 openBuilder is a **thin client** for the remote opencode server (read-mostly, with light interaction), connecting to your own opencode instance over LAN mDNS / Tailscale. Key features:
 
