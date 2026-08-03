@@ -22,13 +22,13 @@ void main() {
       expect(inferDownloadPolicy('app/main.cc'), DownloadPolicy.immediate);
     });
 
-    test('known binary extensions are onDemand', () {
-      expect(inferDownloadPolicy('build/app.apk'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('archive.zip'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('doc.pdf'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('setup.exe'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('song.mp3'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('clip.mp4'), DownloadPolicy.onDemand);
+    test('known binary extensions probe the size first', () {
+      expect(inferDownloadPolicy('build/app.apk'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('archive.zip'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('doc.pdf'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('setup.exe'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('song.mp3'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('clip.mp4'), DownloadPolicy.probe);
     });
 
     test('recognized extensionless text basenames are immediate', () {
@@ -39,15 +39,24 @@ void main() {
       expect(inferDownloadPolicy('dockerfile'), DownloadPolicy.immediate); // case-insensitive
     });
 
-    test('unknown extensionless names fall back to onDemand', () {
-      expect(inferDownloadPolicy('run'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('bin/app'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('someblob'), DownloadPolicy.onDemand);
+    test('unknown extensionless names probe (e.g. .gitignore is text but unrecognized)', () {
+      expect(inferDownloadPolicy('run'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('bin/app'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('someblob'), DownloadPolicy.probe);
+      // dotfiles without a real extension (e.g. .gitignore) land here too —
+      // lastIndexOf('.') == 0, so they take the extension branch and probe.
+      expect(inferDownloadPolicy('.gitignore'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('.envrc'), DownloadPolicy.probe);
     });
 
-    test('unknown extension falls back to onDemand', () {
-      expect(inferDownloadPolicy('data.xyz'), DownloadPolicy.onDemand);
-      expect(inferDownloadPolicy('weird.qqq'), DownloadPolicy.onDemand);
+    test('unknown extension probes', () {
+      expect(inferDownloadPolicy('data.xyz'), DownloadPolicy.probe);
+      expect(inferDownloadPolicy('weird.qqq'), DownloadPolicy.probe);
+    });
+
+    test('probe threshold is exposed for the UI', () {
+      expect(probeThreshold, greaterThan(0));
+      expect(probeThreshold, 1024 * 1024);
     });
   });
 

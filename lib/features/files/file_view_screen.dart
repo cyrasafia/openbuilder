@@ -48,6 +48,18 @@ class _FileViewScreenState extends State<FileViewScreen> {
   final _scrollCtl = ScrollController();
   double? _pendingScrollRestore;
 
+  /// Content-Length observed by the probe for a file that exceeded the
+  /// threshold and was cancelled; shown on the oversized placeholder.
+  int? _oversizedTotal;
+
+  /// True once the user explicitly tapped Download on the oversized
+  /// placeholder; subsequent [_download] calls (including error-retry) skip
+  /// the threshold probe and fetch the full body regardless of size. Lives for
+  /// the lifetime of this State — re-opening the file gets a fresh State and
+  /// re-probes. Intentional: don't re-cancel what the user explicitly asked
+  /// for.
+  bool _forceDownload = false;
+
   @override
   void initState() {
     super.initState();
@@ -67,10 +79,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
         _scheduleScrollRestore();
         return;
       }
-      if (_policy == DownloadPolicy.immediate || r.hadContent) _download();
-      return;
     }
-    if (_policy == DownloadPolicy.immediate) _download();
+    // Both policies download on entry: immediate renders directly, probe
+    // inspects Content-Length and cancels if oversized.
+    _download();
   }
 
   FileBrowsingContainerState? _container;
@@ -134,6 +146,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       _progress = null;
       _error = null;
       _file = null;
+      _oversizedTotal = null;
     });
     try {
       _file = await c.readFileStream(
@@ -143,7 +156,30 @@ class _FileViewScreenState extends State<FileViewScreen> {
           // Ignore progress from a superseded/cancelled download so it can't
           // overwrite the active token's percentage (mirrors the finally guard).
           if (_cancelToken != token) return;
-          if (t > 0 && mounted) {
+          if (!mounted) return;
+          if (_policy == DownloadPolicy.probe && !_forceDownload) {
+            // Cancel once the download clearly exceeds the threshold. We gate on
+            // both the announced total (Content-Length) and the bytes received so
+            // far: `total` may be -1/0 when the server omits Content-Length
+            // (chunked / HTTP2), in which case the received-bytes guard still
+            // caps the download. On native, `total` is the gzipped transfer size
+            // (raw_download keeps compression on); on web the browser owns
+            // decompression and reports decoded bytes — either way the guard
+            // bounds the real cost of previewing.
+            final knownTotal = t > 0 ? t : null;
+            if ((knownTotal != null && knownTotal > probeThreshold) ||
+                r > probeThreshold) {
+              token.cancel();
+              // Show the larger of the announced total (if known) and the bytes
+              // received so far — the most honest "at least this big" hint.
+              final shown = knownTotal != null && knownTotal > r
+                  ? knownTotal
+                  : r;
+              setState(() => _oversizedTotal = shown);
+              return;
+            }
+          }
+          if (t > 0) {
             final p = (r / t).clamp(0.0, 1.0);
             if (p != _progress) setState(() => _progress = p);
           }
@@ -158,7 +194,11 @@ class _FileViewScreenState extends State<FileViewScreen> {
       );
       _scheduleScrollRestore();
     } on DioException catch (e) {
-      if (e.type == DioExceptionType.cancel) return;
+      if (e.type == DioExceptionType.cancel) {
+        // Probe-induced cancellation is expected and already recorded its
+        // outcome in [_oversizedTotal]; don't surface as an error.
+        return;
+      }
       _error = e;
     } catch (e) {
       _error = e;
@@ -259,7 +299,11 @@ class _FileViewScreenState extends State<FileViewScreen> {
     if (_error != null) return _errorView();
     if (_downloading) return _progressView();
     if (_file != null) return _contentDispatch();
-    return _onDemandPlaceholder();
+    // Probe cancelled an oversized download: show the placeholder with the
+    // observed size. The only other way to reach here (no file, no error, not
+    // downloading) is the brief window before initState's _download fires —
+    // also fine to render as the oversized placeholder without a size.
+    return _oversizedPlaceholder();
   }
 
   Widget _progressView() {
@@ -286,8 +330,9 @@ class _FileViewScreenState extends State<FileViewScreen> {
     );
   }
 
-  Widget _onDemandPlaceholder() {
+  Widget _oversizedPlaceholder() {
     final scheme = Theme.of(context).colorScheme;
+    final loc = l(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -295,7 +340,9 @@ class _FileViewScreenState extends State<FileViewScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.insert_drive_file_outlined,
+              _oversizedTotal == null
+                  ? Icons.insert_drive_file_outlined
+                  : Icons.file_download_off_outlined,
               size: 64,
               color: scheme.outline,
             ),
@@ -307,16 +354,46 @@ class _FileViewScreenState extends State<FileViewScreen> {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
+            if (_oversizedTotal != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                loc.fileTooLarge(_formatBytes(_oversizedTotal!)),
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ],
             const SizedBox(height: 24),
             FilledButton.icon(
-              onPressed: _download,
+              onPressed: _requestFullDownload,
               icon: const Icon(Icons.download),
-              label: Text(l(context).fileDownload),
+              label: Text(loc.fileDownload),
             ),
           ],
         ),
       ),
     );
+  }
+
+  /// User-initiated download from a placeholder: skip any probe threshold and
+  /// fetch the full body.
+  void _requestFullDownload() {
+    _forceDownload = true;
+    _download();
+  }
+
+  /// Compact, locale-agnostic byte formatting (1 decimal place for fractions).
+  /// `Content-Length` measures the JSON body, not the raw file, so this is an
+  /// approximate transfer size — fine for a "too large to preview" hint.
+  String _formatBytes(int bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    if (bytes < 1024) return '$bytes B';
+    double v = bytes.toDouble();
+    int u = 0;
+    while (v >= 1024 && u < units.length - 1) {
+      v /= 1024;
+      u++;
+    }
+    return '${v.toStringAsFixed(v < 10 ? 1 : 0)} ${units[u]}';
   }
 
   Widget _errorView() {

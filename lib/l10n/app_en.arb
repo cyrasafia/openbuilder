@@ -121,6 +121,8 @@
   "fileOpen": "Open",
   "fileOpenFailed": "Open failed: {error}",
   "@fileOpenFailed": {"placeholders": {"error": {"type": "String"}}},
+  "fileTooLarge": "File too large to preview ({size})",
+  "@fileTooLarge": {"placeholders": {"size": {"type": "String"}}},
   "fileShareFailed": "Share failed: {error}",
   "@fileShareFailed": {"placeholders": {"error": {"type": "String"}}},
   "diffNoChanges": "No changes",
