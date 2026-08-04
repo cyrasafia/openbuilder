@@ -213,8 +213,8 @@ class _FileListScreenState extends State<FileListScreen> {
   }
 
   Future<void> _showRefMenu(BuildContext context, FileNode n) async {
-    final renderBox = context.findRenderObject() as RenderBox?;
-    if (renderBox == null) {
+    final renderBox = context.findRenderObject();
+    if (renderBox is! RenderBox) {
       _refNode(n);
       return;
     }
@@ -239,7 +239,12 @@ class _FileListScreenState extends State<FileListScreen> {
             children: [
               const Icon(Icons.alternate_email, size: 20),
               const SizedBox(width: 12),
-              Text(l(context).fileMentionInConversation),
+              Flexible(
+                child: Text(
+                  l(context).fileMentionInConversation,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
         ),
@@ -411,45 +416,49 @@ class _FileListScreenState extends State<FileListScreen> {
       controller: _scrollCtl,
       itemCount: _nodes.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
-      itemBuilder: (ctx, i) {
+      itemBuilder: (_, i) {
         final n = _nodes[i];
-        return ListTile(
-          leading: Icon(
-            n.isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
-          ),
-          title: Text(
-            n.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: n.ignored
-                ? TextStyle(
-                    color: Theme.of(context).colorScheme.outline,
-                    fontSize: 14,
-                    fontStyle: FontStyle.italic,
+        return Builder(
+          builder: (ctx) => ListTile(
+            leading: Icon(
+              n.isDir
+                  ? Icons.folder_outlined
+                  : Icons.insert_drive_file_outlined,
+            ),
+            title: Text(
+              n.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: n.ignored
+                  ? TextStyle(
+                      color: Theme.of(context).colorScheme.outline,
+                      fontSize: 14,
+                      fontStyle: FontStyle.italic,
+                    )
+                  : const TextStyle(fontSize: 14),
+            ),
+            subtitle: (_query.isNotEmpty && _parentPath(n.path).isNotEmpty)
+                ? Text(
+                    _parentPath(n.path),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                   )
-                : const TextStyle(fontSize: 14),
+                : null,
+            trailing: n.isDir ? const Icon(Icons.chevron_right) : null,
+            onTap: () {
+              if (n.isDir) {
+                setState(() => _path = n.path);
+                _load();
+              } else {
+                _container?.openFile(n.path);
+              }
+            },
+            onLongPress: () => _showRefMenu(ctx, n),
           ),
-          subtitle: (_query.isNotEmpty && _parentPath(n.path).isNotEmpty)
-              ? Text(
-                  _parentPath(n.path),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                )
-              : null,
-          trailing: n.isDir ? const Icon(Icons.chevron_right) : null,
-          onTap: () {
-            if (n.isDir) {
-              setState(() => _path = n.path);
-              _load();
-            } else {
-              _container?.openFile(n.path);
-            }
-          },
-          onLongPress: () => _showRefMenu(ctx, n),
         );
       },
     );
