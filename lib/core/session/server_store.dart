@@ -1533,7 +1533,6 @@ class ServerStore extends ChangeNotifier {
         }
         break;
       case 'message.updated':
-        AppLogger.I.d(_tag, 'message.updated.raw role=${ev.properties['info']?['role']} id=${ev.properties['info']?['id']}');
         final msgInfo = ev.properties['info'];
         final msgSid = msgInfo is Map ? msgInfo['sessionID']?.toString() : null;
         if (msgSid != null) fileBrowsing.invalidateContentForSession(msgSid);
@@ -1674,12 +1673,6 @@ class ServerStore extends ChangeNotifier {
     // during streaming; this keeps it correct at message boundaries.
     final local = conv?.lastMessagePreview(
         hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
-    final lastRole = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.role : '?';
-    final lastId = conv?.messages.isNotEmpty == true ? conv!.messages.last.info.id : '?';
-    AppLogger.I.d(
-        _tag,
-        'message.updated.parsed sid=$sid role=${m.role} id=${m.id} '
-        'finish=${m.finish} _last=($lastRole,$lastId)');
     if (local != null) {
       _lastMessage[sid] = local;
       _notifyPreviewChanged();

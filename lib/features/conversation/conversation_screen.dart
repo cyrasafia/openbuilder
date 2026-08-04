@@ -13,7 +13,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/attachments/file_ref.dart';
-import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
@@ -331,17 +330,10 @@ class _ConversationScreenState extends State<ConversationScreen>
     final condNotLast = !(visHigh == msgCount - 1 &&
         highTop != null &&
         highTop > topEdge + eps);
-    var mStartEval = -1;
-    var mEndEval = -1;
-    var gapEval = false;
-    var runTopLBEval = 0.0;
-    var topOutEval = false;
-    var entered = false;
     if (visHigh >= 0 &&
         lowBottom != null &&
         lowBottom >= bottomEdge - eps &&
         condNotLast) {
-      entered = true;
       var mStart = visHigh;
       var mEnd = visHigh;
       if (msgs[visHigh].info.role != 'user') {
@@ -352,8 +344,6 @@ class _ConversationScreenState extends State<ConversationScreen>
           mEnd++;
         }
       }
-      mStartEval = mStart;
-      mEndEval = mEnd;
       if (visLow >= mStart) {
         final runTopId = msgs[mEnd].info.id;
         var gap = false;
@@ -366,12 +356,9 @@ class _ConversationScreenState extends State<ConversationScreen>
             runTopLB += mh;
           }
         }
-        gapEval = gap;
-        runTopLBEval = runTopLB;
         if (!gap) {
           _driverAbortedRunTop = null;
           final topOut = runTopLB > pixels + h + eps;
-          topOutEval = topOut;
           if (topOut && runTopLB - _footerHeight >= 2 * h) {
             target = runTopLB - h;
           }
@@ -383,24 +370,6 @@ class _ConversationScreenState extends State<ConversationScreen>
     } else {
       _stopDriver();
     }
-    AppLogger.I.d(
-      'BackToTop',
-      'eval entered=$entered pixels=$pixels h=$h msgCount=$msgCount '
-          'listTop=$listTop listBottom=$listBottom '
-          'footerH=$_footerHeight footerRowH=$_footerRowHeight '
-          'bottomEdge=$bottomEdge topEdge=$topEdge '
-          'visLow=$visLow visHigh=$visHigh '
-          'visLowBottom=$lowBottom visHighTop=$highTop '
-          'condVisHigh=${visHigh >= 0} '
-          'condLowBottom=${lowBottom != null && lowBottom >= bottomEdge - eps} '
-          'condNotLast=$condNotLast '
-          'visLowGE_mStart=${visLow >= mStartEval && mStartEval >= 0} '
-          'mStart=$mStartEval mEnd=$mEndEval '
-          'gap=$gapEval runTopLB=$runTopLBEval '
-          'topOut=$topOutEval '
-          'farEnough=${runTopLBEval > 0 ? (runTopLBEval - _footerHeight >= 2 * h) : null} '
-          'target=$target cur=${_backToTopTarget.value}',
-    );
     _setBackToTopTarget(target);
     _maybeLoadEarlier();
   }
@@ -1797,14 +1766,6 @@ class _ToolChipState extends State<_ToolChip>
     PageStorage.maybeOf(
       context,
     )?.writeState(context, _expanded, identifier: _expansionStorageKey);
-    final p = widget.part;
-    AppLogger.I.d(
-      'ToolChip',
-      '${_expanded ? "expand" : "collapse"} tool=${p.tool} status=${p.toolStatus} '
-          'inLen=${p.toolInput?.length ?? -1} outLen=${p.toolOutput?.length ?? -1} '
-          'outLines=${p.toolOutput == null ? -1 : "\n".allMatches(p.toolOutput!).length + 1} '
-          'errLen=${p.toolError?.length ?? -1}',
-    );
   }
 
   @override
