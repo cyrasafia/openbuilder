@@ -162,7 +162,11 @@ class ProjectDetailScreen extends StatelessWidget {
               ...workspaces.map(
                 (dir) => ListTile(
                   leading: const Icon(Icons.call_split),
-                  title: Text(dir.split('/').last),
+                  title: Text(
+                    dir == project.worktree
+                        ? l(ctx).projectMainWorkspace
+                        : dir.split('/').last,
+                  ),
                   subtitle: Text(
                     dir,
                     maxLines: 1,
