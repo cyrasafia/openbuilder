@@ -74,14 +74,27 @@ _messagePalette(BuildContext context, bool user) {
   );
 }
 
+sealed class _PendingItem {
+  const _PendingItem();
+}
+
+final class _PendingAttachment extends _PendingItem {
+  final AttachmentPreview preview;
+  const _PendingAttachment(this.preview);
+}
+
+final class _PendingFileRef extends _PendingItem {
+  final FileRef ref;
+  const _PendingFileRef(this.ref);
+}
+
 class _ConversationScreenState extends State<ConversationScreen>
     with WidgetsBindingObserver {
   final _scrollController = ScrollController();
   final _ctl = TextEditingController();
   bool _cmdMode = false;
   bool _shellMode = false;
-  final List<AttachmentPreview> _attachments = [];
-  final List<FileRef> _fileRefs = [];
+  final List<_PendingItem> _pending = [];
   bool _cmdRefreshTriggered = false;
   bool _didForceReload = false;
   bool _didRestoreDraft = false;
@@ -577,7 +590,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final store = serverStore.fileBrowsing;
     store.resetCollapse();
     store.registerRefPicker(widget.sessionId, (ref) {
-      if (mounted) setState(() => _fileRefs.add(ref));
+      if (mounted) setState(() => _pending.add(_PendingFileRef(ref)));
     });
     final dir = Uri.encodeQueryComponent(directory);
     final snap = store.snapshotFor(widget.sessionId, directory);
@@ -796,13 +809,11 @@ class _ConversationScreenState extends State<ConversationScreen>
                 onSend: _send,
                 farFromBottom: _farFromBottom,
                 onScrollToBottom: _scrollToBottom,
-                attachments: _attachments,
-                fileRefs: _fileRefs,
+                pending: _pending,
                 shellMode: _shellMode,
                 onExitShellMode: () => setState(() => _shellMode = false),
                 onPickAttachments: _pickAttachments,
-                onRemoveAttachment: _removeAttachment,
-                onRemoveFileRef: _removeFileRef,
+                onRemove: _removePending,
               ),
             ],
           );
@@ -879,16 +890,17 @@ class _ConversationScreenState extends State<ConversationScreen>
         }
       }
     }
-    if (resolved.isNotEmpty) setState(() => _attachments.addAll(resolved));
+    if (resolved.isNotEmpty) {
+      setState(() => _pending.addAll(resolved.map(_PendingAttachment.new)));
+    }
   }
 
-  void _removeAttachment(int i) => setState(() => _attachments.removeAt(i));
-  void _removeFileRef(int i) => setState(() => _fileRefs.removeAt(i));
+  void _removePending(int i) => setState(() => _pending.removeAt(i));
 
   Future<void> _send() async {
     final text = _ctl.text.trim();
     final startsShell = text.startsWith('!') || _shellMode;
-    if (startsShell && (_attachments.isNotEmpty || _fileRefs.isNotEmpty)) {
+    if (startsShell && _pending.isNotEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(l(context).attachmentShellIgnore)),
@@ -896,23 +908,27 @@ class _ConversationScreenState extends State<ConversationScreen>
       }
       return;
     }
-    if (text.isEmpty && _attachments.isEmpty && _fileRefs.isEmpty) return;
+    if (text.isEmpty && _pending.isEmpty) return;
     final conv = serverStore.conversationFor(widget.sessionId);
     final client = serverStore.client;
     if (conv == null || client == null) return;
     serverStore.ensureSseForSession(widget.sessionId);
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
-    final attachments = List<AttachmentPreview>.from(_attachments);
-    final fileRefs = List<FileRef>.from(_fileRefs);
+    final pendingSnapshot = List<_PendingItem>.from(_pending);
+    final attachments = pendingSnapshot
+        .whereType<_PendingAttachment>()
+        .map((e) => e.preview)
+        .toList();
+    final fileRefs =
+        pendingSnapshot.whereType<_PendingFileRef>().map((e) => e.ref).toList();
     final shellModeWas = _shellMode;
     final displayText = _shellMode ? '!$text' : text;
     _ctl.clear();
     setState(() {
       _cmdMode = false;
       _shellMode = false;
-      _attachments.clear();
-      _fileRefs.clear();
+      _pending.clear();
     });
     try {
       if (startsShell) {
@@ -1058,12 +1074,9 @@ class _ConversationScreenState extends State<ConversationScreen>
         setState(() {
           _shellMode = shellModeWas;
           _cmdMode = false;
-          _attachments
+          _pending
             ..clear()
-            ..addAll(attachments);
-          _fileRefs
-            ..clear()
-            ..addAll(fileRefs);
+            ..addAll(pendingSnapshot);
         });
         conv.setDraft(shellModeWas ? text : displayText, shell: shellModeWas);
         conv.persistDraft(); // CD-2：失败回填草稿并落盘，与成功路径对称
@@ -2126,16 +2139,9 @@ class _FileChip extends StatelessWidget {
 }
 
 class _FilePreviewBar extends StatelessWidget {
-  final List<AttachmentPreview> attachments;
-  final List<FileRef> fileRefs;
-  final ValueChanged<int> onRemoveAttachment;
-  final ValueChanged<int> onRemoveFileRef;
-  const _FilePreviewBar({
-    required this.attachments,
-    required this.fileRefs,
-    required this.onRemoveAttachment,
-    required this.onRemoveFileRef,
-  });
+  final List<_PendingItem> pending;
+  final ValueChanged<int> onRemove;
+  const _FilePreviewBar({required this.pending, required this.onRemove});
 
   Widget _iconTile(BuildContext context, IconData icon) {
     return Container(
@@ -2151,40 +2157,33 @@ class _FilePreviewBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final total = attachments.length + fileRefs.length;
     return SizedBox(
       height: 60,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        itemCount: total,
+        itemCount: pending.length,
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (ctx, i) {
-          final bool isRef = i >= attachments.length;
-          final Widget tile;
-          final VoidCallback onClose;
-          if (!isRef) {
-            final a = attachments[i];
-            onClose = () => onRemoveAttachment(i);
-            tile = a.isImage && a.previewThumb != null
-                ? ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.memory(
-                      a.previewThumb!,
-                      width: 48,
-                      height: 48,
-                      fit: BoxFit.cover,
-                    ),
-                  )
-                : _iconTile(context, Icons.insert_drive_file);
-          } else {
-            final r = fileRefs[i - attachments.length];
-            onClose = () => onRemoveFileRef(i - attachments.length);
-            tile = _iconTile(
+          final item = pending[i];
+          final tile = switch (item) {
+            _PendingAttachment(:final preview) =>
+              preview.isImage && preview.previewThumb != null
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        preview.previewThumb!,
+                        width: 48,
+                        height: 48,
+                        fit: BoxFit.cover,
+                      ),
+                    )
+                  : _iconTile(context, Icons.insert_drive_file),
+            _PendingFileRef(:final ref) => _iconTile(
               context,
-              r.isDir ? Icons.folder_outlined : Icons.insert_drive_file,
-            );
-          }
+              ref.isDir ? Icons.folder_outlined : Icons.insert_drive_file,
+            ),
+          };
           return Stack(
             clipBehavior: Clip.none,
             children: [
@@ -2193,7 +2192,7 @@ class _FilePreviewBar extends StatelessWidget {
                 right: -2,
                 top: -2,
                 child: GestureDetector(
-                  onTap: onClose,
+                  onTap: () => onRemove(i),
                   child: Container(
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surface,
@@ -2974,13 +2973,11 @@ class _BottomBar extends StatelessWidget {
   final VoidCallback onSend;
   final ValueNotifier<bool> farFromBottom;
   final VoidCallback onScrollToBottom;
-  final List<AttachmentPreview> attachments;
-  final List<FileRef> fileRefs;
+  final List<_PendingItem> pending;
   final bool shellMode;
   final VoidCallback onExitShellMode;
   final VoidCallback onPickAttachments;
-  final ValueChanged<int> onRemoveAttachment;
-  final ValueChanged<int> onRemoveFileRef;
+  final ValueChanged<int> onRemove;
 
   const _BottomBar({
     required this.sessionId,
@@ -2992,13 +2989,11 @@ class _BottomBar extends StatelessWidget {
     required this.onSend,
     required this.farFromBottom,
     required this.onScrollToBottom,
-    required this.attachments,
-    required this.fileRefs,
+    required this.pending,
     required this.shellMode,
     required this.onExitShellMode,
     required this.onPickAttachments,
-    required this.onRemoveAttachment,
-    required this.onRemoveFileRef,
+    required this.onRemove,
   });
 
   @override
@@ -3017,13 +3012,8 @@ class _BottomBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (attachments.isNotEmpty || fileRefs.isNotEmpty)
-            _FilePreviewBar(
-              attachments: attachments,
-              fileRefs: fileRefs,
-              onRemoveAttachment: onRemoveAttachment,
-              onRemoveFileRef: onRemoveFileRef,
-            ),
+          if (pending.isNotEmpty)
+            _FilePreviewBar(pending: pending, onRemove: onRemove),
           _ComposeBar(
             ctl: ctl,
             busy: busy,
@@ -3032,8 +3022,7 @@ class _BottomBar extends StatelessWidget {
             onSend: onSend,
             farFromBottom: farFromBottom,
             onScrollToBottom: onScrollToBottom,
-            attachments: attachments,
-            fileRefs: fileRefs,
+            pending: pending,
             shellMode: shellMode,
             onExitShellMode: onExitShellMode,
             onPickAttachments: onPickAttachments,
@@ -3053,8 +3042,7 @@ class _ComposeBar extends StatefulWidget {
   final VoidCallback onScrollToBottom;
   final bool busy;
   final Future<bool> Function() onAbort;
-  final List<AttachmentPreview> attachments;
-  final List<FileRef> fileRefs;
+  final List<_PendingItem> pending;
   final bool shellMode;
   final VoidCallback onExitShellMode;
   final VoidCallback onPickAttachments;
@@ -3066,8 +3054,7 @@ class _ComposeBar extends StatefulWidget {
     required this.onScrollToBottom,
     required this.busy,
     required this.onAbort,
-    required this.attachments,
-    required this.fileRefs,
+    required this.pending,
     required this.shellMode,
     required this.onExitShellMode,
     required this.onPickAttachments,
@@ -3144,8 +3131,7 @@ class _ComposeBarState extends State<_ComposeBar>
     final showStop =
         widget.busy &&
         widget.ctl.text.trim().isEmpty &&
-        widget.attachments.isEmpty &&
-        widget.fileRefs.isEmpty;
+        widget.pending.isEmpty;
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 8, top: 8, bottom: 8),
       child: Row(
@@ -3211,7 +3197,7 @@ class _ComposeBarState extends State<_ComposeBar>
             builder: (context, far, _) {
               final hasInput =
                   widget.ctl.text.trim().isNotEmpty ||
-                  widget.attachments.isNotEmpty;
+                  widget.pending.isNotEmpty;
               if (!hasInput && far) {
                 return IconButton.filled(
                   onPressed: widget.onScrollToBottom,
