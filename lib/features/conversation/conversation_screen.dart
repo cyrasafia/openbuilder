@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/attachments/file_ref.dart';
+import '../../core/attachments/image_data_cache.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
@@ -20,6 +21,7 @@ import '../../ui/l10n_ext.dart';
 import '../../l10n/gen/app_localizations.dart';
 import '../files/file_browsing_container.dart';
 import '../files/file_view_screen.dart';
+import '../files/image_view.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -1261,6 +1263,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         return _ToolChip(key: PageStorageKey(p.id), part: p);
       case 'file':
         return _FileChip(
+          key: ValueKey(p.id),
           part: p,
           user: user,
           isFirst: isFirst,
@@ -1965,19 +1968,35 @@ class _ToolChipState extends State<_ToolChip>
   }
 }
 
-class _FileChip extends StatelessWidget {
+const double imageBubbleMaxHeight = 220;
+
+class _FileChip extends StatefulWidget {
   final DisplayPart part;
   final bool user;
   final bool isFirst;
   final String? sessionId;
   final String? directory;
   const _FileChip({
+    super.key,
     required this.part,
     this.user = false,
     this.isFirst = false,
     this.sessionId,
     this.directory,
   });
+
+  @override
+  State<_FileChip> createState() => _FileChipState();
+}
+
+class _FileChipState extends State<_FileChip> {
+  late final Future<Uint8List?> _bytes;
+
+  DisplayPart get part => widget.part;
+  bool get user => widget.user;
+  bool get isFirst => widget.isFirst;
+  String? get sessionId => widget.sessionId;
+  String? get directory => widget.directory;
 
   bool get _isHttpUrl {
     final url = part.fileUrl;
@@ -1986,85 +2005,162 @@ class _FileChip extends StatelessWidget {
   }
 
   bool get _isReference => part.source?['type'] == 'file';
-  String get _refPath => part.source?['path']?.toString() ?? part.filename ?? '';
+  String get _refPath =>
+      part.source?['path']?.toString() ?? part.filename ?? '';
+
+  bool get _isDisplayableImage =>
+      (part.fileMime?.startsWith('image/') ?? false) &&
+      part.fileMime != 'image/svg+xml' &&
+      (part.fileUrl?.startsWith('data:') ?? false);
+
+  @override
+  void initState() {
+    super.initState();
+    final url = widget.part.fileUrl;
+    _bytes = (url != null && url.startsWith('data:'))
+        ? ImageDataCache.instance.get(url)
+        : Future.value(null);
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (_isReference) {
-      final p = _messagePalette(context, user);
-      final isDirRef = _refPath.endsWith('/');
-      final Widget content = GestureDetector(
-        onTap: (isDirRef || sessionId == null)
-            ? null
-            : () => _openFileView(context),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              isDirRef
-                  ? Icons.folder_outlined
-                  : Icons.insert_drive_file,
-              size: 16,
-              color: p.outline,
-            ),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                _refPath,
-                style: AppTheme.mono.copyWith(fontSize: 12, color: p.text),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-      );
-      return isFirst
-          ? content
-          : Padding(padding: const EdgeInsets.only(top: 6), child: content);
-    }
-    // CR-2：仅乐观侧有 96px previewThumb；接收侧不解码 data URL（避免内存膨胀/首帧掉帧）
-    final thumb = part.previewThumb;
     final Widget content;
-    if (thumb != null) {
-      content = GestureDetector(
-        onTap: () => _showFullScreen(context),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.memory(
-            thumb,
-            width: 120,
-            height: 120,
-            fit: BoxFit.cover,
-          ),
-        ),
-      );
+    if (_isReference) {
+      content = _refChip(context);
+    } else if (_isDisplayableImage) {
+      content = _imageChip(context);
     } else {
-      final p = _messagePalette(context, user);
-      content = Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.insert_drive_file, size: 16, color: p.outline),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              part.filename ?? part.fileUrl ?? l(context).attachmentFallback,
-              style: AppTheme.mono.copyWith(fontSize: 12, color: p.text),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (_isHttpUrl) ...[
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => _openUrl(context),
-              child: Icon(Icons.open_in_new, size: 14, color: p.link),
-            ),
-          ],
-        ],
-      );
+      content = _filenameChip(context);
     }
     return isFirst
         ? content
         : Padding(padding: const EdgeInsets.only(top: 6), child: content);
+  }
+
+  Widget _refChip(BuildContext context) {
+    final p = _messagePalette(context, user);
+    final isDirRef = _refPath.endsWith('/');
+    return GestureDetector(
+      onTap: (isDirRef || sessionId == null)
+          ? null
+          : () => _openFileView(context),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isDirRef ? Icons.folder_outlined : Icons.insert_drive_file,
+            size: 16,
+            color: p.outline,
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              _refPath,
+              style: AppTheme.mono.copyWith(fontSize: 12, color: p.text),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _filenameChip(BuildContext context) {
+    final p = _messagePalette(context, user);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.insert_drive_file, size: 16, color: p.outline),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            part.filename ?? part.fileUrl ?? l(context).attachmentFallback,
+            style: AppTheme.mono.copyWith(fontSize: 12, color: p.text),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (_isHttpUrl) ...[
+          const SizedBox(width: 6),
+          GestureDetector(
+            onTap: () => _openUrl(context),
+            child: Icon(Icons.open_in_new, size: 14, color: p.link),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _imageChip(BuildContext context) {
+    return FutureBuilder<Uint8List?>(
+      future: _bytes,
+      builder: (ctx, snap) {
+        final bytes = snap.data;
+        if (bytes != null) {
+          final dpr = MediaQuery.devicePixelRatioOf(ctx);
+          return GestureDetector(
+            onTap: () => _openFullScreen(ctx, bytes),
+            child: ConstrainedBox(
+              constraints:
+                  const BoxConstraints(maxHeight: imageBubbleMaxHeight),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(
+                  bytes,
+                  cacheHeight: (imageBubbleMaxHeight * dpr).round(),
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => _filenameChip(ctx),
+                ),
+              ),
+            ),
+          );
+        }
+        if (snap.connectionState == ConnectionState.done) {
+          return _filenameChip(ctx);
+        }
+        final thumb = part.previewThumb;
+        if (thumb != null) return _placeholderThumb(ctx, thumb);
+        return _decodingPlaceholder(ctx);
+      },
+    );
+  }
+
+  Widget _placeholderThumb(BuildContext context, Uint8List thumb) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Image.memory(thumb, width: 120, height: 120, fit: BoxFit.cover),
+    );
+  }
+
+  Widget _decodingPlaceholder(BuildContext context) {
+    return Container(
+      width: 120,
+      height: 120,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+    );
+  }
+
+  void _openFullScreen(BuildContext context, Uint8List bytes) {
+    Navigator.of(context).push(
+      slideLeftRoute(
+        Scaffold(
+          backgroundColor: Colors.black87,
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            leading: IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          body: SafeArea(
+            child: ImageView(bytes: bytes, isSvg: false),
+          ),
+        ),
+      ),
+    );
   }
 
   // CR-5：launchUrl 失败提示 + try/catch
@@ -2076,9 +2172,8 @@ class _FileChip extends StatelessWidget {
     try {
       final ok = await launchUrl(uri);
       if (!ok && context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
       }
     } catch (e) {
       if (context.mounted) {
@@ -2102,36 +2197,6 @@ class _FileChip extends StatelessWidget {
           sessionId: sid,
           path: path,
           directory: directory,
-        ),
-      ),
-    );
-  }
-
-  // CR-2(c)：全屏解码 part.fileUrl 全尺寸（点击一次性，不缓存进 previewThumb）
-  void _showFullScreen(BuildContext context) {
-    final url = part.fileUrl;
-    if (url == null) return;
-    Uint8List? bytes;
-    if (url.startsWith('data:')) {
-      final comma = url.indexOf(',');
-      if (comma < 0) return;
-      try {
-        bytes = base64Decode(url.substring(comma + 1));
-      } catch (_) {
-        return;
-      }
-    }
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => GestureDetector(
-        onTap: () => Navigator.pop(ctx),
-        child: Scaffold(
-          backgroundColor: Colors.black87,
-          body: Center(
-            child: bytes != null
-                ? Image.memory(bytes, fit: BoxFit.contain)
-                : Image.network(url, fit: BoxFit.contain),
-          ),
         ),
       ),
     );
