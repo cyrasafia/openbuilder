@@ -14,11 +14,17 @@ class BinaryView extends StatefulWidget {
   final String? mimeType;
   final Uint8List? downloadedBytes;
 
+  /// Shown as a Download button when [downloadedBytes] is null (content not
+  /// fetched yet, e.g. an oversized probe that was cancelled). When null and
+  /// [downloadedBytes] is also null, the view degrades to a failure hint.
+  final VoidCallback? onDownload;
+
   const BinaryView({
     super.key,
     required this.filename,
     this.mimeType,
     this.downloadedBytes,
+    this.onDownload,
   });
 
   @override
@@ -62,16 +68,26 @@ class _BinaryViewState extends State<BinaryView> {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 24),
-            if (widget.downloadedBytes == null)
-              Text(
-                l(context).loadFailed,
-                style: const TextStyle(fontSize: 12),
-              )
-            else
-              _actions(),
+            _footer(),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _footer() {
+    if (widget.downloadedBytes != null) return _actions();
+    final onDownload = widget.onDownload;
+    if (onDownload != null) {
+      return FilledButton.icon(
+        onPressed: onDownload,
+        icon: const Icon(Icons.download),
+        label: Text(l(context).fileDownload),
+      );
+    }
+    return Text(
+      l(context).loadFailed,
+      style: const TextStyle(fontSize: 12),
     );
   }
 

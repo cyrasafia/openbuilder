@@ -13,7 +13,8 @@
 /// so the download is started and the first `onReceiveProgress` callback
 /// decides — small files finish and render directly (a misnamed `.gitignore`
 /// → CodeView, a small `.apk` → BinaryView with bytes already in memory),
-/// large files are cancelled and fall back to the oversized placeholder.
+/// large files are cancelled and fall back to the binary-style preview
+/// (icon + name + Download button, no "too large" dead-end).
 /// This avoids forcing an extra tap on the common
 /// small-text-without-a-text-extension case while still protecting against
 /// huge binaries.
@@ -30,15 +31,15 @@ enum DownloadPolicy {
   /// Content is fetched on entry — recognised image/text extensions.
   immediate,
   /// Start downloading, inspect `Content-Length` from the first progress
-  /// event, then either continue (small) or cancel and show the oversized
-  /// placeholder (large). The threshold is [probeThreshold].
+  /// event, then either continue (small) or cancel and show the binary-style
+  /// preview with a Download button (large). The threshold is [probeThreshold].
   probe,
 }
 
 /// Maximum size (announced `Content-Length` or bytes received so far; the
 /// gzipped transfer size on native, decoded size on web) that a probed file
-/// may reach before the download is cancelled and the oversized placeholder is
-/// shown.
+/// may reach before the download is cancelled and the binary-style preview
+/// with a Download button is shown.
 const int probeThreshold = 1 * 1024 * 1024; // 1 MiB
 
 DownloadPolicy inferDownloadPolicy(String path) {

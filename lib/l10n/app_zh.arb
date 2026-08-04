@@ -123,8 +123,6 @@
   "fileOpen": "打开",
   "fileOpenFailed": "打开失败：{error}",
   "@fileOpenFailed": {"placeholders": {"error": {"type": "String"}}},
-  "fileTooLarge": "文件过大，无法预览（{size}）",
-  "@fileTooLarge": {"placeholders": {"size": {"type": "String"}}},
   "fileShareFailed": "分享失败：{error}",
   "@fileShareFailed": {"placeholders": {"error": {"type": "String"}}},
   "diffNoChanges": "无变更",
