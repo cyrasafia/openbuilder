@@ -982,6 +982,26 @@ void main() {
       expect(msg.parts.where((p) => p.type == 'text').length, 1);
     });
 
+    test('part order preserved when server delivers file before text', () {
+      // Regression: optimistic inserts text→file, but the server may emit
+      // message.part.updated in a different order (file before text for
+      // @-mentions). The real part must replace its placeholder IN PLACE so
+      // text stays above file — not get appended to the list tail.
+      final conv = ConversationStore('ob3b', _fakeClient());
+      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'm3b', role: 'user', sessionID: 'ob3b', created: 100));
+      // Server delivers file part FIRST, then text.
+      conv.onPartUpdated(_filePartRaw('pf', 'm3b'), null);
+      conv.onPartUpdated(
+          {'id': 'pt', 'messageID': 'm3b', 'type': 'text', 'text': '看下这个文件'},
+          null);
+      final msg =
+          conv.renderableMessages.firstWhere((m) => m.info.id == 'm3b');
+      final types = msg.parts.map((p) => p.type).toList();
+      expect(types, ['text', 'file']); // text above file, not reversed
+    });
+
     test('reconcile drops placeholder superseded by REST part', () async {
       final entries = [
         MessageEntry.fromJson({

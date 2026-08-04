@@ -1120,16 +1120,22 @@ class ConversationStore extends ChangeNotifier {
     if (idx == -1) {
       // Insert only renderable part types; skip hidden ones and synthetic text.
       if (_shouldHidePart(p.raw)) return;
-      // Evict one optimistic placeholder of the same type (FIFO): the
-      // authoritative part now replaces the carry-over guess seeded by
-      // onMessageUpdated, preventing duplicate chips once it arrives.
+      dp = DisplayPart.from(p);
       if (!p.id.startsWith(optimisticPartPrefix)) {
+        // Replace one optimistic placeholder of the same type IN PLACE (FIFO):
+        // the authoritative part takes the placeholder's slot, preserving the
+        // order established by the optimistic message (text→file) regardless of
+        // the order the server emits message.part.updated events.
         final ph = msg.parts
             .indexWhere((x) => _isPlaceholderPart(x) && x.type == p.type);
-        if (ph != -1) msg.parts.removeAt(ph);
+        if (ph != -1) {
+          msg.parts[ph] = dp;
+        } else {
+          msg.parts.add(dp);
+        }
+      } else {
+        msg.parts.add(dp);
       }
-      dp = DisplayPart.from(p);
-      msg.parts.add(dp);
     } else {
       dp = msg.parts[idx];
     }
