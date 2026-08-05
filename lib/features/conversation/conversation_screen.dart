@@ -4,7 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show ScrollCacheExtent, SliverMultiBoxAdaptorParentData;
+    show RenderSliverMultiBoxAdaptor, ScrollCacheExtent, SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cross_file/cross_file.dart';
@@ -117,9 +117,13 @@ class _ConversationScreenState extends State<ConversationScreen>
   final _farFromBottom = ValueNotifier<bool>(false);
   final _keepAliveIds = ValueNotifier<Set<String>>(const {});
   final _messageChildCache = <String, Widget>{};
+  int? _lastMsgVersion;
+  bool? _lastShowThinking;
 
   final _sizeKeys = <String, GlobalKey>{};
   final _heightCache = <String, double>{};
+
+  final _sliverKey = GlobalKey();
   final _footerSizeKey = GlobalKey();
   double _footerRowHeight = 0;
   double _viewportHeight = 0;
@@ -136,9 +140,6 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   /// 距底基底 = 8(留白 sliver) + footer 动态行高 + 8(消息 SliverPadding 底侧)。
   double get _footerHeight => 16 + _footerRowHeight;
-
-  /// 消息 SliverPadding 顶侧（与 _footerHeight 底侧 8 对称，用于占满判定上边界）。
-  static const _kTopPadding = 8.0;
 
   @override
   void initState() {
@@ -302,83 +303,113 @@ class _ConversationScreenState extends State<ConversationScreen>
       return;
     }
     final pixels = _scrollController.position.pixels;
-    final listTop = listBox.localToGlobal(Offset.zero).dy;
-    final listBottom = listTop + h;
 
-    var visLow = msgCount;
-    var visHigh = -1;
-    double? visLowBottom;
-    double? visHighTop;
-    if (_sizeKeys.isNotEmpty) {
-      for (var i = 0; i < msgCount; i++) {
-        final id = msgs[i].info.id;
-        final ctx = _sizeKeys[id]?.currentContext;
-        if (ctx == null) continue;
-        final rb = ctx.findRenderObject();
-        if (rb is! RenderBox || !rb.attached || !rb.hasSize) continue;
-        final pd = _sliverParentDataOf(rb);
-        if (pd == null || pd.keptAlive) continue;
-        final mh = rb.size.height;
-        if (mh > 0 && _heightCache[id] != mh) _heightCache[id] = mh;
-        final top = rb.localToGlobal(Offset.zero).dy;
-        final bottom = top + mh;
-        if (bottom <= listTop + 1 || top >= listBottom - 1) continue;
-        if (i < visLow) {
-          visLow = i;
-          visLowBottom = bottom;
-        }
-        if (i > visHigh) {
-          visHigh = i;
-          visHighTop = top;
-        }
+    // 锚定最顶挂载消息（sliver 的 lastChild）：其绝对 scroll 位置从渲染树读
+    // （layout pass 已积分全部当前高度），故吸收了底部一切变化（含不可观测的
+    // 流式增长），不受底部 _heightCache 缺口影响。runTop/visLowIdx 皆相对此
+    // 锚做算术，只用新鲜高度（挂载区 + 更早的稳定消息）；最底陈旧的流式 run
+    // 根本不进场。
+    final sliverRO = _sliverKey.currentContext?.findRenderObject();
+    RenderBox? lastChild;
+    var lastIdx = -1;
+    if (sliverRO is RenderSliverMultiBoxAdaptor) {
+      lastChild = sliverRO.lastChild;
+      final pd = lastChild?.parentData;
+      if (pd is SliverMultiBoxAdaptorParentData) lastIdx = pd.index ?? -1;
+    }
+    if (lastChild == null || lastIdx < 0 || lastIdx >= msgCount) {
+      _setBackToTopTarget(null);
+      _stopDriver();
+      _maybeLoadEarlier();
+      return;
+    }
+    // lastChild 的 trailing scroll 边（reverse 下即其顶边）。screen 坐标换算：
+    // scroll 偏移 s 的内容点 screenY = vpBottom - (s - pixels)，故 s = pixels +
+    // vpBottom - screenY。
+    final vpBottom = listBox.localToGlobal(Offset.zero).dy + h;
+    final lastTop =
+        pixels + vpBottom - lastChild.localToGlobal(Offset.zero).dy;
+
+    // Seed the anchor height directly from the render object: it is laid out
+    // by post-frame time, but _heightCache lags because _measuredMessage's
+    // measurement callback is registered during build (after _scheduleFrameEval
+    // registers _evaluateFrame), so FIFO runs _evaluateFrame first. Without
+    // this seed, a freshly mounted lastChild breaks the walk-down and the
+    // button stays hidden during active upward scroll.
+    if (lastChild.hasSize) {
+      final lastH = lastChild.size.height;
+      if (lastH > 0) {
+        final id = msgs[lastIdx].info.id;
+        if (_heightCache[id] != lastH) _heightCache[id] = lastH;
       }
     }
 
     const eps = 1.0;
     double? target;
-    final lowBottom = visLowBottom;
-    final highTop = visHighTop;
-    // 视口上下边界需扣除非消息占用区：底部留白 sliver(8) + footer 动态行 +
-    // 消息 SliverPadding 底侧(8) = _footerHeight；顶部消息 SliverPadding 顶侧。
-    final bottomEdge = listBottom - _footerHeight;
-    final topEdge = listTop + _kTopPadding;
-    final condNotLast = !(visHigh == msgCount - 1 &&
-        highTop != null &&
-        highTop > topEdge + eps);
-    if (visHigh >= 0 &&
-        lowBottom != null &&
-        lowBottom >= bottomEdge - eps &&
-        condNotLast) {
-      var mStart = visHigh;
-      var mEnd = visHigh;
-      if (msgs[visHigh].info.role != 'user') {
-        while (mStart > 0 && msgs[mStart - 1].info.role != 'user') {
-          mStart--;
+    final viewBottom = pixels < _footerHeight ? _footerHeight : pixels;
+    // 从 lastChild 向下走，定位覆盖 viewBottom 的视口下缘消息。
+    var visLowIdx = -1;
+    var topEdge = lastTop; // 当前消息的 trailing（顶）边
+    for (var i = lastIdx; i >= 0; i--) {
+      final mi = _heightCache[msgs[i].info.id];
+      if (mi == null || mi <= 0) break; // 缺口，无法定位
+      if (viewBottom < topEdge + eps && viewBottom >= topEdge - mi - eps) {
+        visLowIdx = i;
+        break;
+      }
+      topEdge -= mi;
+    }
+    if (visLowIdx >= 0) {
+      var lo = visLowIdx;
+      var hi = visLowIdx;
+      if (msgs[visLowIdx].info.role != 'user') {
+        while (lo > 0 && msgs[lo - 1].info.role != 'user') {
+          lo--;
         }
-        while (mEnd < msgCount - 1 && msgs[mEnd + 1].info.role != 'user') {
-          mEnd++;
+        while (hi < msgCount - 1 && msgs[hi + 1].info.role != 'user') {
+          hi++;
         }
       }
-      if (visLow >= mStart) {
-        final runTopId = msgs[mEnd].info.id;
-        var gap = false;
-        var runTopLB = _footerHeight;
-        for (var i = 0; i <= mEnd; i++) {
-          final mh = _heightCache[msgs[i].info.id];
-          if (mh == null) {
+      // runTop = msgs[hi] 的 trailing 边，相对 lastTop 锚。
+      var gap = false;
+      var runTop = lastTop;
+      if (hi >= lastIdx) {
+        for (var i = lastIdx; i < hi; i++) {
+          final mi = _heightCache[msgs[i + 1].info.id];
+          if (mi == null || mi <= 0) {
             gap = true;
-          } else {
-            runTopLB += mh;
+            break;
           }
+          runTop += mi;
         }
+      } else {
+        for (var i = lastIdx; i > hi; i--) {
+          final mi = _heightCache[msgs[i].info.id];
+          if (mi == null || mi <= 0) {
+            gap = true;
+            break;
+          }
+          runTop -= mi;
+        }
+      }
+      // run 自身跨度（≥2 屏门槛）。
+      var span = 0.0;
+      for (var i = lo; i <= hi; i++) {
+        final mi = _heightCache[msgs[i].info.id];
+        if (mi == null || mi <= 0) {
+          gap = true;
+          break;
+        }
+        span += mi;
+      }
+      // 占满：run 顶到视口上缘（run 底 ≤ pixels 由 visLowIdx 在 run 内自动成立）。
+      final occupied = runTop >= pixels + h - eps;
+      if (occupied) {
         if (!gap) {
           _driverAbortedRunTop = null;
-          final topOut = runTopLB > pixels + h + eps;
-          if (topOut && runTopLB - _footerHeight >= 2 * h) {
-            target = runTopLB - h;
-          }
+          if (span >= 2 * h) target = runTop - h;
         }
-        _drivePreAssembly(conv, gap: gap, runTopId: runTopId);
+        _drivePreAssembly(conv, gap: gap, runTopId: msgs[hi].info.id);
       } else {
         _stopDriver();
       }
@@ -489,10 +520,33 @@ class _ConversationScreenState extends State<ConversationScreen>
     });
   }
 
+  Widget _cachedMessage(DisplayMessage msg) {
+    final id = msg.info.id;
+    // Only an unfinished non-user (streaming assistant) message mutates in
+    // place per token; its cached widget would be a stale snapshot. User
+    // messages and finished assistant messages have stable content → cache.
+    if (msg.info.role != 'user' && msg.info.finish == null) {
+      _messageChildCache.remove(id);
+      return _message(msg);
+    }
+    return _messageChildCache[id] ??= _message(msg);
+  }
+
   Widget _measuredMessage(DisplayMessage msg) {
     final id = msg.info.id;
     _noteMessageBuilt(id);
     final key = _sizeKeys.putIfAbsent(id, () => GlobalKey());
+    // SizeChangedLayoutNotifier 跳过首次布局（_oldSize==null），静态消息
+    // 若无此补偿则永不入 _heightCache。
+    if (!_heightCache.containsKey(id)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final h = key.currentContext?.size?.height;
+        if (h != null && h > 0 && _heightCache[id] != h) {
+          _heightCache[id] = h;
+          _scheduleFrameEval();
+        }
+      });
+    }
     return NotificationListener<SizeChangedLayoutNotification>(
       onNotification: (_) {
         final h = key.currentContext?.size?.height;
@@ -504,15 +558,14 @@ class _ConversationScreenState extends State<ConversationScreen>
       },
       child: SizeChangedLayoutNotifier(
         key: key,
-        // Memoized widget instance: keyboard-animation frames rebuild the
-        // list shell, re-running itemBuilder; returning the identical
-        // instance lets element diffing prune the whole (heavy) message
-        // subtree. Cache is cleared on every body build.
+        // Finished messages have stable content → cache the widget instance so
+        // identity short-circuit prunes the whole subtree on non-content
+        // rebuilds (streaming per-token, driver steps, busy/showThinking).
         child: _KeepAliveMessage(
           key: ValueKey(id),
           msgId: id,
           keepAliveIds: _keepAliveIds,
-          child: _messageChildCache[id] ??= _message(msg),
+          child: _cachedMessage(msg),
         ),
       ),
     );
@@ -574,7 +627,9 @@ class _ConversationScreenState extends State<ConversationScreen>
       final rb = _sizeKeys[id]?.currentContext?.findRenderObject();
       final laidOut =
           rb is RenderObject && !(_sliverParentDataOf(rb)?.keptAlive ?? true);
-      if (!laidOut) _heightCache.remove(id);
+      if (!laidOut) {
+        _heightCache.remove(id);
+      }
     }
   }
 
@@ -688,7 +743,23 @@ class _ConversationScreenState extends State<ConversationScreen>
       body: ListenableBuilder(
         listenable: Listenable.merge([conv, showThinking]),
         builder: (context, _) {
-          _messageChildCache.clear();
+          // Only clear on structural message changes (add/remove/reorder/id
+          // swap), not on per-token content updates or non-content notifies
+          // (driver cacheExtent / busy / showThinking). Lets finished
+          // messages' cached widget instances survive → identity short-circuit
+          // prunes them during streaming / driver rebuilds.
+          final v = conv.messagesVersion;
+          if (_lastMsgVersion != v) {
+            _lastMsgVersion = v;
+            _messageChildCache.clear();
+          }
+          // showThinking changes rendered content (reasoning show/hide) but
+          // not messagesVersion — track it separately and invalidate.
+          final st = showThinking.value;
+          if (_lastShowThinking != st) {
+            _lastShowThinking = st;
+            _messageChildCache.clear();
+          }
           if (conv.loading && !conv.loaded && conv.messages.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -720,6 +791,7 @@ class _ConversationScreenState extends State<ConversationScreen>
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                 sliver: SliverList(
+                  key: _sliverKey,
                   delegate: SliverChildBuilderDelegate(
                     (context, m) => _measuredMessage(msgs[m]),
                     childCount: msgs.length,
@@ -1283,6 +1355,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     super.didChangeDependencies();
     _mdStyleUser = _buildMdStyle(user: true);
     _mdStyleAssistant = _buildMdStyle(user: false);
+    // Cached message widgets freeze build-time values (theme/locale/textScaler);
+    // an inherited change must invalidate them so they rebuild with new styles.
+    _messageChildCache.clear();
   }
 
   Widget _markdownPart(String data, {required bool user}) {

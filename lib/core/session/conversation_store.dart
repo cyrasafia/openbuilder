@@ -277,6 +277,12 @@ class ConversationStore extends ChangeNotifier {
 
   void _touchMessages() => _messagesVersion++;
 
+  /// Bumps only on structural changes (add/remove/reorder/id-swap via
+  /// [_sort] etc.), NOT on in-place content updates (streaming part deltas in
+  /// [onPartUpdated] mutate the DisplayMessage without bumping). Used by the
+  /// detail screen to gate `_messageChildCache` clears.
+  int get messagesVersion => _messagesVersion;
+
   List<DisplayMessage> get renderableMessages {
     if (_renderableVersion == _messagesVersion) return _renderableCache;
     final List<DisplayMessage> result;
@@ -1169,7 +1175,12 @@ class ConversationStore extends ChangeNotifier {
         }
         break;
     }
-    _touchMessages();
+    // No _touchMessages() here: in-place part mutations (text/tool/reasoning
+    // deltas) are visible through the cached renderableMessages refs without a
+    // version bump. Bumping per token would clear the detail screen's widget
+    // cache every token, defeating its identity short-circuit. Structural
+    // changes (new message via _ensureMessage→_sort; retry-error replacement
+    // →_sort) still bump via _sort.
     notifyListeners();
   }
 
