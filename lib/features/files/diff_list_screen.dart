@@ -123,64 +123,59 @@ class _DiffListScreenState extends State<DiffListScreen> {
   int get _totalAdd => _diffs.fold(0, (s, d) => s + d.additions);
   int get _totalDel => _diffs.fold(0, (s, d) => s + d.deletions);
 
+  bool get _canShowLastMessage {
+    final conv = serverStore.conversationForRead(widget.sessionId);
+    if (conv == null) return true;
+    return conv.messages.any((m) => m.info.role == 'user');
+  }
+
   @override
   Widget build(BuildContext context) {
-    final session = serverStore.sessionById(widget.sessionId);
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Diff', style: TextStyle(fontSize: 16)),
-            if (session != null)
-              Text(
-                session.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppTheme.mono.copyWith(
-                  fontSize: 11,
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-              ),
-          ],
-        ),
-        actions: [
-          PopupMenuButton<DiffMode>(
-            initialValue: _mode,
-            tooltip: l(context).diffModeTooltip,
-            onSelected: _onModeChanged,
-            itemBuilder: (_) => DiffMode.values
-                .map(
-                  (m) => CheckedPopupMenuItem(
-                    value: m,
-                    checked: _mode == m,
-                    child: Text(_modeLabel(context, m)),
-                  ),
-                )
-                .toList(),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _modeLabel(context, _mode),
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                  const Icon(Icons.arrow_drop_down),
-                ],
-              ),
-            ),
-          ),
-          if (!_loading)
-            Padding(
-              padding: const EdgeInsets.only(right: 14),
-              child: _DiffStat(add: _totalAdd, del: _totalDel),
-            ),
-          appBarActionsTrailing,
+        title: const Text('Diff', style: TextStyle(fontSize: 16)),
+        actions: [appBarActionsTrailing],
+      ),
+      body: Column(
+        children: [
+          _modeSelector(context),
+          if (_diffs.isNotEmpty && !_loading && _error == null) _totalRow(),
+          Expanded(child: _body(context)),
         ],
       ),
-      body: _body(context),
+    );
+  }
+
+  Widget _totalRow() {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 16, top: 2, bottom: 6),
+        child: _DiffStat(add: _totalAdd, del: _totalDel),
+      ),
+    );
+  }
+
+  Widget _modeSelector(BuildContext context) {
+    final modes = DiffMode.values
+        .where((m) => m != DiffMode.lastMessage || _canShowLastMessage)
+        .toList();
+    final selected = modes.contains(_mode) ? _mode : DiffMode.uncommitted;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: SegmentedButton<DiffMode>(
+        showSelectedIcon: false,
+        selected: {selected},
+        onSelectionChanged: (s) => _onModeChanged(s.first),
+        segments: modes
+            .map(
+              (m) => ButtonSegment(
+                value: m,
+                label: Text(_modeLabel(context, m)),
+              ),
+            )
+            .toList(),
+      ),
     );
   }
 
@@ -223,14 +218,28 @@ class _DiffListScreenState extends State<DiffListScreen> {
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (_, i) {
         final d = _diffs[i];
+        final slash = d.file.lastIndexOf('/');
+        final name = slash >= 0 ? d.file.substring(slash + 1) : d.file;
+        final dir = slash >= 0 ? d.file.substring(0, slash) : '';
         return ListTile(
           leading: const Icon(Icons.description_outlined),
           title: Text(
-            d.file,
+            name,
             style: AppTheme.mono.copyWith(fontSize: 13),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
+          subtitle: dir.isNotEmpty
+              ? Text(
+                  dir,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTheme.mono.copyWith(
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                )
+              : null,
           trailing: _DiffStat(add: d.additions, del: d.deletions),
           onTap: () => context.push(
             '/session/${widget.sessionId}/diff/file'
