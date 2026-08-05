@@ -724,13 +724,23 @@ class _ConversationScreenState extends State<ConversationScreen>
             tooltip: l(context).fileTitle,
             onPressed: () => _openFiles(context, directory),
           ),
-          IconButton(
-            icon: const Icon(Icons.compare),
-            tooltip: 'Diff',
-            onPressed: () => context.push(
-              '/session/${widget.sessionId}/diff'
-              '?directory=${Uri.encodeQueryComponent(directory)}',
-            ),
+          ListenableBuilder(
+            listenable: serverStore,
+            builder: (context, _) {
+              final s = serverStore.sessionById(widget.sessionId);
+              final canDiff = s != null &&
+                  (serverStore.projectOf(s.projectID)?.workspaceCapable ??
+                      false);
+              if (!canDiff) return const SizedBox.shrink();
+              return IconButton(
+                icon: const Icon(Icons.compare),
+                tooltip: 'Diff',
+                onPressed: () => context.push(
+                  '/session/${widget.sessionId}/diff'
+                  '?directory=${Uri.encodeQueryComponent(directory)}',
+                ),
+              );
+            },
           ),
           _MoreMenu(
             sessionId: widget.sessionId,
