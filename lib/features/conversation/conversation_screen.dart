@@ -3605,7 +3605,6 @@ class _AgentModelBar extends StatefulWidget {
 }
 
 class _AgentModelBarState extends State<_AgentModelBar> {
-  static const double _barHeight = 30;
   List<AgentInfo> _agents = const [];
   List<ModelInfo> _models = const [];
   bool _loading = false;
@@ -3832,14 +3831,23 @@ class _AgentModelBarState extends State<_AgentModelBar> {
 
   Widget _buildBar(BuildContext context, Color muted) {
     if (_loading) {
-      return SizedBox(
-        height: _barHeight,
-        child: Center(
-          child: SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2, color: muted),
-          ),
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _Chip(
+              icon: Icons.smart_toy_outlined,
+              label: '—',
+              muted: muted,
+            ),
+            const SizedBox(width: 8),
+            _Chip(
+              icon: Icons.memory,
+              label: '—',
+              muted: muted,
+            ),
+          ],
         ),
       );
     }
@@ -3876,10 +3884,9 @@ class _AgentModelBarState extends State<_AgentModelBar> {
         final hasVariants =
             currentModel.isNotEmpty && currentModel.first.variants.isNotEmpty;
 
-        return SizedBox(
-          height: _barHeight,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+          child: IntrinsicHeight(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
