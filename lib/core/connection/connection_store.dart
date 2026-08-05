@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../cache/cache_store.dart';
 import 'connection_profile.dart';
 
 /// Persisted list of configured opencode servers + the active one.
@@ -74,6 +75,9 @@ class ConnectionStore extends ChangeNotifier {
       _activeId = _servers.isEmpty ? null : _servers.first.id;
     }
     await _save();
+    // Drop the profile's whole cache namespace (server + all conv_*). Needs
+    // only the profile id — the per-profile directory is the mapping.
+    await FileCacheStore.removeProfile(id);
   }
 
   Future<void> setActive(String id) async {

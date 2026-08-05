@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_builder/core/cache/cache_store.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
@@ -14,9 +16,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// multi-gap scenarios, SSE extends segment, window-range deletion, cache
 /// preheat (session.updated match/mismatch), and cursor exhaustion.
 
+CacheStore? _cache;
+
 void main() {
-  setUp(() {
+  late Directory tmp;
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    tmp = await Directory.systemTemp.createTemp('incr_reconcile_test');
+    FileCacheStore.rootBaseOverride = Directory('${tmp.path}/ob_cache');
+    _cache = FileCacheStore('test');
+  });
+  tearDown(() async {
+    FileCacheStore.rootBaseOverride = null;
+    _cache = null;
+    if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
   group('incremental reconcile', () {
@@ -165,13 +178,14 @@ void main() {
     test('cache preheat when session.updated matches', () async {
       final entries = _entries(1, 3);
       final client = _PageMockClient([_PageSpec(entries, null)]);
-      final conv = ConversationStore('s1', client);
+      final conv = ConversationStore('s1', client, cacheStore: _cache);
       conv.sessionUpdated = 42;
-      // Save cache
+      // Save cache (flush the unawaited _saveCache to the file store).
       await conv.reconcile();
+      await conv.saveCacheForTest();
       expect(conv.loaded, isTrue);
       // Simulate restart: new conv, same sessionUpdated
-      final conv2 = ConversationStore('s1', client);
+      final conv2 = ConversationStore('s1', client, cacheStore: _cache);
       conv2.sessionUpdated = 42;
       client.addPages([_PageSpec(entries, null)]); // reconcile re-fetches
       await conv2.load();
@@ -183,11 +197,12 @@ void main() {
     test('cache preheat skipped when session.updated differs', () async {
       final entries = _entries(1, 3);
       final client = _PageMockClient([_PageSpec(entries, null)]);
-      final conv = ConversationStore('s1', client);
+      final conv = ConversationStore('s1', client, cacheStore: _cache);
       conv.sessionUpdated = 42;
       await conv.reconcile();
+      await conv.saveCacheForTest();
       // Restart with different sessionUpdated (new messages arrived)
-      final conv2 = ConversationStore('s1', client);
+      final conv2 = ConversationStore('s1', client, cacheStore: _cache);
       conv2.sessionUpdated = 99; // mismatch
       client.addPages([_PageSpec(entries, null)]);
       await conv2.load();
@@ -246,15 +261,15 @@ void main() {
     test('cache preheat content visible even when reconcile fails (IR-7)', () async {
       final entries = _entries(1, 3);
       final client = _PageMockClient([_PageSpec(entries, null)]);
-      final conv = ConversationStore('s1', client);
+      final conv = ConversationStore('s1', client, cacheStore: _cache);
       conv.sessionUpdated = 42;
       await conv.reconcile(); // save cache
-      // IR-R3: explicitly drain the unawaited _saveCache microtask so the
-      // test doesn't depend on implicit microtask scheduling order.
-      await Future.delayed(Duration.zero);
+      // IR-R3: flush the unawaited _saveCache to the file store explicitly —
+      // file I/O is multi-await (was a microtask drain when on SharedPreferences).
+      await conv.saveCacheForTest();
       // New conv: sessionUpdated matches → preheat, then reconcile fails
       final failClient = _AlwaysFailMockClient();
-      final conv2 = ConversationStore('s1', failClient);
+      final conv2 = ConversationStore('s1', failClient, cacheStore: _cache);
       conv2.sessionUpdated = 42; // match → preheat
       await conv2.load();
       expect(conv2.loaded, isTrue);

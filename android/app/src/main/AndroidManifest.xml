@@ -11,7 +11,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
         android:label="Open Builder"
-        android:name="${applicationName}"
+        android:name=".OpenBuilderApplication"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:enableOnBackInvokedCallback="false"

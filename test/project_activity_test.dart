@@ -1,13 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_builder/core/cache/cache_store.dart';
 import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 // A non-null [OpencodeClient] pointing at a discard port. The activity logic
 // under test is purely local (no network calls), so this only satisfies the
@@ -77,6 +78,16 @@ SessionModel _session({
 }
 
 void main() {
+  late Directory tmp;
+  setUp(() async {
+    tmp = await Directory.systemTemp.createTemp('project_activity_test');
+    FileCacheStore.rootBaseOverride = Directory('${tmp.path}/ob_cache');
+  });
+  tearDown(() async {
+    FileCacheStore.rootBaseOverride = null;
+    if (await tmp.exists()) await tmp.delete(recursive: true);
+  });
+
   // PA-1: archiving the last active session in a project must NOT reset the
   // project's sort position. Before the fix, `_upsertSession` removed the
   // archived session from `_sessions` and `lastActivityForProject` returned 0
@@ -218,19 +229,17 @@ void main() {
   // by `_saveCache` is restored by `_loadCache`. Locks the JSON shape (NUL-
   // escaped key encoding, int value) and the v1 schema field name `activity`.
   test('cache round-trip restores activity map (PA-R2a)', () async {
-    SharedPreferences.setMockInitialValues({
-      'server_${_profile.id}': jsonEncode({
-        'v': 1,
-        'projects': <Map<String, dynamic>>[],
-        'sessions': <Map<String, dynamic>>[],
-        'status': <String, dynamic>{},
-        'lastMessage': <String, dynamic>{},
-        'activity': {
-          'p1': 5000,
-          'global\u0000/dirA': 7000,
-        },
-      }),
-    });
+    await FileCacheStore(_profile.id).write('server', jsonEncode({
+      'v': 1,
+      'projects': <Map<String, dynamic>>[],
+      'sessions': <Map<String, dynamic>>[],
+      'status': <String, dynamic>{},
+      'lastMessage': <String, dynamic>{},
+      'activity': {
+        'p1': 5000,
+        'global\u0000/dirA': 7000,
+      },
+    }));
     final store = ServerStore()..client = _fakeClient();
     await store.loadCacheForTesting(_profile);
     expect(store.lastActivityForProject('p1'), 5000);
@@ -250,22 +259,18 @@ void main() {
         id: 's1', projectID: 'p1', directory: '/r', updated: 9000));
     expect(store.lastActivityForProject('p1'), 9000);
     // Cache has an older value 5000 — must NOT overwrite.
-    SharedPreferences.setMockInitialValues({
-      'server_${_profile.id}': jsonEncode({
-        'v': 1,
-        'activity': {'p1': 5000},
-      }),
-    });
+    await FileCacheStore(_profile.id).write('server', jsonEncode({
+      'v': 1,
+      'activity': {'p1': 5000},
+    }));
     await store.loadCacheForTesting(_profile);
     expect(store.lastActivityForProject('p1'), 9000);
     // But for a key not yet in memory, the cached value fills in.
     expect(store.lastActivityForProject('p2'), 0); // sanity: absent key
-    SharedPreferences.setMockInitialValues({
-      'server_${_profile.id}': jsonEncode({
-        'v': 1,
-        'activity': {'p2': 3000},
-      }),
-    });
+    await FileCacheStore(_profile.id).write('server', jsonEncode({
+      'v': 1,
+      'activity': {'p2': 3000},
+    }));
     await store.loadCacheForTesting(_profile);
     expect(store.lastActivityForProject('p2'), 3000);
     // p1 should still be 9000 (loading p2's cache didn't reset p1's SSE value).

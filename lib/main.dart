@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'app_router.dart';
 import 'app_state.dart';
+import 'core/cache/cache_store.dart';
 import 'core/logging/app_logger.dart';
 import 'core/notifications/notification_service.dart';
 import 'core/net/system_font_weight.dart';
@@ -35,6 +37,14 @@ void main() {
       }
     }
     await connectionStore.load();
+    // One-time migration of legacy SharedPreferences blobs into the file
+    // cache. MUST run before wireServerStore() (which triggers connect() →
+    // _loadCache) and after connectionStore.load() (profile ids enumerable).
+    if (!kIsWeb) {
+      await FileCacheStore.migrateFromPrefs(
+        profileIds: connectionStore.servers.map((s) => s.id).toList(),
+      );
+    }
     await modelHideStore.load();
     await defaultAgentModelStore.load();
     wireServerStore();

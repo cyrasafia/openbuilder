@@ -3,12 +3,12 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
 import '../../l10n/gen/app_localizations.dart';
 import '../connection/connection_profile.dart';
+import '../cache/cache_store.dart';
 import '../logging/app_logger.dart';
 import '../net/dio_factory.dart';
 import '../net/net_error.dart';
@@ -52,6 +52,10 @@ class ServerStore extends ChangeNotifier {
   DateTime? _lastPreviewNotifyAt;
   static const _previewNotifyInterval = Duration(milliseconds: 120);
   ConnectionProfile? _profile;
+  // Profile-scoped cache backend. Rebuilt on connect() per profile.id; null
+  // after disconnect(). Shared with ConversationStore (conv cache lives under
+  // the same per-profile directory).
+  CacheStore? _cacheStore;
 
   // ── On-demand SSE constants ──
   static const _kGlobalWatchdog = '\u0000__global_watchdog__';
@@ -719,7 +723,8 @@ class ServerStore extends ChangeNotifier {
     final c = client;
     if (c == null) return null;
     final directory = sessionById(sid)?.directory ?? '';
-    final conv = ConversationStore(sid, c, directory: directory);
+    final conv = ConversationStore(sid, c,
+        directory: directory, cacheStore: _cacheStore);
     conv.onQuestionResolved = _markQuestionResolved;
     conv.onPermissionResolved = _markPermissionResolved;
     _conversations[sid] = conv;
@@ -845,6 +850,7 @@ class ServerStore extends ChangeNotifier {
         await _saveCache();
       }
       _profile = profile;
+      _cacheStore = FileCacheStore(profile.id);
       await _teardown(flushCache: false);
       _projects = [];
       _sessions = [];
@@ -1400,14 +1406,15 @@ class ServerStore extends ChangeNotifier {
   void addSessionsForTesting(Map<String, SessionModel> out, List<SessionModel> list) =>
       _addSessions(out, list);
 
-  /// Test seam for the cache round-trip path. Sets `_profile` (required by
-  /// `_loadCache` to compute the storage key) and loads cache. Used by PA-R2
-  /// to assert that an `activity` blob in SharedPreferences is restored, and
-  /// that a stale cached value does NOT overwrite a fresher in-memory value
-  /// (the monotonic-max merge in `_loadCache`).
+  /// Test seam for the cache round-trip path. Sets `_profile` + `_cacheStore`
+  /// (required by `_loadCache`) and loads cache. Used by PA-R2 to assert that
+  /// an `activity` blob is restored, and that a stale cached value does NOT
+  /// overwrite a fresher in-memory value (the monotonic-max merge in
+  /// `_loadCache`).
   @visibleForTesting
   Future<void> loadCacheForTesting(ConnectionProfile profile) async {
     _profile = profile;
+    _cacheStore = FileCacheStore(profile.id);
     await _loadCache();
   }
 
@@ -1748,6 +1755,8 @@ class ServerStore extends ChangeNotifier {
     _conversations.remove(id);
     _lastMessage.remove(id);
     _statusMap.remove(id);
+    final cs = _cacheStore;
+    if (cs != null) unawaited(cs.remove('conv/$id'));
     // Intentionally keeps `_lastActivityByKey` — activity is monotonic across
     // deletes too. Removing the entry here would sink the project if its last
     // observed session is hard-deleted (PA-5 locks this invariant). The entry
@@ -1859,6 +1868,7 @@ class ServerStore extends ChangeNotifier {
     _suspiciousEmptyStreak = 0;
     client = null;
     _profile = null;
+    _cacheStore = null;
     notifyListeners();
   }
 
@@ -2002,8 +2012,6 @@ class ServerStore extends ChangeNotifier {
 
   // ── Local cache (offline-first: instant UI on app open) ──
 
-  String _cacheKey(String profileId) => 'server_$profileId';
-
   void _scheduleCacheSave() {
     if (_profile == null) return;
     _cacheSaveTimer?.cancel();
@@ -2011,10 +2019,9 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> _saveCache() async {
-    final profile = _profile;
-    if (profile == null) return;
+    final cs = _cacheStore;
+    if (cs == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
       final j = {
         'v': 1,
         'projects': _projects.map((p) => p.toJson()).toList(),
@@ -2028,24 +2035,22 @@ class ServerStore extends ChangeNotifier {
         'activity': _lastActivityByKey,
         'workspaceEnabled': _workspaceEnabled,
       };
-      await prefs.setString(_cacheKey(profile.id), jsonEncode(j));
+      await cs.write('server', jsonEncode(j));
     } catch (e) {
       AppLogger.I.w(_tag, 'saveCache failed: $e');
     }
   }
 
   Future<void> _loadCache() async {
-    final profile = _profile;
-    if (profile == null) return;
-    final key = _cacheKey(profile.id);
+    final cs = _cacheStore;
+    if (cs == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(key);
+      final raw = await cs.read('server');
       if (raw == null || raw.isEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
       if (j['v'] != 1) {
         AppLogger.I.w(_tag, 'cache schema mismatch, dropping');
-        await prefs.remove(key);
+        await cs.remove('server');
         return;
       }
       final projects = (j['projects'] as List? ?? [])
@@ -2090,10 +2095,9 @@ class ServerStore extends ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      AppLogger.I.e(_tag, 'loadCache failed ($key): $e');
+      AppLogger.I.e(_tag, 'loadCache failed: $e');
       try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(key);
+        await cs.remove('server');
       } catch (_) {}
     }
   }

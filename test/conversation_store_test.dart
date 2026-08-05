@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/attachments/attachment_pipeline.dart';
 import 'package:open_builder/core/attachments/file_ref.dart';
+import 'package:open_builder/core/cache/cache_store.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
 import 'package:open_builder/core/net/net_error.dart';
@@ -13,6 +14,7 @@ import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
 
 // 指向丢弃端口的非空 client；被测逻辑（addOptimisticUserMessage /
 // lastMessagePreview / DisplayPart.from）均不发起网络请求。
@@ -64,9 +66,23 @@ Map<String, dynamic> _filePartRaw(String id, String mid) => {
       },
     };
 
+late CacheStore _cache;
+late Directory _tmp;
+
+ConversationStore _conv(String sid, OpencodeClient client,
+        {String directory = ''}) =>
+    ConversationStore(sid, client, directory: directory, cacheStore: _cache);
+
 void main() {
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    _tmp = await Directory.systemTemp.createTemp('conv_test');
+    FileCacheStore.rootBaseOverride = Directory('${_tmp.path}/ob_cache');
+    _cache = FileCacheStore('test');
+  });
+  tearDown(() async {
+    FileCacheStore.rootBaseOverride = null;
+    if (await _tmp.exists()) await _tmp.delete(recursive: true);
   });
   group('DisplayPart.from file branch (AT-4: 工厂不解码)', () {
     test('extracts mime/url/filename, previewThumb null', () {
@@ -106,7 +122,7 @@ void main() {
 
   group('addOptimisticUserMessage with attachments', () {
     test('text + file parts, previewThumb from AttachmentPreview', () {
-      final conv = ConversationStore('s1', _fakeClient());
+      final conv = _conv('s1', _fakeClient());
       final thumb = Uint8List.fromList([1, 2, 3]);
       conv.addOptimisticUserMessage('hi', attachments: [
         AttachmentPreview(
@@ -131,7 +147,7 @@ void main() {
     });
 
     test('pure attachments (no text) produces only file parts', () {
-      final conv = ConversationStore('s2', _fakeClient());
+      final conv = _conv('s2', _fakeClient());
       conv.addOptimisticUserMessage('', attachments: [
         AttachmentPreview(
             mime: 'application/pdf',
@@ -145,7 +161,7 @@ void main() {
     });
 
     test('backward compat: single-arg still works', () {
-      final conv = ConversationStore('s3', _fakeClient());
+      final conv = _conv('s3', _fakeClient());
       conv.addOptimisticUserMessage('plain');
       final msg = conv.messages.single;
       expect(msg.parts.length, 1);
@@ -156,7 +172,7 @@ void main() {
 
   group('lastMessagePreview hides reasoning when asked', () {
     test('reasoning-only last message: shown by default, null when hidden', () {
-      final conv = ConversationStore('s6', _fakeClient());
+      final conv = _conv('s6', _fakeClient());
       conv.onPartUpdated(
           <String, dynamic>{
             'messageID': 'm1',
@@ -169,7 +185,7 @@ void main() {
     });
 
     test('reasoning as last part falls back to earlier text when hidden', () {
-      final conv = ConversationStore('s7', _fakeClient());
+      final conv = _conv('s7', _fakeClient());
       conv.onPartUpdated(
           <String, dynamic>{
             'messageID': 'm1',
@@ -199,7 +215,7 @@ void main() {
 
     test('pure attachment optimistic -> localized fallback when filename empty',
         () {
-      final conv = ConversationStore('s4', _fakeClient());
+      final conv = _conv('s4', _fakeClient());
       conv.addOptimisticUserMessage('', attachments: [
         AttachmentPreview(
             mime: 'image/png',
@@ -211,7 +227,7 @@ void main() {
     });
 
     test('attachment with filename uses filename', () {
-      final conv = ConversationStore('s5', _fakeClient());
+      final conv = _conv('s5', _fakeClient());
       conv.addOptimisticUserMessage('', attachments: [
         AttachmentPreview(
             mime: 'application/pdf',
@@ -229,7 +245,7 @@ void main() {
 
     test('subtask body is populated from prompt field, preview stays concise',
         () {
-      final conv = ConversationStore('s_st', _fakeClient());
+      final conv = _conv('s_st', _fakeClient());
       conv.onMessageUpdated(
           MessageInfo(id: 'm1', role: 'user', sessionID: 's_st', created: 1));
       conv.onPartUpdated(
@@ -245,7 +261,7 @@ void main() {
     });
 
     test('subtask without prompt falls back to subtask: review', () {
-      final conv = ConversationStore('s_st3', _fakeClient());
+      final conv = _conv('s_st3', _fakeClient());
       conv.onMessageUpdated(
           MessageInfo(id: 'm1', role: 'user', sessionID: 's_st3', created: 1));
       conv.onPartUpdated({
@@ -259,7 +275,7 @@ void main() {
     });
 
     test('subtask with empty command and text falls back to bare subtask', () {
-      final conv = ConversationStore('s_st4', _fakeClient());
+      final conv = _conv('s_st4', _fakeClient());
       conv.onMessageUpdated(
           MessageInfo(id: 'm1', role: 'user', sessionID: 's_st4', created: 1));
       conv.onPartUpdated({
@@ -317,7 +333,7 @@ void main() {
     });
 
     test('onPartUpdated carries error from SSE', () {
-      final conv = ConversationStore('s6', _fakeClient());
+      final conv = _conv('s6', _fakeClient());
       conv.onPartUpdated({
         'id': 'p4',
         'messageID': 'm1',
@@ -336,7 +352,7 @@ void main() {
     });
 
     test('onPartUpdated does not clear toolError when later state omits error', () {
-      final conv = ConversationStore('s6', _fakeClient());
+      final conv = _conv('s6', _fakeClient());
       conv.onPartUpdated({
         'id': 'p4',
         'messageID': 'm1',
@@ -363,7 +379,7 @@ void main() {
     });
 
     test('cache round-trip preserves toolError', () async {
-      final conv = ConversationStore('s7', _fakeClient());
+      final conv = _conv('s7', _fakeClient());
       conv.onPartUpdated({
         'id': 'p5',
         'messageID': 'm2',
@@ -377,7 +393,7 @@ void main() {
       }, null);
       await conv.saveCacheForTest();
 
-      final restored = ConversationStore('s7', _fakeClient());
+      final restored = _conv('s7', _fakeClient());
       await restored.loadCacheForTest();
       expect(restored.messages.length, 1);
       expect(restored.messages.single.parts.single.toolError, 'disk full');
@@ -385,7 +401,7 @@ void main() {
 
     test('cache round-trip preserves subtask command and expanded prompt',
         () async {
-      final conv = ConversationStore('s7c', _fakeClient());
+      final conv = _conv('s7c', _fakeClient());
       conv.onPartUpdated({
         'id': 'pst',
         'messageID': 'mst',
@@ -395,7 +411,7 @@ void main() {
       }, null);
       await conv.saveCacheForTest();
 
-      final restored = ConversationStore('s7c', _fakeClient());
+      final restored = _conv('s7c', _fakeClient());
       await restored.loadCacheForTest();
       expect(restored.messages.length, 1);
       expect(restored.messages.single.parts.single.command, 'review');
@@ -410,7 +426,7 @@ void main() {
         id: 'que_t1', sessionID: 's1', questions: const []);
 
     test('replyQuestion throws when directory empty and keeps the card', () async {
-      final conv = ConversationStore('s1', _fakeClient()); // directory 默认 ''
+      final conv = _conv('s1', _fakeClient()); // directory 默认 ''
       expect(conv.directory, '');
       conv.onQuestion(q);
       expect(conv.questions.length, 1);
@@ -425,14 +441,14 @@ void main() {
     });
 
     test('rejectQuestion throws when directory empty and keeps the card', () async {
-      final conv = ConversationStore('s1', _fakeClient());
+      final conv = _conv('s1', _fakeClient());
       conv.onQuestion(q);
       await expectLater(conv.rejectQuestion(q), throwsA(isA<KnownError>()));
       expect(conv.questions.length, 1);
     });
 
     test('setDirectory fills only when current is empty', () {
-      final conv = ConversationStore('s1', _fakeClient());
+      final conv = _conv('s1', _fakeClient());
       expect(conv.directory, '');
       conv.setDirectory('/a');
       expect(conv.directory, '/a');
@@ -447,7 +463,7 @@ void main() {
 
   group('retry part error propagation', () {
     test('retry part propagates error to parent message info.error', () {
-      final conv = ConversationStore('s8', _fakeClient());
+      final conv = _conv('s8', _fakeClient());
       // Simulate a message updated (assistant message, no error yet).
       conv.onMessageUpdated(MessageInfo(
         id: 'msg_r1',
@@ -484,7 +500,7 @@ void main() {
     });
 
     test('retry part does not overwrite existing message error', () {
-      final conv = ConversationStore('s9', _fakeClient());
+      final conv = _conv('s9', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
         id: 'msg_r2',
         role: 'assistant',
@@ -509,7 +525,7 @@ void main() {
     });
 
     test('empty retry error does not propagate', () {
-      final conv = ConversationStore('s10', _fakeClient());
+      final conv = _conv('s10', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
         id: 'msg_r3',
         role: 'assistant',
@@ -531,7 +547,7 @@ void main() {
     });
 
     test('message.updated preserves retry error when new info lacks error', () {
-      final conv = ConversationStore('s11', _fakeClient());
+      final conv = _conv('s11', _fakeClient());
       // 1. message.updated arrives first (no error).
       conv.onMessageUpdated(MessageInfo(
         id: 'msg_r4',
@@ -565,7 +581,7 @@ void main() {
   });
 
   group('setStatus retry message', () {
-    ConversationStore newConv() => ConversationStore('s12', _fakeClient());
+    ConversationStore newConv() => _conv('s12', _fakeClient());
 
     test('retry status stores message', () {
       final conv = newConv();
@@ -644,7 +660,7 @@ void main() {
     });
 
     test('toDisplayForTest filters synthetic text but keeps file + real text', () {
-      final conv = ConversationStore('s_syn', _fakeClient());
+      final conv = _conv('s_syn', _fakeClient());
       final dm = conv.toDisplayForTest(MessageEntry.fromJson({
         'info': {
           'id': 'msg_u1',
@@ -669,7 +685,7 @@ void main() {
     });
 
     test('onPartUpdated skips synthetic text from SSE', () {
-      final conv = ConversationStore('s_syn2', _fakeClient());
+      final conv = _conv('s_syn2', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
         id: 'msg_u2', role: 'user', sessionID: 's_syn2', created: 2000));
       conv.onPartUpdated({
@@ -699,7 +715,7 @@ void main() {
     });
 
     test('onPartUpdated keeps file parts from SSE', () {
-      final conv = ConversationStore('s_syn3', _fakeClient());
+      final conv = _conv('s_syn3', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
           id: 'msg_u3', role: 'user', sessionID: 's_syn3', created: 3000));
       conv.onPartUpdated({
@@ -719,7 +735,7 @@ void main() {
     // executed by the user") for shell commands whose only part is hidden.
     // It must be hidden from rendering instead of producing an empty bubble.
     test('synthetic-only user message renders no empty bubble', () {
-      final conv = ConversationStore('s_syn4', _fakeClient());
+      final conv = _conv('s_syn4', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
           id: 'msg_u4', role: 'user', sessionID: 's_syn4', created: 4000));
       conv.onPartUpdated({
@@ -739,7 +755,7 @@ void main() {
     // Regression: a hidden part arriving before a visible part must not drop
     // the user message or resurrect it with the wrong role.
     test('user message renders when visible part follows hidden part', () {
-      final conv = ConversationStore('s_syn5', _fakeClient());
+      final conv = _conv('s_syn5', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
           id: 'msg_u5', role: 'user', sessionID: 's_syn5', created: 5000));
       conv.onPartUpdated({
@@ -779,7 +795,7 @@ void main() {
     // green bubble but no text → empty bubble. It must be filtered like the
     // shell synthetic case.
     test('blank-text-only user message renders no empty bubble', () {
-      final conv = ConversationStore('s_cmd1', _fakeClient());
+      final conv = _conv('s_cmd1', _fakeClient());
       conv.onMessageUpdated(MessageInfo(
           id: 'msg_c1', role: 'user', sessionID: 's_cmd1', created: 6000));
       conv.onPartUpdated({
@@ -832,7 +848,7 @@ void main() {
   // 验证草稿加载须显式调用 loadDraftOnly()；setUp 已隔离 SharedPreferences。
   group('draft persistence (CD-1~31)', () {
     test('setDraft updates memory only and does not notify', () {
-      final conv = ConversationStore('d1', _fakeClient());
+      final conv = _conv('d1', _fakeClient());
       var notifies = 0;
       conv.addListener(() => notifies++);
       conv.setDraft('hello', shell: true);
@@ -842,10 +858,10 @@ void main() {
     });
 
     test('persistDraft writes draft/draftShell into blob', () async {
-      final conv = ConversationStore('d2', _fakeClient());
+      final conv = _conv('d2', _fakeClient());
       conv.setDraft('unsent text', shell: true);
       await conv.persistDraft();
-      final restored = ConversationStore('d2', _fakeClient());
+      final restored = _conv('d2', _fakeClient());
       await restored.loadDraftOnly();
       expect(restored.draftText, 'unsent text');
       expect(restored.draftShell, isTrue);
@@ -853,12 +869,12 @@ void main() {
     });
 
     test('loadDraftOnly reads only draft, ignores messages/todos (CD-1)', () async {
-      final seed = ConversationStore('d3', _fakeClient());
+      final seed = _conv('d3', _fakeClient());
       seed.onPartUpdated(
           {'id': 'p1', 'messageID': 'm1', 'type': 'text'}, 'a real message');
       await seed.saveCacheForTest();
 
-      final restored = ConversationStore('d3', _fakeClient());
+      final restored = _conv('d3', _fakeClient());
       await restored.loadDraftOnly();
       expect(restored.draftText, ''); // 无 draft 字段 → 兜底空
       expect(restored.draftShell, isFalse);
@@ -867,11 +883,10 @@ void main() {
     });
 
     test('backward compat: blob without draft fields → empty (CD-7)', () async {
-      SharedPreferences.setMockInitialValues({
-        'conv_d4':
-            '{"messages":[],"todos":[],"segments":[],"cachedSessionUpdated":null}',
-      });
-      final conv = ConversationStore('d4', _fakeClient());
+      await _cache.write(
+          'conv/d4',
+          '{"messages":[],"todos":[],"segments":[],"cachedSessionUpdated":null}');
+      final conv = _conv('d4', _fakeClient());
       await conv.loadDraftOnly();
       expect(conv.draftText, '');
       expect(conv.draftShell, isFalse);
@@ -879,22 +894,18 @@ void main() {
     });
 
     test('loadDraftOnly is idempotent (_draftLoaded guard)', () async {
-      SharedPreferences.setMockInitialValues({
-        'conv_d5': '{"draft":"first","draftShell":false}',
-      });
-      final conv = ConversationStore('d5', _fakeClient());
+      await _cache.write('conv/d5', '{"draft":"first","draftShell":false}');
+      final conv = _conv('d5', _fakeClient());
       await conv.loadDraftOnly();
       expect(conv.draftText, 'first');
       // 改 backing 值；第二次调用须被守卫拦住、不重读。
-      SharedPreferences.setMockInitialValues({
-        'conv_d5': '{"draft":"second","draftShell":false}',
-      });
+      await _cache.write('conv/d5', '{"draft":"second","draftShell":false}');
       await conv.loadDraftOnly();
       expect(conv.draftText, 'first');
     });
 
     test('loadDraftOnly on missing blob sets draftLoaded without throw', () async {
-      final conv = ConversationStore('d6', _fakeClient()); // 无缓存
+      final conv = _conv('d6', _fakeClient()); // 无缓存
       await conv.loadDraftOnly();
       expect(conv.draftText, '');
       expect(conv.draftLoaded, isTrue);
@@ -902,15 +913,15 @@ void main() {
 
     test('loadDraftOnly on corrupt blob does not throw, sets draftLoaded',
         () async {
-      SharedPreferences.setMockInitialValues({'conv_d7': '{not valid json'});
-      final conv = ConversationStore('d7', _fakeClient());
+      await _cache.write('conv/d7', '{not valid json');
+      final conv = _conv('d7', _fakeClient());
       await conv.loadDraftOnly();
       expect(conv.draftText, '');
       expect(conv.draftLoaded, isTrue);
     });
 
     test('persistDraft after dispose is safe (CD-3/CD-20 ordering)', () async {
-      final conv = ConversationStore('d8', _fakeClient());
+      final conv = _conv('d8', _fakeClient());
       conv.setDraft('x');
       conv.dispose();
       await conv.persistDraft(); // _saveCache 不检查 _disposed；写仍有效、不抛
@@ -918,10 +929,8 @@ void main() {
 
     test('loadDraftOnly notifies on completion (reactive restore, §5.3)',
         () async {
-      SharedPreferences.setMockInitialValues({
-        'conv_d9': '{"draft":"restored","draftShell":true}',
-      });
-      final conv = ConversationStore('d9', _fakeClient());
+      await _cache.write('conv/d9', '{"draft":"restored","draftShell":true}');
+      final conv = _conv('d9', _fakeClient());
       var notifies = 0;
       conv.addListener(() => notifies++);
       await conv.loadDraftOnly();
@@ -935,7 +944,7 @@ void main() {
   // 且权威 part 到达后按 type 1:1 去重，无重复。
   group('optimistic→authoritative part bridging (option A)', () {
     test('optimistic file part bridges onto authoritative user message', () {
-      final conv = ConversationStore('ob1', _fakeClient());
+      final conv = _conv('ob1', _fakeClient());
       conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
       // message.updated(user) lands BEFORE any part.updated — the gap window.
       conv.onMessageUpdated(const MessageInfo(
@@ -952,7 +961,7 @@ void main() {
         () {
       // The original bug: optimistic pruned → file gone until reconcile.
       // With bridging the placeholder persists, so the file never disappears.
-      final conv = ConversationStore('ob2', _fakeClient());
+      final conv = _conv('ob2', _fakeClient());
       conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
       conv.onMessageUpdated(const MessageInfo(
           id: 'm2', role: 'user', sessionID: 'ob2', created: 100));
@@ -966,7 +975,7 @@ void main() {
 
     test('authoritative part.updated evicts placeholder 1:1 (no duplicates)',
         () {
-      final conv = ConversationStore('ob3', _fakeClient());
+      final conv = _conv('ob3', _fakeClient());
       conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
       conv.onMessageUpdated(const MessageInfo(
           id: 'm3', role: 'user', sessionID: 'ob3', created: 100));
@@ -987,7 +996,7 @@ void main() {
       // message.part.updated in a different order (file before text for
       // @-mentions). The real part must replace its placeholder IN PLACE so
       // text stays above file — not get appended to the list tail.
-      final conv = ConversationStore('ob3b', _fakeClient());
+      final conv = _conv('ob3b', _fakeClient());
       conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
       conv.onMessageUpdated(const MessageInfo(
           id: 'm3b', role: 'user', sessionID: 'ob3b', created: 100));
@@ -1017,7 +1026,7 @@ void main() {
           ],
         }),
       ];
-      final conv = ConversationStore('ob4', _MockClient(entries));
+      final conv = _conv('ob4', _MockClient(entries));
       conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
       conv.onMessageUpdated(const MessageInfo(
           id: 'm4', role: 'user', sessionID: 'ob4', created: 100));
@@ -1030,10 +1039,10 @@ void main() {
     });
 
     test('cache round-trip preserves file fields', () async {
-      final conv = ConversationStore('ob5', _fakeClient());
+      final conv = _conv('ob5', _fakeClient());
       conv.onPartUpdated(_filePartRaw('pf', 'm5'), null);
       await conv.saveCacheForTest();
-      final restored = ConversationStore('ob5', _fakeClient());
+      final restored = _conv('ob5', _fakeClient());
       await restored.loadCacheForTest();
       final fp = restored.messages.single.parts.single;
       expect(fp.type, 'file');
@@ -1047,7 +1056,7 @@ void main() {
       // Send-while-busy edge: two optimistic user messages pending. The server
       // creates in send order, so the first authoritative to land must pick up
       // the FIRST optimistic's parts — not the newer send's.
-      final conv = ConversationStore('ob6', _fakeClient());
+      final conv = _conv('ob6', _fakeClient());
       conv.addOptimisticUserMessage('A', fileRefs: const [_fileRef]);
       conv.addOptimisticUserMessage('B');
       conv.onMessageUpdated(const MessageInfo(

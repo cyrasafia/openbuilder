@@ -3,13 +3,13 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../data/api/opencode_client.dart';
 import '../../../domain/models.dart';
 import '../../../l10n/gen/app_localizations.dart';
 import '../attachments/attachment_pipeline.dart';
 import '../attachments/file_ref.dart';
+import '../cache/cache_store.dart';
 import '../logging/app_logger.dart';
 import '../net/net_error.dart';
 
@@ -206,7 +206,12 @@ class ConversationStore extends ChangeNotifier {
   void Function(String questionId)? onQuestionResolved;
   void Function(String permissionId)? onPermissionResolved;
 
-  ConversationStore(this.sessionId, this.client, {this.directory = ''});
+  // Profile-scoped cache backend (injected by ServerStore.ensureConversation).
+  // Null in tests that don't exercise persistence; all cache ops no-op then.
+  final CacheStore? cacheStore;
+
+  ConversationStore(this.sessionId, this.client,
+      {this.directory = '', this.cacheStore});
 
   /// 回填 directory（仅当当前为空时填充，避免覆盖已注入的有效值）。
   void setDirectory(String dir) {
@@ -850,12 +855,14 @@ class ConversationStore extends ChangeNotifier {
 
   // ── Local cache for offline read-back ──
 
-  String get _cacheKey => 'conv_$sessionId';
+  String get _cacheKey => 'conv/$sessionId';
 
   Future<void> _saveCache() async {
+    final cs = cacheStore;
+    if (cs == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
       final j = {
+        'v': 1,
         'messages': _messages
             .map((m) => {
                   'info': m.info.toJson(),
@@ -890,20 +897,29 @@ class ConversationStore extends ChangeNotifier {
         'draft': _draftText,
         'draftShell': _draftShell,
       };
-      await prefs.setString(_cacheKey, jsonEncode(j));
-    } catch (_) {}
+      await cs.write(_cacheKey, jsonEncode(j));
+    } catch (e) {
+      AppLogger.I.e(_tag, 'saveCache failed: $e');
+    }
   }
 
   Future<void> _loadCache() async {
+    final cs = cacheStore;
+    if (cs == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_cacheKey);
+      final raw = await cs.read(_cacheKey);
       if (raw == null || raw.isEmpty) return;
       // MA-2: 若 async gap 期间已有 SSE 累积，不再用陈旧缓存覆盖。
       if (_messages.isNotEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
+      // Schema guard: a future incompatible bump (v != 1) drops the cache.
+      // Migrated legacy blobs carry no `v` and load as-is (compatible).
+      final v = j['v'];
+      if (v != null && v != 1) return;
       _loadCacheFromJson(j);
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.I.e(_tag, 'loadCache failed: $e');
+    }
   }
 
   /// Restore `_messages` + `_segments` + `_todos` from a cache JSON map.
@@ -965,17 +981,24 @@ class ConversationStore extends ChangeNotifier {
   /// subsequent reconcile will overlap-merge (no gap, no flash).
   Future<void> _maybePreheatCache() async {
     if (sessionUpdated == null || _messages.isNotEmpty || loaded) return;
+    final cs = cacheStore;
+    if (cs == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_cacheKey);
+      final raw = await cs.read(_cacheKey);
       if (raw == null || raw.isEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
+      // Schema guard parity with _loadCache: a future incompatible bump
+      // (v != 1) must not be fed into _loadCacheFromJson here.
+      final v = j['v'];
+      if (v != null && v != 1) return;
       final cached = j['cachedSessionUpdated'];
       if (cached != null && cached == sessionUpdated) {
         _loadCacheFromJson(j);
         if (_messages.isNotEmpty && !_disposed) notifyListeners();
       }
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.I.w(_tag, 'preheatCache failed: $e');
+    }
   }
 
   // ── Draft persistence ──
@@ -998,15 +1021,19 @@ class ConversationStore extends ChangeNotifier {
   /// ServerStore.ensureConversation 跨库调用（CD-13）。是唯一的草稿读路径。
   Future<void> loadDraftOnly() async {
     if (_draftLoaded) return;
+    final cs = cacheStore;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_cacheKey);
-      if (raw != null && raw.isNotEmpty) {
-        final j = jsonDecode(raw) as Map<String, dynamic>;
-        _draftText = (j['draft'] ?? '').toString();
-        _draftShell = j['draftShell'] == true;
+      if (cs != null) {
+        final raw = await cs.read(_cacheKey);
+        if (raw != null && raw.isNotEmpty) {
+          final j = jsonDecode(raw) as Map<String, dynamic>;
+          _draftText = (j['draft'] ?? '').toString();
+          _draftShell = j['draftShell'] == true;
+        }
       }
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.I.w(_tag, 'loadDraft failed: $e');
+    }
     _draftLoaded = true; // 即使无缓存也置真（表示「已尝试读」）
     if (!_disposed) notifyListeners(); // 触发页面 reactive 恢复（§5.3）
   }
