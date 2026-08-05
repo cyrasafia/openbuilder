@@ -14,11 +14,15 @@ class DiffDetailScreen extends StatefulWidget {
   final String sessionId;
   final String path;
   final String? directory;
+  final DiffMode mode;
+  final String? messageID;
   const DiffDetailScreen({
     super.key,
     required this.sessionId,
     required this.path,
     this.directory,
+    this.mode = DiffMode.uncommitted,
+    this.messageID,
   });
 
   @override
@@ -36,6 +40,18 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     _load();
   }
 
+  String _modeLabel(BuildContext context) {
+    final loc = l(context);
+    switch (widget.mode) {
+      case DiffMode.uncommitted:
+        return loc.diffModeUncommitted;
+      case DiffMode.branch:
+        return loc.diffModeBranch;
+      case DiffMode.lastMessage:
+        return loc.diffModeLastMessage;
+    }
+  }
+
   Future<void> _load() async {
     final c = serverStore.client;
     if (c == null) {
@@ -43,16 +59,26 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       return;
     }
     try {
-      final diffs = await c.diff(widget.sessionId, directory: widget.directory);
-      for (final d in diffs) {
-        if (d.file == widget.path) {
-          _diff = d;
-          break;
+      if (widget.mode == DiffMode.lastMessage &&
+          (widget.messageID == null || widget.messageID!.isEmpty)) {
+        _error = const KnownError(FriendlyErrorKind.diffNoLastMessage);
+      } else {
+        final diffs = await c.diff(
+          widget.sessionId,
+          directory: widget.directory,
+          mode: widget.mode == DiffMode.branch ? 'branch' : 'git',
+          messageID: widget.mode == DiffMode.lastMessage ? widget.messageID : null,
+        );
+        for (final d in diffs) {
+          if (d.file == widget.path) {
+            _diff = d;
+            break;
+          }
         }
+        _error = _diff == null
+            ? const KnownError(FriendlyErrorKind.diffNotFound)
+            : null;
       }
-      _error = _diff == null
-          ? const KnownError(FriendlyErrorKind.diffNotFound)
-          : null;
     } catch (e) {
       _error = e;
     } finally {
@@ -107,6 +133,15 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 16),
+            ),
+            Text(
+              _modeLabel(context),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).colorScheme.outline,
+              ),
             ),
             if (_diff != null)
               Padding(

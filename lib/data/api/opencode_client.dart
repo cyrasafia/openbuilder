@@ -552,12 +552,33 @@ class OpencodeClient {
     );
   }
 
-  /// `GET /session/:id/diff` → list of changed files.
-  Future<List<FileDiff>> diff(String sessionId, {String? directory}) async {
-    final r = await dio.get<dynamic>(
-      '/session/$sessionId/diff',
-      queryParameters: directory != null ? {'directory': directory} : null,
-    );
+  /// `GET /vcs/diff?mode=...` or `GET /session/:id/diff?messageID=...`
+  /// → list of changed files in [directory].
+  ///
+  /// [sessionId] is only used when [messageID] is provided; VCS diff
+  /// endpoints are scoped by [directory] rather than session.
+  ///
+  /// When [messageID] is provided, uses the per-message session diff endpoint.
+  /// Otherwise uses `/vcs/diff` with [mode] (`git` / `branch`).
+  Future<List<FileDiff>> diff(
+    String sessionId, {
+    String? directory,
+    String? mode,
+    String? messageID,
+  }) async {
+    final dir = directory != null && directory.isNotEmpty ? directory : null;
+    if (messageID != null && messageID.isNotEmpty) {
+      final params = <String, dynamic>{'messageID': messageID};
+      if (dir != null) params['directory'] = dir;
+      final r = await dio.get<dynamic>(
+        '/session/$sessionId/diff',
+        queryParameters: params,
+      );
+      return _getModelsFromData(r.data, FileDiff.fromJson);
+    }
+    final params = <String, dynamic>{'mode': mode ?? 'git'};
+    if (dir != null) params['directory'] = dir;
+    final r = await dio.get<dynamic>('/vcs/diff', queryParameters: params);
     return _getModelsFromData(r.data, FileDiff.fromJson);
   }
 

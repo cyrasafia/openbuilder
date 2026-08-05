@@ -576,6 +576,8 @@ class FileDiff {
   String get fileName => file.split('/').last;
 }
 
+enum DiffMode { uncommitted, branch, lastMessage }
+
 /// A single rendered line of a unified diff.
 class DiffLine {
   /// '+' added | '-' removed | ' ' context | '@' hunk header

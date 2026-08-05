@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/net/net_error.dart';
+import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -21,6 +22,9 @@ class _DiffListScreenState extends State<DiffListScreen> {
   List<FileDiff> _diffs = [];
   bool _loading = true;
   Object? _error;
+  DiffMode _mode = DiffMode.uncommitted;
+  String? _messageID;
+  int _loadGen = 0;
 
   @override
   void initState() {
@@ -28,19 +32,91 @@ class _DiffListScreenState extends State<DiffListScreen> {
     _load();
   }
 
+  Future<String?> _lastUserMessageId(OpencodeClient c) async {
+    String? before;
+    const maxPages = 10;
+    for (var p = 0; p < maxPages; p++) {
+      final page = await c.messagesPage(
+        widget.sessionId,
+        limit: 100,
+        before: before,
+      );
+      for (var i = page.entries.length - 1; i >= 0; i--) {
+        if (page.entries[i].info.role == 'user') {
+          return page.entries[i].info.id;
+        }
+      }
+      if (page.nextCursor == null) return null;
+      before = page.nextCursor;
+    }
+    return null;
+  }
+
   Future<void> _load() async {
+    final gen = ++_loadGen;
+    final mode = _mode;
     final c = serverStore.client;
     if (c == null) {
-      setState(() => _error = const KnownError(FriendlyErrorKind.notConnected));
+      if (gen == _loadGen) {
+        setState(() {
+          _loading = false;
+          _error = const KnownError(FriendlyErrorKind.notConnected);
+        });
+      }
       return;
     }
-    try {
-      _diffs = await c.diff(widget.sessionId, directory: widget.directory);
+    setState(() {
+      _loading = true;
+      _diffs = [];
       _error = null;
+    });
+    try {
+      String? messageID;
+      if (mode == DiffMode.lastMessage) {
+        messageID = await _lastUserMessageId(c);
+      }
+      if (gen != _loadGen) return;
+      _messageID = messageID;
+      if (mode == DiffMode.lastMessage && messageID == null) {
+        _diffs = [];
+        _error = const KnownError(FriendlyErrorKind.diffNoLastMessage);
+      } else {
+        final diffs = await c.diff(
+          widget.sessionId,
+          directory: widget.directory,
+          mode: mode == DiffMode.branch ? 'branch' : 'git',
+          messageID: messageID,
+        );
+        if (gen != _loadGen) return;
+        _diffs = diffs;
+        _error = null;
+      }
     } catch (e) {
-      _error = e;
+      if (gen == _loadGen) _error = e;
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && gen == _loadGen) setState(() => _loading = false);
+    }
+  }
+
+  void _onModeChanged(DiffMode mode) {
+    if (mode == _mode) return;
+    setState(() {
+      _mode = mode;
+      _messageID = null;
+      _loading = true;
+    });
+    _load();
+  }
+
+  String _modeLabel(BuildContext context, DiffMode mode) {
+    final loc = l(context);
+    switch (mode) {
+      case DiffMode.uncommitted:
+        return loc.diffModeUncommitted;
+      case DiffMode.branch:
+        return loc.diffModeBranch;
+      case DiffMode.lastMessage:
+        return loc.diffModeLastMessage;
     }
   }
 
@@ -69,6 +145,33 @@ class _DiffListScreenState extends State<DiffListScreen> {
           ],
         ),
         actions: [
+          PopupMenuButton<DiffMode>(
+            initialValue: _mode,
+            tooltip: l(context).diffModeTooltip,
+            onSelected: _onModeChanged,
+            itemBuilder: (_) => DiffMode.values
+                .map(
+                  (m) => CheckedPopupMenuItem(
+                    value: m,
+                    checked: _mode == m,
+                    child: Text(_modeLabel(context, m)),
+                  ),
+                )
+                .toList(),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _modeLabel(context, _mode),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  const Icon(Icons.arrow_drop_down),
+                ],
+              ),
+            ),
+          ),
           if (!_loading)
             Padding(
               padding: const EdgeInsets.only(right: 14),
@@ -132,7 +235,9 @@ class _DiffListScreenState extends State<DiffListScreen> {
           onTap: () => context.push(
             '/session/${widget.sessionId}/diff/file'
             '?path=${Uri.encodeQueryComponent(d.file)}'
-            '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
+            '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}'
+            '&mode=${_mode.name}'
+            '${_messageID != null ? '&messageID=${Uri.encodeQueryComponent(_messageID!)}' : ''}',
           ),
         );
       },

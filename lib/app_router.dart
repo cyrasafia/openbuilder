@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import 'core/connection/connection_store.dart';
 import 'core/session/file_browsing_store.dart';
+import 'domain/models.dart';
 import 'features/conversation/conversation_screen.dart';
 import 'features/files/diff_detail_screen.dart';
 import 'features/files/diff_list_screen.dart';
@@ -70,11 +71,20 @@ GoRouter buildRouter(ConnectionStore store) {
       ),
       GoRoute(
         path: '/session/:id/diff/file',
-        builder: (_, s) => DiffDetailScreen(
-          sessionId: s.pathParameters['id']!,
-          path: s.uri.queryParameters['path'] ?? '',
-          directory: s.uri.queryParameters['directory'],
-        ),
+        builder: (_, s) {
+          final modeName = s.uri.queryParameters['mode'];
+          final mode = DiffMode.values.firstWhere(
+            (m) => m.name == modeName,
+            orElse: () => DiffMode.uncommitted,
+          );
+          return DiffDetailScreen(
+            sessionId: s.pathParameters['id']!,
+            path: s.uri.queryParameters['path'] ?? '',
+            directory: s.uri.queryParameters['directory'],
+            mode: mode,
+            messageID: s.uri.queryParameters['messageID'],
+          );
+        },
       ),
       GoRoute(
         path: '/session/:id/files',

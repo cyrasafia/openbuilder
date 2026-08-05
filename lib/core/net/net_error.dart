@@ -31,6 +31,7 @@ enum FriendlyErrorKind {
   sessionNotReady,
   notConnected,
   diffNotFound,
+  diffNoLastMessage,
   generic,
 }
 
@@ -75,6 +76,7 @@ String friendlyMessage(AppLocalizations l, Object e) {
     FriendlyErrorKind.sessionNotReady => l.errorSessionNotReady,
     FriendlyErrorKind.notConnected => l.errorNotConnected,
     FriendlyErrorKind.diffNotFound => l.errorDiffNotFound,
+    FriendlyErrorKind.diffNoLastMessage => l.errorDiffNoLastMessage,
     FriendlyErrorKind.generic => l.errorGeneric,
   };
 }
