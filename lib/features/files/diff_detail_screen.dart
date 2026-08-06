@@ -40,18 +40,6 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     _load();
   }
 
-  String _modeLabel(BuildContext context) {
-    final loc = l(context);
-    switch (widget.mode) {
-      case DiffMode.uncommitted:
-        return loc.diffModeUncommitted;
-      case DiffMode.branch:
-        return loc.diffModeBranch;
-      case DiffMode.lastMessage:
-        return loc.diffModeLastMessage;
-    }
-  }
-
   Future<void> _load() async {
     final c = serverStore.client;
     if (c == null) {
@@ -125,30 +113,11 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              widget.path.split('/').last,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 16),
-            ),
-            Text(
-              _modeLabel(context),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11,
-                color: Theme.of(context).colorScheme.outline,
-              ),
-            ),
-            if (_diff != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: _Stat(add: _diff!.additions, del: _diff!.deletions),
-              ),
-          ],
+        title: Text(
+          widget.path.split('/').last,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 16),
         ),
         actions: [
           TextButton(
@@ -262,25 +231,4 @@ class _DiffRow extends StatelessWidget {
       ),
     );
   }
-}
-
-class _Stat extends StatelessWidget {
-  final int add;
-  final int del;
-  const _Stat({required this.add, required this.del});
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Text(
-        '+$add',
-        style: const TextStyle(color: Color(0xFF3FB950), fontSize: 12),
-      ),
-      const SizedBox(width: 8),
-      Text(
-        '-$del',
-        style: const TextStyle(color: Color(0xFFF85149), fontSize: 12),
-      ),
-    ],
-  );
 }
