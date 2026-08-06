@@ -131,6 +131,8 @@
   "fileShareFailed": "分享失败：{error}",
   "@fileShareFailed": {"placeholders": {"error": {"type": "String"}}},
   "diffNoChanges": "无变更",
+  "diffChangedFiles": "{count, plural, other{{count} 个文件改动}}",
+  "@diffChangedFiles": {"placeholders": {"count": {"type": "int"}}},
   "diffViewFullFile": "查看完整文件",
   "createFailed": "创建失败：{detail}",
   "@createFailed": {"placeholders": {"detail": {"type": "String"}}},

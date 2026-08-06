@@ -139,19 +139,29 @@ class _DiffListScreenState extends State<DiffListScreen> {
       body: Column(
         children: [
           _modeSelector(context),
-          if (_diffs.isNotEmpty && !_loading && _error == null) _totalRow(),
+          if (_diffs.isNotEmpty && !_loading && _error == null)
+            _headerRow(context),
           Expanded(child: _body(context)),
         ],
       ),
     );
   }
 
-  Widget _totalRow() {
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Padding(
-        padding: const EdgeInsets.only(right: 16, top: 2, bottom: 6),
-        child: _DiffStat(add: _totalAdd, del: _totalDel),
+  Widget _headerRow(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+      child: Row(
+        children: [
+          Text(
+            l(context).diffChangedFiles(_diffs.length),
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).colorScheme.outline,
+            ),
+          ),
+          const Spacer(),
+          _DiffStat(add: _totalAdd, del: _totalDel),
+        ],
       ),
     );
   }
