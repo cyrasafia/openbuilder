@@ -9,7 +9,6 @@ const _gutterPad = 4.0;
 const _padLeft = 8.0;
 const _padRight = 20.0;
 const _fontSize = 12.5;
-const _asyncThreshold = 2000;
 
 class CodeView extends StatefulWidget {
   final String content;
@@ -81,7 +80,7 @@ class _CodeViewState extends State<CodeView> {
     final gen = ++_highlightGen;
     final base = _base;
 
-    if (_lines.length <= _asyncThreshold) {
+    if (_lines.length <= kAsyncHighlightThreshold) {
       final spans =
           HighlightPainter.highlight(widget.content, lang, base, brightness);
       if (gen == _highlightGen) setState(() => _lineSpans = spans);

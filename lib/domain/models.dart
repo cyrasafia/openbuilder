@@ -578,9 +578,9 @@ class FileDiff {
 
 enum DiffMode { uncommitted, branch, lastMessage }
 
-/// A single rendered line of a unified diff.
+/// A single content line of a unified diff hunk.
+/// kind: '+' added | '-' removed | ' ' context.
 class DiffLine {
-  /// '+' added | '-' removed | ' ' context | '@' hunk header
   final String kind;
   final String text;
   final int? oldNo;
@@ -588,44 +588,101 @@ class DiffLine {
   const DiffLine(this.kind, this.text, this.oldNo, this.newNo);
 }
 
-/// Parse a unified diff (`git diff` style) into renderable [DiffLine]s with
-/// old/new line numbers, so the UI can show dual gutters.
-List<DiffLine> parseUnifiedDiff(String patch) {
-  final lines = patch.split('\n');
-  final out = <DiffLine>[];
+/// One hunk of a unified diff: starts at a `@@ ... @@` header, ends at the next
+/// `@@` or end of patch. File-header metadata (diff --git / index / +++ / ---)
+/// is discarded; only content lines are retained.
+class DiffHunk {
+  final int? oldStart;
+  final int? newStart;
+  final List<DiffLine> lines;
+  final int additions;
+  final int deletions;
+  const DiffHunk({
+    required this.oldStart,
+    required this.newStart,
+    required this.lines,
+    required this.additions,
+    required this.deletions,
+  });
+}
+
+/// Parse a single-file unified diff patch into [DiffHunk]s.
+///
+/// Everything before the first `@@` is file-header metadata and is dropped
+/// (this also fixes the prior parser bug where `+++ b/file` was misclassified
+/// as an added line). Inside a hunk, lines are classified by their single
+/// leading char (`+`/`-`/` `); a content line may itself start with `++`/`--`
+/// (e.g. added `++i` -> raw `+++i`), so no `+++`/`---` check is performed there.
+/// A mid-hunk `diff `/`index ` prefix (unproduceable by content lines) stops
+/// parsing, treating further input as the next file's header.
+List<DiffHunk> parseDiffHunks(String patch) {
+  final out = <DiffHunk>[];
+  final raws = patch.split('\n');
+  const beforeHunk = 0;
+  const inHunk = 1;
+  var state = beforeHunk;
+  int? oldStart;
+  int? newStart;
   int oldNo = 0;
   int newNo = 0;
-  for (final raw in lines) {
+  var add = 0;
+  var del = 0;
+  final lines = <DiffLine>[];
+
+  void flush() {
+    if (lines.isNotEmpty) {
+      out.add(DiffHunk(
+        oldStart: oldStart,
+        newStart: newStart,
+        lines: List.unmodifiable(lines),
+        additions: add,
+        deletions: del,
+      ));
+    }
+    lines.clear();
+    add = 0;
+    del = 0;
+  }
+
+  final hunkRe = RegExp(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@');
+
+  for (final raw in raws) {
     if (raw.startsWith('@@')) {
-      // @@ -l,s +l,s @@
-      final m = RegExp(
-        r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@',
-      ).firstMatch(raw);
-      if (m != null) {
-        oldNo = int.tryParse(m.group(1)!) ?? 0;
-        newNo = int.tryParse(m.group(2)!) ?? 0;
-      }
-      out.add(DiffLine('@', raw, null, null));
+      flush();
+      final m = hunkRe.firstMatch(raw);
+      oldStart = m == null ? null : int.tryParse(m.group(1)!);
+      newStart = m == null ? null : int.tryParse(m.group(2)!);
+      oldNo = oldStart ?? 0;
+      newNo = newStart ?? 0;
+      state = inHunk;
       continue;
     }
+    if (state == beforeHunk) continue;
     if (raw.startsWith('+')) {
-      out.add(DiffLine('+', raw.substring(1), null, newNo));
+      lines.add(DiffLine('+', raw.substring(1), null, newNo));
       newNo++;
+      add++;
     } else if (raw.startsWith('-')) {
-      out.add(DiffLine('-', raw.substring(1), oldNo, null));
+      lines.add(DiffLine('-', raw.substring(1), oldNo, null));
       oldNo++;
+      del++;
     } else if (raw.startsWith(' ')) {
-      out.add(DiffLine(' ', raw.substring(1), oldNo, newNo));
+      lines.add(DiffLine(' ', raw.substring(1), oldNo, newNo));
       oldNo++;
       newNo++;
     } else if (raw.isEmpty) {
-      // Trailing newline artifact; skip.
       continue;
+    } else if (raw.startsWith('diff ') || raw.startsWith('index ')) {
+      // Next file's header (content lines can't produce these prefixes).
+      // This parser handles a single-file patch (the caller filters by file),
+      // so stop here rather than letting another file's hunks leak in.
+      flush();
+      break;
     } else {
-      // Unprefixed line (e.g. diff header like "diff --git ..." / "+++ ...").
-      out.add(DiffLine('h', raw, null, null));
+      continue;
     }
   }
+  flush();
   return out;
 }
 

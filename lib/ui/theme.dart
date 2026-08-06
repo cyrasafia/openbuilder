@@ -129,6 +129,10 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.userLink,
     required this.userBorder,
     required this.userQuoteBar,
+    required this.diffAddBg,
+    required this.diffDelBg,
+    required this.diffAddFg,
+    required this.diffDelFg,
   });
 
   final Color code;
@@ -144,6 +148,10 @@ class AppColors extends ThemeExtension<AppColors> {
   final Color userLink;
   final Color userBorder;
   final Color userQuoteBar;
+  final Color diffAddBg;
+  final Color diffDelBg;
+  final Color diffAddFg;
+  final Color diffDelFg;
 
   static const dark = AppColors(
     code: Color(0xFFEC407A),
@@ -159,6 +167,10 @@ class AppColors extends ThemeExtension<AppColors> {
     userLink: Color(0xFF2196F3),
     userBorder: Color(0xFF30363D),
     userQuoteBar: Color(0xFF6E7681),
+    diffAddBg: Color(0xFF12261A),
+    diffDelBg: Color(0xFF2A1416),
+    diffAddFg: Color(0xFF3FB950),
+    diffDelFg: Color(0xFFF85149),
   );
 
   static const light = AppColors(
@@ -175,6 +187,10 @@ class AppColors extends ThemeExtension<AppColors> {
     userLink: Color(0xFF2196F3),
     userBorder: Color(0xFF30363D),
     userQuoteBar: Color(0xFF6E7681),
+    diffAddBg: Color(0xFFE6F4EA),
+    diffDelBg: Color(0xFFFCE8E8),
+    diffAddFg: Color(0xFF1A7F37),
+    diffDelFg: Color(0xFFCF222E),
   );
 
   @override
@@ -192,6 +208,10 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? userLink,
     Color? userBorder,
     Color? userQuoteBar,
+    Color? diffAddBg,
+    Color? diffDelBg,
+    Color? diffAddFg,
+    Color? diffDelFg,
   }) =>
       AppColors(
         code: code ?? this.code,
@@ -207,6 +227,10 @@ class AppColors extends ThemeExtension<AppColors> {
         userLink: userLink ?? this.userLink,
         userBorder: userBorder ?? this.userBorder,
         userQuoteBar: userQuoteBar ?? this.userQuoteBar,
+        diffAddBg: diffAddBg ?? this.diffAddBg,
+        diffDelBg: diffDelBg ?? this.diffDelBg,
+        diffAddFg: diffAddFg ?? this.diffAddFg,
+        diffDelFg: diffDelFg ?? this.diffDelFg,
       );
 
   @override
@@ -227,6 +251,10 @@ class AppColors extends ThemeExtension<AppColors> {
       userLink: Color.lerp(userLink, other.userLink, t)!,
       userBorder: Color.lerp(userBorder, other.userBorder, t)!,
       userQuoteBar: Color.lerp(userQuoteBar, other.userQuoteBar, t)!,
+      diffAddBg: Color.lerp(diffAddBg, other.diffAddBg, t)!,
+      diffDelBg: Color.lerp(diffDelBg, other.diffDelBg, t)!,
+      diffAddFg: Color.lerp(diffAddFg, other.diffAddFg, t)!,
+      diffDelFg: Color.lerp(diffDelFg, other.diffDelFg, t)!,
     );
   }
 }

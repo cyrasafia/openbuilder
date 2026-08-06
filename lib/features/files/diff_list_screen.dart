@@ -8,6 +8,7 @@ import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import 'diff_widgets.dart';
 
 class DiffListScreen extends StatefulWidget {
   final String sessionId;
@@ -160,7 +161,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
             ),
           ),
           const Spacer(),
-          _DiffStat(add: _totalAdd, del: _totalDel),
+          DiffStat(add: _totalAdd, del: _totalDel),
         ],
       ),
     );
@@ -250,7 +251,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
                   ),
                 )
               : null,
-          trailing: _DiffStat(add: d.additions, del: d.deletions),
+          trailing: DiffStat(add: d.additions, del: d.deletions),
           onTap: () => context.push(
             '/session/${widget.sessionId}/diff/file'
             '?path=${Uri.encodeQueryComponent(d.file)}'
@@ -262,25 +263,4 @@ class _DiffListScreenState extends State<DiffListScreen> {
       },
     );
   }
-}
-
-class _DiffStat extends StatelessWidget {
-  final int add;
-  final int del;
-  const _DiffStat({required this.add, required this.del});
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Text(
-        '+$add',
-        style: const TextStyle(color: Color(0xFF3FB950), fontSize: 13),
-      ),
-      const SizedBox(width: 8),
-      Text(
-        '-$del',
-        style: const TextStyle(color: Color(0xFFF85149), fontSize: 13),
-      ),
-    ],
-  );
 }
