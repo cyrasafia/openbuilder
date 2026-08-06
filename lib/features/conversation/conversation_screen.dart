@@ -104,8 +104,11 @@ class _ConversationScreenState extends State<ConversationScreen>
   bool _wasBusy = false;
 
   static const _kAutoScrollPixels = 50.0;
-  static const _kFarFromBottomScreens = 5.0;
   static const _kPaginationScreens = 2.0;
+  // 回顶/回底悬浮按钮共用同一显隐门槛：屏数 × 整屏高度（MediaQuery 屏高，
+  // 不受键盘弹起影响）。用整屏高度而非实际列表视口高 _viewportHeight（键盘展开
+  // 时变窄，会使门槛被低估、按钮凭空出现）；两者屏数也共用，保证一致的"距离感"。
+  static const _kScrollButtonThresholdScreens = 2.0;
   static const _kKeepAliveWindow = 48;
   static const _kCacheExtentBase = 250.0;
   static const _kDriverStepScreens = 0.5;
@@ -127,6 +130,8 @@ class _ConversationScreenState extends State<ConversationScreen>
   final _footerSizeKey = GlobalKey();
   double _footerRowHeight = 0;
   double _viewportHeight = 0;
+  // 整屏高度（MediaQuery 屏高，键盘无关），作为悬浮按钮门槛的"一屏"参考。
+  double _screenHeight = 0;
   double? _widthBaseline;
   TextScaler? _textScaleBaseline;
 
@@ -276,7 +281,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     final msgs = conv.renderableMessages;
     final msgCount = msgs.length;
 
-    final w = MediaQuery.sizeOf(context).width;
+    final mqSize = MediaQuery.sizeOf(context);
+    final w = mqSize.width;
+    _screenHeight = mqSize.height;
     final ts = MediaQuery.textScalerOf(context);
     if (_widthBaseline == null) {
       _widthBaseline = w;
@@ -407,7 +414,12 @@ class _ConversationScreenState extends State<ConversationScreen>
       if (occupied) {
         if (!gap) {
           _driverAbortedRunTop = null;
-          if (span >= 2 * h) target = runTop - h;
+          // 跨度门槛取 _kScrollButtonThresholdScreens × _screenHeight（整屏高度，
+          // 不受键盘弹起影响），而非实际视口高 h：键盘展开时视口变窄，2*h 会被
+          // 低估使按钮凭空出现。点击目标 target 仍用实际 h 以对齐当前视口顶。
+          if (span >= _kScrollButtonThresholdScreens * _screenHeight) {
+            target = runTop - h;
+          }
         }
         _drivePreAssembly(conv, gap: gap, runTopId: msgs[hi].info.id);
       } else {
@@ -466,9 +478,9 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _updateFarFromBottom() {
-    if (_viewportHeight <= 0 || !_scrollController.hasClients) return;
+    if (_screenHeight <= 0 || !_scrollController.hasClients) return;
     final far = _scrollController.position.pixels >
-        _kFarFromBottomScreens * _viewportHeight;
+        _kScrollButtonThresholdScreens * _screenHeight;
     if (_farFromBottom.value != far) _farFromBottom.value = far;
   }
 

@@ -43,9 +43,13 @@ viewport = 列表 RenderBox 的 paint bounds（top, bottom, height H）
 命中条件（全部满足）：
   1. runTop    <  -ε            （段落顶部已滚出视口上方 → 有"顶部"可回）
   2. runBottom >  H + ε         （段落底部仍在视口下方 → 视口被单段占满）
-  3. runBottom - runTop ≥ 2H    （段落超过两屏）
+  3. runBottom - runTop ≥ _kScrollButtonThresholdScreens·screenH  （段落超过两屏；screenH 为整屏高度，见下）
 ε = 1.0（抗取整抖动）
 ```
+
+- 条件 3 的门槛用**整屏高度 `screenH = MediaQuery.sizeOf(context).height`**，而非实际视口高 H：H 在键盘弹起时变窄，若用 2H 作门槛，键盘展开会让一段原本不足两屏的内容"凭空"满足门槛、按钮误现。改用键盘无关的整屏高度后，门槛稳定为"约两倍收起键盘时的屏幕高度"。条件 1/2 与点击目标仍用实际 H（描述的是当前真实视口几何）。
+- `screenH` 与屏数 `_kScrollButtonThresholdScreens`(=2) 由"回顶"与"回底"两个悬浮按钮共用：回底按钮（`_kScrollButtonThresholdScreens·screenH` 显隐门槛，即向上滚出 ≥2 屏时出现）与回顶按钮门槛完全一致，保证一致的"距离感"；两者都不用实际视口高，避免键盘展开视口变窄使门槛被低估、按钮误现。
+
 
 - 命中 → `_backToTopTarget.value = _TurnTarget(...)`；未命中 → `null`。
 - 目标变化才写 `ValueNotifier`（比较 firstMessageId），避免按钮抖动。
