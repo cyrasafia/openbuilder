@@ -18,7 +18,7 @@ import 'package:re_highlight/styles/github.dart' as hl;
 import 'package:re_highlight/styles/github-dark.dart' as hl;
 
 /// Lines at/above which highlighting runs off the UI isolate via `compute`.
-/// Shared by CodeView (full-file) and DiffHunkSection (per-hunk).
+/// Shared by CodeView (full-file) and DiffDetailScreen (per-hunk).
 const kAsyncHighlightThreshold = 2000;
 
 const extensionLanguageMap = <String, String>{

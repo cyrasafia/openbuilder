@@ -2,19 +2,21 @@
 
 ## 问题
 
-当前 `DiffDetailScreen`（`lib/features/files/diff_detail_screen.dart`）把 unified diff 平铺渲染，存在四类体验缺陷：
+当前 `DiffDetailScreen`（`lib/features/files/diff_detail_screen.dart`）把 unified diff 平铺渲染，存在五类缺陷（第 1–4 为体验/正确性、第 5 为实现后实测的滚动性能，阻塞级）：
 
 1. **铺成一整段**：所有 hunk 混在一个 `ListView` 里，无分段，无法快速定位「这一段改了多少」。
 2. **无语法高亮**：`_DiffRow`（`:165-234`）用普通 `Text(line.text)` 整行单色渲染，未复用项目已有的 `HighlightPainter.highlight` / `languageForPath` 基础设施（`CodeView` 已在用）。项目里 `re_highlight` 已接入但 diff 没接上。
 3. **增删标识仅靠整行文字颜色**：`+` 行整行绿字、`-` 行整行红字，行底色很弱，窄屏上扫读时区分度不足。
 4. **暴露原始 diff 命令**：`diff --git` / `index` / `+++` / `---` / `@@ -1,5 +1,7 @@` 这些机读文本直接铺出来，对人类阅读是噪声；且当前解析器把 `+++`/`---` 误判成增删内容行（`parseUnifiedDiff` 见 `models.dart:593`，无文件头判定、`startsWith('+')` 在 `:611` 会先于文件头命中，连函数自身的 `:625` 注释「`+++ ...` 落到 else」都是错的）。
+5. **滚动严重卡顿（实现后实测）**：渲染树按 **hunk 粒度虚拟化**（`ListView.builder` 的 `itemCount = hunks.length`），每个 `DiffHunkSection` 内部用**非虚拟化**的 `Column` 一次性构建本段全部行。设计曾假设「hunk 通常 < 百行」（见原决策 6），但实测大重构 / 生成文件 / minified bundle 普遍产出几百至上千行的单 hunk——这些行连同每行一个 `SelectableText.rich`（`RenderEditable`）被全量构建并常驻，**进页即卡、几乎无法滚动**。叠加每次 `build()` 都在 build 路径里重跑 `parseDiffHunks` + 逐行 `TextPainter.layout()`（`_maxContentWidth`/`_gutterWidth` 无缓存），任何 rebuild（切主题、键盘弹出、旋转）都会再付一次 O(N) 主线程开销。对照同项目 `CodeView`（同款 `SelectableText.rich` 逐行渲染却流畅）——差异正在虚拟化粒度（行 vs hunk）与状态缓存。
 
 需求目标：
 
 - 按 **hunk 分段**，每段独立显示该段增删行数。
 - **语法高亮 + 行号**。
-- **增删行有明确视觉标识**（背景 + gutter 标记）。
+- **增删标识有明确视觉标识**（背景 + gutter 标记）。
 - **不显示原始 diff 命令**（文件头、`@@` 行机读文本一律丢弃）。
+- **大 diff（单 hunk 数百至数千行）滚动流畅**：参照 `CodeView` 的**单行虚拟化** + 状态缓存模式，build 路径零重活。
 
 ## 设计
 
@@ -110,46 +112,51 @@ for line in hunk.lines:
 ### 渲染分层
 
 ```
-DiffDetailScreen（现有，改 _body）
-  ├─ load → parseDiffHunks(_diff.patch) → List<DiffHunk>
-  ├─ 算总内容宽 = max(所有 hunk 最长行宽) + gutter，供 SizedBox
-  └─ SingleChildScrollView(horizontal)        ← 整段共享横滚轴（唯一横滚容器）
-       └─ SizedBox(width: 总内容宽)
-            └─ ListView.builder(vertical)      ← 每项一个 DiffHunkSection
-                 items = hunks.map(h => DiffHunkSection(h, language))
-
-DiffHunkSection（StatefulWidget，单个 vertical-list item）
-  └─ Column
-       ├─ DiffHunkHeader
-       └─ for line: DiffRow(line, spanFor(line))   ← 不自带横滚，宽度由父 SizedBox 约束
+DiffDetailScreen（StatefulWidget，全部状态收敛到此处）
+  ├─ 数据就绪时一次性准备（缓存进 State，★ 不在 build 路径重算）：
+  │    ├─ _hunks = parseDiffHunks(_diff.patch)          // 只解析一次
+  │    ├─ _items = 扁平化 [Header₀, Line, Line, …, Header₁, Line, …]
+  │    │           每项 = (hunkIndex, kind∈{header,line}, lineIndexInHunk?)
+  │    ├─ _maxWidthCache / _gutterWidthCache            // 测宽一次，仅 textScaler 变才重算
+  │    └─ _beginHighlight()                              // 逐 hunk 双路重建，gen 防竞态
+  ├─ didChangeDependencies: brightness 变 → 重算高亮；scaler 变 → 清宽度缓存
+  └─ build → _body:
+       SingleChildScrollView(horizontal)              ← 整段共享横滚轴（唯一横滚容器）
+         └─ SizedBox(width: 总内容宽)
+              └─ ListView.builder(vertical)            ← ★ 虚拟化粒度 = 单行（含 header）
+                   itemCount: _items.length
+                   itemBuilder → Header项 ? DiffHunkHeader : DiffRow
 ```
 
-要点：
+要点（★ 为本次滚动性能修正）：
 
-- **横滚唯一在屏幕层**：`DiffHunkSection` 不持有横向滚动，只 `Column` 排布 header + rows，宽度被外层 `SizedBox` 统一约束 → 所有 hunk 行列对齐、共享同一横滚轴。
-- **纵向虚拟化粒度 = hunk**：每个 `DiffHunkSection` 是 `ListView` 的一个 item，仅可见 hunk 构建。hunk 内行数通常 < 百，整段一次构建无碍；超大 hunk 的 span 走异步，行 widget 本身轻量。
-- **总内容宽在屏幕层算**：屏幕已持有全部 `DiffHunk`，遍历所有 `DiffLine.text` 取最宽行 + gutter 宽即为 `SizedBox` 宽度（复用 `CodeView._maxContentWidth` 的 `TextPainter` 测宽思路）。
-- **diff 永不换行**：换行会让 added/removed 行折行数不同、破坏视觉对齐，且 diff 本质是代码。故**不提供 wrap 切换**，恒 `maxLines: 1` + 横滚。
+- **★ 虚拟化粒度 = 单行**：`itemCount` 是扁平后的条目数（`Σ 各 hunk 行数 + hunk 数`），不再是 hunk 数。只有屏幕可见的十几行被构建/布局，无论某个 hunk 有多大。这是对旧「hunk 粒度 + hunk 内 `Column` 全量构建」的**根本修正**——参照 `CodeView`（`code_view.dart:134-139`）已验证的同款模式。**`DiffHunkSection`（持有 `Column[Header, ...rows]` 的 StatefulWidget）删除**，扁平列表里它退化为「1 个 header 条目 + N 个 line 条目」。
+- **★ 状态收敛到屏幕层、build 路径零重活**：解析、扁平化、测宽、高亮全部在 `DiffDetailScreen` State 里**算一次并缓存**；`build()` 只读缓存。消除旧实现「每次 build 都 `parseDiffHunks` + 逐行 `TextPainter.layout`」的 O(N) 主线程开销（旧 `diff_detail_screen.dart:159/175/176/231-248`）。照搬 `CodeView._CodeViewState`：`_maxWidthCache`/`_gutterWidthCache` 仅在 `textScaler` 变化时清空重算（`didChangeDependencies`），亮度变化只触发高亮重算、不动宽度缓存。
+- **横滚唯一在屏幕层**：`DiffRow` / `DiffHunkHeader` 不持有横向滚动，宽度被外层 `SizedBox` 统一约束 → 所有行/段行列对齐、共享同一横滚轴。不变。
+- **总内容宽在屏幕层算（缓存）**：屏幕持有全部 `DiffHunk`，遍历所有 `DiffLine.text` 取最宽行 + gutter 即为 `SizedBox` 宽度。照搬 `CodeView._maxContentWidth` 的 `TextPainter` 测宽，但**结果缓存**，不每帧重算。
+- **diff 永不换行**：换行会让 added/removed 行折行数不同、破坏视觉对齐，且 diff 本质是代码。故**不提供 wrap 切换**，恒 `maxLines: 1` + 横滚。不变。
+- **RepaintBoundary 自动**：`ListView.builder` 默认 `addRepaintBoundaries: true`，每个 item 自动裹一层；无需手动包。
 
 组件拆分：
 
 | 组件 | 类型 | 职责 |
 |------|------|------|
-| `DiffDetailScreen` | 现有 StatefulWidget | 加载 / 错误 / 解析 hunk / 提供横滚 + 总宽 |
-| `DiffHunkSection` | 新 StatefulWidget | 接收 `DiffHunk` + `language`；内部双路重建 + 高亮（带亮度/异步 gen）；产出 header + N 个 `DiffRow` 的 span |
-| `DiffRow` | 新 StatelessWidget | 接收 `DiffLine` + 已高亮 `TextSpan` + bg tint + gutter；渲染单行 |
-| `DiffHunkHeader` | 新 StatelessWidget | hunk 索引 + 行范围 + `_DiffStat`（复用 `diff_list_screen.dart:267` 的 `_DiffStat`，抽到共享处） |
+| `DiffDetailScreen` | StatefulWidget | 加载 / 错误 / 解析 hunk / 扁平化 items / 缓存测宽 / **持有全部 hunk 高亮状态** / 提供横滚 + 总宽 + 扁平 ListView |
+| ~~`DiffHunkSection`~~ | — | **删除**（扁平列表后不再需要；其 `Column` 全量构建正是卡顿根因，见 DV-P1） |
+| `DiffRow` | StatelessWidget | 接收 `DiffLine` + 已高亮 `TextSpan` + bg tint + gutter；渲染单行（一个 ListView item） |
+| `DiffHunkHeader` | StatelessWidget | hunk 索引 + 行范围 + `DiffStat`（已在 `diff_widgets.dart`，diff 列表页与详情页共用；一个 ListView item，自带全宽 + 底边） |
 
-`_DiffStat`（`+N` 绿 / `-N` 红）目前在 `diff_list_screen.dart` 私有。本次抽到 `lib/features/files/` 共享（如 `diff_widgets.dart`），diff 列表页与详情页共用，避免重复。
+`DiffStat`（`+N` 绿 / `-N` 红）已抽到 `lib/features/files/diff_widgets.dart`，diff 列表页与详情页共用。
 
-### 高亮的生命周期（DiffHunkSection 内部）
+### 高亮的生命周期（提升到屏幕层）
 
-照搬 `CodeView`（`code_view.dart:32-96`）的成熟模式，缩到 hunk 粒度：
+照搬 `CodeView`（`code_view.dart:32-96`）的成熟模式，但所有权从「per-hunk widget」提升到 **`DiffDetailScreen` State**（扁平列表后不再有 section widget 承载状态）：
 
-- `didChangeDependencies`：brightness 变 → 重算；textScaler 变 → 清宽度缓存。
-- 同步阈值：hunk 行数 ≤ 同步阈值（2000）→ 同步算（hunk 通常很小，绝大多数走这条）；否则 `compute` 后台算。> 注：`CodeView` 的 `_asyncThreshold`（`code_view.dart:12`）是文件私有常量；本次**抽到共享常量**（如 `highlight_theme.dart` 的 `kAsyncHighlightThreshold`），`CodeView` 与 `DiffHunkSection` 共用，避免两处漂移。
-- gen 计数器防竞态（快速切 hunk / 切文件）。
-- 高亮未就绪时行内容用 plain span（`TextSpan(text, style: base)`），背景 / gutter 先行着色，高亮完成后 setState 刷新 span。
+- 数据就绪后 `_beginHighlight()`：**遍历每个 hunk** 做双路重建（new/old 各整段 tokenize），结果按 `hunkIndex` 存进 State（`Map<int, {newSpans, oldSpans}>`）；逐行 span 由 `DiffRow` 经 `hunkIndex + lineIndexInHunk` 查表取得。
+- **gen 计数器防竞态**：屏幕级单一 `_highlightGen`；切文件 / 切主题时 `++_gen`，旧异步结果作废。
+- 同步阈值 `kAsyncHighlightThreshold`（2000，已抽共享常量）：单 hunk 行数 ≤ 阈值 → 同步算；否则该 hunk 两侧 `Future.wait` 并行 `compute` 后台算（沿用 DV-C3 的并行修正）。**注意阈值语义不变**：它管的是「单次高亮 tokenize 是否上 isolate」，与虚拟化粒度无关。
+- `didChangeDependencies`：brightness 变 → 整屏重算高亮；textScaler 变 → 清 `_maxWidthCache`/`_gutterWidthCache`（宽度与亮度无关，不重算高亮）。
+- 高亮未就绪时行内容用 plain span（`TextSpan(text, style: base)`），背景 / gutter 先行着色；某 hunk 高亮完成后 `setState`，因 `ListView.builder` 只重建可见 item，仅当前屏幕内该 hunk 的行刷新。
 
 ### 行布局与视觉标识
 
@@ -241,6 +248,7 @@ Column(center)
 | removed 行（old 路）含未闭合字符串 | old 路独立 tokenize，正常着色，红底 |
 | 未知扩展名 `.xyz` 的 diff | 无语法高亮（plain mono），但增删底色 + gutter 标识照常 |
 | 大 hunk（>2000 行，极少见） | 先出 plain（底色 + gutter），后台高亮完成后着色 |
+| 大 diff（单 hunk 数百至数千行，常见） | 单行虚拟化只构建可见行，滚动流畅；解析/测宽/高亮均缓存，切主题/键盘弹出 rebuild 不再重跑 O(N) |
 | 二进制文件 patch | 居中占位「无文本差异或二进制文件」 |
 | 切深 / 浅色主题 | 底色 / token 色随亮度重算 |
 | 长代码行（>屏宽） | 整页横滚，所有 hunk 行对齐 |
@@ -253,7 +261,7 @@ Column(center)
 3. **整页共享横滚、diff 永不换行**：换行破坏增删行对齐；统一横滚轴保证多 hunk 行列对齐、可一起横拖。与 `CodeView` 的 wrap 设计刻意不同——diff 是对齐敏感的代码对比，换行是反模式。
 4. **背景作主标识、保留 token 语法色**：旧实现整行绿/红字压制了语法信息；新实现底色满行 tint 当主标识、token 色保留、marker + gutter 颜色做次级强化，三重 cues 且不互相覆盖。
 5. **单 gutter 列（newNo 为准）**：旧双 gutter（old \| new）在移动端占宽过多。单列以 newNo 为主、removed 行显 oldNo，配合「查看完整文件」按 new 行号定位，信息无损且更省宽。
-6. **hunk 粒度高亮、复用 CodeView 生命周期模式**：每个 `DiffHunkSection` 自管 gen/异步/亮度重算，hunk 间相互独立、天然懒渲染（`ListView.builder` 只构建可见 hunk）。hunk 通常 < 百行，绝大多数走同步路径。
+6. **单行虚拟化 + 屏幕层高亮、复用 CodeView 生命周期模式**：~~hunk 粒度~~（旧设计假设「hunk 通常 < 百行」**实测不成立**，大重构 / 生成文件单 hunk 可达数百至数千行 → `Column` 全量构建卡死，见 DV-P1）→ 改为 `ListView.builder` **单行粒度**，只构建可见行。高亮状态收敛到 `DiffDetailScreen` State（逐 hunk 双路重建，gen 防竞态），扁平列表的行经 `hunkIndex + lineIndexInHunk` 查 span。生命周期模式（同步阈值 / isolate / 亮度重算 / 宽度缓存）照搬 `CodeView._CodeViewState`。
 7. **不引新三方包**：pub.dev 无成熟专用「git diff view」组件（搜索命中的 `diffutil_dart`/`list_diff` 是列表差分算法、非代码 diff 渲染；`flutter_monaco` 过重）。项目已具备 `re_highlight` + `HighlightPainter.highlight` + `languageForPath` 全套基础设施，零新依赖即可达成。
 8. **抽 `_DiffStat` 共享**：diff 列表页与详情页 hunk header 共用同一统计组件，避免重复、保证视觉一致。
 
@@ -325,3 +333,23 @@ Column(center)
 | DV-C2 | ✅ `DiffStat` 改为 `theme.extension<AppColors>()!` 取 `diffAddFg`/`diffDelFg`，深浅一致。 |
 | DV-C3 | ✅ 两侧阈值任一超限时 `Future.wait` 并行；阈值内仍内联同步。 |
 | DV-C4 | ✅ 文件末尾补换行。 |
+
+### 五次评审意见（滚动性能根因修正）
+
+实现后实测：大 diff（单 hunk 数百至数千行）进页即卡、几乎无法滚动。根因是设计层的虚拟化粒度假设错误，故作为设计缺陷迭代修订。
+
+| 编号 | 优先级 | 问题 | 建议 |
+|------|--------|------|------|
+| DV-P1 | 🔴 阻塞 | 滚动卡死根因：虚拟化粒度 = **hunk**（旧 `diff_detail_screen.dart:184` `itemCount: hunks.length`），而每个 `DiffHunkSection` 内部是非虚拟化的 `Column`（`:393-401`），一次性构建本段**全部行**。设计假设「hunk 通常 < 百行」（本文原决策 6 / 渲染分层要点）实测不成立：大重构、生成文件、minified bundle 普遍产出数百至数千行单 hunk，这些行 + 每行一个 `SelectableText.rich`（`RenderEditable`）全量构建并常驻 → 卡死。对照 `CodeView` 同款 `SelectableText.rich` 逐行却流畅，差异恰在粒度（行 vs hunk）。 | **改为单行虚拟化**：扁平化所有 hunk 的行（+ header）成一条 `ListView.builder`，`itemCount = 总行数 + hunk 数`，参照 `code_view.dart:134-139`。删除 `DiffHunkSection`（其 `Column` 全量构建正是根因）。 |
+| DV-P2 | 🔴 阻塞 | 每次 rebuild 在 build 路径重跑 O(N) 重活且无缓存：`parseDiffHunks`（`:159`）、`_maxContentWidth` 逐行 `TextPainter.layout`（`:231-248`）、`_gutterWidth`（`:211-229`）。任何 rebuild（切主题 / 键盘弹出 / 旋转）都再付一次主线程开销。 | 全部收敛到 `DiffDetailScreen` State：解析 + 扁平化只做一次并缓存；测宽照搬 `CodeView` 的 `_maxWidthCache`/`_gutterWidthCache`，仅 `textScaler` 变才重算；`build()` 只读缓存。 |
+| DV-P3 | 🟡 中 | 高亮状态原挂 per-hunk widget（`DiffHunkSection`），扁平化后无 widget 承载。 | 高亮所有权提升到屏幕层 State：逐 hunk 双路重建，按 `hunkIndex` 存 span，gen 防竞态；亮度变整屏重算，scaler 变只清宽度缓存。模式照搬 `CodeView._CodeViewState`。 |
+
+### 修复复审（设计层）
+
+| 编号 | 处理 |
+|------|------|
+| DV-P1 | ✅ 渲染分层重写为单行虚拟化扁平 `ListView.builder`；删除 `DiffHunkSection`；新增「★ 虚拟化粒度 = 单行」要点；组件表标记 `DiffHunkSection` 删除；问题清单加第 5 类缺陷。 |
+| DV-P2 | ✅ 新增「★ 状态收敛到屏幕层、build 路径零重活」要点；测宽/解析缓存照搬 CodeView，scaler 变才重算。 |
+| DV-P3 | ✅ 「高亮的生命周期」节重写为屏幕层所有权；新增场景验证行（大 diff 滚动流畅）；决策 6 修订并显式撤回「hunk < 百行」假设。 |
+
+> 本次为**设计层**修订（撤回错误的粒度假设 + 收敛状态），代码实现见后续 `plan-diff-view-perf.md` / `review-diff-view-perf.md`。

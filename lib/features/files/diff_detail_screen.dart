@@ -37,6 +37,16 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   bool _loading = true;
   Object? _error;
 
+  List<DiffHunk>? _hunks;
+  List<_DiffItem>? _items;
+  Brightness? _brightness;
+  TextScaler _textScaler = TextScaler.noScaling;
+  final Map<int, List<TextSpan>> _newSpansByHunk = {};
+  final Map<int, List<TextSpan>> _oldSpansByHunk = {};
+  int _highlightGen = 0;
+  double? _maxWidthCache;
+  double? _gutterWidthCache;
+
   @override
   void initState() {
     super.initState();
@@ -69,12 +79,184 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
         _error = _diff == null
             ? const KnownError(FriendlyErrorKind.diffNotFound)
             : null;
+        if (_diff != null) _prepare();
       }
     } catch (e) {
       _error = e;
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  void _prepare() {
+    final hunks = parseDiffHunks(_diff!.patch);
+    _hunks = hunks;
+    _items = _flatten(hunks);
+    _newSpansByHunk.clear();
+    _oldSpansByHunk.clear();
+    _beginHighlight();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final brightness = Theme.of(context).brightness;
+    final scaler = MediaQuery.textScalerOf(context);
+    final brightnessChanged = _brightness != null && _brightness != brightness;
+    final scalerChanged = scaler != _textScaler;
+    _brightness = brightness;
+    _textScaler = scaler;
+    if (scalerChanged) {
+      _maxWidthCache = null;
+      _gutterWidthCache = null;
+    }
+    if (_hunks != null && brightnessChanged) _beginHighlight();
+  }
+
+  List<_DiffItem> _flatten(List<DiffHunk> hunks) {
+    final items = <_DiffItem>[];
+    for (var hi = 0; hi < hunks.length; hi++) {
+      final hunk = hunks[hi];
+      items.add(_HeaderItem(index: hi, hunk: hunk));
+      var ni = 0;
+      var oi = 0;
+      for (final line in hunk.lines) {
+        final useOld = line.kind == '-';
+        items.add(_LineItem(
+          hunkIndex: hi,
+          line: line,
+          useOld: useOld,
+          spanIndex: useOld ? oi : ni,
+        ));
+        if (line.kind == ' ') {
+          ni++;
+          oi++;
+        } else if (line.kind == '+') {
+          ni++;
+        } else {
+          oi++;
+        }
+      }
+    }
+    return items;
+  }
+
+  Future<void> _beginHighlight() async {
+    final lang = languageForPath(widget.path);
+    final hunks = _hunks;
+    final brightness = _brightness;
+    if (lang == null || hunks == null || brightness == null) return;
+    final gen = ++_highlightGen;
+    final base = _base;
+    for (var hi = 0; hi < hunks.length; hi++) {
+      final hunk = hunks[hi];
+      final newList = <String>[];
+      final oldList = <String>[];
+      for (final line in hunk.lines) {
+        switch (line.kind) {
+          case ' ':
+            newList.add(line.text);
+            oldList.add(line.text);
+            break;
+          case '+':
+            newList.add(line.text);
+            break;
+          case '-':
+            oldList.add(line.text);
+            break;
+        }
+      }
+      final newCode = newList.join('\n');
+      final oldCode = oldList.join('\n');
+      final newAsync = newList.length > kAsyncHighlightThreshold;
+      final oldAsync = oldList.length > kAsyncHighlightThreshold;
+
+      List<TextSpan> nsp;
+      List<TextSpan> osp;
+      if (newAsync || oldAsync) {
+        final newFuture = newAsync
+            ? compute(_highlightTask, _Task(newCode, lang, base, brightness))
+            : Future.value(
+                HighlightPainter.highlight(newCode, lang, base, brightness));
+        final oldFuture = oldAsync
+            ? compute(_highlightTask, _Task(oldCode, lang, base, brightness))
+            : Future.value(
+                HighlightPainter.highlight(oldCode, lang, base, brightness));
+        final results = await Future.wait([newFuture, oldFuture]);
+        nsp = results[0];
+        osp = results[1];
+      } else {
+        nsp = HighlightPainter.highlight(newCode, lang, base, brightness);
+        osp = HighlightPainter.highlight(oldCode, lang, base, brightness);
+      }
+      if (gen != _highlightGen) return;
+      if (!mounted) return;
+      _newSpansByHunk[hi] = nsp;
+      _oldSpansByHunk[hi] = osp;
+      setState(() {});
+    }
+  }
+
+  TextSpan _spanForLine(_LineItem item) {
+    final spans =
+        item.useOld ? _oldSpansByHunk[item.hunkIndex] : _newSpansByHunk[item.hunkIndex];
+    if (spans != null && item.spanIndex < spans.length) {
+      return spans[item.spanIndex];
+    }
+    return TextSpan(text: item.line.text, style: _base);
+  }
+
+  TextStyle get _base => AppTheme.mono.copyWith(
+        fontSize: _fontSize,
+        color: _brightness == Brightness.dark
+            ? const Color(0xFFDFE4DC)
+            : const Color(0xFF181D18),
+      );
+
+  double get _gutterWidth {
+    final cached = _gutterWidthCache;
+    if (cached != null) return cached;
+    final hunks = _hunks!;
+    var maxNo = 0;
+    for (final h in hunks) {
+      for (final line in h.lines) {
+        final n = line.newNo ?? line.oldNo ?? 0;
+        if (n > maxNo) maxNo = n;
+      }
+    }
+    final digits = maxNo.toString().length;
+    final tp = TextPainter(
+      text: TextSpan(
+          text: '0' * digits, style: AppTheme.mono.copyWith(fontSize: _fontSize)),
+      textDirection: TextDirection.ltr,
+      textScaler: _textScaler,
+      maxLines: 1,
+    )..layout();
+    final w = tp.width + 4;
+    tp.dispose();
+    return _gutterWidthCache = w;
+  }
+
+  double get _maxContentWidth {
+    final cached = _maxWidthCache;
+    if (cached != null) return cached;
+    final hunks = _hunks!;
+    final style = AppTheme.mono.copyWith(fontSize: _fontSize);
+    final tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      textScaler: _textScaler,
+      maxLines: 1,
+    );
+    var widest = 0.0;
+    for (final h in hunks) {
+      for (final line in h.lines) {
+        tp.text = TextSpan(text: line.text, style: style);
+        tp.layout();
+        if (tp.width > widest) widest = tp.width;
+      }
+    }
+    tp.dispose();
+    return _maxWidthCache = widest;
   }
 
   Future<void> _openFullFile() async {
@@ -156,7 +338,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
         ),
       );
     }
-    final hunks = parseDiffHunks(_diff!.patch);
+    final hunks = _hunks!;
     if (hunks.isEmpty) {
       return Center(
         child: Column(
@@ -169,27 +351,41 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
         ),
       );
     }
-    final language = languageForPath(widget.path);
-    final brightness = Theme.of(context).brightness;
-    final scaler = MediaQuery.textScalerOf(context);
-    final contentWidth = _maxContentWidth(hunks, scaler);
-    final gutterWidth = _gutterWidth(hunks, scaler);
+    final contentWidth = _maxContentWidth;
+    final gutterWidth = _gutterWidth;
     final totalWidth = contentWidth + gutterWidth + _gutterGap + _padLeft + _padRight;
+    final a = Theme.of(context).extension<AppColors>()!;
+    final muted = Theme.of(context).colorScheme.outline;
+    final base = _base;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SizedBox(
         width: totalWidth,
         child: ListView.builder(
           padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: hunks.length,
-          itemBuilder: (_, i) => DiffHunkSection(
-            hunk: hunks[i],
-            index: i,
-            language: language,
-            contentWidth: contentWidth,
-            gutterWidth: gutterWidth,
-            brightness: brightness,
-          ),
+          itemCount: _items!.length,
+          itemBuilder: (_, i) {
+            final item = _items![i];
+            if (item is _HeaderItem) {
+              return DiffHunkHeader(
+                index: item.index,
+                hunk: item.hunk,
+                width: totalWidth,
+              );
+            }
+            final li = item as _LineItem;
+            return DiffRow(
+              line: li.line,
+              span: _spanForLine(li),
+              gutterWidth: gutterWidth,
+              base: base,
+              addBg: a.diffAddBg,
+              delBg: a.diffDelBg,
+              addFg: a.diffAddFg,
+              delFg: a.diffDelFg,
+              muted: muted,
+            );
+          },
         ),
       ),
     );
@@ -201,207 +397,25 @@ const _gutterGap = 6.0;
 const _padLeft = 8.0;
 const _padRight = 20.0;
 
-TextStyle _baseStyle(Brightness brightness) => AppTheme.mono.copyWith(
-      fontSize: _fontSize,
-      color: brightness == Brightness.dark
-          ? const Color(0xFFDFE4DC)
-          : const Color(0xFF181D18),
-    );
+abstract class _DiffItem {}
 
-double _gutterWidth(List<DiffHunk> hunks, TextScaler scaler) {
-  var maxNo = 0;
-  for (final h in hunks) {
-    for (final line in h.lines) {
-      final n = line.newNo ?? line.oldNo ?? 0;
-      if (n > maxNo) maxNo = n;
-    }
-  }
-  final digits = maxNo.toString().length;
-  final tp = TextPainter(
-    text: TextSpan(text: '0' * digits, style: AppTheme.mono.copyWith(fontSize: _fontSize)),
-    textDirection: TextDirection.ltr,
-    textScaler: scaler,
-    maxLines: 1,
-  )..layout();
-  final w = tp.width;
-  tp.dispose();
-  return w + 4;
-}
-
-double _maxContentWidth(List<DiffHunk> hunks, TextScaler scaler) {
-  final style = AppTheme.mono.copyWith(fontSize: _fontSize);
-  final tp = TextPainter(
-    textDirection: TextDirection.ltr,
-    textScaler: scaler,
-    maxLines: 1,
-  );
-  var widest = 0.0;
-  for (final h in hunks) {
-    for (final line in h.lines) {
-      tp.text = TextSpan(text: line.text, style: style);
-      tp.layout();
-      if (tp.width > widest) widest = tp.width;
-    }
-  }
-  tp.dispose();
-  return widest;
-}
-
-/// Per-hunk block: owns the dual-path highlight state and renders a header plus
-/// its content rows. Does not scroll horizontally itself — width is bounded by
-/// the parent [SizedBox] so all hunks share one horizontal axis.
-class DiffHunkSection extends StatefulWidget {
-  final DiffHunk hunk;
+class _HeaderItem extends _DiffItem {
   final int index;
-  final String? language;
-  final double contentWidth;
-  final double gutterWidth;
-  final Brightness brightness;
-
-  const DiffHunkSection({
-    super.key,
-    required this.hunk,
-    required this.index,
-    required this.language,
-    required this.contentWidth,
-    required this.gutterWidth,
-    required this.brightness,
-  });
-
-  @override
-  State<DiffHunkSection> createState() => _DiffHunkSectionState();
+  final DiffHunk hunk;
+  _HeaderItem({required this.index, required this.hunk});
 }
 
-class _DiffHunkSectionState extends State<DiffHunkSection> {
-  List<TextSpan>? _newSpans;
-  List<TextSpan>? _oldSpans;
-  int _gen = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _beginHighlight();
-  }
-
-  @override
-  void didUpdateWidget(covariant DiffHunkSection old) {
-    super.didUpdateWidget(old);
-    if (widget.hunk != old.hunk ||
-        widget.language != old.language ||
-        widget.brightness != old.brightness) {
-      _beginHighlight();
-    }
-  }
-
-  Future<void> _beginHighlight() async {
-    final lang = widget.language;
-    if (lang == null) return;
-    final gen = ++_gen;
-    final base = _baseStyle(widget.brightness);
-
-    final newList = <String>[];
-    final oldList = <String>[];
-    for (final line in widget.hunk.lines) {
-      switch (line.kind) {
-        case ' ':
-          newList.add(line.text);
-          oldList.add(line.text);
-          break;
-        case '+':
-          newList.add(line.text);
-          break;
-        case '-':
-          oldList.add(line.text);
-          break;
-      }
-    }
-    final newCode = newList.join('\n');
-    final oldCode = oldList.join('\n');
-
-    List<TextSpan> computeNew() => HighlightPainter.highlight(newCode, lang, base, widget.brightness);
-    List<TextSpan> computeOld() => HighlightPainter.highlight(oldCode, lang, base, widget.brightness);
-
-    final newAsync = newList.length > kAsyncHighlightThreshold;
-    final oldAsync = oldList.length > kAsyncHighlightThreshold;
-
-    List<TextSpan> nsp;
-    List<TextSpan> osp;
-    if (newAsync || oldAsync) {
-      // Offload the heavy side(s) to a background isolate; a side under
-      // threshold is computed inline first (it's already done by the time
-      // Future.wait starts, so only the async side truly offloads).
-      final newFuture = newAsync
-          ? compute(_highlightTask, _Task(newCode, lang, base, widget.brightness))
-          : Future.value(computeNew());
-      final oldFuture = oldAsync
-          ? compute(_highlightTask, _Task(oldCode, lang, base, widget.brightness))
-          : Future.value(computeOld());
-      final results = await Future.wait([newFuture, oldFuture]);
-      nsp = results[0];
-      osp = results[1];
-    } else {
-      nsp = computeNew();
-      osp = computeOld();
-    }
-    if (mounted && gen == _gen) {
-      setState(() {
-        _newSpans = nsp;
-        _oldSpans = osp;
-      });
-    }
-  }
-
-  TextSpan _plain(String text) => TextSpan(text: text, style: _baseStyle(widget.brightness));
-
-  TextSpan _spanFor(DiffLine line, int ni, int oi) {
-    if (line.kind == '-') {
-      return (_oldSpans != null && oi < _oldSpans!.length) ? _oldSpans![oi] : _plain(line.text);
-    }
-    return (_newSpans != null && ni < _newSpans!.length) ? _newSpans![ni] : _plain(line.text);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final a = Theme.of(context).extension<AppColors>()!;
-    final muted = Theme.of(context).colorScheme.outline;
-    final base = _baseStyle(widget.brightness);
-    final rows = <Widget>[];
-    var ni = 0;
-    var oi = 0;
-    for (final line in widget.hunk.lines) {
-      final span = _spanFor(line, ni, oi);
-      if (line.kind == ' ') {
-        ni++;
-        oi++;
-      } else if (line.kind == '+') {
-        ni++;
-      } else {
-        oi++;
-      }
-      rows.add(DiffRow(
-        line: line,
-        span: span,
-        gutterWidth: widget.gutterWidth,
-        base: base,
-        addBg: a.diffAddBg,
-        delBg: a.diffDelBg,
-        addFg: a.diffAddFg,
-        delFg: a.diffDelFg,
-        muted: muted,
-      ));
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        DiffHunkHeader(
-          index: widget.index,
-          hunk: widget.hunk,
-          width: widget.contentWidth + widget.gutterWidth + _gutterGap + _padLeft + _padRight,
-        ),
-        ...rows,
-      ],
-    );
-  }
+class _LineItem extends _DiffItem {
+  final int hunkIndex;
+  final DiffLine line;
+  final bool useOld;
+  final int spanIndex;
+  _LineItem({
+    required this.hunkIndex,
+    required this.line,
+    required this.useOld,
+    required this.spanIndex,
+  });
 }
 
 List<TextSpan> _highlightTask(_Task t) =>
@@ -431,8 +445,6 @@ class DiffHunkHeader extends StatelessWidget {
     final muted = Theme.of(context).colorScheme.outline;
     final surface = Theme.of(context).colorScheme.surfaceContainerLow;
     final newStart = hunk.newStart;
-    // New-side line numbers advance only for context + added lines, not deletions,
-    // so the new-side span length is the count of those — not all hunk lines.
     var newCount = 0;
     for (final l in hunk.lines) {
       if (l.kind == ' ' || l.kind == '+') newCount++;
