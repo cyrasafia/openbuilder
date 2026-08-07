@@ -3255,10 +3255,13 @@ class _ComposeBarState extends State<_ComposeBar>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final inset = View.of(context).viewInsets.bottom;
+      final route = ModalRoute.of(context);
+      final obscured = route != null && !route.isCurrent;
       if (_prevBottomInset > 0 &&
           inset == 0 &&
           _fieldFocus.hasFocus &&
-          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
+          !obscured) {
         _fieldFocus.unfocus();
       }
       _prevBottomInset = inset;
@@ -3312,6 +3315,7 @@ class _ComposeBarState extends State<_ComposeBar>
               child: TextField(
                 controller: widget.ctl,
                 focusNode: _fieldFocus,
+                onTapOutside: (_) {},
                 onChanged: widget.onChanged,
                 onSubmitted: (_) => widget.onSend(),
                 minLines: 1,
