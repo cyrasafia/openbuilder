@@ -12,9 +12,11 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-        // Required by flutter_local_notifications (release build): enable core
-        // library desugaring so java.time APIs used by the plugin work on older
-        // Android API levels.
+        // flutter_local_notifications enables core library desugaring in its own
+        // compileOptions; AGP then propagates this as a mandatory consumer
+        // requirement via AAR metadata. The app must keep desugaring enabled or
+        // checkAarMetadata fails — regardless of minSdk (verified: removing it
+        // breaks the build even at minSdk 34).
         isCoreLibraryDesugaringEnabled = true
     }
 
@@ -23,7 +25,7 @@ android {
         applicationId = "com.openbuilder.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 34
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

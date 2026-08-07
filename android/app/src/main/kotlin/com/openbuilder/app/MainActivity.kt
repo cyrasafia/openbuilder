@@ -3,7 +3,6 @@ package com.openbuilder.app
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
@@ -98,14 +97,10 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    /// Save [srcPath] into the public Download folder via MediaStore (API 29+).
-    /// No permission needed. Older API has no permission-free path to public
-    /// Download, so it throws and the Dart side falls back to app storage.
+    /// Save [srcPath] into the public Download folder via MediaStore.
+    /// No permission needed.
     /// [mimeType] (optional) overrides extension-based detection.
     private fun saveToDownloads(srcPath: String, displayName: String, mimeType: String?): String {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            throw UnsupportedOperationException("saveToDownloads 需要 API 29+")
-        }
         val src = File(srcPath)
         if (!src.exists()) throw java.io.FileNotFoundException("源文件不存在: $srcPath")
         val resolver = contentResolver
@@ -145,20 +140,14 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun canInstallPackages(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            packageManager.canRequestPackageInstalls()
-        } else {
-            true
-        }
+        return packageManager.canRequestPackageInstalls()
     }
 
     private fun openInstallSettings() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
+        val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+            data = Uri.parse("package:$packageName")
         }
+        startActivity(intent)
     }
 
     private fun installApk(filePath: String) {
