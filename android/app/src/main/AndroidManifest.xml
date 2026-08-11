@@ -16,6 +16,13 @@
         android:usesCleartextTraffic="true"
         android:enableOnBackInvokedCallback="false"
         android:localeConfig="@xml/locales_config">
+        <!-- Hybrid Composition++ (Flutter 3.44): hands PlatformView compositing
+             to the Android OS (Vulkan SurfaceControl), removing the historical
+             scroll/FPS penalty for embedding a WebView. Requires minSdk 34.
+             Used by the Markdown preview (design-markdown-webview.md). -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableHcpp"
+            android:value="true" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

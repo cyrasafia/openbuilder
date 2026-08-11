@@ -208,3 +208,46 @@ WebView（HCPP 启用）
 2. **WebView 库选型**：`flutter_inappwebview`（推荐，支持预热）vs `webview_flutter`（官方更轻）。引入 `flutter_inappwebview` 是否与项目"不轻易引第三方"的克制一致？
 3. **代码高亮单一源**：Dart 侧 `re_highlight` 预高亮 vs WebView 内 `highlight.js`，确认前者。
 4. **预热池生命周期**：预热 `HeadlessInAppWebView` 的常驻内存代价与释放时机。
+
+### 2次评审（实现验证，2026-08-07）
+
+评审范围：按本文档落地实现后，构建 + analyze + test 三项验证，及实现期相对 §4 的两处有据偏离。
+
+#### ✅ 落地范围
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| markdown→HTML + front matter + 链接解析 | `lib/features/files/markdown_html.dart` | `splitFrontMatter`（自 `markdown_view.dart` 迁入并改 top-level）、`resolveRelativePath`、`buildMarkdownPreviewHtml`（`package:markdown` GFM → 重高亮代码块 → front matter 卡片 → 自包含文档） |
+| 代码高亮 HTML | `highlight_theme.dart` `HighlightPainter.highlightToHtml` | 新增：自定义 `HighlightRenderer` 产出 `tok-*` span，复用已注册语言的同一 `Highlight` 实例（与 source 模式 `CodeView` 同源） |
+| CSS 复刻 | `lib/features/files/markdown_css.dart` | CSS 变量从 `AppColors` 程序化生成；三档字重（400/600 出现，300 按 DESIGN.md 仅 hero 故不出现在正文）；token 色由 github theme map 生成，`bold`→`600` |
+| WebView 渲染 | `lib/features/files/markdown_web_view.dart` | `WebViewWidget` + JS 桥（链接点击/滚动上报）+ `shouldOverrideUrlLoading` 等价物（`NavigationDelegate` 仅放行 about:blank）+ 主题切换重载保滚动 |
+| 模式调度 | `markdown_view.dart` 瘦身 | preview→`MarkdownWebView`；source→`CodeView`（不变） |
+| 滚动恢复 | `file_view_screen.dart` | markdown preview 改用 `_mdScrollOffset`（WebView 自管滚动）经回调收集 / `initialScrollOffset` 恢复 |
+| HCPP | `AndroidManifest.xml` | `io.flutter.embedding.android.EnableHcpp=true`（依赖 minSdk 34，已由 `design-bump-minsdk-34` 落地） |
+
+#### 🔴 阻塞：`flutter_inappwebview` 与 AGP 9 不兼容 — 库选型改用 `webview_flutter`
+
+实现 §4.2.2 推荐的 `flutter_inappwebview: ^6.1.5` 时，`flutter build apk --debug` 失败：
+
+```
+* What went wrong:
+A problem occurred evaluating project ':flutter_inappwebview_android'.
+> `getDefaultProguardFile('proguard-android.txt')` is no longer supported ...
+```
+
+根因：`flutter_inappwebview_android 1.1.3`（当前唯一稳定版）的 `android/build.gradle:44,48` 调用 AGP 9 已移除的 `getDefaultProguardFile('proguard-android.txt')`，且该调用发生在插件 build script 的**求值期**（`android { buildTypes { } }` 内），消费方的 `subprojects { afterEvaluate { } }` 来不及拦截——这是**硬性不兼容**，且上游无已发布修复（最新仅 `1.2.0-beta`）。
+
+**决议**：改用官方 `webview_flutter: ^4.9.0`。依据：
+1. 与 AGP 9.0.1 兼容（`webview_flutter_android 3.16.9` 无该 proguard 调用，debug APK 构建通过）；
+2. 呼应评审点 #2——官方更轻，与项目"不轻易引第三方"一致；
+3. **HCPP 收益与库无关**（HCPP 是 Flutter/Android PlatformView 合成层能力，由 manifest 开关 + minSdk 34 决定，不依赖 WebView 包封装）；核心方案（markdown→HTML→CSS 复刻→JS 桥）库无关。
+
+#### 🟡 中：预热池（§4.2.7）暂不实现
+
+`webview_flutter` 无 `HeadlessInAppWebView`，无进程级内核预热 API。Android `WebView` 内核本就进程级单例——首个 markdown 预览承担一次内核初始化，之后复用同一 warmed 内核，成本仅"会话内首次"。`design-bump-minsdk-34` §2次评审的经验表明保留可回退能力即可，故本次不引入额外预热机制；若实测首屏不可接受，再评估（offscreen 常驻 `WebViewWidget` 或回 `inappwebview` 上游修复版）。评审点 #4 随之关闭。
+
+#### ✅ 验证
+
+- `flutter analyze --fatal-infos` → No issues found。
+- `flutter test` → 364 passed（含新增 `markdown_webview_test.dart`：高亮 HTML / CSS 三档字重 / 路径解析 / 文档装配；`markdown_front_matter_test.dart` 已随 `splitFrontMatter` 迁移更新导入）。
+- `flutter build apk --debug`（JAVA_HOME=jdk21）→ ✓ Built app-debug.apk（HCPP manifest + webview_flutter 均生效）。剩余 KGP/Java8 警告为既有插件既有问题，与本次无关。

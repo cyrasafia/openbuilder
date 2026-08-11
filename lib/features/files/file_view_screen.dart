@@ -47,6 +47,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
   CancelToken? _cancelToken;
   final _scrollCtl = ScrollController();
   double? _pendingScrollRestore;
+  // Markdown preview scrolls inside its own WebView (not via _scrollCtl); we
+  // track its offset here via the WebView callback so collapse/restore keeps
+  // the reading position for preview mode.
+  double _mdScrollOffset = 0;
 
   Animation<double>? _routeAnimation;
   bool _routeAnimInstalled = false;
@@ -69,6 +73,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       _wrap = r.wrap;
       _mdShowSource = r.mdShowSource;
       _pendingScrollRestore = r.scrollOffset;
+      _mdScrollOffset = r.scrollOffset;
       final cached = serverStore.fileBrowsing.cachedContent(
         widget.sessionId,
         widget.directory,
@@ -131,7 +136,9 @@ class _FileViewScreenState extends State<FileViewScreen> {
       widget.directory,
       OpenFileEntry(
         path: widget.path,
-        scrollOffset: _scrollCtl.hasClients ? _scrollCtl.position.pixels : 0,
+        scrollOffset: _isMarkdownPreview
+            ? _mdScrollOffset
+            : (_scrollCtl.hasClients ? _scrollCtl.position.pixels : 0),
         wrap: _wrap,
         mdShowSource: _mdShowSource,
         hadContent: _file != null,
@@ -405,6 +412,8 @@ class _FileViewScreenState extends State<FileViewScreen> {
         path: widget.path,
         directory: widget.directory,
         scrollController: _scrollCtl,
+        initialScrollOffset: _mdScrollOffset,
+        onScrolled: (o) => _mdScrollOffset = o,
       );
     }
     if (!f.isBinary) {

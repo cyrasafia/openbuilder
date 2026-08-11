@@ -123,6 +123,25 @@ final class HighlightPainter {
     ];
   }
 
+  /// Highlights [code] into an HTML fragment with `<span class="tok-...">`
+  /// markup. Class names are derived from each token's scope (dots/colons
+  /// replaced with dashes) and stay stable across themes — colors are applied
+  /// purely via CSS (`codeHighlightCss`), so a theme switch never requires
+  /// re-highlighting. Falls back to HTML-escaped plain text when the language
+  /// is unknown or highlighting fails.
+  static String highlightToHtml(String code, String language) {
+    if (language.isEmpty) return _escapeHtml(code);
+    try {
+      final result = _hl.highlight(code: code, language: language);
+      final renderer = _HtmlSpanRenderer();
+      result.render(renderer);
+      final out = renderer.buffer;
+      return out.isEmpty ? _escapeHtml(code) : out;
+    } catch (_) {
+      return _escapeHtml(code);
+    }
+  }
+
   static void _flatten(InlineSpan span, TextStyle parentStyle, List<_FlatSpan> out) {
     final style = span.style != null
         ? parentStyle.merge(span.style!)
@@ -151,4 +170,43 @@ final class _FlatSpan {
   const _FlatSpan(this.text, this.style);
   final String text;
   final TextStyle style;
+}
+
+String _escapeHtml(String value) {
+  return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#x27;');
+}
+
+String _scopeToClass(String scope) =>
+    'tok-${scope.replaceAll('.', '-').replaceAll(':', '-')}';
+
+/// Emits the highlight token tree as `<span class="tok-...">` HTML. Only nodes
+/// carrying a scope are wrapped; bare text is HTML-escaped verbatim.
+class _HtmlSpanRenderer implements HighlightRenderer {
+  final StringBuffer _buf = StringBuffer();
+
+  String get buffer => _buf.toString();
+
+  @override
+  void addText(String text) {
+    _buf.write(_escapeHtml(text));
+  }
+
+  @override
+  void openNode(DataNode node) {
+    final scope = node.scope;
+    if (scope == null || scope.isEmpty) return;
+    _buf.write('<span class="${_scopeToClass(scope)}">');
+  }
+
+  @override
+  void closeNode(DataNode node) {
+    final scope = node.scope;
+    if (scope == null || scope.isEmpty) return;
+    _buf.write('</span>');
+  }
 }
