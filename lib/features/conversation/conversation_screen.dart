@@ -14,6 +14,7 @@ import '../../app_state.dart';
 import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/attachments/file_ref.dart';
 import '../../core/attachments/image_data_cache.dart';
+import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
@@ -412,6 +413,9 @@ class _ConversationScreenState extends State<ConversationScreen>
       // 占满：run 顶到视口上缘（run 底 ≤ pixels 由 visLowIdx 在 run 内自动成立）。
       final occupied = runTop >= pixels + h - eps;
       if (occupied) {
+        if (gap) {
+          AppLogger.I.d('RunTop', 'eval occupied+gap (top unmeasured) hi=$hi lo=$lo busy=${conv.busy} driver=$_driverActive ce=${_cacheExtent.toStringAsFixed(0)}');
+        }
         if (!gap) {
           _driverAbortedRunTop = null;
           // 跨度门槛取 _kScrollButtonThresholdScreens × _screenHeight（整屏高度，
@@ -426,6 +430,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         _stopDriver();
       }
     } else {
+      AppLogger.I.d('RunTop', 'eval visLowIdx=-1 (bottom unmeasured) msgs=$msgCount busy=${conv.busy} driver=$_driverActive');
       _stopDriver();
     }
     _setBackToTopTarget(target);
@@ -443,15 +448,22 @@ class _ConversationScreenState extends State<ConversationScreen>
   }) {
     final h = _viewportHeight;
     if (!gap || conv.busy || h <= 0) {
+      if (gap && conv.busy) {
+        AppLogger.I.d('RunTop', 'driver skip: busy (gap pending) runTopId=$runTopId');
+      }
       if (_driverActive) _stopDriver();
       return;
     }
-    if (_driverAbortedRunTop == runTopId) return;
+    if (_driverAbortedRunTop == runTopId) {
+      AppLogger.I.d('RunTop', 'driver skip: aborted runTopId=$runTopId');
+      return;
+    }
     final maxExtent =
         (_driverResetMode ? _kDriverResetMaxScreens : _kDriverMaxScreens) * h;
     if (_cacheExtent >= maxExtent) {
       _stopDriver();
       _driverAbortedRunTop = runTopId;
+      AppLogger.I.w('RunTop', 'driver ABORT (run > ${_driverResetMode ? _kDriverResetMaxScreens : _kDriverMaxScreens} screens) runTopId=$runTopId');
       return;
     }
     final next = math.min(
@@ -460,12 +472,16 @@ class _ConversationScreenState extends State<ConversationScreen>
       maxExtent,
     );
     _driverActive = true;
+    AppLogger.I.d('RunTop', 'driver expand ce ${_cacheExtent.toStringAsFixed(0)} -> ${next.toStringAsFixed(0)} runTopId=$runTopId');
     setState(() => _cacheExtent = next);
   }
 
   String? _driverAbortedRunTop;
 
   void _stopDriver() {
+    if (_driverActive) {
+      AppLogger.I.d('RunTop', 'driver stop (ce ${_cacheExtent.toStringAsFixed(0)} -> base)');
+    }
     _driverActive = false;
     _driverResetMode = false;
     if (_cacheExtent != _kCacheExtentBase) {
@@ -474,7 +490,10 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _setBackToTopTarget(double? target) {
-    if (_backToTopTarget.value != target) _backToTopTarget.value = target;
+    if (_backToTopTarget.value != target) {
+      AppLogger.I.i('RunTop', 'target ${_backToTopTarget.value} -> $target');
+      _backToTopTarget.value = target;
+    }
   }
 
   void _updateFarFromBottom() {

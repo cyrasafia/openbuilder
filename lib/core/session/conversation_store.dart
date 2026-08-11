@@ -646,6 +646,7 @@ class ConversationStore extends ChangeNotifier {
       loaded = true;
       error = null;
       _stale = false;
+      AppLogger.I.i(_tag, 'reconcile done $sessionId msgs=${_messages.length}');
       loading = false;
       unawaited(_saveCache());
     } catch (e) {
