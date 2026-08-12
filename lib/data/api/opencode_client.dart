@@ -552,7 +552,7 @@ class OpencodeClient {
     );
   }
 
-  /// `GET /vcs/diff?mode=...` or `GET /session/:id/diff?messageID=...`
+  /// `GET /vcs/diff?mode=...&context=...` or `GET /session/:id/diff?messageID=...`
   /// → list of changed files in [directory].
   ///
   /// [sessionId] is only used when [messageID] is provided; VCS diff
@@ -560,11 +560,20 @@ class OpencodeClient {
   ///
   /// When [messageID] is provided, uses the per-message session diff endpoint.
   /// Otherwise uses `/vcs/diff` with [mode] (`git` / `branch`).
+  ///
+  /// [context] (VCS diff only) is the number of unchanged context lines shown
+  /// around each hunk. The server's internal default (when omitted) returns
+  /// the **entire file** as context wrapped in a single hunk, which bloats the
+  /// patch and tanks the diff detail page. A small value (e.g. [kVcsDiffContext],
+  /// the same as `git diff --unified=3`) gives minimal hunks. The
+  /// `/session/:id/diff` endpoint has no `context` parameter and is unaffected.
+  /// When omitted, the VCS path defaults to [kVcsDiffContext].
   Future<List<FileDiff>> diff(
     String sessionId, {
     String? directory,
     String? mode,
     String? messageID,
+    int? context,
   }) async {
     final dir = directory != null && directory.isNotEmpty ? directory : null;
     if (messageID != null && messageID.isNotEmpty) {
@@ -578,6 +587,7 @@ class OpencodeClient {
     }
     final params = <String, dynamic>{'mode': mode ?? 'git'};
     if (dir != null) params['directory'] = dir;
+    params['context'] = context ?? kVcsDiffContext;
     final r = await dio.get<dynamic>('/vcs/diff', queryParameters: params);
     return _getModelsFromData(r.data, FileDiff.fromJson);
   }
@@ -721,6 +731,14 @@ class OpencodeClient {
 /// spawning an isolate, avoiding per-open spawn latency for the common
 /// small-file case (mirrors the old ImageView `_syncDecodeLimit` threshold).
 const int _inlineParseLimit = 500 * 1024;
+
+/// Default number of unchanged context lines requested from `/vcs/diff`.
+///
+/// The server's internal default (when `context` is omitted) returns the
+/// **entire file** as context wrapped in a single hunk, which bloats the patch
+/// and tanks the diff detail page. `3` matches `git diff --unified=3` and
+/// yields minimal hunks. See `OpencodeClient.diff`'s doc comment.
+const int kVcsDiffContext = 3;
 
 /// Parses a streamed `/file/content` JSON body (received as raw bytes) into a
 /// [StreamedFile]. Top-level so it can run via `compute`. Binary base64 content

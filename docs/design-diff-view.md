@@ -353,3 +353,23 @@ Column(center)
 | DV-P3 | ✅ 「高亮的生命周期」节重写为屏幕层所有权；新增场景验证行（大 diff 滚动流畅）；决策 6 修订并显式撤回「hunk < 百行」假设。 |
 
 > 本次为**设计层**修订（撤回错误的粒度假设 + 收敛状态），代码实现见后续 `plan-diff-view-perf.md` / `review-diff-view-perf.md`。
+
+### 六次评审意见（"总是展示完整文件"根因：服务端 context 默认值）
+
+实现后实测仍有反馈：「diff 详情页还是很卡，而且展示的总是完整文件内容，而非仅变更部分」。根因不在客户端渲染，而在 **服务端 `/vcs/diff` 的 `context` 默认值**：
+
+- `/vcs/diff` 支持 `context` 查询参数（`opencode_openapi.json` 的 `GET /vcs/diff context`，`integer, minimum 0`）。服务端实现 `Rq`（`patchAll(directory, commit, {context: J?.context ?? E, ...})`）：**当客户端省略 `context` 时，使用内部常量 `E`，实测该值大到等价于"整个文件"**——无论两处改动相距多远（实测 100000 行间距）都合并成单 hunk，context 行数 = 文件全行数。对照 `git diff --unified=3` 仅给 3 行上下文。
+- `/session/{sessionID}/diff`（`lastMessage` 模式）无 `context` 参数，走 `computeDiff`→`Snapshot.diffFull`→`diff` npm 包（jsdiff）的 `createPatch`，默认 4 行上下文，已紧凑，不受此问题影响。
+- 客户端 `opencode_client.dart` 的 `diff()` 从未传 `context`，故 `/vcs/diff`（`uncommitted` / `branch` 两种主模式）**始终省略 `context` → 服务端返回整文件 patch**。这才是"总是展示完整文件"的真正原因，也直接放大了详情页卡顿（单 hunk 可达数千～数十万行，单行虚拟化只构建可见行，但首屏测宽 `_maxContentWidth`/`_gutterWidth` 与逐 hunk 同步高亮的 O(N) 开销依旧付全价）。
+
+| 编号 | 优先级 | 问题 | 建议 |
+|------|--------|------|------|
+| DV-CX1 | 🔴 阻塞 | 客户端 `diff()` 不传 `context`，触发服务端"整文件作 context"默认值 → patch 恒为整文件、单 hunk 包裹全文 → 详情页"展示完整文件"+"卡顿"双症状的真正根因。 | `diff()` 新增 `int? context` 形参（仅 `/vcs/diff` 路径透传，session diff 无此参数）；VCS 路径在方法内缺省为共享常量 `kVcsDiffContext = 3`（对齐 `git diff --unified=3`），使调用点无需各写字面量 `3`、避免漂移。 |
+
+### 修复复审（DV-CX1）
+
+| 编号 | 处理 |
+|------|------|
+| DV-CX1 | ✅ `opencode_client.dart` `diff()` 增 `int? context`，`/vcs/diff` 路径 `params['context'] = context ?? kVcsDiffContext`（VCS 路径恒传该参数，缺省 `kVcsDiffContext = 3`），并在文档注释中说明服务端默认值为"整文件"及为何必须显式传值；`/session/:id/diff` 路径不受影响。共享常量 `kVcsDiffContext` 与 `_inlineParseLimit` 并列，避免三处调用点各写 `3` 漂移。三处调用点无需传参即获正确默认。实测对照（220 行文件 2 处改动）：省略 `context` → 228 行 / 2 hunk（各裹半文件）；传 `context=3` → 24 行 / 4 小 hunk。 |
+
+> 关键教训：`docs/design-diff-view.md` 五次评审一直假设"大 hunk 来自 git 的大改动"，从未怀疑 patch 本身的来源，故 DV-P1/P2 的渲染层修复无法根治——只要服务端恒返整文件，单行虚拟化也只是"只构建可见行"，首屏测宽/高亮的 O(整文件) 依旧卡。本次回归到**数据来源层**（API 参数）才真正闭环。
