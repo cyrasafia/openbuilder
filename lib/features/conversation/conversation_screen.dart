@@ -338,17 +338,34 @@ class _ConversationScreenState extends State<ConversationScreen>
     final lastTop =
         pixels + vpBottom - lastChild.localToGlobal(Offset.zero).dy;
 
-    // Seed the anchor height directly from the render object: it is laid out
-    // by post-frame time, but _heightCache lags because _measuredMessage's
+    // Seed heights for ALL mounted sliver children directly from their render
+    // objects. _heightCache otherwise lags because _measuredMessage's
     // measurement callback is registered during build (after _scheduleFrameEval
-    // registers _evaluateFrame), so FIFO runs _evaluateFrame first. Without
-    // this seed, a freshly mounted lastChild breaks the walk-down and the
-    // button stays hidden during active upward scroll.
-    if (lastChild.hasSize) {
-      final lastH = lastChild.size.height;
-      if (lastH > 0) {
-        final id = msgs[lastIdx].info.id;
-        if (_heightCache[id] != lastH) _heightCache[id] = lastH;
+    // registers _evaluateFrame), so FIFO runs _evaluateFrame first.
+    //
+    // 原 seed 只覆盖 lastChild：reconcile 一次性挂上多条新消息时，可见区里
+    // lastChild 之外的中间消息没被 seed，walk-down 第一步就 break（visLowIdx=-1）
+    // → _stopDriver 把 cacheExtent 收回 base → 刚挂上的 child 被 unmount →
+    // 下一帧 gap 又成立 → driver 再扩。这个 expand/stop 振荡要 ~1s 才收敛，
+    // 期间还触发 _measuredMessage 回调读未布局 child 的 .size 爆异常洪流。
+    // 遍历整条已挂载链一次性补齐高度，单帧闭合缺口，driver 不再反复横跳。
+    if (sliverRO is RenderSliverMultiBoxAdaptor) {
+      var child = sliverRO.firstChild;
+      while (child != null) {
+        if (child.hasSize) {
+          final pd = child.parentData;
+          if (pd is SliverMultiBoxAdaptorParentData) {
+            final idx = pd.index ?? -1;
+            if (idx >= 0 && idx < msgCount) {
+              final ch = child.size.height;
+              if (ch > 0) {
+                final cid = msgs[idx].info.id;
+                if (_heightCache[cid] != ch) _heightCache[cid] = ch;
+              }
+            }
+          }
+        }
+        child = sliverRO.childAfter(child);
       }
     }
 
@@ -490,8 +507,14 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _setBackToTopTarget(double? target) {
-    if (_backToTopTarget.value != target) {
-      AppLogger.I.i('RunTop', 'target ${_backToTopTarget.value} -> $target');
+    final cur = _backToTopTarget.value;
+    // runTop - h 的浮点累加每帧可能产生 ulp 级抖动（实测 1e-13 量级在两值间
+    // 反复横跳）。精确 != 会让 ValueNotifier 每帧通知一次，按钮被无谓 rebuild。
+    // 半像素以内视为相等。
+    final same = (cur == null && target == null) ||
+        (cur != null && target != null && (cur - target).abs() < 0.5);
+    if (!same) {
+      AppLogger.I.i('RunTop', 'target $cur -> $target');
       _backToTopTarget.value = target;
     }
   }
@@ -571,8 +594,15 @@ class _ConversationScreenState extends State<ConversationScreen>
     // 若无此补偿则永不入 _heightCache。
     if (!_heightCache.containsKey(id)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        final h = key.currentContext?.size?.height;
-        if (h != null && h > 0 && _heightCache[id] != h) {
+        // Element.size 内部调 RenderBox.size，未 layout 会 throw（不是返回
+        // null）。reconcile + driver 扩 cacheExtent 时，sliver 把新 child 挂上
+        // 树但本轮 layout 不一定走到（cacheExtent 边界 child），直接读 .size
+        // 会爆 "Bad state: RenderBox was not laid out"。手动 findRenderObject
+        // + hasSize 守卫跳过未布局的 child，下一帧会再尝试。
+        final ro = key.currentContext?.findRenderObject();
+        if (ro is! RenderBox || !ro.hasSize) return;
+        final h = ro.size.height;
+        if (h > 0 && _heightCache[id] != h) {
           _heightCache[id] = h;
           _scheduleFrameEval();
         }
