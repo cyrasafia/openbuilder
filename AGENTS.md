@@ -116,6 +116,7 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `design-` | 子系统设计文档 | `design-load-retry.md`、`design-message-accumulation.md` |
 | `plan-` | 执行计划（配套 design） | `plan-load-retry.md` |
 | `review-` | 代码评审报告（提交级或设计级） | `review-load-retry.md`、`review-04c8b07.md` |
+| `todo-` | 待办问题跟踪（已知缺陷/技术债，含现象、根因、修复方向、验收标准） | `todo-cache-write-race.md` |
 
 ### design 文档结构约定
 
