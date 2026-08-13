@@ -27,6 +27,11 @@ class _DiffListScreenState extends State<DiffListScreen> {
   String? _messageID;
   int _loadGen = 0;
 
+  List<FileDiff>? _measuredFor;
+  TextScaler? _measuredScaler;
+  double _addW = 0;
+  double _delW = 0;
+
   @override
   void initState() {
     super.initState();
@@ -124,6 +129,36 @@ class _DiffListScreenState extends State<DiffListScreen> {
   int get _totalAdd => _diffs.fold(0, (s, d) => s + d.additions);
   int get _totalDel => _diffs.fold(0, (s, d) => s + d.deletions);
 
+  /// Max digit count across all rows (incl. header totals) for each column,
+  /// so the add column and del column line up vertically across rows.
+  int get _addDigits => _diffs.fold(
+        _totalAdd.toString().length,
+        (m, d) => m > d.additions.toString().length
+            ? m
+            : d.additions.toString().length,
+      );
+  int get _delDigits => _diffs.fold(
+        _totalDel.toString().length,
+        (m, d) => m > d.deletions.toString().length
+            ? m
+            : d.deletions.toString().length,
+      );
+
+  double _measureColumnWidth(int digits, TextScaler scaler) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: '+${'9' * digits}',
+        style: const TextStyle(fontSize: 13).merge(DiffStat.statStyle),
+      ),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+      maxLines: 1,
+    )..layout();
+    final w = tp.width;
+    tp.dispose();
+    return w;
+  }
+
   bool get _canShowLastMessage {
     final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv == null) return true;
@@ -132,6 +167,17 @@ class _DiffListScreenState extends State<DiffListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final scaler = MediaQuery.textScalerOf(context);
+    if (_diffs.isEmpty) {
+      _measuredFor = null;
+      _addW = 0;
+      _delW = 0;
+    } else if (!identical(_measuredFor, _diffs) || _measuredScaler != scaler) {
+      _measuredFor = _diffs;
+      _measuredScaler = scaler;
+      _addW = _measureColumnWidth(_addDigits, scaler);
+      _delW = _measureColumnWidth(_delDigits, scaler);
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Diff', style: TextStyle(fontSize: 16)),
@@ -161,7 +207,12 @@ class _DiffListScreenState extends State<DiffListScreen> {
             ),
           ),
           const Spacer(),
-          DiffStat(add: _totalAdd, del: _totalDel),
+          DiffStat(
+            add: _totalAdd,
+            del: _totalDel,
+            addWidth: _addW,
+            delWidth: _delW,
+          ),
         ],
       ),
     );
@@ -251,7 +302,12 @@ class _DiffListScreenState extends State<DiffListScreen> {
                   ),
                 )
               : null,
-          trailing: DiffStat(add: d.additions, del: d.deletions),
+          trailing: DiffStat(
+            add: d.additions,
+            del: d.deletions,
+            addWidth: _addW,
+            delWidth: _delW,
+          ),
           onTap: () => context.push(
             '/session/${widget.sessionId}/diff/file'
             '?path=${Uri.encodeQueryComponent(d.file)}'
