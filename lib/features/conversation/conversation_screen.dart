@@ -26,6 +26,8 @@ import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import 'uri_autolink.dart';
+
 /// Max height of a footer card's scrollable content, as a fraction of the
 /// screen height. Footer cards (todo / permission / question) bound their
 /// scroll region with a [ConstrainedBox] using this factor; the card must NOT
@@ -110,6 +112,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   // 时变窄，会使门槛被低估、按钮凭空出现）；两者屏数也共用，保证一致的"距离感"。
   static const _kScrollButtonThresholdScreens = 2.0;
   static const _kKeepAliveWindow = 48;
+  static const _kUriAutolinkCacheMax = 512;
   static const _kCacheExtentBase = 250.0;
   static const _kDriverStepScreens = 0.5;
   static const _kDriverMaxScreens = 8.0;
@@ -120,6 +123,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   final _farFromBottom = ValueNotifier<bool>(false);
   final _keepAliveIds = ValueNotifier<Set<String>>(const {});
   final _messageChildCache = <String, Widget>{};
+  final _uriAutolinkCache = <String, String>{};
   int? _lastMsgVersion;
   bool? _lastShowThinking;
 
@@ -564,9 +568,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     // messages and finished assistant messages have stable content → cache.
     if (msg.info.role != 'user' && msg.info.finish == null) {
       _messageChildCache.remove(id);
-      return _message(msg);
+      return _message(msg, stable: false);
     }
-    return _messageChildCache[id] ??= _message(msg);
+    return _messageChildCache[id] ??= _message(msg, stable: true);
   }
 
   Widget _measuredMessage(DisplayMessage msg) {
@@ -1242,7 +1246,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     }
   }
 
-  Widget _message(DisplayMessage m) {
+  Widget _message(DisplayMessage m, {required bool stable}) {
     if (m.info.role == 'user') {
       return Padding(
         key: ValueKey(m.info.id),
@@ -1256,7 +1260,7 @@ class _ConversationScreenState extends State<ConversationScreen>
               borderRadius: BorderRadius.circular(14),
             ),
             constraints: const BoxConstraints(maxWidth: 320),
-            child: _parts(m.parts, user: true),
+            child: _parts(m.parts, user: true, stable: stable),
           ),
         ),
       );
@@ -1267,7 +1271,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _parts(m.parts, user: false),
+          _parts(m.parts, user: false, stable: stable),
           if (m.info.error != null) _errorBanner(m.info.error!),
         ],
       ),
@@ -1350,7 +1354,8 @@ class _ConversationScreenState extends State<ConversationScreen>
   Color _userBubbleColor() =>
       Theme.of(context).extension<AppColors>()!.userBubble;
 
-  Widget _parts(List<DisplayPart> parts, {required bool user}) {
+  Widget _parts(List<DisplayPart> parts,
+      {required bool user, required bool stable}) {
     final visible = <DisplayPart>[];
     for (final p in parts) {
       if (user && p.type != 'text' && p.type != 'file' && p.type != 'subtask') {
@@ -1360,7 +1365,8 @@ class _ConversationScreenState extends State<ConversationScreen>
     }
     final children = <Widget>[];
     for (var i = 0; i < visible.length; i++) {
-      children.add(_part(visible[i], user: user, isFirst: i == 0));
+      children.add(
+          _part(visible[i], user: user, isFirst: i == 0, stable: stable));
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1368,16 +1374,17 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  Widget _part(DisplayPart p, {required bool user, bool isFirst = false}) {
+  Widget _part(DisplayPart p,
+      {required bool user, bool isFirst = false, required bool stable}) {
     switch (p.type) {
       case 'subtask':
         final commandName = p.command ?? 'subtask';
         final label = '**subtask: $commandName**';
         final body = p.text;
         final combined = body.isEmpty ? label : '$label\n\n$body';
-        return _markdownPart(combined, user: user);
+        return _markdownPart(combined, user: user, stable: stable);
       case 'text':
-        return _markdownPart(p.text, user: user);
+        return _markdownPart(p.text, user: user, stable: stable);
       case 'reasoning':
         if (!showThinking.value) return const SizedBox.shrink();
         return _Reasoning(
@@ -1414,12 +1421,19 @@ class _ConversationScreenState extends State<ConversationScreen>
     _messageChildCache.clear();
   }
 
-  Widget _markdownPart(String data, {required bool user}) {
+  Widget _markdownPart(String data,
+      {required bool user, required bool stable}) {
     final sheet = user ? _mdStyleUser : _mdStyleAssistant;
+    if (_uriAutolinkCache.length >= _kUriAutolinkCacheMax) {
+      _uriAutolinkCache.remove(_uriAutolinkCache.keys.first);
+    }
+    final linkified = stable
+        ? _uriAutolinkCache.putIfAbsent(data, () => autolinkMarkdownUris(data))
+        : autolinkMarkdownUris(data);
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: MarkdownBody(
-        data: data,
+        data: linkified,
         selectable: true,
         softLineBreak: user,
         onTapLink: (text, href, title) => _openExternalLink(href),
