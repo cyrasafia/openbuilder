@@ -48,8 +48,8 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   double? _gutterWidthCache;
   final _hScrollCtl = ScrollController();
   final _vScrollCtl = ScrollController();
-  final _firstHeaderKey = GlobalKey();
   final _firstLineKey = GlobalKey();
+  List<GlobalKey> _headerKeys = const [];
   double? _headerHeight;
   double? _lineHeight;
   List<double> _headerTops = const [];
@@ -114,6 +114,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     _newSpansByHunk.clear();
     _oldSpansByHunk.clear();
     _firstLineItemIndex = _items!.indexWhere((e) => e is _LineItem);
+    _headerKeys = List.generate(hunks.length, (_) => GlobalKey());
     _headerHeight = null;
     _lineHeight = null;
     _headerTops = const [];
@@ -124,7 +125,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
 
   void _measureItemHeights() {
     if (_headerHeight != null) return;
-    final headerBox = _firstHeaderKey.currentContext?.findRenderObject() as RenderBox?;
+    final headerBox = _headerKeys.first.currentContext?.findRenderObject() as RenderBox?;
     if (headerBox == null || !headerBox.hasSize) return;
     double? lineHeight;
     if (_firstLineItemIndex >= 0) {
@@ -159,36 +160,46 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   }
 
   void _jumpToHunk(int hunkIndex) {
-    if (hunkIndex < 0 || hunkIndex >= _headerTops.length || !_vScrollCtl.hasClients) {
+    if (hunkIndex < 0 ||
+        hunkIndex >= _headerKeys.length ||
+        !_vScrollCtl.hasClients) {
       return;
     }
-    final target = _headerTops[hunkIndex]
-        .clamp(0.0, _vScrollCtl.position.maxScrollExtent);
+    final box = _headerKeys[hunkIndex].currentContext?.findRenderObject()
+        as RenderBox?;
+    double target;
+    if (box != null) {
+      final scrollRenderObject =
+          _vScrollCtl.position.context.storageContext.findRenderObject();
+      final top =
+          box.localToGlobal(Offset.zero, ancestor: scrollRenderObject).dy;
+      target = _vScrollCtl.offset + top;
+    } else {
+      target = _headerTops[hunkIndex];
+    }
     _vScrollCtl.animateTo(
-      target,
+      target.clamp(0.0, _vScrollCtl.position.maxScrollExtent),
       duration: const Duration(milliseconds: 200),
       curve: Curves.easeOut,
     );
   }
 
   void _updateSticky() {
-    final hh = _headerHeight;
-    if (hh == null || _headerTops.isEmpty || !_vScrollCtl.hasClients) return;
-    final offset = _vScrollCtl.offset;
+    if (_headerHeight == null || _headerKeys.isEmpty || !_vScrollCtl.hasClients) return;
+    final scrollRenderObject =
+        _vScrollCtl.position.context.storageContext.findRenderObject();
     var active = -1;
-    for (var i = 0; i < _headerTops.length; i++) {
-      if (_headerTops[i] <= offset) {
+    for (var i = 0; i < _headerKeys.length; i++) {
+      final box = _headerKeys[i].currentContext?.findRenderObject() as RenderBox?;
+      if (box == null) continue;
+      final top = box.localToGlobal(Offset.zero, ancestor: scrollRenderObject).dy;
+      if (top <= 0.5) {
         active = i;
       } else {
         break;
       }
     }
-    var shift = 0.0;
-    if (active >= 0 && active + 1 < _headerTops.length) {
-      final gap = _headerTops[active + 1] - offset;
-      if (gap < hh) shift = gap - hh;
-    }
-    _sticky.value = _StickyState(active, shift);
+    _sticky.value = _StickyState(active, 0);
   }
 
   @override
@@ -496,7 +507,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
                     final item = _items![i];
                     if (item is _HeaderItem) {
                       return DiffHunkHeader(
-                        key: item.index == 0 ? _firstHeaderKey : null,
+                        key: _headerKeys[item.index],
                         index: item.index,
                         hunk: item.hunk,
                         width: effectiveWidth,
