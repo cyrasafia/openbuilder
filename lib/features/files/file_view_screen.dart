@@ -19,6 +19,7 @@ import 'markdown_view.dart';
 
 abstract interface class FileViewJumper {
   void jumpToLine(int line);
+  void forceSourceMode();
 }
 
 class FileViewScreen extends StatefulWidget {
@@ -48,7 +49,7 @@ class _FileViewScreenState extends State<FileViewScreen>
   double? _progress;
   Object? _error;
   bool _wrap = false;
-  bool _mdShowSource = true;
+  bool _mdShowSource = false;
   CancelToken? _cancelToken;
   final _scrollCtl = ScrollController();
   double? _pendingScrollRestore;
@@ -298,6 +299,12 @@ class _FileViewScreenState extends State<FileViewScreen>
     }
     _pendingLine = line;
     _scheduleScrollRestore();
+  }
+
+  @override
+  void forceSourceMode() {
+    if (_mdShowSource) return;
+    setState(() => _mdShowSource = true);
   }
 
   bool get _isTextLike =>

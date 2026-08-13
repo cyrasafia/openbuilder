@@ -374,7 +374,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       final popped = ModalRoute.of(context)?.popped;
       Navigator.of(context, rootNavigator: true).pop();
       await popped;
-      if (container.mounted) container.openFile(widget.path, initialLine: line);
+      if (container.mounted) container.openFile(widget.path, initialLine: line, mdShowSource: true);
       return;
     }
     final existing = store.snapshotFor(widget.sessionId, widget.directory);

@@ -106,29 +106,34 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
     _fileJumpers.remove(path);
   }
 
-  void openFile(String path, {int? initialLine}) {
+  void openFile(String path, {int? initialLine, bool mdShowSource = false}) {
     final nav = _navKey.currentState;
     if (nav == null) return;
     if (_openPaths.contains(path)) {
       nav.popUntil((r) => r.settings.name == fileRouteName(path) || r.isFirst);
-      if (initialLine != null) _fileJumpers[path]?.jumpToLine(initialLine);
+      if (initialLine != null) {
+        _fileJumpers[path]?.jumpToLine(initialLine);
+      } else if (mdShowSource) {
+        _fileJumpers[path]?.forceSourceMode();
+      }
       return;
     }
+    final forceSource = initialLine != null || mdShowSource;
     nav.push(
       slideLeftRoute(
         FileViewScreen(
           sessionId: widget.sessionId,
           path: path,
           directory: widget.directory,
-          restore: initialLine == null
-              ? null
-              : OpenFileEntry(
+          restore: forceSource
+              ? OpenFileEntry(
                   path: path,
                   scrollOffset: 0,
                   wrap: false,
                   mdShowSource: true,
                   initialLine: initialLine,
-                ),
+                )
+              : null,
         ),
         name: fileRouteName(path),
       ),
