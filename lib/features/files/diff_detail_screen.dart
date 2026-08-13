@@ -53,9 +53,9 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   double? _headerHeight;
   double? _lineHeight;
   List<double> _headerTops = const [];
+  double _contentHeight = 0;
   int _firstLineItemIndex = -1;
-  int _stickyIndex = -1;
-  double _stickyShift = 0;
+  final _sticky = ValueNotifier<_StickyState>(const _StickyState(-1, 0));
 
   @override
   void initState() {
@@ -66,6 +66,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
 
   @override
   void dispose() {
+    _sticky.dispose();
     _hScrollCtl.dispose();
     _vScrollCtl.dispose();
     super.dispose();
@@ -116,8 +117,8 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     _headerHeight = null;
     _lineHeight = null;
     _headerTops = const [];
-    _stickyIndex = -1;
-    _stickyShift = 0;
+    _contentHeight = 0;
+    _sticky.value = const _StickyState(-1, 0);
     _beginHighlight();
   }
 
@@ -144,7 +145,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     final lh = _lineHeight;
     if (hh == null || (_firstLineItemIndex >= 0 && lh == null)) return;
     final tops = <double>[];
-    var y = 8.0;
+    var y = 0.0;
     for (final item in _items!) {
       if (item is _HeaderItem) {
         tops.add(y);
@@ -154,6 +155,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       }
     }
     _headerTops = tops;
+    _contentHeight = y;
   }
 
   void _jumpToHunk(int hunkIndex) {
@@ -186,12 +188,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       final gap = _headerTops[active + 1] - offset;
       if (gap < hh) shift = gap - hh;
     }
-    if (active != _stickyIndex || shift != _stickyShift) {
-      setState(() {
-        _stickyIndex = active;
-        _stickyShift = shift;
-      });
-    }
+    _sticky.value = _StickyState(active, shift);
   }
 
   @override
@@ -354,8 +351,16 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
         if (tp.width > widest) widest = tp.width;
       }
     }
+    final pad = TextPainter(
+      text: TextSpan(text: '0', style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: _textScaler,
+      maxLines: 1,
+    )..layout();
+    final padW = pad.width;
+    pad.dispose();
     tp.dispose();
-    return _maxWidthCache = widest;
+    return _maxWidthCache = widest + padW;
   }
 
   Future<void> _openFullFile() async {
@@ -363,7 +368,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     final hunks = _hunks;
     int? line;
     if (hunks != null && hunks.isNotEmpty) {
-      final top = _stickyIndex >= 0 ? _stickyIndex : 0;
+      final top = _sticky.value.index >= 0 ? _sticky.value.index : 0;
       line = hunks[top].newStart ?? hunks[top].oldStart;
     }
     final container = store.containerFor<FileBrowsingContainerState>(
@@ -466,6 +471,13 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final viewportWidth = constraints.maxWidth;
+        final viewportHeight = constraints.maxHeight;
+        final effectiveWidth = totalWidth < viewportWidth ? viewportWidth : totalWidth;
+        final double bottomPad = _headerTops.isEmpty
+            ? 8.0
+            : (_headerTops.last + viewportHeight - _contentHeight > 8
+                ? _headerTops.last + viewportHeight - _contentHeight
+                : 8.0);
         if (_headerHeight == null) {
           WidgetsBinding.instance.addPostFrameCallback((_) => _measureItemHeights());
         }
@@ -475,10 +487,10 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
               controller: _hScrollCtl,
               scrollDirection: Axis.horizontal,
               child: SizedBox(
-                width: totalWidth,
+                width: effectiveWidth,
                 child: ListView.builder(
                   controller: _vScrollCtl,
-                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  padding: EdgeInsets.only(bottom: bottomPad),
                   itemCount: _items!.length,
                   itemBuilder: (_, i) {
                     final item = _items![i];
@@ -487,7 +499,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
                         key: item.index == 0 ? _firstHeaderKey : null,
                         index: item.index,
                         hunk: item.hunk,
-                        width: totalWidth,
+                        width: effectiveWidth,
                         viewportWidth: viewportWidth,
                         scroll: _hScrollCtl,
                         onPrev: item.index > 0 ? () => _jumpToHunk(item.index - 1) : null,
@@ -513,23 +525,31 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
                 ),
               ),
             ),
-            if (_stickyIndex >= 0)
-              Positioned(
-                top: _stickyShift,
-                left: 0,
-                right: 0,
-                child: DiffHunkHeader(
-                  index: _stickyIndex,
-                  hunk: hunks[_stickyIndex],
-                  width: viewportWidth,
-                  viewportWidth: viewportWidth,
-                  scroll: _hScrollCtl,
-                  onPrev: _stickyIndex > 0 ? () => _jumpToHunk(_stickyIndex - 1) : null,
-                  onNext: _stickyIndex < hunks.length - 1
-                      ? () => _jumpToHunk(_stickyIndex + 1)
-                      : null,
-                ),
-              ),
+            ValueListenableBuilder<_StickyState>(
+              valueListenable: _sticky,
+              builder: (context, sticky, _) {
+                if (sticky.index < 0) return const SizedBox.shrink();
+                return Positioned(
+                  top: sticky.shift,
+                  left: 0,
+                  right: 0,
+                  child: DiffHunkHeader(
+                    index: sticky.index,
+                    hunk: hunks[sticky.index],
+                    width: viewportWidth,
+                    viewportWidth: viewportWidth,
+                    overlay: true,
+                    scroll: _hScrollCtl,
+                    onPrev: sticky.index > 0
+                        ? () => _jumpToHunk(sticky.index - 1)
+                        : null,
+                    onNext: sticky.index < hunks.length - 1
+                        ? () => _jumpToHunk(sticky.index + 1)
+                        : null,
+                  ),
+                );
+              },
+            ),
           ],
         );
       },
@@ -541,6 +561,8 @@ const _fontSize = 12.5;
 const _gutterGap = 6.0;
 const _padLeft = 8.0;
 const _padRight = 20.0;
+const _hunkHPad = 12.0;
+const _navBtnMin = 22.0;
 
 abstract class _DiffItem {}
 
@@ -574,11 +596,23 @@ class _Task {
   const _Task(this.code, this.language, this.base, this.brightness);
 }
 
+class _StickyState {
+  final int index;
+  final double shift;
+  const _StickyState(this.index, this.shift);
+  @override
+  bool operator ==(Object other) =>
+      other is _StickyState && other.index == index && other.shift == shift;
+  @override
+  int get hashCode => Object.hash(index, shift);
+}
+
 class DiffHunkHeader extends StatelessWidget {
   final int index;
   final DiffHunk hunk;
   final double width;
   final double viewportWidth;
+  final bool overlay;
   final ScrollController scroll;
   final VoidCallback? onPrev;
   final VoidCallback? onNext;
@@ -588,6 +622,7 @@ class DiffHunkHeader extends StatelessWidget {
     required this.hunk,
     required this.width,
     required this.viewportWidth,
+    this.overlay = false,
     required this.scroll,
     this.onPrev,
     this.onNext,
@@ -605,6 +640,37 @@ class DiffHunkHeader extends StatelessWidget {
     final newEnd = (newStart == null || newCount == 0)
         ? null
         : newStart + newCount - 1;
+    final left = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          l(context).diffHunkSegment(index + 1),
+          style: TextStyle(fontSize: 12, color: muted),
+        ),
+        if (newStart != null && newEnd != null) ...[
+          const SizedBox(width: 8),
+          Text(
+            'L$newStart–$newEnd',
+            style: AppTheme.mono.copyWith(fontSize: 11, color: muted),
+          ),
+        ],
+      ],
+    );
+    final cluster = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        DiffStat(add: hunk.additions, del: hunk.deletions),
+        const SizedBox(width: 4),
+        _HunkNavButton(
+          icon: Icons.keyboard_arrow_up,
+          onPressed: onPrev,
+        ),
+        _HunkNavButton(
+          icon: Icons.keyboard_arrow_down,
+          onPressed: onNext,
+        ),
+      ],
+    );
     return Container(
       width: width,
       decoration: BoxDecoration(
@@ -613,44 +679,41 @@ class DiffHunkHeader extends StatelessWidget {
           bottom: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
         ),
       ),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: AnimatedBuilder(
         animation: scroll,
         builder: (context, _) {
-          final vw = viewportWidth < width ? viewportWidth : width;
-          final offset = scroll.hasClients ? scroll.offset : 0.0;
-          final shift = offset.clamp(0.0, width - vw);
-          return Transform.translate(
-            offset: Offset(shift, 0),
-            child: Container(
-              width: vw,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  Text(
-                    l(context).diffHunkSegment(index + 1),
-                    style: TextStyle(fontSize: 12, color: muted),
-                  ),
-                  if (newStart != null && newEnd != null) ...[
-                    const SizedBox(width: 8),
-                    Text(
-                      'L$newStart–$newEnd',
-                      style: AppTheme.mono.copyWith(fontSize: 11, color: muted),
-                    ),
-                  ],
-                  const Spacer(),
-                  DiffStat(add: hunk.additions, del: hunk.deletions),
-                  const SizedBox(width: 4),
-                  _HunkNavButton(
-                    icon: Icons.keyboard_arrow_up,
-                    onPressed: onPrev,
-                  ),
-                  _HunkNavButton(
-                    icon: Icons.keyboard_arrow_down,
-                    onPressed: onNext,
-                  ),
-                ],
+          final hOffset = scroll.hasClients ? scroll.offset : 0.0;
+          final raw = width - viewportWidth + _hunkHPad - hOffset;
+          final right = raw < _hunkHPad ? _hunkHPad : raw;
+          final leftPadded = Padding(
+            padding: const EdgeInsets.only(left: _hunkHPad),
+            child: left,
+          );
+          return Stack(
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: _navBtnMin),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: overlay
+                      ? Transform.translate(
+                          offset: Offset(-hOffset, 0),
+                          child: leftPadded,
+                        )
+                      : leftPadded,
+                ),
               ),
-            ),
+              Positioned(
+                right: right,
+                top: 0,
+                bottom: 0,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: cluster,
+                ),
+              ),
+            ],
           );
         },
       ),
@@ -755,7 +818,7 @@ class _HunkNavButton extends StatelessWidget {
       color: muted,
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+      constraints: const BoxConstraints(minWidth: _navBtnMin, minHeight: _navBtnMin),
     );
   }
 }
