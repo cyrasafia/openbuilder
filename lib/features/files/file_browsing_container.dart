@@ -49,6 +49,7 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
   final _navKey = GlobalKey<NavigatorState>();
   final LinkedHashMap<Object, void Function()> _collectors = LinkedHashMap();
   final Set<String> _openPaths = {};
+  final Map<String, FileViewJumper> _fileJumpers = {};
   bool Function()? _backInterceptor;
 
   @override
@@ -95,19 +96,22 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
     if (_backInterceptor == interceptor) _backInterceptor = null;
   }
 
-  void registerFile(String path) {
+  void registerFile(String path, [FileViewJumper? jumper]) {
     _openPaths.add(path);
+    if (jumper != null) _fileJumpers[path] = jumper;
   }
 
   void unregisterFile(String path) {
     _openPaths.remove(path);
+    _fileJumpers.remove(path);
   }
 
-  void openFile(String path) {
+  void openFile(String path, {int? initialLine}) {
     final nav = _navKey.currentState;
     if (nav == null) return;
     if (_openPaths.contains(path)) {
       nav.popUntil((r) => r.settings.name == fileRouteName(path) || r.isFirst);
+      if (initialLine != null) _fileJumpers[path]?.jumpToLine(initialLine);
       return;
     }
     nav.push(
@@ -116,6 +120,15 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
           sessionId: widget.sessionId,
           path: path,
           directory: widget.directory,
+          restore: initialLine == null
+              ? null
+              : OpenFileEntry(
+                  path: path,
+                  scrollOffset: 0,
+                  wrap: false,
+                  mdShowSource: true,
+                  initialLine: initialLine,
+                ),
         ),
         name: fileRouteName(path),
       ),

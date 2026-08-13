@@ -8,7 +8,8 @@ const _gutterGap = 6.0;
 const _gutterPad = 4.0;
 const _padLeft = 8.0;
 const _padRight = 20.0;
-const _fontSize = 12.5;
+const codeFontSize = 12.5;
+const codeListVerticalPadding = 8.0;
 
 class CodeView extends StatefulWidget {
   final String content;
@@ -96,7 +97,7 @@ class _CodeViewState extends State<CodeView> {
 
   TextSpan _plainSpan(int i) => TextSpan(text: _lines[i], style: _base);
 
-  TextStyle get _base => AppTheme.mono.copyWith(fontSize: _fontSize);
+  TextStyle get _base => AppTheme.mono.copyWith(fontSize: codeFontSize);
 
   @override
   Widget build(BuildContext context) {
@@ -133,7 +134,7 @@ class _CodeViewState extends State<CodeView> {
 
     final listView = ListView.builder(
       controller: widget.scrollController,
-      padding: const EdgeInsets.only(left: _padLeft, right: _padRight, top: 8, bottom: 8),
+      padding: const EdgeInsets.only(left: _padLeft, right: _padRight, top: codeListVerticalPadding, bottom: codeListVerticalPadding),
       itemCount: _lines.length,
       itemBuilder: rowBuilder,
     );

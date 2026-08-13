@@ -46,11 +46,29 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   int _highlightGen = 0;
   double? _maxWidthCache;
   double? _gutterWidthCache;
+  final _hScrollCtl = ScrollController();
+  final _vScrollCtl = ScrollController();
+  final _firstHeaderKey = GlobalKey();
+  final _firstLineKey = GlobalKey();
+  double? _headerHeight;
+  double? _lineHeight;
+  List<double> _headerTops = const [];
+  int _firstLineItemIndex = -1;
+  int _stickyIndex = -1;
+  double _stickyShift = 0;
 
   @override
   void initState() {
     super.initState();
+    _vScrollCtl.addListener(_updateSticky);
     _load();
+  }
+
+  @override
+  void dispose() {
+    _hScrollCtl.dispose();
+    _vScrollCtl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -94,7 +112,86 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     _items = _flatten(hunks);
     _newSpansByHunk.clear();
     _oldSpansByHunk.clear();
+    _firstLineItemIndex = _items!.indexWhere((e) => e is _LineItem);
+    _headerHeight = null;
+    _lineHeight = null;
+    _headerTops = const [];
+    _stickyIndex = -1;
+    _stickyShift = 0;
     _beginHighlight();
+  }
+
+  void _measureItemHeights() {
+    if (_headerHeight != null) return;
+    final headerBox = _firstHeaderKey.currentContext?.findRenderObject() as RenderBox?;
+    if (headerBox == null || !headerBox.hasSize) return;
+    double? lineHeight;
+    if (_firstLineItemIndex >= 0) {
+      final lineBox = _firstLineKey.currentContext?.findRenderObject() as RenderBox?;
+      if (lineBox == null || !lineBox.hasSize) return;
+      lineHeight = lineBox.size.height;
+    }
+    setState(() {
+      _headerHeight = headerBox.size.height;
+      _lineHeight = lineHeight;
+      _computeHeaderTops();
+      _updateSticky();
+    });
+  }
+
+  void _computeHeaderTops() {
+    final hh = _headerHeight;
+    final lh = _lineHeight;
+    if (hh == null || (_firstLineItemIndex >= 0 && lh == null)) return;
+    final tops = <double>[];
+    var y = 8.0;
+    for (final item in _items!) {
+      if (item is _HeaderItem) {
+        tops.add(y);
+        y += hh;
+      } else {
+        y += lh!;
+      }
+    }
+    _headerTops = tops;
+  }
+
+  void _jumpToHunk(int hunkIndex) {
+    if (hunkIndex < 0 || hunkIndex >= _headerTops.length || !_vScrollCtl.hasClients) {
+      return;
+    }
+    final target = _headerTops[hunkIndex]
+        .clamp(0.0, _vScrollCtl.position.maxScrollExtent);
+    _vScrollCtl.animateTo(
+      target,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _updateSticky() {
+    final hh = _headerHeight;
+    if (hh == null || _headerTops.isEmpty || !_vScrollCtl.hasClients) return;
+    final offset = _vScrollCtl.offset;
+    var active = -1;
+    for (var i = 0; i < _headerTops.length; i++) {
+      if (_headerTops[i] <= offset) {
+        active = i;
+      } else {
+        break;
+      }
+    }
+    var shift = 0.0;
+    if (active >= 0 && active + 1 < _headerTops.length) {
+      final gap = _headerTops[active + 1] - offset;
+      if (gap < hh) shift = gap - hh;
+    }
+    if (active != _stickyIndex || shift != _stickyShift) {
+      setState(() {
+        _stickyIndex = active;
+        _stickyShift = shift;
+      });
+    }
   }
 
   @override
@@ -109,6 +206,8 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     if (scalerChanged) {
       _maxWidthCache = null;
       _gutterWidthCache = null;
+      _headerHeight = null;
+      _lineHeight = null;
     }
     if (_hunks != null && brightnessChanged) _beginHighlight();
   }
@@ -261,6 +360,12 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
 
   Future<void> _openFullFile() async {
     final store = serverStore.fileBrowsing;
+    final hunks = _hunks;
+    int? line;
+    if (hunks != null && hunks.isNotEmpty) {
+      final top = _stickyIndex >= 0 ? _stickyIndex : 0;
+      line = hunks[top].newStart ?? hunks[top].oldStart;
+    }
     final container = store.containerFor<FileBrowsingContainerState>(
       widget.sessionId,
       widget.directory,
@@ -269,7 +374,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       final popped = ModalRoute.of(context)?.popped;
       Navigator.of(context, rootNavigator: true).pop();
       await popped;
-      if (container.mounted) container.openFile(widget.path);
+      if (container.mounted) container.openFile(widget.path, initialLine: line);
       return;
     }
     final existing = store.snapshotFor(widget.sessionId, widget.directory);
@@ -277,7 +382,8 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       path: widget.path,
       scrollOffset: 0,
       wrap: false,
-      mdShowSource: false,
+      mdShowSource: true,
+      initialLine: line,
     );
     if (existing != null) {
       existing.openFiles.removeWhere((e) => e.path == entry.path);
@@ -357,37 +463,76 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     final a = Theme.of(context).extension<AppColors>()!;
     final muted = Theme.of(context).colorScheme.outline;
     final base = _base;
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: SizedBox(
-        width: totalWidth,
-        child: ListView.builder(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: _items!.length,
-          itemBuilder: (_, i) {
-            final item = _items![i];
-            if (item is _HeaderItem) {
-              return DiffHunkHeader(
-                index: item.index,
-                hunk: item.hunk,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final viewportWidth = constraints.maxWidth;
+        if (_headerHeight == null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _measureItemHeights());
+        }
+        return Stack(
+          children: [
+            SingleChildScrollView(
+              controller: _hScrollCtl,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
                 width: totalWidth,
-              );
-            }
-            final li = item as _LineItem;
-            return DiffRow(
-              line: li.line,
-              span: _spanForLine(li),
-              gutterWidth: gutterWidth,
-              base: base,
-              addBg: a.diffAddBg,
-              delBg: a.diffDelBg,
-              addFg: a.diffAddFg,
-              delFg: a.diffDelFg,
-              muted: muted,
-            );
-          },
-        ),
-      ),
+                child: ListView.builder(
+                  controller: _vScrollCtl,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: _items!.length,
+                  itemBuilder: (_, i) {
+                    final item = _items![i];
+                    if (item is _HeaderItem) {
+                      return DiffHunkHeader(
+                        key: item.index == 0 ? _firstHeaderKey : null,
+                        index: item.index,
+                        hunk: item.hunk,
+                        width: totalWidth,
+                        viewportWidth: viewportWidth,
+                        scroll: _hScrollCtl,
+                        onPrev: item.index > 0 ? () => _jumpToHunk(item.index - 1) : null,
+                        onNext: item.index < hunks.length - 1
+                            ? () => _jumpToHunk(item.index + 1)
+                            : null,
+                      );
+                    }
+                    final li = item as _LineItem;
+                    return DiffRow(
+                      key: i == _firstLineItemIndex ? _firstLineKey : null,
+                      line: li.line,
+                      span: _spanForLine(li),
+                      gutterWidth: gutterWidth,
+                      base: base,
+                      addBg: a.diffAddBg,
+                      delBg: a.diffDelBg,
+                      addFg: a.diffAddFg,
+                      delFg: a.diffDelFg,
+                      muted: muted,
+                    );
+                  },
+                ),
+              ),
+            ),
+            if (_stickyIndex >= 0)
+              Positioned(
+                top: _stickyShift,
+                left: 0,
+                right: 0,
+                child: DiffHunkHeader(
+                  index: _stickyIndex,
+                  hunk: hunks[_stickyIndex],
+                  width: viewportWidth,
+                  viewportWidth: viewportWidth,
+                  scroll: _hScrollCtl,
+                  onPrev: _stickyIndex > 0 ? () => _jumpToHunk(_stickyIndex - 1) : null,
+                  onNext: _stickyIndex < hunks.length - 1
+                      ? () => _jumpToHunk(_stickyIndex + 1)
+                      : null,
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -433,11 +578,19 @@ class DiffHunkHeader extends StatelessWidget {
   final int index;
   final DiffHunk hunk;
   final double width;
+  final double viewportWidth;
+  final ScrollController scroll;
+  final VoidCallback? onPrev;
+  final VoidCallback? onNext;
   const DiffHunkHeader({
     super.key,
     required this.index,
     required this.hunk,
     required this.width,
+    required this.viewportWidth,
+    required this.scroll,
+    this.onPrev,
+    this.onNext,
   });
 
   @override
@@ -454,29 +607,52 @@ class DiffHunkHeader extends StatelessWidget {
         : newStart + newCount - 1;
     return Container(
       width: width,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: surface,
         border: Border(
           bottom: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
         ),
       ),
-      child: Row(
-        children: [
-          Text(
-            l(context).diffHunkSegment(index + 1),
-            style: TextStyle(fontSize: 12, color: muted),
-          ),
-          if (newStart != null && newEnd != null) ...[
-            const SizedBox(width: 8),
-            Text(
-              'L$newStart–$newEnd',
-              style: AppTheme.mono.copyWith(fontSize: 11, color: muted),
+      child: AnimatedBuilder(
+        animation: scroll,
+        builder: (context, _) {
+          final vw = viewportWidth < width ? viewportWidth : width;
+          final offset = scroll.hasClients ? scroll.offset : 0.0;
+          final shift = offset.clamp(0.0, width - vw);
+          return Transform.translate(
+            offset: Offset(shift, 0),
+            child: Container(
+              width: vw,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Text(
+                    l(context).diffHunkSegment(index + 1),
+                    style: TextStyle(fontSize: 12, color: muted),
+                  ),
+                  if (newStart != null && newEnd != null) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      'L$newStart–$newEnd',
+                      style: AppTheme.mono.copyWith(fontSize: 11, color: muted),
+                    ),
+                  ],
+                  const Spacer(),
+                  DiffStat(add: hunk.additions, del: hunk.deletions),
+                  const SizedBox(width: 4),
+                  _HunkNavButton(
+                    icon: Icons.keyboard_arrow_up,
+                    onPressed: onPrev,
+                  ),
+                  _HunkNavButton(
+                    icon: Icons.keyboard_arrow_down,
+                    onPressed: onNext,
+                  ),
+                ],
+              ),
             ),
-          ],
-          const Spacer(),
-          DiffStat(add: hunk.additions, del: hunk.deletions),
-        ],
+          );
+        },
       ),
     );
   }
@@ -560,6 +736,26 @@ class DiffRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _HunkNavButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onPressed;
+  const _HunkNavButton({required this.icon, this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.outline;
+    return IconButton(
+      onPressed: onPressed,
+      icon: Icon(icon),
+      iconSize: 16,
+      color: muted,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
     );
   }
 }

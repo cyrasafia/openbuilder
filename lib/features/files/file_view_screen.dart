@@ -17,6 +17,10 @@ import 'highlight_theme.dart';
 import 'image_view.dart';
 import 'markdown_view.dart';
 
+abstract interface class FileViewJumper {
+  void jumpToLine(int line);
+}
+
 class FileViewScreen extends StatefulWidget {
   final String sessionId;
   final String path;
@@ -34,7 +38,8 @@ class FileViewScreen extends StatefulWidget {
   State<FileViewScreen> createState() => _FileViewScreenState();
 }
 
-class _FileViewScreenState extends State<FileViewScreen> {
+class _FileViewScreenState extends State<FileViewScreen>
+    implements FileViewJumper {
   late final DownloadPolicy _policy = inferDownloadPolicy(widget.path);
 
   StreamedFile? _file;
@@ -43,10 +48,11 @@ class _FileViewScreenState extends State<FileViewScreen> {
   double? _progress;
   Object? _error;
   bool _wrap = false;
-  bool _mdShowSource = false;
+  bool _mdShowSource = true;
   CancelToken? _cancelToken;
   final _scrollCtl = ScrollController();
   double? _pendingScrollRestore;
+  int? _pendingLine;
   // Markdown preview scrolls inside its own WebView (not via _scrollCtl); we
   // track its offset here via the WebView callback so collapse/restore keeps
   // the reading position for preview mode.
@@ -73,6 +79,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       _wrap = r.wrap;
       _mdShowSource = r.mdShowSource;
       _pendingScrollRestore = r.scrollOffset;
+      _pendingLine = r.initialLine;
       _mdScrollOffset = r.scrollOffset;
       final cached = serverStore.fileBrowsing.cachedContent(
         widget.sessionId,
@@ -97,7 +104,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
     super.didChangeDependencies();
     _container = FileBrowsingContainer.maybeOf(context);
     _container?.registerCollector(this, _collectSelf);
-    _container?.registerFile(widget.path);
+    _container?.registerFile(widget.path, this);
     _installRouteAnimationListener();
   }
 
@@ -147,11 +154,24 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 
   void _scheduleScrollRestore() {
-    if (_pendingScrollRestore == null) return;
+    if (_pendingScrollRestore == null && _pendingLine == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (_pendingScrollRestore == null) return;
       if (!_scrollCtl.hasClients) return;
+      final line = _pendingLine;
+      if (line != null) {
+        _pendingLine = null;
+        _pendingScrollRestore = null;
+        if (_isMarkdownPreview || line <= 1) return;
+        final pos = _scrollCtl.position;
+        _scrollCtl.jumpTo(
+          (codeListVerticalPadding + (line - 1) * _lineHeight())
+              .clamp(pos.minScrollExtent, pos.maxScrollExtent)
+              .toDouble(),
+        );
+        return;
+      }
+      if (_pendingScrollRestore == null) return;
       final pending = _pendingScrollRestore!;
       _pendingScrollRestore = null;
       final pos = _scrollCtl.position;
@@ -159,6 +179,18 @@ class _FileViewScreenState extends State<FileViewScreen> {
         pending.clamp(pos.minScrollExtent, pos.maxScrollExtent).toDouble(),
       );
     });
+  }
+
+  double _lineHeight() {
+    final tp = TextPainter(
+      text: TextSpan(text: '0', style: AppTheme.mono.copyWith(fontSize: codeFontSize)),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    final h = tp.height;
+    tp.dispose();
+    return h;
   }
 
   Future<void> _download() async {
@@ -253,6 +285,19 @@ class _FileViewScreenState extends State<FileViewScreen> {
   void _cancelDownload() {
     _cancelToken?.cancel();
     if (mounted) setState(() => _downloading = false);
+  }
+
+  @override
+  void jumpToLine(int line) {
+    if (line < 1) return;
+    if (_isMarkdownPreview || _wrap) {
+      setState(() {
+        _mdShowSource = true;
+        _wrap = false;
+      });
+    }
+    _pendingLine = line;
+    _scheduleScrollRestore();
   }
 
   bool get _isTextLike =>
