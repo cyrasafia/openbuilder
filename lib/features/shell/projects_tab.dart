@@ -44,24 +44,33 @@ class _ProjectsTabState extends State<ProjectsTab> {
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
-          if (!serverStore.connected && serverStore.bootstrapFailed) {
-            return RefreshIndicator(
-              onRefresh: () => serverStore.refresh(),
-              child: emptyScrollable(
-                ErrorView(
-                  onRetry: () => connectionStore.active != null
-                      ? serverStore.connect(connectionStore.active!)
-                      : null,
+          final hasCache = serverStore.projects.isNotEmpty ||
+              serverStore.sessions.isNotEmpty;
+          if (!serverStore.connected && !hasCache) {
+            if (serverStore.bootstrapFailed) {
+              return RefreshIndicator(
+                onRefresh: () => serverStore.refresh(),
+                child: emptyScrollable(
+                  ErrorView(
+                    onRetry: () => connectionStore.active != null
+                        ? serverStore.connect(connectionStore.active!)
+                        : null,
+                  ),
                 ),
-              ),
-            );
-          }
-          if (!serverStore.connected) {
+              );
+            }
             return const Center(child: CircularProgressIndicator());
           }
           final items = _buildItems(context);
           return RefreshIndicator(
-            onRefresh: () => serverStore.refresh(),
+            onRefresh: () async {
+              final ok = await refreshOrReconnect();
+              if (!ok && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(l(context).refreshFailed)),
+                );
+              }
+            },
             child: items.isEmpty
                 ? emptyScrollable(
                     Text(l(context).noProjects,

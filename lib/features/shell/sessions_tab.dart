@@ -46,25 +46,26 @@ class _SessionsTabState extends State<SessionsTab> {
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
-          if (!serverStore.connected && serverStore.bootstrapFailed) {
-            return RefreshIndicator(
-              onRefresh: () => serverStore.refresh(),
-              child: emptyScrollable(
-                ErrorView(
-                  onRetry: () => connectionStore.active != null
-                      ? serverStore.connect(connectionStore.active!)
-                      : null,
+          final hasCache = serverStore.sessions.isNotEmpty;
+          if (!serverStore.connected && !hasCache) {
+            if (serverStore.bootstrapFailed) {
+              return RefreshIndicator(
+                onRefresh: () => serverStore.refresh(),
+                child: emptyScrollable(
+                  ErrorView(
+                    onRetry: () => connectionStore.active != null
+                        ? serverStore.connect(connectionStore.active!)
+                        : null,
+                  ),
                 ),
-              ),
-            );
-          }
-          if (!serverStore.connected) {
+              );
+            }
             return const Center(child: CircularProgressIndicator());
           }
           final sessions = serverStore.sortedSessions().toList();
           return RefreshIndicator(
             onRefresh: () async {
-              final ok = await serverStore.refresh();
+              final ok = await refreshOrReconnect();
               if (!ok && context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(content: Text(l(context).refreshFailed)),

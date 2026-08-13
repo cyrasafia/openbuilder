@@ -51,6 +51,16 @@ Locale resolveActiveLocale() {
 
 final ValueNotifier<bool> showThinking = ValueNotifier(false);
 
+/// Refresh when connected; when offline (e.g. showing cached data after a
+/// failed bootstrap) attempt a reconnect instead. Returns whether data is
+/// live afterwards so callers can surface failure feedback.
+Future<bool> refreshOrReconnect() {
+  if (serverStore.connected) return serverStore.refresh();
+  final active = connectionStore.active;
+  if (active == null) return Future.value(false);
+  return serverStore.connect(active).then((_) => serverStore.connected);
+}
+
 /// Resolve the persisted locale string. On native it reads from the durable
 /// file store; on web from SharedPreferences. On the first launch after
 /// upgrade a legacy SharedPreferences `locale` is migrated into the file
