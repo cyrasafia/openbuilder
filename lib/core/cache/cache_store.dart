@@ -64,17 +64,25 @@ class FileCacheStore implements CacheStore {
       return false;
     }
     final f = await _fileFor(key);
+    File? tmp;
     try {
       await f.parent.create(recursive: true);
-      final tmp = File('${f.path}.tmp');
+      tmp = File('${f.path}.${_tmpSeq++}.tmp');
       await tmp.writeAsString(value, flush: true);
       await tmp.rename(f.path);
       return true;
     } catch (e) {
       AppLogger.I.w(_tag, 'write $key failed: $e');
+      if (tmp != null) {
+        try {
+          if (tmp.existsSync()) await tmp.delete();
+        } catch (_) {}
+      }
       return false;
     }
   }
+
+  static int _tmpSeq = 0;
 
   @override
   Future<void> remove(String key) async {

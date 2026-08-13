@@ -86,6 +86,28 @@ void main() {
       await cs.write('server', 'new');
       expect(await cs.read('server'), 'new');
     });
+
+    test('concurrent writes to same key do not race (no .tmp residue)',
+        () async {
+      final cs = FileCacheStore('p1');
+      final n = 100;
+      final futures = <Future<bool>>[];
+      for (var i = 0; i < n; i++) {
+        futures.add(cs.write('conv/s1', 'v$i'));
+      }
+      final results = await Future.wait(futures);
+      expect(results.every((r) => r), isTrue);
+      final value = await cs.read('conv/s1');
+      expect(value, isNotNull);
+      expect(int.parse(value!.substring(1)), inInclusiveRange(0, n - 1));
+      final root = FileCacheStore.rootBaseOverride!;
+      final residue = root
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.tmp'))
+          .toList();
+      expect(residue, isEmpty);
+    });
   });
 
   group('migrateFromPrefs', () {
