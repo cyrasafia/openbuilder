@@ -39,6 +39,7 @@ class FileBrowsingSnapshot {
   String searchQuery;
   bool searchExpanded;
   final List<OpenFileEntry> openFiles;
+  final bool peek;
 
   FileBrowsingSnapshot({
     this.listPath = '',
@@ -46,6 +47,7 @@ class FileBrowsingSnapshot {
     this.searchQuery = '',
     this.searchExpanded = false,
     List<OpenFileEntry>? openFiles,
+    this.peek = false,
   }) : openFiles = openFiles ?? [];
 }
 

@@ -142,6 +142,121 @@ void main() {
     expect(serverStore.fileBrowsing.snapshotFor(sid, ''), isNull);
   });
 
+  testWidgets('peek collapse seals the file state into the snapshot', (
+    tester,
+  ) async {
+    final router = await _pumpApp(tester);
+    const sid = 'peek-collapse';
+    final snap = FileBrowsingSnapshot(
+      openFiles: const [
+        OpenFileEntry(
+          path: 'a/b/c.txt',
+          scrollOffset: 0,
+          wrap: false,
+          mdShowSource: true,
+        ),
+      ],
+      peek: true,
+    );
+
+    router.push('/session/$sid/files?directory=', extra: snap);
+    await _flush(tester);
+
+    expect(find.byType(FileViewScreen), findsOneWidget);
+    expect(find.byType(FileListScreen, skipOffstage: false), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.unfold_less));
+    await _flush(tester);
+
+    expect(find.text('home'), findsOneWidget);
+    final sealed = serverStore.fileBrowsing.snapshotFor(sid, '');
+    expect(sealed, isNotNull);
+    expect(sealed!.peek, isFalse);
+    expect(sealed.openFiles.map((e) => e.path).toList(), ['a/b/c.txt']);
+  });
+
+  testWidgets(
+    'peek-collapsed state restores as full mode via file icon (no '
+    'self-perpetuating peek)',
+    (tester) async {
+      final router = await _pumpApp(tester);
+      const sid = 'peek-restore';
+      router.push(
+        '/session/$sid/files?directory=',
+        extra: FileBrowsingSnapshot(
+          openFiles: const [
+            OpenFileEntry(
+              path: 'a/b/c.txt',
+              scrollOffset: 0,
+              wrap: false,
+              mdShowSource: true,
+            ),
+          ],
+          peek: true,
+        ),
+      );
+      await _flush(tester);
+      expect(find.byType(FileListScreen, skipOffstage: false), findsNothing);
+
+      await tester.tap(find.byIcon(Icons.unfold_less));
+      await _flush(tester);
+      final sealed = serverStore.fileBrowsing.snapshotFor(sid, '')!;
+
+      router.push('/session/$sid/files?directory=', extra: sealed);
+      await _flush(tester);
+
+      expect(find.byType(FileViewScreen), findsOneWidget);
+      expect(find.byType(FileListScreen, skipOffstage: false), findsOneWidget);
+    },
+  );
+
+  testWidgets('back from a peek preserves a previously saved session', (
+    tester,
+  ) async {
+    final router = await _pumpApp(tester);
+    const sid = 'peek-back';
+    final saved = _seal(
+      sid,
+      listPath: 'a/b',
+      openFiles: const [
+        OpenFileEntry(
+          path: 'a/b/old.txt',
+          scrollOffset: 0,
+          wrap: false,
+          mdShowSource: false,
+        ),
+      ],
+    );
+    expect(saved.listPath, 'a/b');
+
+    final peekSnap = FileBrowsingSnapshot(
+      openFiles: const [
+        OpenFileEntry(
+          path: 'x/y/new.txt',
+          scrollOffset: 0,
+          wrap: false,
+          mdShowSource: true,
+        ),
+      ],
+      peek: true,
+    );
+    router.push('/session/$sid/files?directory=', extra: peekSnap);
+    await _flush(tester);
+    expect(find.byType(FileViewScreen), findsOneWidget);
+
+    await tester.pageBack();
+    await _flush(tester);
+
+    expect(find.text('home'), findsOneWidget);
+    final preserved = serverStore.fileBrowsing.snapshotFor(sid, '');
+    expect(preserved, isNotNull);
+    expect(preserved!.listPath, 'a/b');
+    expect(
+      preserved.openFiles.map((e) => e.path).toList(),
+      ['a/b/old.txt'],
+    );
+  });
+
   testWidgets('restore builds list and open files from snapshot', (
     tester,
   ) async {

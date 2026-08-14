@@ -329,6 +329,18 @@ class _FileViewScreenState extends State<FileViewScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          tooltip: MaterialLocalizations.of(context).backButtonTooltip,
+          onPressed: () {
+            final c = _container;
+            if (c != null) {
+              c.handleBack();
+            } else {
+              Navigator.of(context).maybePop();
+            }
+          },
+        ),
         title: Text(
           widget.path.split('/').last,
           maxLines: 1,

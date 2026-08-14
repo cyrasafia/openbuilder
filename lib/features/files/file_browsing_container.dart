@@ -140,12 +140,18 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
     );
   }
 
+  bool get _peek {
+    final snap = widget.initial;
+    return snap != null && snap.peek && snap.openFiles.isNotEmpty;
+  }
+
   void collapse() {
     final store = serverStore.fileBrowsing;
     store.beginCollapse(widget.sessionId, widget.directory);
     for (final collect in _collectors.values.toList().reversed) {
       collect();
     }
+    store.endCollapse(widget.sessionId, widget.directory);
     Navigator.of(context, rootNavigator: true).pop();
   }
 
@@ -162,29 +168,35 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
     }
     if (_backInterceptor?.call() ?? false) return;
     if (!mounted) return;
-    serverStore.fileBrowsing.clearSnapshot(widget.sessionId, widget.directory);
+    if (!_peek) {
+      serverStore.fileBrowsing.clearSnapshot(widget.sessionId, widget.directory);
+    }
     Navigator.of(context, rootNavigator: true).pop();
   }
 
   List<Route<dynamic>> _initialRoutes() {
     final snap = widget.initial;
-    final routes = <Route<dynamic>>[
-      slideLeftRoute(
-        FileListScreen(
-          sessionId: widget.sessionId,
-          directory: widget.directory,
-          initialPath: snap?.listPath,
-          restore: snap == null
-              ? null
-              : FileListRestore(
-                  scrollOffset: snap.listScrollOffset,
-                  searchQuery: snap.searchQuery,
-                  searchExpanded: snap.searchExpanded,
-                ),
+    final openFiles = snap?.openFiles ?? const <OpenFileEntry>[];
+    final routes = <Route<dynamic>>[];
+    if (!_peek) {
+      routes.add(
+        slideLeftRoute(
+          FileListScreen(
+            sessionId: widget.sessionId,
+            directory: widget.directory,
+            initialPath: snap?.listPath,
+            restore: snap == null
+                ? null
+                : FileListRestore(
+                    scrollOffset: snap.listScrollOffset,
+                    searchQuery: snap.searchQuery,
+                    searchExpanded: snap.searchExpanded,
+                  ),
+          ),
         ),
-      ),
-    ];
-    for (final e in snap?.openFiles ?? const <OpenFileEntry>[]) {
+      );
+    }
+    for (final e in openFiles) {
       routes.add(
         slideLeftRoute(
           FileViewScreen(

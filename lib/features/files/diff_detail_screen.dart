@@ -393,26 +393,22 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       if (container.mounted) container.openFile(widget.path, initialLine: line, mdShowSource: true);
       return;
     }
-    final existing = store.snapshotFor(widget.sessionId, widget.directory);
-    final entry = OpenFileEntry(
-      path: widget.path,
-      scrollOffset: 0,
-      wrap: false,
-      mdShowSource: true,
-      initialLine: line,
-    );
-    if (existing != null) {
-      existing.openFiles.removeWhere((e) => e.path == entry.path);
-      existing.openFiles.add(entry);
-      if (existing.openFiles.length > FileBrowsingStore.maxOpenFiles) {
-        existing.openFiles.removeAt(0);
-      }
-    }
     if (!mounted) return;
     context.push(
       '/session/${widget.sessionId}/files'
       '?directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
-      extra: existing ?? FileBrowsingSnapshot(openFiles: [entry]),
+      extra: FileBrowsingSnapshot(
+        openFiles: [
+          OpenFileEntry(
+            path: widget.path,
+            scrollOffset: 0,
+            wrap: false,
+            mdShowSource: true,
+            initialLine: line,
+          ),
+        ],
+        peek: true,
+      ),
     );
   }
 

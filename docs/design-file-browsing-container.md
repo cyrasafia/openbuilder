@@ -61,7 +61,7 @@
 | conversation_screen.dart:397（恢复循环 push） | 根路由 push | 删除，改为容器初始栈 |
 | file_list_screen.dart:429（点文件） | 根路由 push | 嵌套 `Navigator.push` |
 | markdown_view.dart:111（md 链接打开文件） | 根路由 push | `Navigator.of(context).push`（本身已在容器内，命中嵌套栈） |
-| diff_detail_screen.dart:107（查看文件） | 根路由 push | 分两支：容器已在栈上 → **先 pop 掉 diff detail（根路由 pop，等其完成）露出容器，再调容器的 `openFile(path)`**——必须先露出再 push，否则水平滑入动画在屏外播完；容器不在栈上 → push 容器并带初始栈 `[列表, 详情]` |
+| diff_detail_screen.dart:107（查看文件） | 根路由 push | 分两支：容器已在栈上 → **先 pop 掉 diff detail（根路由 pop，等其完成）露出容器，再调容器的 `openFile(path)`**——必须先露出再 push，否则水平滑入动画在屏外播完；容器不在栈上 → push 容器并带 **peek 快照**（`peek: true`，仅含目标文件），初始栈 = `[详情]`（无列表层），返回直接回 diff 详情 |
 
 `FileBrowsingStore` 新增：`registerContainer(key, FileBrowsingContainerState)` / `unregisterContainer(key)` / `containerFor(sessionId, directory)`，生命周期由容器 initState/dispose 维护，与 list anchor 同增同减。
 
@@ -69,6 +69,36 @@
 
 - **list anchor**：注册/反注册从 FileListScreen 移到容器（file_list_screen.dart:47-48、79-80 删除）。anchor 是计数制，双重注册/漏反注册会导致计数泄漏、`hasListAnchor` 恒 true，收起按钮在容器外错误显示。
 - **fileRouteObserver**：挂在根 GoRouter（app_router.dart:40），对嵌套 Navigator 内的路由不会派发任何事件。删除 file_list/file_view 中的 `RouteAware` 订阅代码（file_list_screen.dart:72-78、file_view_screen.dart:74-84）；`didPopNext` 逻辑删除后若无其他使用者，`fileRouteObserver` 一并从 GoRouter observers 移除。
+
+### 导航与记忆模型
+
+文件容器有两种入口模式，决定嵌套栈的底层与退出时的记忆语义：
+
+| 入口 | 模式 | 嵌套栈底层 | 快照来源 |
+|------|------|-----------|----------|
+| 会话页文件 icon / markdown 链接 / 列表点文件 | 普通（full） | `FileListScreen` | `FileBrowsingSnapshot(peek: false)` 或无快照 |
+| diff 详情「查看完整文件」 | peek | `FileViewScreen`（无列表层） | `FileBrowsingSnapshot(openFiles: [entry], peek: true)` |
+
+peek 模式下 `_initialRoutes` 跳过 `FileListScreen`，文件视图成为嵌套栈底层路由，因此「返回」直接退出容器回到调用方（diff 详情），而非先落到文件列表——这是「从 diff 查看文件后返回应回 diff 详情」诉求的落点。`FileViewScreen` 因此显式自带返回箭头：容器内调 `handleBack`（普通模式 pop 到列表、peek 模式 pop 掉整个容器），无容器时（如会话页文件引用 chip 的独立 push）回退 `Navigator.maybePop`。
+
+> **`peek` 是运行时入口属性，不是持久化状态。** 它只随「本次打开容器的快照」（`widget.initial`）存在，决定该次实例的栈底层与退出记忆语义；`collapse` 收起时**不**把 `peek` 写入保存的快照——保存态恒为 full（`peek: false`），保证经文件 icon 恢复时一定是含列表的完整会话，不会因一次 peek 收起而永久退化。
+
+**记忆（`FileBrowsingStore._snapshots`）的改写规则：**
+
+| 操作 | 对记忆的影响 |
+|------|-------------|
+| 返回 / 系统手势退出容器（**普通**模式） | **清除**当前会话记忆（下次文件 icon 从头开始） |
+| 返回 / 系统手势退出容器（**peek**模式） | **保留**记忆（peek 是临时查看，不破坏已保存的浏览会话） |
+| 收起按钮 | **写入**当前完整状态覆盖旧记忆；peek 收起也封存文件状态（位置/preview·源码/换行），但 `peek` 标志置 false——保存态恒为 full，文件 icon 恢复为 `[列表, 文件]` |
+| 会话页文件 icon | **读取**记忆恢复（无记忆则全新列表） |
+| diff 详情「查看完整文件」（新路径进入） | 容器以新 peek 状态呈现（覆盖显示）；旧记忆**仅在随后收起时**被覆盖，若只是查看后返回则旧记忆保留 |
+
+四条交互规则：
+
+1. **返回按钮 / 系统返回手势** → 总是回到上一个状态（嵌套栈内 pop），没有上一个状态时退出容器；退出时按入口模式决定是否清除记忆（见上表）。
+2. **收起按钮** → 总是记住当前状态（含各文件浏览位置 / 模式 / 换行）并关闭容器。
+3. **会话详情页文件 icon** → 恢复上一次记住的状态。
+4. **有记忆时从一个新路径进入容器** → 新状态在容器中呈现并覆盖显示；旧记忆在收起时被覆盖，查看后返回则旧记忆不受影响。
 
 ### 返回与收起
 
@@ -78,16 +108,16 @@
 Future<void> handleBack() async {
   final popped = await _nestedKey.currentState!.maybePop();
   if (popped) return;          // 嵌套栈消费：详情水平退出，或列表 PopScope 拦截
-  // 嵌套栈只剩列表且可退出 → 普通返回语义
-  store.clearSnapshot(sessionId, directory);
+  // 嵌套栈只剩底层且可退出 → 普通返回语义
+  if (!_peek) store.clearSnapshot(sessionId, directory);  // peek 保留记忆，普通清除
   if (mounted) Navigator.of(context, rootNavigator: true).pop();
 }
 ```
 
 - **容器根部 `PopScope(canPop: false, onPopInvoked: (_, _) => handleBack())`**：`canPop` 必须是纯布尔常量，严禁在其中调用 `maybePop()`（框架会在仅查询时读取，副作用会被误触发）。系统返回经根部 PopScope 转发进 `handleBack`，嵌套路由的 `popDisposition`（含列表页搜索态/子目录拦截的 PopScope）由嵌套 `maybePop` 正常咨询。
 - **列表页 AppBar 返回箭头改为自定义**，点击调 `handleBack()`，不再用默认 `BackButton`（默认按钮只对嵌套 Navigator 发 `maybePop`，无法透传到根路由，且嵌套栈 pop 掉最后一个 initial route 会留下空白 Navigator）。
-- **普通返回清除快照**（保留现有行为，file_list_screen.dart:226-233）：嵌套化后列表的 PopScope `onPopInvoked` 不会触发，`clearSnapshot` 由 `handleBack` 的 fallback 分支接管；列表内 PopScope 仅保留拦截语义（搜索/子目录），清除逻辑删除。
-- **收起按钮** → `container.collapse()`：`beginCollapse` + 遍历收集 + `Navigator.of(context, rootNavigator: true).pop()`。根 `Navigator.pop` 不经过 PopScope 拦截，整叠一次向下滑出。
+- **普通返回清除快照仅限普通模式**：`clearSnapshot` 由 `handleBack` 的 fallback 分支接管，但仅当容器非 peek 入口时执行；peek 入口返回退出时**保留**记忆（避免临时查看破坏已保存的浏览会话）。列表内 PopScope 仅保留拦截语义（搜索/子目录），清除逻辑删除。
+- **收起按钮** → `container.collapse()`：`beginCollapse`（不带 peek，保存态恒 full）+ 遍历收集 + `endCollapse` + `Navigator.of(context, rootNavigator: true).pop()`。peek 模式下没有列表页调用 `collectList` 收尾，故由容器在收集后显式 `endCollapse` 提交（正常模式下该调用为幂等 no-op，列表页的 `collectList` 已先行收尾）。根 `Navigator.pop` 不经过 PopScope 拦截，整叠一次向下滑出。
 - 删除 `didPopNext` 连锁 pop 逻辑：file_list_screen.dart:88-97、file_view_screen.dart:87-95、diff_list_screen.dart:44-51、diff_detail_screen.dart:50-57。
 
 ## 场景验证
@@ -100,10 +130,12 @@ Future<void> handleBack() async {
 | 详情返回（箭头/系统返回） | 详情从左向右滑出，露出列表 |
 | markdown 链接打开文件 | 新详情从右向左滑入（叠在当前详情上） |
 | diff 详情查看文件（容器已开） | diff detail 先默认动画退出露出容器，详情再从右向左滑入 |
-| diff 详情查看文件（容器未开） | 容器自下而上滑入，栈=[列表, 详情] |
+| diff 详情查看文件（容器未开） | 容器自下而上滑入，栈=[详情]（peek，无列表层） |
+| peek 返回（箭头/系统返回） | 容器向下滑出，直接回 diff 详情，**记忆保留**（不破坏已保存会话） |
+| peek 收起 | 容器向下滑出，封存文件状态（**peek=false**，保存态恒 full）覆盖记忆；文件 icon 恢复为 `[列表, 文件]` |
 | 详情页收起 | 整叠（列表+详情）随容器一次向下滑出 |
 | 列表页收起 | 容器向下滑出，快照保留 |
-| 列表页普通返回（根目录、非搜索态） | 容器向下滑出，**快照清除**（下次打开从头开始，同现有行为） |
+| 列表页普通返回（根目录、非搜索态） | 容器向下滑出，**快照清除**（下次打开从头开始；仅普通模式，peek 返回不清除） |
 | 搜索态/子目录下系统返回 | 仅内部状态回退（嵌套 PopScope 拦截），无路由动画 |
 
 ## 关键设计决策
@@ -150,3 +182,5 @@ Future<void> handleBack() async {
 1. **handleBack 不用 `maybePop`**：Flutter 3.44 起 `NavigatorState.maybePop` 对 `doNotPop` 也返回 true（调 PopScope 回调并视为已处理），无法区分「详情被 pop」与「列表拦截」。实现改为：`nav.canPop()` 为真 → `nav.pop()`（详情水平退出）；否则调列表注册的 `_backInterceptor`（搜索态收搜索、子目录回上级，返回 true 表示已消费）；未消费 → `clearSnapshot` + 根 pop。列表页因此不再需要 PopScope。
 2. **容器 PopScope 回调必须判 didPop**：`NavigatorState.pop`（直接 pop，不经 disposition）同样会触发 `onPopInvokedWithResult(didPop: true)`；不判的话 `collapse()`/`handleBack()` 里的根 pop 会递归重入 `handleBack` 触发 `_debugLocked` 断言。实现为 `onPopInvokedWithResult: (didPop, _) { if (!didPop) handleBack(); }`。
 3. **`/session/:id/file` 根路由已删除**；`fileRouteObserver` 及其全部订阅随之移除；「无 list anchor 时隐藏收起按钮」场景不再存在（容器必然注册 anchor），对应测试删除。
+4. **peek 入口与差异化记忆**：`FileBrowsingSnapshot` 新增 `peek` 字段；diff 详情「查看完整文件」在容器未开时不再合并进旧快照，而是推入全新 `peek: true` 快照（仅目标文件）。容器以统一 `_peek` getter（`snap.peek && openFiles 非空`）驱动：`_initialRoutes` 在 peek 下跳过 `FileListScreen`（文件视图成为底层路由 → 返回直接退出回 diff 详情）；`handleBack` 退出时普通模式 `clearSnapshot`、peek 模式保留记忆。**`peek` 是运行时入口属性、不持久化**：`collapse` 走 `beginCollapse`（不带 peek）+ 收集 + 显式 `endCollapse`，保存态恒为 `peek: false`（full），避免一次 peek 收起让文件 icon 永久退化成无列表视图。peek 收起仍封存文件状态（位置/preview·源码/换行）。`FileViewScreen` 显式自带返回箭头：容器内 `handleBack`、无容器（会话页文件引用 chip 独立 push）回退 `Navigator.maybePop`；tooltip 取 `MaterialLocalizations.backButtonTooltip`（兼容 `pageBack` 测试与系统返回语义）。
+5. **测试**：`file_browser_collapse_test.dart` 新增 `peek collapse seals the file state`、`peek-collapsed state restores as full mode via file icon`（防 peek 自持续退化）、`back from a peek preserves a previously saved session`；`system back at root list ...` 保持「clears」（普通模式）。
