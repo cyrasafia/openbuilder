@@ -194,6 +194,7 @@
   "todoTitle": "Tasks",
   "reasoning": "Reasoning",
   "linkOpenFailed": "Unable to open link",
+  "fileLinkNotInProject": "File is not inside the project",
   "linkOpenFailedDetail": "Unable to open link: {detail}",
   "@linkOpenFailedDetail": {"placeholders": {"detail": {"type": "String"}}},
   "permissionRequest": "Permission request",

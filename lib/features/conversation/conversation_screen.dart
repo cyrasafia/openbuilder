@@ -16,6 +16,7 @@ import '../../core/attachments/file_ref.dart';
 import '../../core/attachments/image_data_cache.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/conversation_store.dart';
+import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../l10n/gen/app_localizations.dart';
@@ -26,7 +27,7 @@ import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
-import 'uri_autolink.dart';
+import 'message_autolink.dart';
 
 /// Max height of a footer card's scrollable content, as a fraction of the
 /// screen height. Footer cards (todo / permission / question) bound their
@@ -112,7 +113,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   // 时变窄，会使门槛被低估、按钮凭空出现）；两者屏数也共用，保证一致的"距离感"。
   static const _kScrollButtonThresholdScreens = 2.0;
   static const _kKeepAliveWindow = 48;
-  static const _kUriAutolinkCacheMax = 512;
+  static const _kAutolinkCacheMax = 512;
   static const _kCacheExtentBase = 250.0;
   static const _kDriverStepScreens = 0.5;
   static const _kDriverMaxScreens = 8.0;
@@ -123,7 +124,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   final _farFromBottom = ValueNotifier<bool>(false);
   final _keepAliveIds = ValueNotifier<Set<String>>(const {});
   final _messageChildCache = <String, Widget>{};
-  final _uriAutolinkCache = <String, String>{};
+  final _autolinkCache = <String, String>{};
   int? _lastMsgVersion;
   bool? _lastShowThinking;
 
@@ -1424,19 +1425,19 @@ class _ConversationScreenState extends State<ConversationScreen>
   Widget _markdownPart(String data,
       {required bool user, required bool stable}) {
     final sheet = user ? _mdStyleUser : _mdStyleAssistant;
-    if (_uriAutolinkCache.length >= _kUriAutolinkCacheMax) {
-      _uriAutolinkCache.remove(_uriAutolinkCache.keys.first);
+    if (_autolinkCache.length >= _kAutolinkCacheMax) {
+      _autolinkCache.remove(_autolinkCache.keys.first);
     }
     final linkified = stable
-        ? _uriAutolinkCache.putIfAbsent(data, () => autolinkMarkdownUris(data))
-        : autolinkMarkdownUris(data);
+        ? _autolinkCache.putIfAbsent(data, () => autolinkMarkdownLinks(data))
+        : autolinkMarkdownLinks(data);
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: MarkdownBody(
         data: linkified,
         selectable: true,
         softLineBreak: user,
-        onTapLink: (text, href, title) => _openExternalLink(href),
+        onTapLink: (text, href, title) => _onMdLink(href),
         styleSheet: sheet ?? _buildMdStyle(user: user),
       ),
     );
@@ -1479,6 +1480,46 @@ class _ConversationScreenState extends State<ConversationScreen>
         border: Border(left: BorderSide(color: p.quoteBar, width: 3)),
       ),
       blockquotePadding: const EdgeInsets.only(left: 12),
+    );
+  }
+
+  void _onMdLink(String? href) {
+    if (href == null || href.isEmpty) return;
+    if (href.startsWith('ob-file:///')) {
+      _openLinkedFile(href);
+      return;
+    }
+    _openExternalLink(href);
+  }
+
+  void _openLinkedFile(String href) {
+    final decoded = decodeFileHref(href);
+    if (decoded == null) return;
+    final (raw, line) = decoded;
+    final directory =
+        serverStore.sessionById(widget.sessionId)?.directory ?? '';
+    final rel = resolveProjectPath(raw, directory);
+    if (rel == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l(context).fileLinkNotInProject)));
+      return;
+    }
+    context.push(
+      '/session/${widget.sessionId}/files'
+      '?directory=${Uri.encodeQueryComponent(directory)}',
+      extra: FileBrowsingSnapshot(
+        openFiles: [
+          OpenFileEntry(
+            path: rel,
+            scrollOffset: 0,
+            wrap: false,
+            mdShowSource: line != null,
+            initialLine: line,
+          ),
+        ],
+        peek: true,
+      ),
     );
   }
 
