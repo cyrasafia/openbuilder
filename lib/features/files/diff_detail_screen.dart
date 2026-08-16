@@ -185,15 +185,11 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   }
 
   void _updateSticky() {
-    if (_headerHeight == null || _headerKeys.isEmpty || !_vScrollCtl.hasClients) return;
-    final scrollRenderObject =
-        _vScrollCtl.position.context.storageContext.findRenderObject();
+    if (_headerTops.isEmpty || !_vScrollCtl.hasClients) return;
+    final offset = _vScrollCtl.offset;
     var active = -1;
-    for (var i = 0; i < _headerKeys.length; i++) {
-      final box = _headerKeys[i].currentContext?.findRenderObject() as RenderBox?;
-      if (box == null) continue;
-      final top = box.localToGlobal(Offset.zero, ancestor: scrollRenderObject).dy;
-      if (top <= 0.5) {
+    for (var i = 0; i < _headerTops.length; i++) {
+      if (_headerTops[i] <= offset + 0.5) {
         active = i;
       } else {
         break;
