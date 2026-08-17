@@ -157,4 +157,4 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `design-image-attachment-thumbnail.md` | 图片附件缩略图统一渲染（乐观↔权威一致：判定改由 fileMime 驱动、ImageDataCache 异步解码 + native 缩放、复用 ImageView 放大、限最大高度；化解 CR-2 内存/掉帧顾虑） |
 | `design-bump-minsdk-34.md` | 提升 minSdk 至 34 + 清理冗余兼容代码（移除 core library desugaring、`Build.VERSION` 死分支、`-v21` 资源限定符；解锁通知运行时权限 / 暗色 uiMode / 预测性返回 / HCPP；不含 Markdown→WebView） |
 | `design-markdown-webview.md` | 文件详情页 Markdown 预览 Flutter Markdown → WebView（mar→HTML + CSS 复刻三档字重 + JS 桥 + 预热池；依赖 HCPP，前提为 minSdk 34；含原生缓解/分块/换渲染器/WebView 四方向选型否决理由） |
-| `design-message-autolink.md` | 会话消息链接自动识别（URI + 项目内文件路径：围栏感知纯文本改写 + content-keyed memoize；`ob-file:` 自定义 scheme 分流；peek 快照进文件容器；行内代码仅纯目标转链；含八轮评审记录） |
+| `design-message-autolink.md` | 会话消息链接自动识别（URI + 项目内文件路径：围栏感知纯文本改写 + content-keyed memoize；`ob-file:` 自定义 scheme 分流；peek 快照进文件容器；行内代码仅纯目标转链；URI 主体 ASCII-only 修复全角标点吞字；含九轮评审记录） |

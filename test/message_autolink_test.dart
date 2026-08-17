@@ -99,6 +99,29 @@ after http://free.example.com''';
       expect(autolinkMarkdownLinks(src), src);
     });
 
+    test('full-width punctuation terminates the URL', () {
+      expect(
+        autolinkMarkdownLinks(
+          '已发布到飞书：https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg（151 个块，0 图片）。',
+        ),
+        '已发布到飞书：'
+            '[https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg]'
+            '(https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg)'
+            '（151 个块，0 图片）。',
+      );
+    });
+
+    test('CJK text after URL stays outside the link', () {
+      expect(
+        autolinkMarkdownLinks('打开 http://example.com/a?b=1即可'),
+        '打开 [http://example.com/a?b=1](http://example.com/a?b=1)即可',
+      );
+      expect(
+        autolinkMarkdownLinks('见 www.example.com/x，同上'),
+        '见 [www.example.com/x](https://www.example.com/x)，同上',
+      );
+    });
+
     test('multiple URIs on one line', () {
       expect(
         autolinkMarkdownLinks('a http://a.com b https://b.com'),

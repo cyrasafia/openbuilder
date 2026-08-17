@@ -72,13 +72,15 @@ const _absPath =
 const _relPath =
     '(?<![A-Za-z0-9_/.:])(?:\\.{1,2}/)?(?:$_segment/)+$_terminalSeg$_lineSuffix';
 
+const _uriTail = r"""[^\s<>"'`\[\]\x80-\uFFFF]+""";
+
 final RegExp _inlineToken = RegExp([
   r"""`{2,}[^`\n]*`{2,}""",
   r"""`[^`\n]*`""",
   r"""\[[^\]\n]*\]\([^)\n]*\)""",
   r"""<[^<>\s\n]+>""",
-  r"""(?<![A-Za-z0-9_])(?:https?|ftp)://[^\s<>"'`\[\]]+""",
-  r"""(?<![A-Za-z0-9_])www\.[A-Za-z0-9][^\s<>"'`\[\]]+""",
+  r'(?<![A-Za-z0-9_])(?:https?|ftp)://' + _uriTail,
+  r'(?<![A-Za-z0-9_])www\.[A-Za-z0-9]' + _uriTail,
   _absPath,
   _relPath,
 ].join('|'));

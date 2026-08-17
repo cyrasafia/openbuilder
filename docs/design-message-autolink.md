@@ -1,8 +1,8 @@
 # design-message-autolink — 会话消息链接自动识别（URI + 项目内文件路径）
 
-> 状态：URI 识别已实现（`41e1b68` feat + `20f5ea5` / `668c68e` / `b1923e2` 三轮评审修复）；项目文件路径识别已实现（v2 扩展，MA/MB/MC 三轮评审修复）
+> 状态：URI 识别已实现（`41e1b68` feat + `20f5ea5` / `668c68e` / `b1923e2` 三轮评审修复）；项目文件路径识别已实现（v2 扩展，MA/MB/MC 三轮评审修复）；URI 主体 ASCII 收紧修复全角标点吞字（MF-1）
 > 代码：`lib/features/conversation/message_autolink.dart`（原 `uri_autolink.dart` 改名扩展）、`conversation_screen.dart` `_markdownPart` / `_onMdLink` / `_openLinkedFile`
-> 测试：`test/message_autolink_test.dart`（58 例，原 `uri_autolink_test.dart` 改名扩展）
+> 测试：`test/message_autolink_test.dart`（60 例，原 `uri_autolink_test.dart` 改名扩展）
 
 ## 问题
 
@@ -55,7 +55,11 @@
 
 ### 识别规则
 
-URI 候选（不变）：`(?<![A-Za-z0-9_])(?:https?|ftp)://…` 与 `(?<![A-Za-z0-9_])www\.…`。
+URI 候选（MF-1 收紧）：`(?<![A-Za-z0-9_])(?:https?|ftp)://…` 与 `(?<![A-Za-z0-9_])www\.…`，
+主体字符类排除所有 ≥ U+0080 的非 ASCII 字符（`[^\s<>"'`\[\]\x80-\uFFFF]+`）——全角标点
+（`（`、`，`、`。`）与 CJK 文本天然终止 URL，修复「URL 后紧跟全角括号被吞进链接」；
+与文件路径分支的 ASCII 段字符集对齐。原始非 ASCII 字符的 IRI 形态不再识别
+（百分号编码形态不受影响），见「不做的事」。
 
 文件路径候选（新增，组合正则中置于 URI **之后**——`http://host/a/b.dart` 整体是
 URI，路径段不被拆出）：
@@ -260,6 +264,9 @@ URI，路径段不被拆出）：
   假设）。
 - 缩进代码块（4 空格）不识别为代码——聊天场景罕见（沿用 URI 取舍）。
 - 裸邮箱不转链（沿用）。
+- 原始非 ASCII 字符的 URL 主体（IRI，如 `http://müller.de/中文`）不识别——MF-1 收紧后
+  主体仅限 ASCII，匹配会在首个非 ASCII 字符处截断（极端形态 `http://m` 残链走外部浏览器，
+  与既有 ASCII 短主机行为一致）；正常发送方均百分号编码，出现率极低。
 - 非对称反引号 span 原样保留（沿用）。
 - 转链后统一渲染为普通链接样式（`styleSheet.a`），文件路径不保留等宽样式（沿用）。
 
@@ -409,3 +416,15 @@ URI，路径段不被拆出）：
 | ME-2 | ✅ | `_lineSuffix` 补 `(?![A-Za-z0-9:])`——guard 在可选组外，`:42abc` 使整体不匹配，与行内代码"整体拒绝"完全对齐；补测试 |
 | ME-3 | ✅ | 「不做的事」补 `user@host/path` 为已知取舍（`user@host:path` 已被 MD-1 拦截） |
 | ME-4 | ✅ | 文档头更正为 58 例（含本轮 2 例新增） |
+
+### 9次评审意见（线上缺陷修复）
+
+| 编号 | 优先级 | 问题 | 修复建议 |
+|------|--------|------|----------|
+| MF-1 | 🟡 | URI 主体字符类为黑名单 `[^\s<>"'`\[\]]+`：全角/CJK 标点与文字既非空白也不在排除集，`https://…Dg（151 个块` 会把 `（151` 一并吞进链接（用户实测报告）；`_trimTrailing` 只剥 ASCII 标点，救不回来 | 黑名单改 ASCII 白名单等价形态：追加排除 `\x80-\uFFFF`（含代理对，覆盖全部非 ASCII），全角标点天然终止 URL；与文件路径段字符集（纯 ASCII）对齐 |
+
+#### 修复复审
+
+| 编号 | 状态 | 说明 |
+|------|------|------|
+| MF-1 | ✅ | 抽出 `_uriTail` 常量统一两个 URI 分支；补「全角标点终止 URL」「CJK 尾随文本留链外」2 例；60 例全过；IRI 不识别记入「不做的事」 |
