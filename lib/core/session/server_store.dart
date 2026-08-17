@@ -130,20 +130,19 @@ class ServerStore extends ChangeNotifier {
   /// a transient blip; a degraded partial is never retained over a fresh fetch.
   bool _commandsCacheComplete = false;
   /// True when the most recent [refreshCommands] produced a degraded or
-  /// incomplete result (a server source errored, or the whole refresh threw).
+  /// incomplete result (the fetch errored, or the whole refresh threw).
   /// The conversation screen uses this to re-fetch on the next `/` input
   /// instead of giving up after one failed attempt.
   bool _commandsDegraded = false;
   bool get commandsDegraded => _commandsDegraded;
-  /// Consecutive "suspicious empty" refreshes (both `/api/command` and
-  /// `/api/skill` returned 200-OK with zero entries). Right after a network
+  /// Consecutive "suspicious empty" refreshes (`GET /command` returned 200-OK
+  /// with zero entries — impossible for a healthy registry, which always
+  /// carries the hardcoded init/review built-ins). Right after a network
   /// recovery the connection pool can serve a stale/empty response that does
-  /// NOT throw, so without protection it would be trusted as a genuinely empty
-  /// directory and wipe a known-good cache (surfacing only the `/config`
-  /// commands, e.g. just `/goal`). We retain the cache while this streak is
-  /// under [_kMaxSuspiciousRetries]; once exhausted a persistent empty is
-  /// treated as authoritative so a directory that truly lost its commands is
-  /// eventually reflected.
+  /// NOT throw, so without protection it would be trusted as genuine and wipe
+  /// a known-good cache. We retain the cache while this streak is under
+  /// [kMaxSuspiciousRetries]; once exhausted a persistent empty is treated as
+  /// authoritative so the list can never be stuck stale forever.
   int _suspiciousEmptyStreak = 0;
   @visibleForTesting
   static const int kMaxSuspiciousRetries = 3;
@@ -155,41 +154,27 @@ class ServerStore extends ChangeNotifier {
     _commandsRefreshing = true;
     _commandsRefreshDir = directory;
     try {
-      // Fire all three concurrently; capture per-source success/failure so a
-      // transient blip (e.g. during SSE reconnect) can't replace a good cached
-      // list with an incomplete one. Errors used to be swallowed by
-      // `.catchError`, making a degraded fetch indistinguishable from a genuine
-      // empty result.
-      final cmdsF = _tryFetchCommands(c.getCommands(directory: directory));
-      final skillsF = _tryFetchCommands(c.getSkills(directory: directory));
-      final configF = _tryFetchCommands(c.getConfigCommands());
-      final cmds = await cmdsF;
-      final skills = await skillsF;
-      final config = await configF;
+      // Single source: the v1 instance route `GET /command?directory=` — the
+      // same per-directory registry that executes `POST /session/:id/command`,
+      // covering built-in commands (init/review), config/plugin/MCP commands,
+      // and the full skill set incl. external ~/.claude / ~/.agents dirs. Every
+      // entry expands server-side ($ARGUMENTS/$N), so the client never needs
+      // templates. The v2 `/api/command` + `/api/skill` endpoints are
+      // deliberately not called: not GA yet, source-registry based (no external
+      // skill scan, no skill merge), and they ignore the flat `?directory=`
+      // query — always answering for the server's default location. `/config`
+      // was only read for client-side template expansion, now redundant.
+      final v1 =
+          await _tryFetchCommands(c.getMergedCommands(directory: directory));
 
-      // A refresh is degraded when the per-directory command or skill source
-      // actually failed. A genuinely empty directory (server returns 200 with
-      // no commands/skills) is NOT degraded by itself — trusting it avoids
-      // cross-project command leakage and lets deletions reflect.
-      //
-      // BUT: right after a network recovery the connection pool can serve a
-      // 200-OK response with an empty body for BOTH sources (no exception), so
-      // the per-source `failed` flags stay false. Without protection that
-      // "suspicious empty" is trusted as genuine and wipes a known-good cache
-      // (leaving only the /config commands, e.g. just /goal). We therefore also
-      // treat a suspicious empty as retain-worthy while a streak of them is
-      // under [kMaxSuspiciousRetries]; once exhausted a persistent empty is
-      // accepted as authoritative.
-      //
-      // On a retain-worthy (degraded or suspicious) fetch, keep a
-      // *known-complete* cache for the same directory so a transient blip can't
-      // wipe a good list. Never retain a degraded partial — it may be worse than
-      // the fresh result, so fall through and apply that instead.
-      final degraded = cmds.failed || skills.failed;
-      final suspiciousEmpty = !cmds.failed &&
-          !skills.failed &&
-          cmds.value.isEmpty &&
-          skills.value.isEmpty;
+      // A healthy registry always contains the built-ins, so a 200-OK empty is
+      // never genuine on its own — treat it as suspicious (transient), same as
+      // a thrown request (degraded). Both retain a known-complete cache for the
+      // same directory while the streak is under [kMaxSuspiciousRetries]; once
+      // exhausted the empty is applied. Never retain a degraded partial over a
+      // fresh result — fall through and apply that instead.
+      final degraded = v1.failed;
+      final suspiciousEmpty = !v1.failed && v1.value.isEmpty;
       final haveGoodCache = commandsNotifier.value.isNotEmpty &&
           _commandsCacheDir == directory &&
           _commandsCacheComplete;
@@ -199,22 +184,12 @@ class ServerStore extends ChangeNotifier {
         _commandsDegraded = true;
         AppLogger.I.w(_tag,
             'commands refresh ${suspiciousEmpty ? 'suspicious-empty' : 'degraded'} '
-            '(cmds=${cmds.value.length}/${cmds.failed ? 'err' : 'ok'} '
-            'skills=${skills.value.length}/${skills.failed ? 'err' : 'ok'} '
-            'config=${config.value.length}); keeping cache of ${commandsNotifier.value.length} '
+            '(v1=${v1.value.length}/${v1.failed ? 'err' : 'ok'}); '
+            'keeping cache of ${commandsNotifier.value.length} '
             '(streak $_suspiciousEmptyStreak)');
         return;
       }
 
-      final existing = cmds.value.map((e) => e.name.toLowerCase()).toSet();
-      var merged = [...cmds.value];
-      for (final s in skills.value) {
-        if (s.description.trim().isEmpty) continue;
-        if (existing.add(s.name.toLowerCase())) merged = [...merged, s];
-      }
-      for (final cc in config.value) {
-        if (existing.add(cc.name.toLowerCase())) merged = [...merged, cc];
-      }
       // A suspicious empty with no cache to protect still isn't authoritative —
       // mark degraded so the next `/` retries. Once the streak is exhausted the
       // empty is treated as genuine (not degraded).
@@ -228,11 +203,10 @@ class ServerStore extends ChangeNotifier {
       _commandsCacheDir = directory;
       _commandsCacheComplete = !degraded;
       AppLogger.I.i(_tag,
-          'commands refreshed: commands=${cmds.value.length} skills=${skills.value.length} '
-          'config=${config.value.length} merged=${merged.length}'
+          'commands refreshed: v1=${v1.value.length}'
           '${degraded ? ' (degraded, no usable cache)' : ''}'
           '${suspiciousEmpty && !trustEmpty ? ' (suspicious-empty, no cache)' : ''}');
-      commandsNotifier.value = merged;
+      commandsNotifier.value = v1.value;
     } catch (e) {
       _commandsDegraded = true;
       AppLogger.I.e(_tag, 'commands refresh failed: $e');

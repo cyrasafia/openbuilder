@@ -1110,54 +1110,21 @@ class _ConversationScreenState extends State<ConversationScreen>
             conv.addOptimisticUserMessage(text,
                 attachments: attachments, fileRefs: fileRefs);
             serverStore.reflectPreviewFrom(widget.sessionId);
-            if (matched.content != null && matched.content!.isNotEmpty) {
-              final body = matched.content!;
-              final hasPlaceholder = body.contains('\$ARGUMENTS');
-              final parts = <Map<String, dynamic>>[
-                {
-                  'type': 'text',
-                  'text': hasPlaceholder
-                      ? body.replaceAll('\$ARGUMENTS', arguments)
-                      : body,
-                },
-              ];
-              if (arguments.isNotEmpty && !hasPlaceholder) {
-                parts.add({'type': 'text', 'text': arguments});
-              }
-              parts.addAll(cmdParts);
-              final totalLen = parts.fold<int>(
-                0,
-                (s, p) =>
-                    s +
-                    (p['text']?.toString().length ?? 0) +
-                    (p['url']?.toString().length ?? 0),
-              );
-              await client.prompt(
-                widget.sessionId,
-                directory: directory,
-                agent: matched.agent ?? agent,
-                parts: parts,
-                sendTimeout: totalLen > 2 * 1024 * 1024
-                    ? const Duration(seconds: 120)
-                    : null,
-              );
-            } else {
-              final totalLen = cmdParts.fold<int>(
-                0,
-                (s, p) => s + (p['url']?.toString().length ?? 0),
-              );
-              await client.command(
-                widget.sessionId,
-                directory: directory,
-                agent: matched.agent ?? agent,
-                command: matched.name,
-                arguments: arguments,
-                parts: cmdParts,
-                sendTimeout: totalLen > 2 * 1024 * 1024
-                    ? const Duration(seconds: 120)
-                    : null,
-              );
-            }
+            final totalLen = cmdParts.fold<int>(
+              0,
+              (s, p) => s + (p['url']?.toString().length ?? 0),
+            );
+            await client.command(
+              widget.sessionId,
+              directory: directory,
+              agent: matched.agent ?? agent,
+              command: matched.name,
+              arguments: arguments,
+              parts: cmdParts,
+              sendTimeout: totalLen > 2 * 1024 * 1024
+                  ? const Duration(seconds: 120)
+                  : null,
+            );
             conv.setStatus('busy');
           }
         }

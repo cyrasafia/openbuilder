@@ -108,48 +108,28 @@ void main() {
     expect(cap.sendTimeout, const Duration(seconds: 120));
   });
 
-  test('getSkills: GET /api/skill and parse into CommandInfo(source:skill, content)', () async {
+  test('getMergedCommands: GET /command bare array with source field', () async {
     final cap = _Capture();
-    final skillsJson = jsonEncode({
-      'location': {'directory': '/w'},
-      'data': [
-        {
-          'name': 'tavily-search',
-          'description': 'web search',
-          'content': 'SKILL BODY',
-          'location': '/x.md',
-        },
-      ],
-    });
-    final res = await _client(cap, body: skillsJson).getSkills(directory: '/w');
+    final mergedJson = jsonEncode([
+      {'name': 'init', 'description': 'setup AGENTS.md', 'source': 'command'},
+      {'name': 'grilling', 'description': 'stress-test plans', 'source': 'skill'},
+    ]);
+    final res =
+        await _client(cap, body: mergedJson).getMergedCommands(directory: '/w');
     expect(cap.method, 'GET');
-    expect(cap.path, '/api/skill');
+    expect(cap.path, '/command');
     expect(cap.query!['directory'], '/w');
-    expect(res, hasLength(1));
-    expect(res[0].name, 'tavily-search');
-    expect(res[0].description, 'web search');
-    expect(res[0].source, 'skill');
-    expect(res[0].content, 'SKILL BODY');
-    expect(res[0].isSkill, isTrue);
+    expect(res, hasLength(2));
+    expect(res[0].name, 'init');
+    expect(res[0].source, 'command');
+    expect(res[1].name, 'grilling');
+    expect(res[1].isSkill, isTrue);
   });
 
-  test('getConfigCommands: reads command map from /config', () async {
+  test('getMergedCommands: omits directory when absent', () async {
     final cap = _Capture();
-    final cfgJson = jsonEncode({
-      'command': {
-        'goal': {
-          'template': 'run goal \$ARGUMENTS now',
-          'description': 'Set goal',
-        },
-      },
-    });
-    final res = await _client(cap, body: cfgJson).getConfigCommands();
-    expect(cap.method, 'GET');
-    expect(cap.path, '/config');
-    expect(res, hasLength(1));
-    expect(res[0].name, 'goal');
-    expect(res[0].description, 'Set goal');
-    expect(res[0].source, 'config');
-    expect(res[0].content, contains('ARGUMENTS'));
+    await _client(cap, body: '[]').getMergedCommands();
+    expect(cap.path, '/command');
+    expect(cap.query, isEmpty);
   });
 }

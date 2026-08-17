@@ -96,20 +96,19 @@ class ProjectIcon {
   String? get image => override ?? url;
 }
 
-/// A slash command available in a session's directory, from `GET /api/command`
-/// (or merged in from `GET /api/skill` on older servers).
+/// A slash command available in a session's directory, from `GET /command`.
+/// Every entry expands server-side via `POST /session/:id/command` — the client
+/// sends name + arguments only and never handles templates.
 class CommandInfo {
   final String name;
   final String description;
   final String? agent;
   final String? source;
-  final String? content;
   const CommandInfo({
     required this.name,
     this.description = '',
     this.agent,
     this.source,
-    this.content,
   });
 
   factory CommandInfo.fromJson(Map<String, dynamic> j) => CommandInfo(

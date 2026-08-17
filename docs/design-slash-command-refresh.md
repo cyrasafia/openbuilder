@@ -219,3 +219,62 @@ commands 缓存是全局单缓存（`commandsNotifier` + `_commandsCacheDir` 记
 > 评审日期：（待评审）
 > 评审对象：本设计文档 `design-slash-command-refresh.md`。
 > 核对对象：`lib/core/session/server_store.dart` `refreshCommands`（:143-232）/ `test/command_refresh_cache_test.dart`。
+## 2026-08-17 追加：skill 全消失（服务端 1.18.18 双栈 API 差异）
+
+> 现象：输入 `/` 只剩 `init`/`review`/`goal`（+builtin `customize-opencode`），`~/.claude/skills`、`~/.agents/skills` 的十几个 skill 全部不出现。
+
+### 根因调研（实测锁定）
+
+服务端 opencode 从 1.18.6 升级到 **1.18.18**（`/usr/bin/opencode`，8月14日替换）后，同一台 15120 服务的端点行为变了：
+
+| 端点 | 1.18.6 | 1.18.18 实测 |
+|------|--------|--------------|
+| `GET /api/command` | init+review | init+review（v2 协议层 `CommandV2`，**不合并 skill**） |
+| `GET /api/skill` | 12 个 skills（~88KB） | **仅 builtin `customize-opencode`** |
+| `GET /command`（v2 instance 路由） | — | **17 项：commands + 全部外部 skills（`source:"skill"`）** |
+
+源码比对（1.18.6 vs 1.18.18 tarball diff，skill 相关文件逐字节相同）确认服务端代码没改，改的是**路由接线**：
+
+- `/api/skill`（protocol `server.skill`）→ `SkillV2.list()` 只列**已注册 source**：builtin embedded + `<configDir>/skill|skills`（config 插件注册）+ `skills.paths/urls` + 插件注册。**从不扫描 `~/.claude`/`~/.agents`**。本机 `~/.config/opencode/skills/` 在 8月6日 20:13 被清空 → 只剩 builtin。（1.18.6 时代的"12 个 skills"来自该目录当时的存量，非外部扫描。）
+- `/api/command`（protocol `server.command`）→ `CommandV2` 同为 source 注册制，无 skill 合并。
+- `GET /command`（instance httpapi）→ 会话侧 `command.list()`，其中 `for (item of skill.all())` 把会话侧 skill 注册表（**含 `~/.claude`/`~/.agents` 外部扫描**，实测 `init count=14`）以 `source:"skill"` 合并进命令表——**这是外部 skill 唯一的 HTTP 出口**。
+
+即：外部 skill（`~/.claude/skills`、`~/.agents/skills`）在任何版本都**不在** `/api/skill` 里；1.18.6 时代可见是因为 `~/.config/opencode/skills` 有存量。该目录被清空 + 升级后，客户端三源合并里 skill 源归零。
+
+### 修复：单源 `GET /command`（最终方案）
+
+经两轮迭代（四源并发合并 → v1 优先短路 + legacy 回退）后收敛为**单源**：`refreshCommands` 只调 v1 instance 路由 `GET /command?directory=`，三源合并与 `/config` 读取全部移除。
+
+**为什么 v1 `/command` 是权威源**（源码 `packages/opencode/src/command/index.ts` `Command.state` 枚举顺序）：
+
+1. 内置命令：`init`/`review` 硬编码注册；
+2. `cfg.command` map：全局/项目 config + **插件注入**（`/goal`）定义的命令；
+3. MCP prompts（`source:"mcp"`）；
+4. `skill.all()`：v1 Skill 注册表 —— builtin + 外部 `~/.claude`/`~/.agents`（含 up-tree `.claude/.agents`）+ config 目录 `{skill,skills}/**/SKILL.md` + `skills.paths/urls`。
+
+即它就是 `POST /session/:id/command` 执行所用的同一注册表，三类（内置/插件/skill）全覆盖。实测 15120（1.18.18）：18 项 = init/review（内置）+ goal（插件）+ 14 全局 skill + agent-eval（项目级 skill）。
+
+**执行展开链验证**（`session/prompt.ts` `SessionPrompt.command`）：三类命令统一服务端展开——`cmd.template` await（含 MCP 懒加载）、`$1..$n` 位置替换（末位吸收剩余）、`$ARGUMENTS` 整体替换、**无占位符时参数追加**（覆盖 skill）、模板内 ```sh 代码块服务端执行、`cmd.model`/`cmd.agent`（含 subtask）服务端解析。真机验证：`POST /command {"command":"grilling","arguments":"..."}` 落盘消息 = SKILL.md 正文 + base-dir 页脚 + 参数。因此客户端**零展开**。
+
+**为什么完全移除另三个源**：
+
+- **v2 `/api/command`、`/api/skill`**：v2 未正式发布，暂不应调用（待 GA 后再评估切换）。且二者有硬伤：`/api/*` 路由只认 deepObject `location[directory]`（workspace-routing.ts:86-88），flat `?directory=` 被忽略、恒返回服务端默认目录数据；`/api/skill` 是 source 注册制无外部扫描，`/api/command` 无 skill 合并——均非执行注册表。
+- **`/config`**：唯一用途是取 `command.*` 模板做**客户端展开**（老服务器不支持 skill-as-command 时的兼容）。服务端展开已覆盖全部三类，客户端展开成死代码，一并移除（`CommandInfo.content` 字段、`_send` 的 prompt 展开分支、`getCommands`/`getSkills`/`getConfigCommands` 三个 client 方法）。
+
+**逻辑**（`refreshCommands`，保留原有缓存防护语义）：
+
+```
+GET /command?directory=
+  ├─ 抛错(degraded) 或 200空(suspiciousEmpty：内置恒在，空=瞬态) ──有同目录完整缓存──► 保留缓存 + degraded（下次 `/` 重试）
+  │                                          └─无缓存──► 应用结果 + degraded
+  └─ 连击耗尽(kMaxSuspiciousRetries=3) 后仍空 ──► 空视为权威（防缓存永久卡死）
+  └─ 正常非空 ──► 直接应用，清零连击
+```
+
+- 正常路径 1 个请求（原 3 个）。degraded/suspiciousEmpty/连击/目录隔离（`_commandsCacheDir`）逻辑原样保留，仅数据源收窄。
+
+### 验收
+
+- `test/command_refresh_cache_test.dart` 重写为单源：健康直用、可疑空保留缓存、无缓存时空但 degraded、恢复清零连击、连击耗尽信任空、抛错保留缓存、目录隔离不串显。
+- `test/opencode_client_command_test.dart`：`getMergedCommands` 解析（裸数组 + source 字段、无 directory 时省参）。
+- 真机回归：连接 15120（1.18.18）输入 `/` 应看到 grilling/apifox-cli/publish-prd 等全部 skill（实测 18 项含项目级 agent-eval）；发送 `/grilling xxx` 服务端展开正确（SKILL 正文 + base-dir + 参数）。

@@ -158,64 +158,23 @@ class OpencodeClient {
   }
 
   /// Available slash commands for a session's directory.
-  /// `GET /api/command?directory=<dir>` → `{ location, data: [CommandV2Info] }`.
-  /// Returns the project-scoped command list (empty if the server resolves
-  /// none for the directory). The v2 endpoint requires a directory to resolve
-  /// commands; without it `data` comes back empty.
-  Future<List<CommandInfo>> getCommands({String? directory}) async {
+  /// `GET /command?directory=<dir>` → bare `[{name, description, agent, source}]`.
+  /// This is the registry `POST /session/:id/command` executes from: built-in
+  /// commands (init/review), config/plugin commands, MCP prompts, and the full
+  /// skill set including external `~/.claude/skills` / `~/.agents/skills`. It
+  /// is the only command endpoint that honors the flat `?directory=` query
+  /// (the `/api/*` v2 routes ignore it and answer for the server's default
+  /// location). Every entry expands server-side — the client sends name +
+  /// arguments only. The v2 `/api/command`/`/api/skill` endpoints are not
+  /// called until v2 is GA, and `/config` (previously read for client-side
+  /// template expansion) is no longer needed.
+  Future<List<CommandInfo>> getMergedCommands({String? directory}) async {
     final params = <String, dynamic>{};
     if (directory != null && directory.isNotEmpty) {
       params['directory'] = directory;
     }
-    final r = await dio.get<dynamic>('/api/command', queryParameters: params);
-    final data = _asMap(r.data)['data'];
-    return _getModelsFromData(data, CommandInfo.fromJson);
-  }
-
-  /// Available skills for a session's directory, from `GET /api/skill`.
-  /// Newer servers already merge skills into `/api/command` with
-  /// `source:"skill"`; older servers (e.g. v1.18.x) do not, so the client
-  /// merges them itself to surface every slash entry. `content` is the full
-  /// SKILL.md body, used to execute the skill as a prompt on servers that lack
-  /// skill-as-command support.
-  Future<List<CommandInfo>> getSkills({String? directory}) async {
-    final params = <String, dynamic>{};
-    if (directory != null && directory.isNotEmpty) {
-      params['directory'] = directory;
-    }
-    final r = await dio.get<dynamic>('/api/skill', queryParameters: params);
-    final data = _asMap(r.data)['data'];
-    return _getModelsFromData(data, (j) => CommandInfo(
-          name: (j['name'] ?? '').toString(),
-          description: (j['description'] ?? '').toString(),
-          source: 'skill',
-          content: (j['content'] ?? '').toString(),
-        ));
-  }
-
-  /// Commands declared under the `command` key of `GET /config` — including
-  /// those injected by plugins (e.g. `/goal` from the goal plugin). Newer
-  /// servers surface these via `/api/command`, but older ones (v1.18.x) do
-  /// not sync plugin-injected commands into the list, so the client merges
-  /// them itself. `content` holds the command `template` (with `$ARGUMENTS`),
-  /// expanded client-side and sent as a prompt.
-  Future<List<CommandInfo>> getConfigCommands() async {
-    final r = await dio.get<dynamic>('/config');
-    final command = _asMap(r.data)['command'];
-    if (command is! Map) return const [];
-    final result = <CommandInfo>[];
-    for (final entry in command.entries) {
-      if (entry.value is Map) {
-        final def = entry.value as Map;
-        result.add(CommandInfo(
-          name: entry.key.toString(),
-          description: (def['description'] ?? '').toString(),
-          source: 'config',
-          content: (def['template'] ?? '').toString(),
-        ));
-      }
-    }
-    return result;
+    final r = await dio.get<dynamic>('/command', queryParameters: params);
+    return _getModelsFromData(r.data, CommandInfo.fromJson);
   }
 
   /// `GET /session/status?directory=<dir>` → `{ sessionID: {type: idle|busy|retry} }`.
