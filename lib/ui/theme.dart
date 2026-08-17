@@ -194,6 +194,48 @@ class AppColors extends ThemeExtension<AppColors> {
   );
 
   @override
+  bool operator ==(Object other) =>
+      other is AppColors &&
+      other.code == code &&
+      other.link == link &&
+      other.codeBackground == codeBackground &&
+      other.border == border &&
+      other.quoteBar == quoteBar &&
+      other.userBubble == userBubble &&
+      other.userCodeBackground == userCodeBackground &&
+      other.userText == userText &&
+      other.userOutline == userOutline &&
+      other.userCode == userCode &&
+      other.userLink == userLink &&
+      other.userBorder == userBorder &&
+      other.userQuoteBar == userQuoteBar &&
+      other.diffAddBg == diffAddBg &&
+      other.diffDelBg == diffDelBg &&
+      other.diffAddFg == diffAddFg &&
+      other.diffDelFg == diffDelFg;
+
+  @override
+  int get hashCode => Object.hash(
+        code,
+        link,
+        codeBackground,
+        border,
+        quoteBar,
+        userBubble,
+        userCodeBackground,
+        userText,
+        userOutline,
+        userCode,
+        userLink,
+        userBorder,
+        userQuoteBar,
+        diffAddBg,
+        diffDelBg,
+        diffAddFg,
+        diffDelFg,
+      );
+
+  @override
   AppColors copyWith({
     Color? code,
     Color? link,

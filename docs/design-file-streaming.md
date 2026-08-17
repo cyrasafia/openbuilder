@@ -506,3 +506,11 @@ Widget _contentDispatch() {
 
 
 
+
+## 附记：文件详情页 diff 入口移除（2026-08）
+
+**背景**：排查"进入文件详情页转场动画中段卡顿"时确认，`initState` 里无条件发起的 `/vcs/diff` 请求是主因之一——响应体随未提交改动量增长无上限（实测真实项目 `context=3` 下仍达 1.7MB），响应恰落在 300ms 转场窗口内（局域网 ~50-150ms）；dio 5.10.0 默认 `FusedTransformer` 虽将 ≥50KB 的 jsonDecode 移入后台 isolate，但 gunzip（收流阶段）、`FileDiff.fromJson` 全量映射（调用方主线程）与 isolate spawn 开销仍在主 isolate，转场窗口内叠加掉帧。且该请求只为菜单项显隐服务，详情页本身不需要。
+
+**决定**：文件详情页 ⋮ 菜单的「查看 Diff」入口（`_loadDiff` / `_hasDiff` / `_MenuAction.diff` / `fileViewDiff` l10n）整体移除，不再于详情页发起任何 diff 请求。§6.2 `_loadDiffIfText`、§9.7 及 FS-1 的设计至此作废。diff 详情仍可经 diff 列表（会话页入口）到达。
+
+**同批相关变更**（`openFile` 复用语义，详见 `design-file-browser-collapse.md` 关联实现）：重开已打开文件由 `popUntil` 静默复用改为 `removeRoute` + 重新 `push`，保证与首次打开一致的水平滑入动画；旧实例的滚动位置 / wrap / mdShowSource 经 entry getter 采集后随 `restore` 携带进新实例，内容在 `contentTtl`（60s）缓存有效期内直接复用不重新下载，过期后随重新 `push` 重新下载（展示进度条）。栈语义改为保留中间页（`列表 → d → c'`，返回回到 d）。

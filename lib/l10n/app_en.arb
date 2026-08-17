@@ -112,7 +112,6 @@
   "fileWorkspace": "Workspace",
   "fileEmptyDir": "Empty folder",
   "fileNoMatch": "No matching files",
-  "fileViewDiff": "View Diff",
   "fileWrapOff": "Disable wrap",
   "fileWrapOn": "Enable wrap",
   "fileSource": "Source",

@@ -48,13 +48,34 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
 
   final _navKey = GlobalKey<NavigatorState>();
   final LinkedHashMap<Object, void Function()> _collectors = LinkedHashMap();
-  final Set<String> _openPaths = {};
-  final Map<String, FileViewJumper> _fileJumpers = {};
+  final Map<String, Route<dynamic>> _fileRoutes = {};
+  final Map<String, OpenFileEntry Function()> _fileEntryGetters = {};
+  final _FileRouteObserver _routeObserver = _FileRouteObserver();
   bool Function()? _backInterceptor;
+
+  /// Whether this container's own (root) route transition has completed.
+  /// Restore/peek flows create the inner file routes as un-animated initial
+  /// routes, so the real animation window is the root route's slide-up —
+  /// inner screens gate their content mount on this notifier to keep heavy
+  /// first-content frames out of that window.
+  final ValueNotifier<bool> transitionDone = ValueNotifier<bool>(false);
+  Animation<double>? _rootAnimation;
+
+  void _onRootAnimationStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    _rootAnimation?.removeStatusListener(_onRootAnimationStatus);
+    _rootAnimation = null;
+    transitionDone.value = true;
+  }
+
+  void _onRouteGone(Route<dynamic> route) {
+    _fileRoutes.removeWhere((_, r) => identical(r, route));
+  }
 
   @override
   void initState() {
     super.initState();
+    _routeObserver.onGone = _onRouteGone;
     serverStore.fileBrowsing.registerListAnchor(
       widget.sessionId,
       widget.directory,
@@ -67,7 +88,43 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_rootAnimation == null && !transitionDone.value) {
+      _tryInstallRootAnimationGate();
+    }
+  }
+
+  void _tryInstallRootAnimationGate() {
+    if (!mounted || transitionDone.value || _rootAnimation != null) return;
+    final anim = ModalRoute.of(context)?.animation;
+    if (anim is ProxyAnimation &&
+        identical(anim.parent, kAlwaysCompleteAnimation)) {
+      // Placeholder before the route's real controller attaches (declarative
+      // go_router pages); reports completed forever and would open the gate
+      // instantly. Retry after this frame.
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _tryInstallRootAnimationGate(),
+      );
+      return;
+    }
+    if (anim == null || anim.status == AnimationStatus.completed) {
+      transitionDone.value = true;
+      return;
+    }
+    _rootAnimation = anim;
+    anim.addStatusListener(_onRootAnimationStatus);
+    // Cover the case where the animation completed before the listener was
+    // installed (placeholder retry costs a frame).
+    if (anim.status == AnimationStatus.completed) {
+      _onRootAnimationStatus(AnimationStatus.completed);
+    }
+  }
+
+  @override
   void dispose() {
+    _rootAnimation?.removeStatusListener(_onRootAnimationStatus);
+    transitionDone.dispose();
     serverStore.fileBrowsing.unregisterListAnchor(
       widget.sessionId,
       widget.directory,
@@ -96,48 +153,45 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
     if (_backInterceptor == interceptor) _backInterceptor = null;
   }
 
-  void registerFile(String path, [FileViewJumper? jumper]) {
-    _openPaths.add(path);
-    if (jumper != null) _fileJumpers[path] = jumper;
+  void registerFileEntry(String path, OpenFileEntry Function() getter) {
+    _fileEntryGetters[path] = getter;
   }
 
-  void unregisterFile(String path) {
-    _openPaths.remove(path);
-    _fileJumpers.remove(path);
+  void unregisterFileEntry(String path, OpenFileEntry Function() getter) {
+    if (_fileEntryGetters[path] == getter) _fileEntryGetters.remove(path);
   }
+
+  OpenFileEntry? _carryEntry(String path) => _fileEntryGetters[path]?.call();
 
   void openFile(String path, {int? initialLine, bool mdShowSource = false}) {
     final nav = _navKey.currentState;
     if (nav == null) return;
-    if (_openPaths.contains(path)) {
-      nav.popUntil((r) => r.settings.name == fileRouteName(path) || r.isFirst);
-      if (initialLine != null) {
-        _fileJumpers[path]?.jumpToLine(initialLine);
-      } else if (mdShowSource) {
-        _fileJumpers[path]?.forceSourceMode();
-      }
-      return;
+    final existing = _fileRoutes[path];
+    OpenFileEntry? carry;
+    if (existing != null) {
+      carry = _carryEntry(path);
+      nav.removeRoute(existing);
     }
     final forceSource = initialLine != null || mdShowSource;
-    nav.push(
-      slideLeftRoute(
-        FileViewScreen(
-          sessionId: widget.sessionId,
-          path: path,
-          directory: widget.directory,
-          restore: forceSource
-              ? OpenFileEntry(
-                  path: path,
-                  scrollOffset: 0,
-                  wrap: false,
-                  mdShowSource: true,
-                  initialLine: initialLine,
-                )
-              : null,
-        ),
-        name: fileRouteName(path),
+    final route = slideLeftRoute(
+      FileViewScreen(
+        sessionId: widget.sessionId,
+        path: path,
+        directory: widget.directory,
+        restore: forceSource
+            ? OpenFileEntry(
+                path: path,
+                scrollOffset: 0,
+                wrap: false,
+                mdShowSource: true,
+                initialLine: initialLine,
+              )
+            : carry,
       ),
+      name: fileRouteName(path),
     );
+    _fileRoutes[path] = route;
+    nav.push(route);
   }
 
   bool get _peek {
@@ -197,17 +251,17 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
       );
     }
     for (final e in openFiles) {
-      routes.add(
-        slideLeftRoute(
-          FileViewScreen(
-            sessionId: widget.sessionId,
-            path: e.path,
-            directory: widget.directory,
-            restore: e,
-          ),
-          name: fileRouteName(e.path),
+      final route = slideLeftRoute(
+        FileViewScreen(
+          sessionId: widget.sessionId,
+          path: e.path,
+          directory: widget.directory,
+          restore: e,
         ),
+        name: fileRouteName(e.path),
       );
+      _fileRoutes[e.path] = route;
+      routes.add(route);
     }
     return routes;
   }
@@ -221,10 +275,30 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
       },
       child: Navigator(
         key: _navKey,
+        observers: [_routeObserver],
         onGenerateInitialRoutes: (_, _) => _initialRoutes(),
         onGenerateRoute: (_) => null,
       ),
     );
+  }
+}
+
+class _FileRouteObserver extends NavigatorObserver {
+  void Function(Route<dynamic> route)? onGone;
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    onGone?.call(route);
+  }
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    onGone?.call(route);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    if (oldRoute != null) onGone?.call(oldRoute);
   }
 }
 

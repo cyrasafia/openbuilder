@@ -112,7 +112,6 @@
   "fileWorkspace": "工作区",
   "fileEmptyDir": "空目录",
   "fileNoMatch": "无匹配文件",
-  "fileViewDiff": "查看 Diff",
   "fileWrapOff": "关闭换行",
   "fileWrapOn": "开启换行",
   "fileSource": "源码",

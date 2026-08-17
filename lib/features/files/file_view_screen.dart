@@ -1,6 +1,8 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/net/net_error.dart';
@@ -15,12 +17,8 @@ import 'download_policy.dart';
 import 'file_browsing_container.dart';
 import 'highlight_theme.dart';
 import 'image_view.dart';
+import 'markdown_html.dart';
 import 'markdown_view.dart';
-
-abstract interface class FileViewJumper {
-  void jumpToLine(int line);
-  void forceSourceMode();
-}
 
 class FileViewScreen extends StatefulWidget {
   final String sessionId;
@@ -39,12 +37,14 @@ class FileViewScreen extends StatefulWidget {
   State<FileViewScreen> createState() => _FileViewScreenState();
 }
 
-class _FileViewScreenState extends State<FileViewScreen>
-    implements FileViewJumper {
+class _FileViewScreenState extends State<FileViewScreen> {
+  bool _isPlaceholderAnimation(Animation<double>? anim) =>
+      anim is ProxyAnimation &&
+      identical(anim.parent, kAlwaysCompleteAnimation);
+
   late final DownloadPolicy _policy = inferDownloadPolicy(widget.path);
 
   StreamedFile? _file;
-  bool _hasDiff = false;
   bool _downloading = false;
   double? _progress;
   Object? _error;
@@ -63,6 +63,35 @@ class _FileViewScreenState extends State<FileViewScreen>
   bool _routeAnimInstalled = false;
   bool _routeTransitionDone = false;
 
+  // Markdown preview document, built off the UI isolate while the loading UI
+  // is up (download / route transition). Gates the preview mount: content
+  // appears only after it is ready, so the markdown→HTML conversion never
+  // lands inside a transition-animation frame. _mdHtmlTheme is the theme the
+  // document was built under — a theme flip while the WebView is unmounted
+  // (e.g. source-mode round trip) must invalidate it.
+  String? _mdHtml;
+  (Brightness, Color, Color, AppColors)? _mdHtmlTheme;
+  int _mdHtmlGen = 0;
+
+  // Highlight spans for code files, built off the UI isolate during the
+  // loading phase — the same pattern as _mdHtml. Gates the CodeView mount so
+  // the mount frame adopts ready spans instead of paying the highlight cost.
+  List<TextSpan>? _codeSpans;
+  Brightness? _codeSpansBrightness;
+  bool _codeSpansReady = false;
+  int _codeSpansGen = 0;
+
+  // The preview WebView is mounted once _mdHtml is ready but paints
+  // asynchronously (loadHtmlString → parse → first paint). The loading
+  // overlay stays on top until the first onPageFinished arrives, so the
+  // user never sees a blank WebView. _webviewRenderFallback bounds that wait:
+  // if onPageFinished never fires (renderer crash, platform-view init
+  // failure, loadHtmlString throw), the overlay is dropped after a timeout
+  // instead of dead-ending on a permanent spinner.
+  bool _webviewRendered = false;
+  Timer? _webviewRenderFallback;
+  static const _webviewRenderFallbackDelay = Duration(seconds: 8);
+
   /// True once the user explicitly tapped Download on the oversized binary
   /// preview; subsequent [_download] calls (including error-retry) skip the
   /// threshold probe and fetch the full body regardless of size. Lives for
@@ -74,7 +103,6 @@ class _FileViewScreenState extends State<FileViewScreen>
   @override
   void initState() {
     super.initState();
-    _loadDiff();
     final r = widget.restore;
     if (r != null) {
       _wrap = r.wrap;
@@ -89,6 +117,8 @@ class _FileViewScreenState extends State<FileViewScreen>
       );
       if (cached != null) {
         _file = cached;
+        _maybePrepareMarkdownHtml();
+        _maybePrepareCodeSpans();
         _scheduleScrollRestore();
         return;
       }
@@ -99,36 +129,80 @@ class _FileViewScreenState extends State<FileViewScreen>
   }
 
   FileBrowsingContainerState? _container;
+  bool _containerTransitionDone = true;
+  bool _containerListenerInstalled = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _container = FileBrowsingContainer.maybeOf(context);
     _container?.registerCollector(this, _collectSelf);
-    _container?.registerFile(widget.path, this);
+    _container?.registerFileEntry(widget.path, _currentEntry);
+    final notifier = _container?.transitionDone;
+    if (notifier != null) {
+      _containerTransitionDone = notifier.value;
+      if (!_containerListenerInstalled) {
+        _containerListenerInstalled = true;
+        notifier.addListener(_onContainerTransitionDone);
+      }
+    }
     _installRouteAnimationListener();
   }
 
   @override
   void dispose() {
     _routeAnimation?.removeStatusListener(_onRouteAnimationStatus);
+    _container?.transitionDone.removeListener(_onContainerTransitionDone);
     _container?.unregisterCollector(this);
-    _container?.unregisterFile(widget.path);
+    _container?.unregisterFileEntry(widget.path, _currentEntry);
+    _cancelWebViewRenderFallback();
+    _mdHtmlGen++;
+    _codeSpansGen++;
     _cancelToken?.cancel();
     _scrollCtl.dispose();
     super.dispose();
   }
 
+  void _onContainerTransitionDone() {
+    final notifier = _container?.transitionDone;
+    if (notifier == null || !mounted) return;
+    if (notifier.value == _containerTransitionDone) return;
+    setState(() => _containerTransitionDone = notifier.value);
+    _scheduleScrollRestore();
+  }
+
   void _installRouteAnimationListener() {
     if (_routeAnimInstalled) return;
     _routeAnimInstalled = true;
+    _tryInstallRouteAnimation();
+  }
+
+  void _tryInstallRouteAnimation() {
+    if (!mounted || _routeTransitionDone) return;
     final anim = ModalRoute.of(context)?.animation;
+    if (_isPlaceholderAnimation(anim)) {
+      // The route's animation is still the completed-forever placeholder the
+      // framework installs before the real controller attaches (its ProxyAnimation
+      // parent is kAlwaysCompleteAnimation). Reading it eagerly would defeat the
+      // gate, so retry after this frame until the real animation is live.
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _tryInstallRouteAnimation(),
+      );
+      return;
+    }
     if (anim == null || anim.status == AnimationStatus.completed) {
-      _routeTransitionDone = true;
+      setState(() => _routeTransitionDone = true);
+      _scheduleScrollRestore();
       return;
     }
     _routeAnimation = anim;
     anim.addStatusListener(_onRouteAnimationStatus);
+    // The listener was installed after the animation might have already
+    // completed (placeholder retry costs a frame), so check the current
+    // status once — status listeners don't replay the current state.
+    if (anim.status == AnimationStatus.completed) {
+      _onRouteAnimationStatus(AnimationStatus.completed);
+    }
   }
 
   void _onRouteAnimationStatus(AnimationStatus status) {
@@ -138,19 +212,24 @@ class _FileViewScreenState extends State<FileViewScreen>
     _scheduleScrollRestore();
   }
 
+  OpenFileEntry _currentEntry() => OpenFileEntry(
+        path: widget.path,
+        scrollOffset: _isMarkdownPreview
+            ? _mdScrollOffset
+            : (_scrollCtl.hasClients
+                ? _scrollCtl.position.pixels
+                : (_pendingScrollRestore ?? 0)),
+        wrap: _wrap,
+        mdShowSource: _mdShowSource,
+        hadContent: _file != null,
+        initialLine: _pendingLine,
+      );
+
   void _collectSelf() {
     serverStore.fileBrowsing.collectFile(
       widget.sessionId,
       widget.directory,
-      OpenFileEntry(
-        path: widget.path,
-        scrollOffset: _isMarkdownPreview
-            ? _mdScrollOffset
-            : (_scrollCtl.hasClients ? _scrollCtl.position.pixels : 0),
-        wrap: _wrap,
-        mdShowSource: _mdShowSource,
-        hadContent: _file != null,
-      ),
+      _currentEntry(),
     );
   }
 
@@ -158,7 +237,28 @@ class _FileViewScreenState extends State<FileViewScreen>
     if (_pendingScrollRestore == null && _pendingLine == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (!_scrollCtl.hasClients) return;
+      if (!_scrollCtl.hasClients) {
+        // Content not mounted yet (transition/HTML gate still closed, or the
+        // download still running). Keep rescheduling frame-by-frame so the
+        // restore lands on the first frame after mount — download completion
+        // and error-retry both rely on the target staying armed. Only once
+        // content IS mounted and provably not _scrollCtl-driven (markdown
+        // preview / image / binary) is the target dropped, so the loop can't
+        // stay armed forever on views that never attach this controller.
+        if (_file != null && !_isScrollCtlContent) {
+          _pendingLine = null;
+          _pendingScrollRestore = null;
+          return;
+        }
+        // Settled without content (error view, or the probe/user-cancel
+        // download prompt): stay armed but dormant — retry / full-download
+        // success re-schedules the restore.
+        if (_file == null && !_downloading) return;
+        if (_pendingScrollRestore != null || _pendingLine != null) {
+          _scheduleScrollRestore();
+        }
+        return;
+      }
       final line = _pendingLine;
       if (line != null) {
         _pendingLine = null;
@@ -194,6 +294,141 @@ class _FileViewScreenState extends State<FileViewScreen>
     return h;
   }
 
+  /// Kicks the markdown preview document build on a background isolate as
+  /// soon as the content is available (download finished / cache hit) — it
+  /// overlaps the route transition instead of landing in the first content
+  /// frame. Only the preview mode needs it; source mode renders via CodeView.
+  /// Content/theme changes after mount are handled inside MarkdownWebView's
+  /// signature check, not here. Scheduled via microtask so the cache-hit call
+  /// from initState never reads Theme before the state is ready.
+  void _maybePrepareMarkdownHtml() {
+    if (!_isMarkdown || _mdShowSource) return;
+    Future<void>.microtask(_prepareMarkdownHtml);
+  }
+
+  (Brightness, Color, Color, AppColors) _themeSignature() {
+    final theme = Theme.of(context);
+    return (
+      theme.brightness,
+      theme.scaffoldBackgroundColor,
+      theme.colorScheme.onSurface,
+      theme.extension<AppColors>()!,
+    );
+  }
+
+  void _prepareMarkdownHtml() {
+    if (!mounted || !_isMarkdown || _mdShowSource) return;
+    final theme = Theme.of(context);
+    final themeSig = _themeSignature();
+    if (_mdHtml != null) {
+      if (themeSig == _mdHtmlTheme) return;
+      // Stale document (theme flipped since it was built): drop it so the
+      // gate holds the loading UI until the rebuild lands.
+      setState(() => _mdHtml = null);
+    }
+    final gen = ++_mdHtmlGen;
+    final task = MarkdownHtmlTask(
+      _file!.text!,
+      theme.brightness,
+      theme.scaffoldBackgroundColor,
+      theme.colorScheme.onSurface,
+      theme.extension<AppColors>()!,
+    );
+    () async {
+      String html;
+      try {
+        html = await compute(buildMarkdownPreviewHtmlOffIsolate, task);
+      } catch (_) {
+        // Isolate failure must not strand the loading UI; fall back to a
+        // synchronous build on the UI isolate.
+        try {
+          html = buildMarkdownPreviewHtmlOffIsolate(task);
+        } catch (_) {
+          // And if even the fallback throws, degrade to source mode — the
+          // _mdHtml gate must never hold the spinner forever.
+          if (!mounted || gen != _mdHtmlGen) return;
+          setState(() => _mdShowSource = true);
+          return;
+        }
+      }
+      if (!mounted || gen != _mdHtmlGen) return;
+      setState(() {
+        _mdHtml = html;
+        _mdHtmlTheme = themeSig;
+      });
+    }();
+  }
+
+  /// Whether the content renders via CodeView with syntax highlighting —
+  /// text, non-markdown, known language. Such files get their spans
+  /// pre-built during the loading phase (see [_maybePrepareCodeSpans]).
+  bool get _isCodeFile {
+    final f = _file;
+    if (f == null || f.isBinary || _isMarkdown) return false;
+    return languageForPath(widget.path) != null;
+  }
+
+  /// Code-file counterpart of [_maybePrepareMarkdownHtml]: highlight off the
+  /// UI isolate while the loading UI is up, gate the mount on the result.
+  void _maybePrepareCodeSpans() {
+    if (!_isCodeFile || _codeSpansReady) return;
+    Future<void>.microtask(_prepareCodeSpans);
+  }
+
+  void _prepareCodeSpans() {
+    if (!mounted || _codeSpansReady || !_isCodeFile) return;
+    final brightness = Theme.of(context).brightness;
+    final gen = ++_codeSpansGen;
+    final task = HighlightTask(
+      _file!.text!,
+      languageForPath(widget.path)!,
+      AppTheme.mono.copyWith(fontSize: codeFontSize),
+      brightness,
+    );
+    () async {
+      List<TextSpan>? spans;
+      try {
+        spans = await compute(highlightOffIsolate, task);
+      } catch (_) {
+        // Keep spans null: CodeView mounts plain and retries highlighting
+        // itself. The gate must never strand the loading UI.
+      }
+      if (!mounted || gen != _codeSpansGen) return;
+      setState(() {
+        _codeSpans = spans;
+        // Null brightness on failure makes CodeView's first
+        // didChangeDependencies kick off its own highlight — adopting a
+        // brightness with no spans would suppress it permanently.
+        _codeSpansBrightness = spans == null ? null : brightness;
+        _codeSpansReady = true;
+      });
+    }();
+  }
+
+  void _onWebViewFirstRendered() {
+    _cancelWebViewRenderFallback();
+    if (!mounted || _webviewRendered) return;
+    setState(() => _webviewRendered = true);
+  }
+
+  /// Bounds the wait for the WebView's first paint: if `onPageFinished` never
+  /// arrives (renderer crash, platform-view init failure), drop the overlay
+  /// after the delay instead of dead-ending on a permanent spinner. Idempotent
+  /// — safe to call from build on every frame the overlay is up.
+  void _armWebViewRenderFallback() {
+    if (_webviewRenderFallback != null || _webviewRendered) return;
+    _webviewRenderFallback = Timer(_webviewRenderFallbackDelay, () {
+      _webviewRenderFallback = null;
+      if (!mounted || _webviewRendered) return;
+      setState(() => _webviewRendered = true);
+    });
+  }
+
+  void _cancelWebViewRenderFallback() {
+    _webviewRenderFallback?.cancel();
+    _webviewRenderFallback = null;
+  }
+
   Future<void> _download() async {
     final c = serverStore.client;
     if (c == null) {
@@ -208,6 +443,17 @@ class _FileViewScreenState extends State<FileViewScreen>
       _progress = null;
       _error = null;
       _file = null;
+      // Content is being replaced: drop the derived artifacts of the previous
+      // body so a re-download can never mount stale spans/HTML (and any
+      // in-flight pre-build is invalidated via the generation counters).
+      _codeSpans = null;
+      _codeSpansBrightness = null;
+      _codeSpansReady = false;
+      _codeSpansGen++;
+      _mdHtml = null;
+      _mdHtmlTheme = null;
+      _mdHtmlGen++;
+      _webviewRendered = false;
     });
     try {
       _file = await c.readFileStream(
@@ -249,6 +495,8 @@ class _FileViewScreenState extends State<FileViewScreen>
         widget.path,
         _file!,
       );
+      _maybePrepareMarkdownHtml();
+      _maybePrepareCodeSpans();
       _scheduleScrollRestore();
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
@@ -270,41 +518,9 @@ class _FileViewScreenState extends State<FileViewScreen>
     }
   }
 
-  Future<void> _loadDiff() async {
-    final c = serverStore.client;
-    if (c == null) return;
-    try {
-      final diffs = await c.diff(widget.sessionId, directory: widget.directory);
-      if (mounted) {
-        setState(() => _hasDiff = diffs.any((d) => d.file == widget.path));
-      }
-    } catch (_) {
-      // diff is best-effort; absence just hides the menu item
-    }
-  }
-
   void _cancelDownload() {
     _cancelToken?.cancel();
     if (mounted) setState(() => _downloading = false);
-  }
-
-  @override
-  void jumpToLine(int line) {
-    if (line < 1) return;
-    if (_isMarkdownPreview || _wrap) {
-      setState(() {
-        _mdShowSource = true;
-        _wrap = false;
-      });
-    }
-    _pendingLine = line;
-    _scheduleScrollRestore();
-  }
-
-  @override
-  void forceSourceMode() {
-    if (_mdShowSource) return;
-    setState(() => _mdShowSource = true);
   }
 
   bool get _isTextLike =>
@@ -313,15 +529,30 @@ class _FileViewScreenState extends State<FileViewScreen>
   void _onMenuAction(_MenuAction value) {
     switch (value) {
       case _MenuAction.mdShowSource:
-        setState(() => _mdShowSource = !_mdShowSource);
+        setState(() {
+          _mdShowSource = !_mdShowSource;
+          // Returning to preview after a theme flip (source-mode round
+          // trip): invalidate the stale document synchronously so the gate
+          // holds the loading UI from this frame, not one frame later.
+          if (!_mdShowSource &&
+              _mdHtml != null &&
+              _mdHtmlTheme != _themeSignature()) {
+            _mdHtml = null;
+          }
+          // Switching back to preview remounts the WebView, which reloads
+          // and repaints asynchronously — re-arm the first-render overlay so
+          // that repaint is covered too, not just the initial open.
+          if (!_mdShowSource) _webviewRendered = false;
+          // Leaving preview cancels the pending fallback; returning to it
+          // re-arms via the next build.
+          _cancelWebViewRenderFallback();
+        });
+        // Opening in source mode (diff line anchor, sealed snapshot) skips
+        // the HTML pre-build; kick it here so the preview toggle can't hit
+        // the _mdHtml gate with nothing ever producing the document.
+        if (!_mdShowSource) _maybePrepareMarkdownHtml();
       case _MenuAction.wrap:
         setState(() => _wrap = !_wrap);
-      case _MenuAction.diff:
-        context.push(
-          '/session/${widget.sessionId}/diff/file'
-          '?path=${Uri.encodeQueryComponent(widget.path)}'
-          '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}',
-        );
     }
   }
 
@@ -368,11 +599,6 @@ class _FileViewScreenState extends State<FileViewScreen>
                     _wrap ? l(context).fileWrapOff : l(context).fileWrapOn,
                   ),
                 ),
-              if (_hasDiff && _isTextLike)
-                PopupMenuItem(
-                  value: _MenuAction.diff,
-                  child: Text(l(context).fileViewDiff),
-                ),
             ],
           ),
           const FileCollapseAction(),
@@ -387,7 +613,19 @@ class _FileViewScreenState extends State<FileViewScreen>
     if (_error != null) return _errorView();
     if (_downloading) return _progressView();
     if (_file != null) {
-      if (!_routeTransitionDone) {
+      // Content mounts only when every transition animation is done (the
+      // inner route's, and the container root route's for restore/peek flows
+      // where the inner route is an un-animated initial route) and, for
+      // markdown preview, the off-isolate HTML build has finished. Until then
+      // the cheap loading UI stays up, so no heavy first-content frame can
+      // land inside an animation window.
+      if (!_routeTransitionDone || !_containerTransitionDone) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (_isMarkdownPreview && _mdHtml == null) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (_isCodeFile && !_codeSpansReady) {
         return const Center(child: CircularProgressIndicator());
       }
       return _contentDispatch();
@@ -468,7 +706,7 @@ class _FileViewScreenState extends State<FileViewScreen>
       return ImageView(text: f.text!, isSvg: true);
     }
     if (_isMarkdown) {
-      return MarkdownView(
+      final view = MarkdownView(
         content: f.text!,
         showSource: _mdShowSource,
         wrap: _wrap,
@@ -478,7 +716,31 @@ class _FileViewScreenState extends State<FileViewScreen>
         scrollController: _scrollCtl,
         initialScrollOffset: _mdScrollOffset,
         onScrolled: (o) => _mdScrollOffset = o,
+        prebuiltHtml: _mdShowSource ? null : _mdHtml,
+        onFirstRendered: _onWebViewFirstRendered,
       );
+      // Preview mode: the WebView loads/paints asynchronously after mount;
+      // keep an opaque loading overlay on top until its first page finishes,
+      // so the user sees the spinner right up to real content — never a
+      // blank WebView. The Stack structure stays stable across the overlay
+      // swap so the WebView element is never remounted (which would reload
+      // the document from scratch).
+      if (!_mdShowSource) {
+        _armWebViewRenderFallback();
+        return Stack(
+          children: [
+            view,
+            if (!_webviewRendered)
+              Container(
+                color: Theme.of(context).scaffoldBackgroundColor,
+                child: const Center(child: CircularProgressIndicator()),
+              )
+            else
+              const SizedBox.shrink(),
+          ],
+        );
+      }
+      return view;
     }
     if (!f.isBinary) {
       return CodeView(
@@ -486,6 +748,8 @@ class _FileViewScreenState extends State<FileViewScreen>
         language: languageForPath(widget.path),
         wrap: _wrap,
         scrollController: _scrollCtl,
+        prebuiltSpans: _codeSpans,
+        prebuiltBrightness: _codeSpansBrightness,
       );
     }
     return BinaryView(
@@ -504,6 +768,25 @@ class _FileViewScreenState extends State<FileViewScreen>
   }
 
   bool get _isMarkdownPreview => _isMarkdown && !_mdShowSource;
+
+  /// Whether the mounted content drives [_scrollCtl]. Mirrors the dispatch in
+  /// [_contentDispatch]: CodeView and markdown source mode attach it;
+  /// image/SVG/binary views and the markdown preview (WebView scrolls
+  /// itself) do not.
+  bool get _isScrollCtlContent {
+    final f = _file;
+    if (f == null) return false;
+    if (f.isBinary &&
+        f.bytes != null &&
+        (f.mimeType?.startsWith('image/') ?? false) &&
+        f.mimeType != 'image/svg+xml') {
+      return false;
+    }
+    if (!f.isBinary && extensionOf(widget.path) == '.svg') return false;
+    if (_isMarkdown && !_mdShowSource) return false;
+    if (f.isBinary) return false;
+    return true;
+  }
 }
 
-enum _MenuAction { mdShowSource, wrap, diff }
+enum _MenuAction { mdShowSource, wrap }

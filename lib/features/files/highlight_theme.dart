@@ -18,7 +18,9 @@ import 'package:re_highlight/styles/github.dart' as hl;
 import 'package:re_highlight/styles/github-dark.dart' as hl;
 
 /// Lines at/above which highlighting runs off the UI isolate via `compute`.
-/// Shared by CodeView (full-file) and DiffDetailScreen (per-hunk).
+/// Used by DiffDetailScreen (per-hunk). CodeView highlights off-isolate
+/// unconditionally (its synchronous branch was removed by the deferred-render
+/// phase two), so it no longer consults this threshold.
 const kAsyncHighlightThreshold = 2000;
 
 const extensionLanguageMap = <String, String>{
@@ -179,6 +181,21 @@ String _escapeHtml(String value) {
       .replaceAll('>', '&gt;')
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&#x27;');
+}
+
+/// Isolate entry for [HighlightPainter.highlight] — the function itself is
+/// pure (string → TextSpan list), so highlighting can run off the UI isolate
+/// via `compute`. Shared by CodeView's in-widget highlighting and
+/// FileViewScreen's loading-phase pre-build.
+List<TextSpan> highlightOffIsolate(HighlightTask t) =>
+    HighlightPainter.highlight(t.code, t.language, t.base, t.brightness);
+
+class HighlightTask {
+  final String code;
+  final String language;
+  final TextStyle base;
+  final Brightness brightness;
+  const HighlightTask(this.code, this.language, this.base, this.brightness);
 }
 
 String _scopeToClass(String scope) =>

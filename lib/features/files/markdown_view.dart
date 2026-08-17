@@ -18,6 +18,14 @@ class MarkdownView extends StatelessWidget {
   final double? initialScrollOffset;
   final void Function(double)? onScrolled;
 
+  /// Pre-built preview HTML (off-isolate). Only meaningful in preview mode;
+  /// see [MarkdownWebView.prebuiltHtml].
+  final String? prebuiltHtml;
+
+  /// First-render signal from the preview WebView; see
+  /// [MarkdownWebView.onFirstRendered]. Preview mode only.
+  final VoidCallback? onFirstRendered;
+
   const MarkdownView({
     super.key,
     required this.content,
@@ -29,6 +37,8 @@ class MarkdownView extends StatelessWidget {
     this.scrollController,
     this.initialScrollOffset,
     this.onScrolled,
+    this.prebuiltHtml,
+    this.onFirstRendered,
   });
 
   @override
@@ -47,6 +57,8 @@ class MarkdownView extends StatelessWidget {
       directory: directory,
       initialScrollOffset: initialScrollOffset,
       onScrolled: onScrolled,
+      prebuiltHtml: prebuiltHtml,
+      onFirstRendered: onFirstRendered,
     );
   }
 }

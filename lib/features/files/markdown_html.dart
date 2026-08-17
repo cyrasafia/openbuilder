@@ -239,3 +239,31 @@ String buildMarkdownPreviewHtml({
       '<style>$css</style></head><body>'
       '<div class="md">$fm$html</div></body></html>';
 }
+
+/// Isolate entry for [buildMarkdownPreviewHtml] — the whole pipeline
+/// (front-matter split, markdown→HTML, code highlighting, CSS generation) is
+/// pure string/number work, so it can run off the UI isolate via `compute`.
+/// Mirrors the `_highlightTask` pattern used by CodeView / DiffDetailScreen.
+String buildMarkdownPreviewHtmlOffIsolate(MarkdownHtmlTask t) =>
+    buildMarkdownPreviewHtml(
+      content: t.content,
+      brightness: t.brightness,
+      scaffoldBg: t.scaffoldBg,
+      onSurface: t.onSurface,
+      appColors: t.appColors,
+    );
+
+class MarkdownHtmlTask {
+  final String content;
+  final Brightness brightness;
+  final Color scaffoldBg;
+  final Color onSurface;
+  final AppColors appColors;
+  const MarkdownHtmlTask(
+    this.content,
+    this.brightness,
+    this.scaffoldBg,
+    this.onSurface,
+    this.appColors,
+  );
+}

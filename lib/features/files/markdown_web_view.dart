@@ -25,6 +25,18 @@ class MarkdownWebView extends StatefulWidget {
   final double? initialScrollOffset;
   final void Function(double offset)? onScrolled;
 
+  /// Pre-built preview document (from `buildMarkdownPreviewHtmlOffIsolate`).
+  /// Production flows always provide it: FileViewScreen pre-builds during the
+  /// loading phase and gates the mount on it — including the source→preview
+  /// toggle, which kicks the pre-build before switching. Null is only a
+  /// defensive fallback (synchronous in-widget build on first use).
+  final String? prebuiltHtml;
+
+  /// Called once when the initial document finishes loading in the WebView
+  /// (first `onPageFinished`). Lets the file view keep its loading overlay up
+  /// until the preview is actually painted, not merely mounted.
+  final VoidCallback? onFirstRendered;
+
   const MarkdownWebView({
     super.key,
     required this.content,
@@ -32,6 +44,8 @@ class MarkdownWebView extends StatefulWidget {
     this.directory,
     this.initialScrollOffset,
     this.onScrolled,
+    this.prebuiltHtml,
+    this.onFirstRendered,
   });
 
   @override
@@ -63,16 +77,17 @@ const _bridgeScript = r'''
 ''';
 
 class _MarkdownWebViewState extends State<MarkdownWebView> {
-  late final WebViewController _controller;
-  late String _html;
+  WebViewController? _controller;
+  String? _html;
+  (String, Brightness, Color, Color, AppColors)? _builtSignature;
   double _restoreOffset = 0;
+  bool _firstRenderReported = false;
 
   @override
   void initState() {
     super.initState();
     _restoreOffset = widget.initialScrollOffset ?? 0;
-    _html = _buildHtml(context);
-    _controller = _buildController();
+    _html = widget.prebuiltHtml;
   }
 
   WebViewController _buildController() {
@@ -102,7 +117,7 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
           widget.onScrolled?.call(y);
         },
       )
-      ..loadHtmlString(_html);
+      ..loadHtmlString(_html!);
     return c;
   }
 
@@ -123,7 +138,22 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _maybeRebuild();
+    // Theme-dependent init (HTML fallback build, controller creation) lives
+    // here, not initState: looking up Theme.of in initState throws in debug
+    // (framework assert). First call adopts the prebuilt document (if any)
+    // or builds one, and records the signature without comparing.
+    final c = _controller;
+    if (c == null) {
+      // A prebuilt document is assumed to have been generated under the
+      // current theme (it is built moments before mount, during the loading
+      // phase); a theme flip inside that sub-second window would render
+      // stale colors until the next theme/content change.
+      _html ??= _buildHtml(context);
+      _builtSignature = _signature();
+      _controller = _buildController();
+    } else {
+      _maybeRebuild();
+    }
   }
 
   @override
@@ -136,48 +166,70 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
     _maybeRebuild();
   }
 
-  /// Regenerates the document when content OR theme changed (compare the full
-  /// string so any real change — colors, weights, body — reloads; a length-only
-  /// check could miss a theme switch whose output happens to be equally long).
+  /// Regenerates the document only when content OR theme inputs changed.
+  /// Compares an O(1) signature (content + the theme values the HTML/CSS
+  /// derive from) instead of rebuilding the full document to compare strings —
+  /// the old approach paid the markdown conversion twice per open.
   void _maybeRebuild() {
-    final html = _buildHtml(context);
-    if (html != _html) {
-      _html = html;
-      _reload();
-    }
+    final sig = _signature();
+    if (sig == _builtSignature) return;
+    _builtSignature = sig;
+    _html = _buildHtml(context);
+    _reload();
+  }
+
+  (String, Brightness, Color, Color, AppColors) _signature() {
+    final theme = Theme.of(context);
+    return (
+      widget.content,
+      theme.brightness,
+      theme.scaffoldBackgroundColor,
+      theme.colorScheme.onSurface,
+      theme.extension<AppColors>()!,
+    );
   }
 
   Future<void> _reload() async {
+    final c = _controller;
+    final html = _html;
+    if (c == null || html == null) return;
     // Keep the platform background in sync with the (possibly theme-changed)
     // scaffold so there's no white flash before the CSS paints.
     try {
-      await _controller.setBackgroundColor(_scaffoldBg);
+      await c.setBackgroundColor(_scaffoldBg);
     } catch (_) {}
     // Preserve the reading position across the theme/content reload.
     try {
-      final res = await _controller
-          .runJavaScriptReturningResult('window.scrollY || 0');
+      final res = await c.runJavaScriptReturningResult('window.scrollY || 0');
       final y = res is num ? res.toDouble() : double.tryParse('$res') ?? 0;
       if (y > 0) _restoreOffset = y;
     } catch (_) {}
     try {
-      await _controller.loadHtmlString(_html);
+      await c.loadHtmlString(html);
     } catch (_) {}
   }
 
   Future<void> _onPageLoaded() async {
     // (Re)install the link/scroll bridge now that the DOM is ready, then
     // restore the saved reading position.
+    final c = _controller;
+    if (c == null) return;
+    if (!_firstRenderReported) {
+      _firstRenderReported = true;
+      widget.onFirstRendered?.call();
+    }
     try {
-      await _controller.runJavaScript(_bridgeScript);
+      await c.runJavaScript(_bridgeScript);
     } catch (_) {}
     await _applyScrollRestore();
   }
 
   Future<void> _applyScrollRestore() async {
     if (_restoreOffset <= 0) return;
+    final c = _controller;
+    if (c == null) return;
     try {
-      await _controller.runJavaScript('window.scrollTo(0,${_restoreOffset.round()})');
+      await c.runJavaScript('window.scrollTo(0,${_restoreOffset.round()})');
     } catch (_) {}
   }
 
@@ -202,6 +254,8 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
 
   @override
   Widget build(BuildContext context) {
-    return WebViewWidget(controller: _controller);
+    final c = _controller;
+    if (c == null) return const SizedBox.shrink();
+    return WebViewWidget(controller: c);
   }
 }

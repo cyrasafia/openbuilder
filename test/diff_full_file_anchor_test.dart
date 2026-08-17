@@ -162,6 +162,12 @@ void main() {
     expect(find.text('L10–12'), findsWidgets);
 
     await tester.tap(find.text('View full file'));
+    await tester.pump();
+    // The code-span pre-build runs on a real isolate (never completes under
+    // FakeAsync); let it land before settling.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
     await tester.pumpAndSettle();
 
     final expected = codeListVerticalPadding + 9 * _lineHeight();
@@ -189,6 +195,12 @@ void main() {
     expect(stickyText('L67–69'), findsOneWidget);
 
     await tester.tap(find.text('View full file'));
+    await tester.pump();
+    // The code-span pre-build runs on a real isolate (never completes under
+    // FakeAsync); let it land before settling.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
     await tester.pumpAndSettle();
 
     final expected = codeListVerticalPadding + 66 * _lineHeight();
@@ -214,6 +226,12 @@ void main() {
     expect(stickyText('L10–48'), findsOneWidget);
 
     await tester.tap(find.text('View full file'));
+    await tester.pump();
+    // The code-span pre-build runs on a real isolate (never completes under
+    // FakeAsync); let it land before settling.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
     await tester.pumpAndSettle();
 
     final expected = codeListVerticalPadding + 9 * _lineHeight();
