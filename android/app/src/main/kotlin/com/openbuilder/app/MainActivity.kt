@@ -61,7 +61,7 @@ class MainActivity : FlutterActivity() {
                             result.error("invalid_args", "missing uri", null)
                         } else {
                             try {
-                                openFile(uri, resolveMimeType(displayName ?: "", mimeType, "*/*"))
+                                openFile(uri, resolveMimeType(displayName ?: "", mimeType, "*/*") ?: "*/*")
                                 result.success(null)
                             } catch (e: Exception) {
                                 result.error("open_failed", e.message, null)
@@ -106,7 +106,9 @@ class MainActivity : FlutterActivity() {
         val resolver = contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-            put(MediaStore.MediaColumns.MIME_TYPE, resolveMimeType(displayName, mimeType))
+            resolveMimeType(displayName, mimeType)?.let {
+                put(MediaStore.MediaColumns.MIME_TYPE, it)
+            }
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
@@ -163,8 +165,10 @@ class MainActivity : FlutterActivity() {
     }
 
     /// Prefer an explicit [mimeType]; else derive from the file extension;
-    /// fall back to [fallback] (default text/plain for log-export, */* for open).
-    private fun resolveMimeType(displayName: String, mimeType: String?, fallback: String = "text/plain"): String {
+    /// fall back to [fallback] (default null). Returning null lets callers omit
+    /// the MIME type; MediaStore would otherwise append the MIME type's extension
+    /// to the display name (e.g. `foo.log` + `text/plain` -> `foo.log.txt`).
+    private fun resolveMimeType(displayName: String, mimeType: String?, fallback: String? = null): String? {
         if (!mimeType.isNullOrEmpty()) return mimeType
         val ext = displayName.substringAfterLast('.', "").lowercase()
         if (ext.isNotEmpty()) {

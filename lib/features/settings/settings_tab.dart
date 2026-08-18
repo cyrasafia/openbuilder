@@ -337,7 +337,7 @@ class _SettingsTabState extends State<SettingsTab> {
   Future<void> _share(File file) async {
     try {
       await SharePlus.instance.share(
-        ShareParams(files: [XFile(file.path)], text: 'opencode logs'),
+        ShareParams(files: [XFile(file.path)]),
       );
     } catch (e) {
       if (!mounted) return;
