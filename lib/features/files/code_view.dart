@@ -9,7 +9,26 @@ const _gutterPad = 4.0;
 const _padLeft = 8.0;
 const _padRight = 20.0;
 const codeFontSize = 12.5;
+
+/// Explicit line-height multiplier for code/diff rows. Without it the line
+/// box comes from per-glyph font metrics, so rows containing emoji / symbol
+/// fallback glyphs render taller than plain rows and offset math assuming a
+/// uniform row height (diff→file line anchor) drifts.
+const codeLineHeight = 1.44;
 const codeListVerticalPadding = 8.0;
+
+TextStyle codeTextStyle({double fontSize = codeFontSize}) =>
+    AppTheme.mono.copyWith(fontSize: fontSize, height: codeLineHeight);
+
+/// Forces every code/diff row to exactly fontSize × codeLineHeight.
+/// TextStyle.height alone does NOT constrain fallback-font runs (color
+/// emoji glyphs are measured with their own font metrics), so rows with
+/// emoji still grow taller; only a forced strut guarantees uniform rows.
+const codeStrutStyle = StrutStyle(
+  fontSize: codeFontSize,
+  height: codeLineHeight,
+  forceStrutHeight: true,
+);
 
 /// Number of widest-by-estimate lines actually laid out by `_maxContentWidth`.
 const _measureCandidates = 8;
@@ -113,7 +132,7 @@ class _CodeViewState extends State<CodeView> {
 
   TextSpan _plainSpan(int i) => TextSpan(text: _lines[i], style: _base);
 
-  TextStyle get _base => AppTheme.mono.copyWith(fontSize: codeFontSize);
+  TextStyle get _base => codeTextStyle();
 
   @override
   Widget build(BuildContext context) {
@@ -135,6 +154,7 @@ class _CodeViewState extends State<CodeView> {
               '${i + 1}',
               style: gutterStyle,
               textAlign: TextAlign.right,
+              strutStyle: codeStrutStyle,
             ),
           ),
           const SizedBox(width: _gutterGap),
@@ -142,6 +162,7 @@ class _CodeViewState extends State<CodeView> {
             child: SelectableText.rich(
               rich,
               maxLines: widget.wrap ? null : 1,
+              strutStyle: codeStrutStyle,
             ),
           ),
         ],

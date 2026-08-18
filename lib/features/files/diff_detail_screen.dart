@@ -9,6 +9,7 @@ import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import 'code_view.dart';
 import 'diff_widgets.dart';
 import 'file_browsing_container.dart';
 import 'highlight_theme.dart';
@@ -309,8 +310,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     return TextSpan(text: item.line.text, style: _base);
   }
 
-  TextStyle get _base => AppTheme.mono.copyWith(
-        fontSize: _fontSize,
+  TextStyle get _base => codeTextStyle(fontSize: _fontSize).copyWith(
         color: _brightness == Brightness.dark
             ? const Color(0xFFDFE4DC)
             : const Color(0xFF181D18),
@@ -330,7 +330,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     final digits = maxNo.toString().length;
     final tp = TextPainter(
       text: TextSpan(
-          text: '0' * digits, style: AppTheme.mono.copyWith(fontSize: _fontSize)),
+          text: '0' * digits, style: codeTextStyle(fontSize: _fontSize)),
       textDirection: TextDirection.ltr,
       textScaler: _textScaler,
       maxLines: 1,
@@ -344,7 +344,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     final cached = _maxWidthCache;
     if (cached != null) return cached;
     final hunks = _hunks!;
-    final style = AppTheme.mono.copyWith(fontSize: _fontSize);
+    final style = codeTextStyle(fontSize: _fontSize);
     final tp = TextPainter(
       textDirection: TextDirection.ltr,
       textScaler: _textScaler,
@@ -798,6 +798,7 @@ class DiffRow extends StatelessWidget {
             child: SelectableText.rich(
               TextSpan(children: [span], style: base),
               maxLines: 1,
+              strutStyle: codeStrutStyle,
             ),
           ),
         ],

@@ -100,9 +100,7 @@ double _lineHeight(WidgetTester tester) {
   final tp = TextPainter(
     text: TextSpan(
       text: '0',
-      style: DefaultTextStyle.of(ctx).style.merge(
-        AppTheme.mono.copyWith(fontSize: codeFontSize),
-      ),
+      style: DefaultTextStyle.of(ctx).style.merge(codeTextStyle()),
     ),
     textDirection: TextDirection.ltr,
     textScaler: MediaQuery.textScalerOf(ctx),
@@ -158,6 +156,15 @@ GoRouter _router() => GoRouter(
 void main() {
   tearDown(() {
     serverStore.client = null;
+  });
+
+  test('codeTextStyle pins an explicit height (uniform row heights)', () {
+    // The anchor offset math assumes every CodeView row is exactly
+    // fontSize × codeLineHeight. Without an explicit height the line box
+    // comes from per-glyph font metrics and emoji / symbol fallback rows
+    // grow taller on real devices, drifting the anchor.
+    expect(codeTextStyle().height, codeLineHeight);
+    expect(codeTextStyle(fontSize: 11).height, codeLineHeight);
   });
 
   Future<void> pumpDiff(WidgetTester tester, {String patch = _patch}) async {

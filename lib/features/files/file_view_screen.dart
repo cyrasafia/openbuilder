@@ -283,23 +283,19 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 
   double _lineHeight() {
-    // Must match CodeView's rendered row height exactly. The row text widgets
-    // (gutter Text / SelectableText.rich) carry an inheriting style, so they
-    // merge the ambient DefaultTextStyle — the one Material injects under the
-    // Scaffold (bodyMedium, height 1.4) — into it. Measuring the bare mono
-    // style, or from this State's own context (which sits ABOVE the Scaffold
-    // and never sees that DefaultTextStyle), understates every row and the
-    // anchor lands short. Sample the mounted content's context so the
-    // measurement sees the same DefaultTextStyle the rows do — no fallback to
-    // `context`, which would silently mis-anchor instead of failing loudly.
+    // Must match CodeView's rendered row height exactly. Rows carry the
+    // codeStrutStyle (forceStrutHeight), which pins every row to
+    // fontSize × codeLineHeight regardless of glyph fallback fonts (emoji /
+    // symbol runs are measured with their own font metrics otherwise, so
+    // those rows grow taller and break the offset math). Sample the mounted
+    // content's context — not this State's own, which sits above the
+    // Scaffold — so the textScaler matches the rows'.
     assert(_scrollCtl.hasClients);
     final BuildContext ctx = _scrollCtl.position.context.storageContext;
     final tp = TextPainter(
       text: TextSpan(
         text: '0',
-        style: DefaultTextStyle.of(ctx).style.merge(
-          AppTheme.mono.copyWith(fontSize: codeFontSize),
-        ),
+        style: DefaultTextStyle.of(ctx).style.merge(codeTextStyle()),
       ),
       textDirection: TextDirection.ltr,
       textScaler: MediaQuery.textScalerOf(ctx),
@@ -398,7 +394,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
     final task = HighlightTask(
       _file!.text!,
       languageForPath(widget.path)!,
-      AppTheme.mono.copyWith(fontSize: codeFontSize),
+      codeTextStyle(),
       brightness,
     );
     () async {
