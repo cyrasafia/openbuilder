@@ -92,13 +92,20 @@ Dio _noopDio() => Dio(
       ),
     );
 
-double _lineHeight() {
+double _lineHeight(WidgetTester tester) {
+  // Sample below the Scaffold (where Material injects its DefaultTextStyle),
+  // exactly like FileViewScreen._lineHeight does via the scroll position.
+  final lv = tester.widget<ListView>(_fileViewList());
+  final ctx = lv.controller!.position.context.storageContext;
   final tp = TextPainter(
     text: TextSpan(
       text: '0',
-      style: AppTheme.mono.copyWith(fontSize: codeFontSize),
+      style: DefaultTextStyle.of(ctx).style.merge(
+        AppTheme.mono.copyWith(fontSize: codeFontSize),
+      ),
     ),
     textDirection: TextDirection.ltr,
+    textScaler: MediaQuery.textScalerOf(ctx),
     maxLines: 1,
   )..layout();
   final h = tp.height;
@@ -106,14 +113,24 @@ double _lineHeight() {
   return h;
 }
 
-double _fileViewOffset(WidgetTester tester) {
-  final lv = tester.widget<ListView>(
-    find.descendant(
+Finder _fileViewList() => find.descendant(
       of: find.byType(FileViewScreen),
       matching: find.byType(ListView),
-    ),
-  );
+    );
+
+double _fileViewOffset(WidgetTester tester) {
+  final lv = tester.widget<ListView>(_fileViewList());
   return lv.controller!.offset;
+}
+
+double _gutterTopInViewport(WidgetTester tester, String label) {
+  final lv = tester.widget<ListView>(_fileViewList());
+  final vpBox = lv.controller!.position.context.storageContext.findRenderObject()!
+      as RenderBox;
+  final rowBox = tester.renderObject(
+    find.descendant(of: _fileViewList(), matching: find.text(label)).first,
+  ) as RenderBox;
+  return rowBox.localToGlobal(Offset.zero, ancestor: vpBox).dy;
 }
 
 GoRouter _router() => GoRouter(
@@ -170,8 +187,11 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final expected = codeListVerticalPadding + 9 * _lineHeight();
+    final expected = codeListVerticalPadding + 9 * _lineHeight(tester);
     expect(_fileViewOffset(tester), closeTo(expected, 0.5));
+    // The real contract: line 10's row sits flush with the viewport top.
+    // Catches any drift between the offset formula and rendered row height.
+    expect(_gutterTopInViewport(tester, '10'), closeTo(0, 0.5));
   });
 
   Finder stickyText(String text) => find.descendant(
@@ -203,8 +223,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final expected = codeListVerticalPadding + 66 * _lineHeight();
+    final expected = codeListVerticalPadding + 66 * _lineHeight(tester);
     expect(_fileViewOffset(tester), closeTo(expected, 0.5));
+    expect(_gutterTopInViewport(tester, '67'), closeTo(0, 0.5));
   });
 
   testWidgets('deep inside a long hunk: sticky survives header unmount, anchors to its start',
@@ -234,7 +255,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final expected = codeListVerticalPadding + 9 * _lineHeight();
+    final expected = codeListVerticalPadding + 9 * _lineHeight(tester);
     expect(_fileViewOffset(tester), closeTo(expected, 0.5));
+    expect(_gutterTopInViewport(tester, '10'), closeTo(0, 0.5));
   });
 }

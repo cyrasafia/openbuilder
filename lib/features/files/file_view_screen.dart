@@ -283,10 +283,26 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 
   double _lineHeight() {
+    // Must match CodeView's rendered row height exactly. The row text widgets
+    // (gutter Text / SelectableText.rich) carry an inheriting style, so they
+    // merge the ambient DefaultTextStyle — the one Material injects under the
+    // Scaffold (bodyMedium, height 1.4) — into it. Measuring the bare mono
+    // style, or from this State's own context (which sits ABOVE the Scaffold
+    // and never sees that DefaultTextStyle), understates every row and the
+    // anchor lands short. Sample the mounted content's context so the
+    // measurement sees the same DefaultTextStyle the rows do — no fallback to
+    // `context`, which would silently mis-anchor instead of failing loudly.
+    assert(_scrollCtl.hasClients);
+    final BuildContext ctx = _scrollCtl.position.context.storageContext;
     final tp = TextPainter(
-      text: TextSpan(text: '0', style: AppTheme.mono.copyWith(fontSize: codeFontSize)),
+      text: TextSpan(
+        text: '0',
+        style: DefaultTextStyle.of(ctx).style.merge(
+          AppTheme.mono.copyWith(fontSize: codeFontSize),
+        ),
+      ),
       textDirection: TextDirection.ltr,
-      textScaler: MediaQuery.textScalerOf(context),
+      textScaler: MediaQuery.textScalerOf(ctx),
       maxLines: 1,
     )..layout();
     final h = tp.height;
