@@ -93,7 +93,18 @@ flutter test                     # 含 widget + parse + smoke（smoke 需本地 
 
 ### JDK 要求
 
-Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scripts/build.sh` 已自动设 `JAVA_HOME=~/development/jdk21`；手动构建需同样前置 `JAVA_HOME`。
+Android 构建须用 **JDK 17/21**——系统默认 Java 26 与 AGP 的 `jlink`/`JdkImageTransform` 不兼容，会直接构建失败（报错特征：`Execution failed for JdkImageTransform ... core-for-system-modules.jar` / `Error while executing process .../java-26-openjdk/bin/jlink`）。注意这不止影响 `flutter build`，**任何**触发 Gradle 构建的命令（含 `flutter run`）都会中招。`scripts/build.sh` 已自动设 `JAVA_HOME=~/development/jdk21`；手动 `flutter build` / `flutter run` 需同样前置 `JAVA_HOME`：
+
+```bash
+JAVA_HOME="$HOME/development/jdk21" PATH="$HOME/development/jdk21/bin:$PATH" flutter run --profile
+```
+
+或先 export（当前 shell 内后续命令均生效）：
+
+```bash
+export JAVA_HOME="$HOME/development/jdk21"
+export PATH="$JAVA_HOME/bin:$PATH"
+```
 
 ## 代码约定
 
@@ -159,3 +170,4 @@ Android 构建需 **Java 17**（系统默认 Java 26 不兼容 `jlink`）。`scr
 | `design-bump-minsdk-34.md` | 提升 minSdk 至 34 + 清理冗余兼容代码（移除 core library desugaring、`Build.VERSION` 死分支、`-v21` 资源限定符；解锁通知运行时权限 / 暗色 uiMode / 预测性返回 / HCPP；不含 Markdown→WebView） |
 | `design-markdown-webview.md` | 文件详情页 Markdown 预览 Flutter Markdown → WebView（mar→HTML + CSS 复刻三档字重 + JS 桥 + 预热池；依赖 HCPP，前提为 minSdk 34；含原生缓解/分块/换渲染器/WebView 四方向选型否决理由） |
 | `design-message-autolink.md` | 会话消息链接自动识别（URI + 项目内文件路径：围栏感知纯文本改写 + content-keyed memoize；`ob-file:` 自定义 scheme 分流；peek 快照进文件容器；行内代码仅纯目标转链；URI 主体 ASCII-only 修复全角标点吞字；含九轮评审记录） |
+| `design-frame-drop.md` | 掉帧专项优化（umbrella，含问题清单 + 度量/排查方法论）；JANK-1 浮层展开掉帧已修：首帧布局+文本排版为根因、模型浮层 Column 整组急布局为放大器，拍平模型列表 build max 54.6→19.8ms，门控方案预留 |

@@ -4398,50 +4398,47 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
     for (final providerID in groups.keys) {
       final items = groups[providerID]!;
       out.add(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 12, 4),
-              child: Row(
-                children: [
-                  Icon(Icons.dns_outlined, size: 14, color: scheme.outline),
-                  const SizedBox(width: 6),
-                  Text(
-                    providerID,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: scheme.outline,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    '${items.length}',
-                    style: TextStyle(fontSize: 11, color: scheme.outline),
-                  ),
-                ],
-              ),
-            ),
-            ...items.map((m) {
-              final selected =
-                  session?.model?.id == m.id &&
-                  session?.model?.providerID == m.providerID;
-              return ListTile(
-                dense: true,
-                leading: const Icon(Icons.memory, size: 20),
-                title: Text(m.name, style: const TextStyle(fontSize: 14)),
-                subtitle: Text(
-                  '${m.providerID}/${m.id}',
-                  style: AppTheme.mono.copyWith(fontSize: 11),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 12, 4),
+          child: Row(
+            children: [
+              Icon(Icons.dns_outlined, size: 14, color: scheme.outline),
+              const SizedBox(width: 6),
+              Text(
+                providerID,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: scheme.outline,
                 ),
-                trailing: selected ? const Icon(Icons.check, size: 18) : null,
-                onTap: () => widget.onSelected(m),
-              );
-            }),
-          ],
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '${items.length}',
+                style: TextStyle(fontSize: 11, color: scheme.outline),
+              ),
+            ],
+          ),
         ),
       );
+      for (final m in items) {
+        final selected =
+            session?.model?.id == m.id &&
+            session?.model?.providerID == m.providerID;
+        out.add(
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.memory, size: 20),
+            title: Text(m.name, style: const TextStyle(fontSize: 14)),
+            subtitle: Text(
+              '${m.providerID}/${m.id}',
+              style: AppTheme.mono.copyWith(fontSize: 11),
+            ),
+            trailing: selected ? const Icon(Icons.check, size: 18) : null,
+            onTap: () => widget.onSelected(m),
+          ),
+        );
+      }
     }
     return out;
   }
