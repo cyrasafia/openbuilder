@@ -649,6 +649,7 @@ class _ProjectCard extends StatelessWidget {
         if (hasMenu)
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
+            popUpAnimationStyle: popupMenuAnimationStyle,
             onSelected: (v) {
               switch (v) {
                 case 'edit':

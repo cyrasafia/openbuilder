@@ -231,6 +231,7 @@ class _FileListScreenState extends State<FileListScreen> {
     final action = await showMenu<String>(
       context: context,
       position: relative,
+      popUpAnimationStyle: popupMenuAnimationStyle,
       items: [
         PopupMenuItem<String>(
           value: 'ref',

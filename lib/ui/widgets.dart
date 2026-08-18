@@ -538,3 +538,8 @@ Widget emptyScrollable(Widget child) {
 }
 
 const appBarActionsTrailing = SizedBox(width: 4);
+
+const popupMenuAnimationStyle = AnimationStyle(
+  duration: Duration(milliseconds: 120),
+  curve: Curves.easeOutCubic,
+);

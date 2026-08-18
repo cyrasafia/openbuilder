@@ -581,6 +581,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
         actions: [
           PopupMenuButton<_MenuAction>(
             icon: const Icon(Icons.more_vert),
+            popUpAnimationStyle: popupMenuAnimationStyle,
             onSelected: _onMenuAction,
             itemBuilder: (_) => [
               if (_isMarkdown)

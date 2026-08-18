@@ -3555,6 +3555,7 @@ class _MoreMenu extends StatelessWidget {
     return PopupMenuButton<String>(
       icon: const Icon(Icons.more_vert),
       tooltip: loc.moreMenu,
+      popUpAnimationStyle: popupMenuAnimationStyle,
       onSelected: (v) => _onSelected(context, v),
       itemBuilder: (_) => [
         PopupMenuItem(value: 'refresh', child: Text(loc.convRefresh)),
