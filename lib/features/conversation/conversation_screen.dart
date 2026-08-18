@@ -622,7 +622,9 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   Widget _footerRow(ConversationStore conv) {
     final Widget child;
-    if (conv.isRetry &&
+    if (conv.workspaceMissing) {
+      child = const _WorkspaceMissingBanner();
+    } else if (conv.isRetry &&
         conv.retryMessage != null &&
         conv.retryMessage!.isNotEmpty) {
       child = _RetryMessage(message: conv.retryMessage!);
@@ -907,6 +909,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                 directory: directory,
                 ctl: _ctl,
                 busy: conv.busy,
+                disabled: conv.workspaceMissing,
                 onAbort: () => _abort(directory),
                 onChanged: (t) {
                   conv.setDraft(
@@ -1045,6 +1048,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final conv = serverStore.conversationFor(widget.sessionId);
     final client = serverStore.client;
     if (conv == null || client == null) return;
+    if (conv.workspaceMissing) return;
     serverStore.ensureSseForSession(widget.sessionId);
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
@@ -2935,6 +2939,45 @@ class _RetryMessage extends StatelessWidget {
   }
 }
 
+/// Shown when a refresh proved the session's worktree directory no longer
+/// exists (ghost sandbox). Same bubble style as `_RetryMessage`, error-colored
+/// with a static warning icon — nothing is retrying; the session is unusable.
+class _WorkspaceMissingBanner extends StatelessWidget {
+  const _WorkspaceMissingBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final error = Theme.of(context).colorScheme.error;
+    return Padding(
+      padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: error.withAlpha(20),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: error.withAlpha(80)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Icon(Icons.warning_amber_rounded, size: 18, color: error),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                l(context).workspaceMissing,
+                style: TextStyle(fontSize: 14, height: 1.45, color: error),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// Continuously-rotating refresh icon. Conveys "retry in progress" motion.
 class _SpinningRefresh extends StatefulWidget {
   const _SpinningRefresh();
@@ -3184,6 +3227,7 @@ class _BottomBar extends StatelessWidget {
   final String directory;
   final TextEditingController ctl;
   final bool busy;
+  final bool disabled;
   final Future<bool> Function() onAbort;
   final ValueChanged<String> onChanged;
   final VoidCallback onSend;
@@ -3200,6 +3244,7 @@ class _BottomBar extends StatelessWidget {
     required this.directory,
     required this.ctl,
     required this.busy,
+    required this.disabled,
     required this.onAbort,
     required this.onChanged,
     required this.onSend,
@@ -3233,6 +3278,7 @@ class _BottomBar extends StatelessWidget {
           _ComposeBar(
             ctl: ctl,
             busy: busy,
+            disabled: disabled,
             onAbort: onAbort,
             onChanged: onChanged,
             onSend: onSend,
@@ -3257,6 +3303,7 @@ class _ComposeBar extends StatefulWidget {
   final ValueNotifier<bool> farFromBottom;
   final VoidCallback onScrollToBottom;
   final bool busy;
+  final bool disabled;
   final Future<bool> Function() onAbort;
   final List<_PendingItem> pending;
   final bool shellMode;
@@ -3269,6 +3316,7 @@ class _ComposeBar extends StatefulWidget {
     required this.farFromBottom,
     required this.onScrollToBottom,
     required this.busy,
+    required this.disabled,
     required this.onAbort,
     required this.pending,
     required this.shellMode,
@@ -3369,6 +3417,7 @@ class _ComposeBarState extends State<_ComposeBar>
               child: TextField(
                 controller: widget.ctl,
                 focusNode: _fieldFocus,
+                readOnly: widget.disabled,
                 onTapOutside: (_) {},
                 onChanged: widget.onChanged,
                 onSubmitted: (_) => widget.onSend(),
@@ -3388,9 +3437,11 @@ class _ComposeBarState extends State<_ComposeBar>
                     tooltip: widget.shellMode
                         ? l(context).composeShellMode
                         : l(context).composeAttachment,
-                    onPressed: widget.shellMode
-                        ? widget.onExitShellMode
-                        : widget.onPickAttachments,
+                    onPressed: widget.disabled
+                        ? null
+                        : (widget.shellMode
+                            ? widget.onExitShellMode
+                            : widget.onPickAttachments),
                   ),
                   prefixIconColor: Theme.of(
                     context,
@@ -3445,7 +3496,7 @@ class _ComposeBarState extends State<_ComposeBar>
                 );
               }
               return IconButton.filled(
-                onPressed: widget.onSend,
+                onPressed: widget.disabled ? null : widget.onSend,
                 icon: const Icon(Icons.send),
                 tooltip: l(context).composeSend,
               );

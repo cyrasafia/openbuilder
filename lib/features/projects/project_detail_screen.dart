@@ -85,27 +85,38 @@ class ProjectDetailScreen extends StatelessWidget {
                 child: MediaQuery.removePadding(
                   context: context,
                   removeTop: true,
-                  child: ListView(
-                    children: [
-                      if (sessions.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.all(32),
-                          child: Center(
-                            child: Text(loc.projectNoActiveSessions),
+                  child: RefreshIndicator(
+                    onRefresh: () async {
+                      final ok = await refreshOrReconnect();
+                      if (!ok && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(l(context).refreshFailed)),
+                        );
+                      }
+                    },
+                    child: ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        if (sessions.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.all(32),
+                            child: Center(
+                              child: Text(loc.projectNoActiveSessions),
+                            ),
+                          )
+                        else if (project?.id == 'global' && directory == null)
+                          ..._groupedGlobal(context, sessions)
+                        else
+                          ..._groupedByWorktree(
+                            context,
+                            sessions,
+                            scopedWorktree,
+                            project?.sandboxes ?? const [],
+                            alwaysShowHeaders: wsEnabled && directory == null,
                           ),
-                        )
-                      else if (project?.id == 'global' && directory == null)
-                        ..._groupedGlobal(context, sessions)
-                      else
-                        ..._groupedByWorktree(
-                          context,
-                          sessions,
-                          scopedWorktree,
-                          project?.sandboxes ?? const [],
-                          alwaysShowHeaders: wsEnabled && directory == null,
-                        ),
-                      const SizedBox(height: 88),
-                    ],
+                        const SizedBox(height: 88),
+                      ],
+                    ),
                   ),
                 ),
               ),

@@ -233,6 +233,13 @@ class ConversationStore extends ChangeNotifier {
   /// Cleared on any non-retry status transition. Distinct from
   /// per-message errors carried via [MessageInfo.error].
   String? retryMessage;
+  /// Set when a refresh proves the session's worktree directory no longer
+  /// exists (ghost sandbox): the session vanished from the authoritative
+  /// list and its directory is not among the project's real worktrees.
+  /// The detail page shows a banner and blocks sending — the server still
+  /// accepts prompts there, but replies would never stream back (no SSE
+  /// coverage for a directory outside `_eventDirectories`).
+  bool workspaceMissing = false;
   int? sessionUpdated;
   bool _loadingEarlier = false;
   bool _loadEarlierError = false;
@@ -1065,6 +1072,26 @@ class ConversationStore extends ChangeNotifier {
     if (prevStatus != status || prevRetry != this.retryMessage) {
       if (!_disposed) notifyListeners();
     }
+  }
+
+  void markWorkspaceMissing() {
+    if (workspaceMissing) return;
+    // A session whose worktree is gone cannot be busy; settle the status so
+    // the compose bar drops the stop button and `_startRequiredSse`-style
+    // busy checks don't keep reaching for the dead directory.
+    setStatus('idle');
+    workspaceMissing = true;
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Recovery path: the session proved reachable again (present in a fresh
+  /// authoritative list — only fetched from reachable directories), e.g.
+  /// the worktree was re-created at the same path, or a transiently
+  /// incomplete worktree list caused a false positive.
+  void clearWorkspaceMissing() {
+    if (!workspaceMissing) return;
+    workspaceMissing = false;
+    if (!_disposed) notifyListeners();
   }
 
   void onMessageUpdated(MessageInfo info) {

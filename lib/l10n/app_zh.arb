@@ -212,6 +212,7 @@
   "nextStep": "下一步",
   "retryingMessage": "重试中：{message}",
   "@retryingMessage": {"placeholders": {"message": {"type": "String"}}},
+  "workspaceMissing": "该会话所在的工作区已不存在，无法继续发送消息",
   "loadingMore": "加载中",
   "loadEarlierFailedHint": "加载失败，点按或上滑重试",
   "composeShellHint": "shell 命令…",

@@ -87,6 +87,12 @@ class ServerStore extends ChangeNotifier {
   List<ProjectModel> _projects = [];
   List<SessionModel> _sessions = [];
   final Map<String, SessionStatusValue> _statusMap = {};
+  /// Sessions currently known to be ghosts (worktree directory gone). Tracked
+  /// separately from `_statusMap` (where they settle to a plain `idle`) so a
+  /// `ConversationStore` recreated after LRU eviction still gets the
+  /// workspace-missing flag re-applied via [ensureConversation]. Pruned when
+  /// a session reappears in an authoritative fetch, cleared on disconnect.
+  final Set<String> _ghostSessionIds = {};
   final Map<String, String> _lastMessage = {};
   /// Monotonic max(`SessionModel.updated`) per project activity key — includes
   /// sessions that have since been archived. `/session` does not expose
@@ -438,14 +444,16 @@ class ServerStore extends ChangeNotifier {
     final activeClient = client;
     if (activeClient == null) throw const KnownError(FriendlyErrorKind.notConnected);
     try {
-      final updated = await activeClient.updateProject(
-        projectId,
-        name: name,
-        updateIcon: updateIcon,
-        iconUrl: iconUrl,
-        iconOverride: iconOverride,
-        iconColor: iconColor,
-      );
+      final updated = (await _reconcileSandboxes([
+        await activeClient.updateProject(
+          projectId,
+          name: name,
+          updateIcon: updateIcon,
+          iconUrl: iconUrl,
+          iconOverride: iconOverride,
+          iconColor: iconColor,
+        ),
+      ])).single;
       final idx = _projects.indexWhere((p) => p.id == projectId);
       if (idx >= 0) {
         _projects[idx] = updated;
@@ -705,6 +713,9 @@ class ServerStore extends ChangeNotifier {
     final initStatus = statusOf(sid);
     conv.setStatus(initStatus.type, retryMessage: initStatus.message);
     conv.sessionUpdated = sessionById(sid)?.updated;
+    // Re-apply ghost state after an LRU eviction: the flag lives on the
+    // ConversationStore instance, which was dropped; the set survives.
+    if (_ghostSessionIds.contains(sid)) conv.markWorkspaceMissing();
     // Inject any pending permission/question known from SSE/REST backfill.
     final pending = _pendingPermissions[sid];
     if (pending != null) conv.onPermission(pending);
@@ -829,6 +840,7 @@ class ServerStore extends ChangeNotifier {
       _projects = [];
       _sessions = [];
       _statusMap.clear();
+      _ghostSessionIds.clear();
       _lastMessage.clear();
       _lastActivityByKey.clear();
       _workspaceEnabled.clear();
@@ -920,16 +932,137 @@ class ServerStore extends ChangeNotifier {
   String _signature(ConnectionProfile p) =>
       '${p.baseUrl}|${p.username}|${p.password}';
 
+  /// Pure sandboxes filter: intersect each project's `sandboxes` with its
+  /// already-fetched worktree list (server-side sandboxes ∩ real git
+  /// worktrees). Fail-open per project: a missing or empty list keeps the
+  /// unfiltered sandboxes — the endpoint returns 200 `[]` for degraded
+  /// states (deleted main dir, unregistered repo) where wiping every
+  /// sandbox would be wrong. The main worktree itself is always kept.
+  List<ProjectModel> _filterSandboxes(
+    List<ProjectModel> projects,
+    Map<String, List<String>> worktreesByDir,
+  ) {
+    return projects.map((p) {
+      if (p.sandboxes.isEmpty || p.worktree.isEmpty) return p;
+      final real = worktreesByDir[p.worktree];
+      if (real == null || real.isEmpty) return p;
+      final valid = real.toSet()..add(p.worktree);
+      final filtered =
+          p.sandboxes.where(valid.contains).toList(growable: false);
+      if (filtered.length == p.sandboxes.length) return p;
+      return ProjectModel(
+        id: p.id,
+        worktree: p.worktree,
+        vcs: p.vcs,
+        name: p.name,
+        icon: p.icon,
+        commands: p.commands,
+        sandboxes: filtered,
+        created: p.created,
+      );
+    }).toList();
+  }
+
+  /// `GET /project` returns the persisted `sandboxes` list verbatim; entries
+  /// whose directory vanished outside `DELETE /experimental/worktree`
+  /// (manual `git worktree remove` / `rm`, failed creations) linger as
+  /// ghosts. Fetch `GET /experimental/worktree` per project and apply
+  /// `_filterSandboxes` right after fetch so ghost workspaces never reach
+  /// the picker. Fail-open per project: a fetch error keeps the unfiltered
+  /// list. Successful fetches are recorded in [worktreesByDir] (keyed by
+  /// main worktree) so `_sessionsForProject` can reuse them instead of
+  /// fetching the same endpoint twice on the bootstrap critical path.
+  Future<List<ProjectModel>> _reconcileSandboxes(
+    List<ProjectModel> projects, {
+    Map<String, List<String>>? worktreesByDir,
+  }) async {
+    final c = client;
+    if (c == null) return projects;
+    final map = worktreesByDir ?? <String, List<String>>{};
+    await Future.wait(projects.map((p) async {
+      if (p.sandboxes.isEmpty || p.worktree.isEmpty) return;
+      try {
+        map[p.worktree] = await c.worktrees(p.worktree);
+      } catch (_) {}
+    }));
+    return _filterSandboxes(projects, map);
+  }
+
+  /// Mark ghost sessions' open conversations as unusable and settle their
+  /// cached status to idle — the directory is never status-fetched again, so
+  /// a stale `busy` would otherwise persist forever (stop button rendered
+  /// next to the workspace-missing banner, abort always failing).
+  void _markGhostSessions(Set<String> ids) {
+    for (final id in ids) {
+      _statusMap[id] = const SessionStatusValue('idle');
+      _ghostSessionIds.add(id);
+      _conversations[id]?.markWorkspaceMissing();
+    }
+  }
+
+  /// Drop ghost tracking for sessions that reappeared in an authoritative
+  /// list (worktree re-created at the same path, or a transiently incomplete
+  /// worktree list had caused a false positive). Live conversations are
+  /// un-flagged by the per-conv loop in `refreshListAndWorkingSse`.
+  void _unghostRecovered(List<SessionModel> sessions) {
+    if (_ghostSessionIds.isEmpty) return;
+    for (final s in sessions) {
+      _ghostSessionIds.remove(s.id);
+    }
+  }
+
+  /// Sessions that existed before a refresh but vanished from the fresh
+  /// authoritative list AND whose directory is no longer reachable — not in
+  /// the project's main worktree nor its fetched worktree list. Such a
+  /// directory is a ghost sandbox (deleted outside the DELETE endpoint);
+  /// the session is unusable (no SSE coverage, git/snapshot broken).
+  /// Fail-open: projects with a missing/empty worktree list are skipped, as
+  /// are `global` sessions (fetched without directory coverage).
+  Set<String> _detectGhostSessionIds(
+    List<SessionModel> oldSessions,
+    List<SessionModel> newSessions,
+    List<ProjectModel> projects,
+    Map<String, List<String>> worktreesByDir,
+  ) {
+    final newIds = newSessions.map((s) => s.id).toSet();
+    final byId = {for (final p in projects) p.id: p};
+    final out = <String>{};
+    for (final old in oldSessions) {
+      if (newIds.contains(old.id)) continue;
+      if (old.directory.isEmpty) continue;
+      final p = byId[old.projectID];
+      if (p == null || p.id == 'global') continue;
+      final wt = worktreesByDir[p.worktree];
+      if (wt == null || wt.isEmpty) continue;
+      if (old.directory == p.worktree || wt.contains(old.directory)) continue;
+      out.add(old.id);
+    }
+    return out;
+  }
+
   Future<bool> _bootstrap() async {
     try {
-      final projects = await client!.projects();
-      final sessions = await _fetchAllSessions(projects: projects);
+      final worktreesByDir = <String, List<String>>{};
+      final projects = await _reconcileSandboxes(
+        await client!.projects(),
+        worktreesByDir: worktreesByDir,
+      );
+      final sessions = await _fetchAllSessions(
+          projects: projects, worktreesByDir: worktreesByDir);
       final fetchedDirs = <String>{};
       final status = await _fetchAllStatuses(
           projects: projects, sessions: sessions, fetchedDirs: fetchedDirs);
+      // Ghost detection also runs here (not just in refreshListAndWorkingSse):
+      // `_sessions` still holds the cache loaded by `_loadCache`, which may
+      // contain sessions whose worktree vanished while the app was away.
+      // Without this they stay sendable until the first reconcile arrives.
+      _unghostRecovered(sessions);
+      final ghostIds =
+          _detectGhostSessionIds(_sessions, sessions, projects, worktreesByDir);
       _projects = projects;
       _projectsFetched = true;
       _sessions = sessions;
+      _markGhostSessions(ghostIds);
       _mergeStatus(fresh: status, sessions: sessions, fetchedDirs: fetchedDirs);
       _inferWorkspaceForNewProjects();
       return true;
@@ -1012,6 +1145,7 @@ class ServerStore extends ChangeNotifier {
   /// many projects/worktrees doesn't stall the first screen.
   Future<List<SessionModel>> _fetchAllSessions({
     List<ProjectModel>? projects,
+    Map<String, List<String>>? worktreesByDir,
   }) async {
     final ps = projects ?? _projects;
     final futures = <Future<List<SessionModel>>>[];
@@ -1019,7 +1153,7 @@ class ServerStore extends ChangeNotifier {
       if (p.id == 'global') {
         futures.add(client!.sessions());
       } else {
-        futures.add(_sessionsForProject(p));
+        futures.add(_sessionsForProject(p, worktreesByDir));
       }
     }
     final results = await Future.wait(futures);
@@ -1031,9 +1165,21 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// Sessions for one project: resolve its worktrees, then fetch sessions for
-  /// the main worktree and every worktree in parallel.
-  Future<List<SessionModel>> _sessionsForProject(ProjectModel p) async {
-    final dirs = [p.worktree, ...await _safeWorktrees(p.worktree)]
+  /// the main worktree and every worktree in parallel. [worktreesByDir], when
+  /// it already covers the project's main worktree (populated by
+  /// `_reconcileSandboxes` on the same refresh), skips the duplicate
+  /// `GET /experimental/worktree` round-trip; cache-miss fetches are recorded
+  /// back into it so the ghost filter/detection can reuse the result.
+  Future<List<SessionModel>> _sessionsForProject(
+    ProjectModel p, [
+    Map<String, List<String>>? worktreesByDir,
+  ]) async {
+    var worktrees = worktreesByDir?[p.worktree];
+    if (worktrees == null) {
+      worktrees = await _safeWorktrees(p.worktree);
+      worktreesByDir?[p.worktree] = worktrees;
+    }
+    final dirs = [p.worktree, ...worktrees]
         .where((d) => d.isNotEmpty)
         .toList();
     final lists = await Future.wait(dirs.map((dir) async {
@@ -1094,22 +1240,45 @@ class ServerStore extends ChangeNotifier {
       if (force || !_sseByDir.containsKey(_kGlobalWatchdog)) {
         _startSse(_kGlobalWatchdog);
       }
-      final newProjects = (force || !_projectsFetched)
-          ? await client!.projects()
-          : _projects;
+      List<ProjectModel> newProjects;
+      final worktreesByDir = <String, List<String>>{};
+      if (force || !_projectsFetched) {
+        newProjects = await _reconcileSandboxes(
+          await client!.projects(),
+          worktreesByDir: worktreesByDir,
+        );
+      } else {
+        newProjects = _projects;
+      }
       _projectsFetched = true;
-      final sessions = await _fetchAllSessions(projects: newProjects);
+      final sessions = await _fetchAllSessions(
+          projects: newProjects, worktreesByDir: worktreesByDir);
+      // Ghost cleanup using data the session fetch already paid for: drop
+      // sandbox entries whose directory no longer exists, and mark open
+      // conversations whose session just proved unreachable (no SSE
+      // coverage → replies would never render).
+      _unghostRecovered(sessions);
+      final ghostIds =
+          _detectGhostSessionIds(_sessions, sessions, newProjects, worktreesByDir);
+      // On the force path `_reconcileSandboxes` already filtered with the same
+      // map (idempotent no-op here); on the reconcile path this is the pass
+      // that actually cleans in-memory sandboxes using data the session fetch
+      // already paid for.
+      newProjects = _filterSandboxes(newProjects, worktreesByDir);
       final fetchedDirs = <String>{};
       final status = await _fetchAllStatuses(
           projects: newProjects, sessions: sessions, fetchedDirs: fetchedDirs);
       _projects = newProjects;
       _sessions = sessions;
+      _markGhostSessions(ghostIds);
       _mergeStatus(fresh: status, sessions: sessions, fetchedDirs: fetchedDirs);
       _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
         final s = statusOf(conv.sessionId);
         conv.setStatus(s.type, retryMessage: s.message);
-        conv.sessionUpdated = sessionById(conv.sessionId)?.updated;
+        final fresh = sessionById(conv.sessionId);
+        conv.sessionUpdated = fresh?.updated;
+        if (fresh != null) conv.clearWorkspaceMissing();
       }
       // Start SSE for busy/retry sessions + active conversation.
       _startRequiredSse();
@@ -1402,6 +1571,50 @@ class ServerStore extends ChangeNotifier {
   @visibleForTesting
   void setProjectsForTesting(List<ProjectModel> projects) =>
       _projects = projects;
+
+  /// Test seam: drive the post-fetch ghost filtering of `sandboxes`
+  /// (see `_reconcileSandboxes`) without a full connect()/bootstrap.
+  @visibleForTesting
+  Future<List<ProjectModel>> reconcileSandboxesForTesting(
+          List<ProjectModel> projects) =>
+      _reconcileSandboxes(projects);
+
+  /// Test seam: drive `_sessionsForProject` to verify `worktreesByDir`
+  /// reuse (skipping the duplicate `GET /experimental/worktree`).
+  @visibleForTesting
+  Future<List<SessionModel>> sessionsForProjectForTesting(
+    ProjectModel p, [
+    Map<String, List<String>>? worktreesByDir,
+  ]) =>
+      _sessionsForProject(p, worktreesByDir);
+
+  /// Test seam: pure sandboxes filter over pre-fetched worktree lists.
+  @visibleForTesting
+  List<ProjectModel> filterSandboxesForTesting(
+    List<ProjectModel> projects,
+    Map<String, List<String>> worktreesByDir,
+  ) =>
+      _filterSandboxes(projects, worktreesByDir);
+
+  /// Test seam: pure detection of sessions whose directory became
+  /// unreachable (ghost sandbox) across a refresh.
+  @visibleForTesting
+  Set<String> detectGhostSessionIdsForTesting(
+    List<SessionModel> oldSessions,
+    List<SessionModel> newSessions,
+    List<ProjectModel> projects,
+    Map<String, List<String>> worktreesByDir,
+  ) =>
+      _detectGhostSessionIds(oldSessions, newSessions, projects, worktreesByDir);
+
+  /// Test seam: drive ghost tracking (mark / un-ghost) to verify the flag
+  /// survives conversation eviction via `_ghostSessionIds`.
+  @visibleForTesting
+  void markGhostSessionsForTesting(Set<String> ids) => _markGhostSessions(ids);
+
+  @visibleForTesting
+  void unghostRecoveredForTesting(List<SessionModel> sessions) =>
+      _unghostRecovered(sessions);
 
   /// Test seam for the in-memory status-cache merge. Seeds `_statusMap` first
   /// via `session.status` events, then call this to assert the resume-time
@@ -1729,6 +1942,7 @@ class ServerStore extends ChangeNotifier {
     _conversations.remove(id);
     _lastMessage.remove(id);
     _statusMap.remove(id);
+    _ghostSessionIds.remove(id);
     final cs = _cacheStore;
     if (cs != null) unawaited(cs.remove('conv/$id'));
     // Intentionally keeps `_lastActivityByKey` — activity is monotonic across
@@ -1828,6 +2042,7 @@ class ServerStore extends ChangeNotifier {
     _projects = [];
     _sessions = [];
     _statusMap.clear();
+    _ghostSessionIds.clear();
     _lastMessage.clear();
     _lastActivityByKey.clear();
     _workspaceEnabled.clear();

@@ -212,6 +212,7 @@
   "nextStep": "Next",
   "retryingMessage": "Retrying: {message}",
   "@retryingMessage": {"placeholders": {"message": {"type": "String"}}},
+  "workspaceMissing": "This session's workspace no longer exists; messages can no longer be sent",
   "loadingMore": "Loading…",
   "loadEarlierFailedHint": "Load failed, tap or scroll up to retry",
   "composeShellHint": "shell command…",
