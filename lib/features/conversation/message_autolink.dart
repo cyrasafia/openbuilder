@@ -214,7 +214,7 @@ String? _normalizeRelative(String rel) {
 
 String _trimTrailing(String url) {
   var u = url;
-  const punct = '.,;:!?';
+  const punct = '.,;:!?*';
   while (u.length > 1 && punct.contains(u[u.length - 1])) {
     u = u.substring(0, u.length - 1);
   }

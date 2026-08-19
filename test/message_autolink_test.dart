@@ -38,7 +38,10 @@ const u = 'http://code.example.com';
 after http://free.example.com''';
       final out = autolinkMarkdownLinks(src);
       expect(out, contains('http://code.example.com\';'));
-      expect(out, contains('[http://free.example.com](http://free.example.com)'));
+      expect(
+        out,
+        contains('[http://free.example.com](http://free.example.com)'),
+      );
       expect(out.contains('[http://code.example.com]'), isFalse);
     });
 
@@ -105,9 +108,9 @@ after http://free.example.com''';
           '已发布到飞书：https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg（151 个块，0 图片）。',
         ),
         '已发布到飞书：'
-            '[https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg]'
-            '(https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg)'
-            '（151 个块，0 图片）。',
+        '[https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg]'
+        '(https://www.feishu.cn/wiki/HaohwR24liQS2AkFF1vctdOknDg)'
+        '（151 个块，0 图片）。',
       );
     });
 
@@ -121,6 +124,53 @@ after http://free.example.com''';
         '见 [www.example.com/x](https://www.example.com/x)，同上',
       );
     });
+
+    test('markdown emphasis asterisks stay outside the link', () {
+      expect(
+        autolinkMarkdownLinks('**https://example.com**'),
+        '**[https://example.com](https://example.com)**',
+      );
+      expect(
+        autolinkMarkdownLinks('https://example.com**'),
+        '[https://example.com](https://example.com)**',
+      );
+      expect(
+        autolinkMarkdownLinks('*https://example.com*'),
+        '*[https://example.com](https://example.com)*',
+      );
+      expect(
+        autolinkMarkdownLinks(
+          '**https://auth.cyrasafia.party:4433/consent/openid/device-authorization?user_code=JSQPJGLL**（验证码 JSQPJGLL，约 6 分钟后过期）',
+        ),
+        '**'
+        '[https://auth.cyrasafia.party:4433/consent/openid/device-authorization?user_code=JSQPJGLL]'
+        '(https://auth.cyrasafia.party:4433/consent/openid/device-authorization?user_code=JSQPJGLL)'
+        '**（验证码 JSQPJGLL，约 6 分钟后过期）',
+      );
+    });
+
+    test('internal asterisk in URL is preserved', () {
+      expect(
+        autolinkMarkdownLinks('see https://www.google.com/search?q=foo*bar'),
+        'see [https://www.google.com/search?q=foo*bar]'
+        '(https://www.google.com/search?q=foo*bar)',
+      );
+      expect(
+        autolinkMarkdownLinks('route https://example.com/api/v2/*/schema'),
+        'route [https://example.com/api/v2/*/schema]'
+        '(https://example.com/api/v2/*/schema)',
+      );
+    });
+
+    test(
+      'trailing single asterisk wildcard route is stripped (accepted tradeoff)',
+      () {
+        expect(
+          autolinkMarkdownLinks('match https://example.com/*'),
+          'match [https://example.com/](https://example.com/)*',
+        );
+      },
+    );
 
     test('multiple URIs on one line', () {
       expect(
@@ -350,24 +400,24 @@ after http://free.example.com''';
 
   group('decodeFileHref', () {
     test('decodes relative path and line', () {
-      expect(
-        decodeFileHref('ob-file:///lib/foo.dart?line=42'),
-        ('lib/foo.dart', 42),
-      );
+      expect(decodeFileHref('ob-file:///lib/foo.dart?line=42'), (
+        'lib/foo.dart',
+        42,
+      ));
     });
 
     test('decodes absolute path without line', () {
-      expect(
-        decodeFileHref('ob-file:////home/u/proj/a.dart'),
-        ('/home/u/proj/a.dart', null),
-      );
+      expect(decodeFileHref('ob-file:////home/u/proj/a.dart'), (
+        '/home/u/proj/a.dart',
+        null,
+      ));
     });
 
     test('splits query before decoding so encoded ? survives', () {
-      expect(
-        decodeFileHref('ob-file:///weird%3Fline%3D9/foo.dart'),
-        ('weird?line=9/foo.dart', null),
-      );
+      expect(decodeFileHref('ob-file:///weird%3Fline%3D9/foo.dart'), (
+        'weird?line=9/foo.dart',
+        null,
+      ));
     });
 
     test('rejects non ob-file hrefs', () {

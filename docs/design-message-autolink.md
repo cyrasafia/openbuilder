@@ -1,6 +1,6 @@
 # design-message-autolink — 会话消息链接自动识别（URI + 项目内文件路径）
 
-> 状态：URI 识别已实现（`41e1b68` feat + `20f5ea5` / `668c68e` / `b1923e2` 三轮评审修复）；项目文件路径识别已实现（v2 扩展，MA/MB/MC 三轮评审修复）；URI 主体 ASCII 收紧修复全角标点吞字（MF-1）
+> 状态：URI 识别已实现（`41e1b68` feat + `20f5ea5` / `668c68e` / `b1923e2` 三轮评审修复）；项目文件路径识别已实现（v2 扩展，MA/MB/MC 三轮评审修复）；URI 主体 ASCII 收紧修复全角标点吞字（MF-1）；`_trimTrailing` 追加 `*` 剥离修复强调标记吞入链接（MF-2）
 > 代码：`lib/features/conversation/message_autolink.dart`（原 `uri_autolink.dart` 改名扩展）、`conversation_screen.dart` `_markdownPart` / `_onMdLink` / `_openLinkedFile`
 > 测试：`test/message_autolink_test.dart`（60 例，原 `uri_autolink_test.dart` 改名扩展）
 
@@ -56,8 +56,13 @@
 ### 识别规则
 
 URI 候选（MF-1 收紧）：`(?<![A-Za-z0-9_])(?:https?|ftp)://…` 与 `(?<![A-Za-z0-9_])www\.…`，
-主体字符类排除所有 ≥ U+0080 的非 ASCII 字符（`[^\s<>"'`\[\]\x80-\uFFFF]+`）——全角标点
+主体字符类排除所有 ≥ U+0080 的非 ASCII 字符
+（`[^\s<>"'`\[\]\x80-\uFFFF]+`）——全角标点
 （`（`、`，`、`。`）与 CJK 文本天然终止 URL，修复「URL 后紧跟全角括号被吞进链接」；
+markdown 强调标记 `*` 不在主体排除集（`*` 是 RFC 合法的 `sub-delims`，URL 内部
+`?q=foo*bar` 须保留），改由匹配后 `_trimTrailing` 尾标点剥离（MF-2：剥离集
+`.,;:!?*`）兜底——仅剥 URL **末尾**的 `*`，修复 `**https://…**` 强调包裹裸链接时
+闭合 `**` 被吞入；
 与文件路径分支的 ASCII 段字符集对齐。原始非 ASCII 字符的 IRI 形态不再识别
 （百分号编码形态不受影响），见「不做的事」。
 
@@ -428,3 +433,27 @@ URI，路径段不被拆出）：
 | 编号 | 状态 | 说明 |
 |------|------|------|
 | MF-1 | ✅ | 抽出 `_uriTail` 常量统一两个 URI 分支；补「全角标点终止 URL」「CJK 尾随文本留链外」2 例；60 例全过；IRI 不识别记入「不做的事」 |
+
+### 10次评审意见（线上缺陷修复·二）
+
+| 编号 | 优先级 | 问题 | 修复建议 |
+|------|--------|------|----------|
+| MF-2 | 🟡 | URI 尾随 markdown 强调 `*` 被吞入链接：`**https://…JSQPJGLL**`（markdown 强调包裹裸链接，用户实测报告）会把闭合 `**` 吞进链接，产出 `[https://…JSQPJGLL**](https://…JSQPJGLL**)` 畸形链接——`*` 是 ASCII，落在 MF-1 的 `\x80-\uFFFF` 排除之外，`_trimTrailing` 的标点剥离集 `.,;:!?` 也不含 `*` | `_trimTrailing` 标点剥离集追加 `*`（`.,;:!?*`），仅剥离**尾随** `*`；URL 主体内部 `*` 保留（`?q=foo*bar` 合法） |
+
+评审验证通过项：`*` 在 RFC 3986 属 `sub-delims` 合法字符，URL query/path 中可能出现（通配搜索 `?q=foo*bar`、glob 路由 `/api/v2/*/schema`），故**不**采用「`_uriTail` 字符类排除 `*`」方案——该方案会在 `*` 处截断整段 URL，误伤内部含 `*` 的合法 URL。`_trimTrailing` 仅作用于匹配末尾的标点剥离，不影响 URL 主体；`*` 末尾出现时几乎必然是 markdown 强调标记，剥离后作为 `tail` 留在链外，与既有 `.,;:!?` 及括号配平逻辑一致。
+
+**已知取舍（MF-2-尾随通配）**：`_trimTrailing` 的 `*` 剥离是**贪心且无条件**的（`while` 循环剥到尾字符非 `*`），故 URL **合法末尾单 `*`**（如通配路由 `https://example.com/*`）会被剥掉、`*` 留在链外，链接指向 `https://example.com/`。这是 `**url**`/`*url*` 强调包裹修复的逆面，与既有 `.,;:!?` 同款取舍（合法末尾 `.` 也会被剥）。不采用「仅剥 ≥2 连续 `*`」方案——会漏掉单 `*` 强调（`*url*`）的情形。聊天场景中通配路由末尾 `*` 罕见，强调包裹远更常见，接受此取舍（测试 `trailing single asterisk wildcard route is stripped` 固化行为）。
+
+#### 是否扩展为「URI 规范不允许字符全集」的权衡
+
+评审中提出是否应把 RFC 3986 不允许的字符全加入 `_uriTail` 排除列表。结论：**不扩展**。理由：
+
+1. **当前是黑名单策略**（MF-1 确立），`_uriTail` 选取标准是「markdown 语法冲突 / 非 ASCII」，而非「RFC 不允许」。本次补 `*` 走的是 `_trimTrailing` 尾标点剥离路径，未动 `_uriTail`——恰因 `*` 是 RFC 合法的 `sub-delims`，放它进 `_uriTail` 排除集会误伤内部 `*`。
+2. **白名单（unreserved + 部分 reserved）会误伤合法 URL**：query 高频的 `&` `=` `+` `$` `;` 均为 reserved 合法字符，收窄白名单会切断 `?a=1&b=2`；全放行则等同当前黑名单，无意义。
+3. **当前 `_uriTail` 排除集已覆盖全部 markdown 语法字符**（`` ` `` `[` `]` `<` `>` `"` `'`）+ 空白 + 非 ASCII。剩余 `{` `}` `|` `\` `^` 在聊天 URL 中极罕见，且不干扰 markdown 解析，加入收益低、误伤带模板参数 URL（`{id}`）的风险反而存在。`*` 的 markdown 强调语义由 `_trimTrailing` 兜底（仅尾部），不进 `_uriTail`。
+
+#### 修复复审
+
+| 编号 | 状态 | 说明 |
+|------|------|------|
+| MF-2 | ✅ | `_trimTrailing` 标点剥离集追加 `*`；补「强调包裹裸链接」「URL 尾随 `**`」「单 `*` 强调」「内部 `*` 保留」「尾随通配 `*` 剥离取舍」5 例；全量 63 测试通过、`analyze` 无 issue |
