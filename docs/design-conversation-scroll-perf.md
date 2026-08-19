@@ -267,3 +267,92 @@
 - **代价**：流式期间每次 conv notify 清全表 → 可视消息重建一次（= 现状，SP-2 已保证不触发 markdown 重解析）；per-message 版本号精细失效需 store 侧埋点，收益不值得复杂度。
 - **备选（未启用）**：`resizeToAvoidBottomInset: false` + 输入条自行避让 inset，列表完全不参与键盘动画布局。UX 变化大（列表被键盘遮挡的可见性需另行处理），仅当记忆化后 profile 仍不达标再评。
 - **验证**：`flutter analyze --fatal-infos` 无 issue；`flutter test` 282 全过。真机键盘动画掉帧率对比待补（需 profile）。
+
+---
+
+## 8. 第三轮：rebuild 归因定位 + 关闭 Scaffold 键盘 inset 依赖
+
+> 列表已从 `ScrollablePositionedList` 迁到原生 `CustomScrollView + SliverList`（见 [`design-run-assembly.md`](design-run-assembly.md)）。§7.5 的 widget 实例记忆化（`_messageChildCache`）仍保留。本轮针对"记忆化后键盘展开仍掉帧、新建会话更严重"继续定位。
+
+### 8.1 诊断手段：debug 包 rebuild 归因
+
+release 包只能看到帧间隔/耗时，看不到"谁在重建"。在 debug 包挂 `debugOnRebuildDirtyWidget`（仅 debug 生效），会话动画期间按 runtimeType 聚合每帧脏 widget 重建数，随 `KbPerf` 快照输出（`rebuild=N Type:count,...`）。
+
+### 8.2 定位结论
+
+键盘动画期间 `MediaQuery.viewInsets.bottom` 每帧变化。会话页 `Scaffold` 默认 `resizeToAvoidBottomInset: true`，其 `ScaffoldState.build` 会读 `MediaQuery.viewInsetsOf`（`scaffold.dart:3222/3227`）→ Scaffold 对 viewInsets 建立依赖 → **每个挂载中的会话页 Scaffold 每帧重建**。go_router 下被 push 覆盖的会话页**仍留在树里（offstage 但 element 活跃）**，inherited 变化照样传播，故**同时挂载几个会话页就有几个 Scaffold 每帧重建**。
+
+rebuild 聚合实测（debug）：
+- 普通动画帧：每帧 ~300–600 个 widget 重建（MediaQuery/Builder/Text/DefaultTextStyle/KeyedSubtree/IconTheme/SafeArea 为主）。
+- 尖峰帧：~1400–1800 个（其余挂载会话页的子树、含其 keep-alive 消息项 ~47 个 KeepAlive 也一并重建）。
+- **新建会话首次展开最重**（进入新会话后第一次开键盘，叠加首建 + IME/focus 建立，持续 1700–1800 重建）。
+
+release 下单 widget 重建更快，但 120Hz 预算 8.3ms 下 300–1800 次重建仍超预算 → 掉帧。**这与"新建会话更严重"的体感吻合**（首次展开重建量最大）。
+
+### 8.3 修复：关闭 Scaffold 的 viewInsets 依赖，改由小部件自行避让
+
+即 §7.5 记录为"备选（未启用）"的方案，本轮实测证据充分后启用：
+
+1. 会话页 `Scaffold` 设 `resizeToAvoidBottomInset: false` → Scaffold 不再读 `viewInsetsOf`（三元短路），对所有挂载中的会话页（活跃 + offstage）都解除 viewInsets 依赖。
+2. 新增 `_KeyboardAvoider`（`StatelessWidget`）包住 body：只读 `MediaQuery.viewInsetsOf(context).bottom` 并作为 bottom padding。动画期间**只有这个小部件重建**，其 child（body 的 `ListenableBuilder`）是同一实例被 identity 剪枝，子树不重建。净效果与原 resize 一致（列表视口收缩、输入条抬到键盘上方），但每帧重建从"每挂载页一个 Scaffold 子树"降为"每挂载页一个 Padding"。
+3. `_BottomBar` 底部留白改用 `MediaQuery.paddingOf(context).bottom`（只依赖 padding aspect，动画期间至多开/关各变一次），不再整 `MediaQuery.of` 全量依赖。`viewInsets + padding` 互补，合计即正确底部避让。
+
+### 8.4 附带修复：`_ToolChip` build 期读 size 报错
+
+`_ToolChipState.build` 的 `AnimatedBuilder` 里读 `_headerKey.currentContext?.size`（build 期读 size 在 debug 抛 "Cannot get size during build"，每次进入含 tool 卡片的会话都报）。改为在 `_toggle`（手势回调，合法时机）捕获 header 宽存入 `_headerW`，build 期只读该值。
+
+### 8.5 验证
+
+- `flutter analyze --fatal-infos` 无 issue；`flutter test` 448 全过。
+- debug 包已构建（`build/app/outputs/flutter-apk/app-debug.apk`），复测预期：键盘动画帧的 `rebuild=` 从 300–1800 降到个位数（仅 `_KeyboardAvoider`），掉帧消失。真机对比待补。
+- 注：本轮对 `conversation_screen.dart` 跑了 `dart format`（该文件此前未格式化），diff 含一次性格式化，审阅可用 `git diff -w` 看逻辑变更。
+- **复测结果（1659 日志）推翻"降到个位数"预期**：有消息会话确实降到 ~221/帧，但**新建会话（msgs=0）仍 ~465/帧基线 + 尖峰到 1631–1889（build 50–110ms）**。说明 §8 只解掉了会话页自身 Scaffold 的依赖，还有更大的后台重建源 → 见 §9。另：§8.3 第 3 条声称 `_BottomBar` 已改 `paddingOf`，实际当时未落到代码（仍是 `MediaQuery.of`），本轮才真正改上。
+
+## 9. 第四轮：后台 Shell / 会话列表才是尖峰重建源
+
+> §8 之后复测（1659 日志）：新建会话仍掉帧。本轮用同一 `KbPerf` rebuild 归因继续定位，把"谁在重建"对到具体路由/控件。
+
+### 9.1 复测数据对比（1659 日志）
+
+按 `session#N ... msgs=N` 分组，基线=非尖峰帧的 `rebuild=`，尖峰=偶发大批量帧：
+
+| 会话 | msgs | 基线 rebuild/帧 | 尖峰 rebuild | 尖峰帧 build 耗时 |
+|---|---|---|---|---|
+| s=3 open | 100 | ~227 | 无 | — |
+| s=5 open | 21 | ~221 | 无 | — |
+| s=4 close | 21 | ~239 | 693 / 809 / 821 | ~30ms |
+| s=6 close | 21 | ~221–287 | 675 / 791 | ~30ms |
+| s=7 open | 0 | ~465–490 | 1547 / 1648 | 86–102ms |
+| s=8 close | 0 | ~465–537 | 1472–1641、多次 1631 | 72–122ms |
+| s=9 open | 0 | ~465–519 | 1464–1747 | 62–97ms |
+| s=11 close | 0 | ~465–496 | 1311–1889 | 52–115ms |
+
+结论一：**msgs=0（新建会话）基线约为有消息会话的 2 倍，尖峰约 2–3 倍**；掉帧最重的帧（build 50–122ms）全部落在尖峰帧。
+
+### 9.2 尖峰重建的指纹 → 后台会话列表
+
+尖峰帧 top 类型高度一致：`Text:~102, Builder:~82, AnimatedDefaultTextStyle:~78, DefaultTextStyle:~78, KeyedSubtree:~67, IconTheme:~60, Container:~46, Icon:~45`。
+
+这是 **`ListTile` 子树的典型构成**（`ListTile` 内部产 `AnimatedDefaultTextStyle`/`IconTheme`/`KeyedSubtree`/`RawGestureDetector`+`Actions`）。按 ~45 个 `Icon`、~102 个 `Text` 估算约 20–45 个 tile——与**后台 `SessionsTab` 会话列表**规模吻合。且尖峰帧 `body=0 bb=0 cmp=0 ab=0`（会话页自身 chrome 未重建），证明重建量**不在会话页，而在其背后的路由**。
+
+路由结构佐证（`app_router.dart`）：`/session/:id`（会话页）是**顶层 GoRoute**，push 覆盖在 `StatefulShellRoute`（`MainShell` + sessions/projects/settings 三 tab）之上。go_router 下被覆盖的 shell **仍整体挂载**，inherited（MediaQuery）变化照样传播。
+
+### 9.3 根因：shell 各 Scaffold 默认 `resizeToAvoidBottomInset: true`
+
+`MainShell`、`SessionsTab`、`ProjectsTab`、`SettingsTab` 的 `Scaffold` 均未显式设置 → 默认 `resizeToAvoidBottomInset: true` → 各自 `ScaffoldState.build` 读 `MediaQuery.viewInsetsOf` 建立依赖。键盘动画期间 viewInsets 每帧变化 → **后台 4 个 Scaffold 每帧重建并级联到三 tab 子树（含会话列表全部 tile）**。这些 tab **没有任何 TextField**（已 grep 确认），本就不需要避让键盘——纯属浪费。
+
+"新建会话更严重"的成因（与 msgs=0 强相关，细节待复测确认）：尖峰量级随时序增大（s=4/6 Text:48–60 → s=7+ Text:~102），与测试过程中会话列表增长/后台挂载内容变多一致；空会话本身控件更少，故多出的重建只能来自后台。
+
+### 9.4 修复
+
+1. **shell 四处 Scaffold 设 `resizeToAvoidBottomInset: false`**（`main_shell.dart` / `sessions_tab.dart` / `projects_tab.dart` / `settings_tab.dart`）：解除后台 shell 对 viewInsets 的依赖，键盘动画期间不再重建三 tab 与会话列表。因无 TextField，关闭避让无副作用。
+2. **补齐会话页残留的全量 `MediaQuery.of` 依赖**（§8 遗漏/未落）：
+   - `_BottomBar` 底部留白 `MediaQuery.of(...).padding.bottom` → `MediaQuery.paddingOf(...).bottom`（§8.3 声称已改、实际未落，本轮真正改上）。
+   - `_FooterCard`（todo/permission/question 三处）与 `_CommandHints` 的 `MediaQuery.of(...).size.height` → `MediaQuery.sizeOf(...).height`。
+   - `_AgentModelBar` 的 `MediaQuery.of(...).copyWith(textScaler:...)` 追加 `viewInsets: EdgeInsets.zero`：bar 子树看到的 viewInsets 恒定，动画期间 MediaQuery data 不变 → 子树不重建（bar 由 `_KeyboardAvoider` 的 padding 定位，自身从不读 viewInsets）。
+
+### 9.5 验证
+
+- `flutter analyze --fatal-infos` 无 issue；`flutter test` 448 全过；debug 包已重建。
+- 复测预期：键盘动画帧的尖峰（1400–1889）应消失或大幅回落（后台 shell/会话列表不再重建），新建会话基线从 ~465 回落、掉帧消除。
+- 若新建会话仍有残余尖峰，则说明还有 serverStore notify 驱动的会话列表整体重建成分，下一步给 `SessionsTab`/`_SessionTile` 加计数或按 session 记忆化 tile 再定位。

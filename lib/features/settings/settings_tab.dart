@@ -71,6 +71,8 @@ class _SettingsTabState extends State<SettingsTab> {
     final scheme = Theme.of(context).colorScheme;
     final loc = l(context);
     return Scaffold(
+      // See MainShell: background behind pushed routes; no text input here.
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(title: Text(loc.settingsTitle)),
       body: ListenableBuilder(
         listenable: connectionStore,

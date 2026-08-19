@@ -40,6 +40,9 @@ class _SessionsTabState extends State<SessionsTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // See MainShell: tab is background behind pushed routes; must not rebuild
+      // every frame of a foreground keyboard animation (no text input here).
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: Text(l(context).tabSessions),
       ),

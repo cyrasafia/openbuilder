@@ -4,7 +4,10 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show RenderSliverMultiBoxAdaptor, ScrollCacheExtent, SliverMultiBoxAdaptorParentData;
+    show
+        RenderSliverMultiBoxAdaptor,
+        ScrollCacheExtent,
+        SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cross_file/cross_file.dart';
@@ -281,6 +284,10 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _evaluateFrame() {
+    _evaluateFrameImpl();
+  }
+
+  void _evaluateFrameImpl() {
     final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv == null) return;
     final msgs = conv.renderableMessages;
@@ -339,8 +346,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     // scroll 偏移 s 的内容点 screenY = vpBottom - (s - pixels)，故 s = pixels +
     // vpBottom - screenY。
     final vpBottom = listBox.localToGlobal(Offset.zero).dy + h;
-    final lastTop =
-        pixels + vpBottom - lastChild.localToGlobal(Offset.zero).dy;
+    final lastTop = pixels + vpBottom - lastChild.localToGlobal(Offset.zero).dy;
 
     // Seed heights for ALL mounted sliver children directly from their render
     // objects. _heightCache otherwise lags because _measuredMessage's
@@ -500,7 +506,8 @@ class _ConversationScreenState extends State<ConversationScreen>
     // runTop - h 的浮点累加每帧可能产生 ulp 级抖动（实测 1e-13 量级在两值间
     // 反复横跳）。精确 != 会让 ValueNotifier 每帧通知一次，按钮被无谓 rebuild。
     // 半像素以内视为相等。
-    final same = (cur == null && target == null) ||
+    final same =
+        (cur == null && target == null) ||
         (cur != null && target != null && (cur - target).abs() < 0.5);
     if (!same) {
       _backToTopTarget.value = target;
@@ -509,7 +516,8 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   void _updateFarFromBottom() {
     if (_screenHeight <= 0 || !_scrollController.hasClients) return;
-    final far = _scrollController.position.pixels >
+    final far =
+        _scrollController.position.pixels >
         _kScrollButtonThresholdScreens * _screenHeight;
     if (_farFromBottom.value != far) _farFromBottom.value = far;
   }
@@ -529,8 +537,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
     final t = target.clamp(pos.minScrollExtent, pos.maxScrollExtent);
-    final screens =
-        _viewportHeight > 0 ? (t - pos.pixels).abs() / _viewportHeight : 1.0;
+    final screens = _viewportHeight > 0
+        ? (t - pos.pixels).abs() / _viewportHeight
+        : 1.0;
     final ms = (250 * screens).clamp(250.0, 500.0).round();
     unawaited(
       _scrollController.animateTo(
@@ -725,6 +734,10 @@ class _ConversationScreenState extends State<ConversationScreen>
     }
     final directory = session?.directory ?? '';
     return Scaffold(
+      // Keyboard avoidance is done by _KeyboardAvoider (viewInsets padding)
+      // instead of resizeToAvoidBottomInset, so the Scaffold does not register
+      // a viewInsets dependency and rebuild every keyboard-animation frame.
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: ListenableBuilder(
           listenable: serverStore,
@@ -779,7 +792,8 @@ class _ConversationScreenState extends State<ConversationScreen>
             listenable: serverStore,
             builder: (context, _) {
               final s = serverStore.sessionById(widget.sessionId);
-              final canDiff = s != null &&
+              final canDiff =
+                  s != null &&
                   (serverStore.projectOf(s.projectID)?.workspaceCapable ??
                       false);
               if (!canDiff) return const SizedBox.shrink();
@@ -801,159 +815,162 @@ class _ConversationScreenState extends State<ConversationScreen>
           appBarActionsTrailing,
         ],
       ),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([conv, showThinking]),
-        builder: (context, _) {
-          // Only clear on structural message changes (add/remove/reorder/id
-          // swap), not on per-token content updates or non-content notifies
-          // (driver cacheExtent / busy / showThinking). Lets finished
-          // messages' cached widget instances survive → identity short-circuit
-          // prunes them during streaming / driver rebuilds.
-          final v = conv.messagesVersion;
-          if (_lastMsgVersion != v) {
-            _lastMsgVersion = v;
-            _messageChildCache.clear();
-          }
-          // showThinking changes rendered content (reasoning show/hide) but
-          // not messagesVersion — track it separately and invalidate.
-          final st = showThinking.value;
-          if (_lastShowThinking != st) {
-            _lastShowThinking = st;
-            _messageChildCache.clear();
-          }
-          if (conv.loading && !conv.loaded && conv.messages.isEmpty) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (!conv.loading && conv.error != null && conv.messages.isEmpty) {
-            return Center(
-              child: Text(
-                l(
-                  context,
-                ).loadFailedDetail(friendlyMessage(l(context), conv.error!)),
-              ),
-            );
-          }
-          // Reversed CustomScrollView pins to the newest message (bottom) on
-          // open. Slivers keep non-message rows out of the message index
-          // space: bottom spacing / dynamic footer / messages / header.
-          final msgs = conv.renderableMessages;
-          if (_wasBusy && !conv.busy) _onBusyEnd(msgs);
-          _wasBusy = conv.busy;
-          _pruneMessageCaches(msgs);
-          _scheduleFrameEval();
-          final list = CustomScrollView(
-            key: _listKey,
-            reverse: true,
-            controller: _scrollController,
-            scrollCacheExtent: ScrollCacheExtent.pixels(_cacheExtent),
-            slivers: [
-              const SliverToBoxAdapter(child: SizedBox(height: 8)),
-              SliverToBoxAdapter(child: _footerRow(conv)),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                sliver: SliverList(
-                  key: _sliverKey,
-                  delegate: SliverChildBuilderDelegate(
-                    (context, m) => _measuredMessage(msgs[m]),
-                    childCount: msgs.length,
+      body: _KeyboardAvoider(
+        child: ListenableBuilder(
+          listenable: Listenable.merge([conv, showThinking]),
+          builder: (context, _) {
+            // Only clear on structural message changes (add/remove/reorder/id
+            // swap), not on per-token content updates or non-content notifies
+            // (driver cacheExtent / busy / showThinking). Lets finished
+            // messages' cached widget instances survive → identity short-circuit
+            // prunes them during streaming / driver rebuilds.
+            final v = conv.messagesVersion;
+            if (_lastMsgVersion != v) {
+              _lastMsgVersion = v;
+              _messageChildCache.clear();
+            }
+            // showThinking changes rendered content (reasoning show/hide) but
+            // not messagesVersion — track it separately and invalidate.
+            final st = showThinking.value;
+            if (_lastShowThinking != st) {
+              _lastShowThinking = st;
+              _messageChildCache.clear();
+            }
+            if (conv.loading && !conv.loaded && conv.messages.isEmpty) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (!conv.loading && conv.error != null && conv.messages.isEmpty) {
+              return Center(
+                child: Text(
+                  l(
+                    context,
+                  ).loadFailedDetail(friendlyMessage(l(context), conv.error!)),
+                ),
+              );
+            }
+            // Reversed CustomScrollView pins to the newest message (bottom) on
+            // open. Slivers keep non-message rows out of the message index
+            // space: bottom spacing / dynamic footer / messages / header.
+            final msgs = conv.renderableMessages;
+            if (_wasBusy && !conv.busy) _onBusyEnd(msgs);
+            _wasBusy = conv.busy;
+            _pruneMessageCaches(msgs);
+            _scheduleFrameEval();
+            final list = CustomScrollView(
+              key: _listKey,
+              reverse: true,
+              controller: _scrollController,
+              scrollCacheExtent: ScrollCacheExtent.pixels(_cacheExtent),
+              slivers: [
+                const SliverToBoxAdapter(child: SizedBox(height: 8)),
+                SliverToBoxAdapter(child: _footerRow(conv)),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                  sliver: SliverList(
+                    key: _sliverKey,
+                    delegate: SliverChildBuilderDelegate(
+                      (context, m) => _measuredMessage(msgs[m]),
+                      childCount: msgs.length,
+                    ),
                   ),
                 ),
-              ),
-              SliverToBoxAdapter(child: _headerRow(conv)),
-            ],
-          );
-          final msgCount = msgs.length;
-          if (msgCount != _lastMsgCount) {
-            _lastMsgCount = msgCount;
-            _scheduleAutoScroll();
-          }
-          final showFooter =
-              conv.permissions.isNotEmpty ||
-              conv.questions.isNotEmpty ||
-              conv.todos.any((t) => !t.done);
-          return Column(
-            children: [
-              Expanded(
-                child: Stack(
-                  children: [
-                    list,
-                    Positioned(
-                      right: 12,
-                      bottom: 12,
-                      child: _BackToTurnTopButton(
-                        target: _backToTopTarget,
-                        onTap: _scrollToRunTop,
+                SliverToBoxAdapter(child: _headerRow(conv)),
+              ],
+            );
+            final msgCount = msgs.length;
+            if (msgCount != _lastMsgCount) {
+              _lastMsgCount = msgCount;
+              _scheduleAutoScroll();
+            }
+            final showFooter =
+                conv.permissions.isNotEmpty ||
+                conv.questions.isNotEmpty ||
+                conv.todos.any((t) => !t.done);
+            return Column(
+              children: [
+                Expanded(
+                  child: Stack(
+                    children: [
+                      list,
+                      Positioned(
+                        right: 12,
+                        bottom: 12,
+                        child: _BackToTurnTopButton(
+                          target: _backToTopTarget,
+                          onTap: _scrollToRunTop,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              if (showFooter)
-                _FooterPanel(
-                  todos: conv.todos,
-                  permissions: conv.permissions,
-                  questions: conv.questions,
-                  store: conv,
-                ),
-              if (_cmdMode)
-                _CommandHints(
-                  query: _ctl.text,
-                  commands: serverStore.commandsNotifier.value,
-                  loading:
-                      serverStore.commandsRefreshing &&
-                      serverStore.commandsNotifier.value.isEmpty,
-                  onPick: _pickCommand,
-                ),
-              _BottomBar(
-                sessionId: widget.sessionId,
-                directory: directory,
-                ctl: _ctl,
-                busy: conv.busy,
-                disabled: conv.workspaceMissing,
-                onAbort: () => _abort(directory),
-                onChanged: (t) {
-                  conv.setDraft(
-                    t,
-                    shell: _shellMode,
-                  ); // ← 开头：覆盖所有输入路径（含 shell 早退，CD-16）
-                  if (_shellMode) {
-                    if (t.isEmpty) {
-                      setState(() => _shellMode = false);
-                    }
-                    return;
-                  }
-                  final mode = t.startsWith('/') && !t.contains(' ');
-                  // Only (re)fetch when transitioning into command mode, not on
-                  // every keystroke while typing — a degraded result retries on
-                  // the next `/` input rather than hammering a flaky server.
-                  if (mode &&
-                      !_cmdMode &&
-                      (!_cmdRefreshTriggered || serverStore.commandsDegraded)) {
-                    _cmdRefreshTriggered = true;
-                    _triggerCommandRefresh();
-                  }
-                  if (t == '!') {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (_ctl.text == '!') {
-                        _ctl.clear();
-                        setState(() => _shellMode = true);
+                if (showFooter)
+                  _FooterPanel(
+                    todos: conv.todos,
+                    permissions: conv.permissions,
+                    questions: conv.questions,
+                    store: conv,
+                  ),
+                if (_cmdMode)
+                  _CommandHints(
+                    query: _ctl.text,
+                    commands: serverStore.commandsNotifier.value,
+                    loading:
+                        serverStore.commandsRefreshing &&
+                        serverStore.commandsNotifier.value.isEmpty,
+                    onPick: _pickCommand,
+                  ),
+                _BottomBar(
+                  sessionId: widget.sessionId,
+                  directory: directory,
+                  ctl: _ctl,
+                  busy: conv.busy,
+                  disabled: conv.workspaceMissing,
+                  onAbort: () => _abort(directory),
+                  onChanged: (t) {
+                    conv.setDraft(
+                      t,
+                      shell: _shellMode,
+                    ); // ← 开头：覆盖所有输入路径（含 shell 早退，CD-16）
+                    if (_shellMode) {
+                      if (t.isEmpty) {
+                        setState(() => _shellMode = false);
                       }
-                    });
-                  }
-                  setState(() => _cmdMode = mode);
-                },
-                onSend: _send,
-                farFromBottom: _farFromBottom,
-                onScrollToBottom: _scrollToBottom,
-                pending: _pending,
-                shellMode: _shellMode,
-                onExitShellMode: () => setState(() => _shellMode = false),
-                onPickAttachments: _pickAttachments,
-                onRemove: _removePending,
-              ),
-            ],
-          );
-        },
+                      return;
+                    }
+                    final mode = t.startsWith('/') && !t.contains(' ');
+                    // Only (re)fetch when transitioning into command mode, not on
+                    // every keystroke while typing — a degraded result retries on
+                    // the next `/` input rather than hammering a flaky server.
+                    if (mode &&
+                        !_cmdMode &&
+                        (!_cmdRefreshTriggered ||
+                            serverStore.commandsDegraded)) {
+                      _cmdRefreshTriggered = true;
+                      _triggerCommandRefresh();
+                    }
+                    if (t == '!') {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (_ctl.text == '!') {
+                          _ctl.clear();
+                          setState(() => _shellMode = true);
+                        }
+                      });
+                    }
+                    setState(() => _cmdMode = mode);
+                  },
+                  onSend: _send,
+                  farFromBottom: _farFromBottom,
+                  onScrollToBottom: _scrollToBottom,
+                  pending: _pending,
+                  shellMode: _shellMode,
+                  onExitShellMode: () => setState(() => _shellMode = false),
+                  onPickAttachments: _pickAttachments,
+                  onRemove: _removePending,
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -1057,8 +1074,10 @@ class _ConversationScreenState extends State<ConversationScreen>
         .whereType<_PendingAttachment>()
         .map((e) => e.preview)
         .toList();
-    final fileRefs =
-        pendingSnapshot.whereType<_PendingFileRef>().map((e) => e.ref).toList();
+    final fileRefs = pendingSnapshot
+        .whereType<_PendingFileRef>()
+        .map((e) => e.ref)
+        .toList();
     final shellModeWas = _shellMode;
     final displayText = _shellMode ? '!$text' : text;
     _ctl.clear();
@@ -1111,8 +1130,11 @@ class _ConversationScreenState extends State<ConversationScreen>
                 },
               for (final r in fileRefs) r.toFilePart(),
             ];
-            conv.addOptimisticUserMessage(text,
-                attachments: attachments, fileRefs: fileRefs);
+            conv.addOptimisticUserMessage(
+              text,
+              attachments: attachments,
+              fileRefs: fileRefs,
+            );
             serverStore.reflectPreviewFrom(widget.sessionId);
             final totalLen = cmdParts.fold<int>(
               0,
@@ -1148,8 +1170,11 @@ class _ConversationScreenState extends State<ConversationScreen>
           for (final r in fileRefs) {
             parts.add(r.toFilePart());
           }
-          conv.addOptimisticUserMessage(text,
-              attachments: attachments, fileRefs: fileRefs);
+          conv.addOptimisticUserMessage(
+            text,
+            attachments: attachments,
+            fileRefs: fileRefs,
+          );
           serverStore.reflectPreviewFrom(widget.sessionId);
           final totalLen = parts.fold<int>(
             0,
@@ -1326,8 +1351,11 @@ class _ConversationScreenState extends State<ConversationScreen>
   Color _userBubbleColor() =>
       Theme.of(context).extension<AppColors>()!.userBubble;
 
-  Widget _parts(List<DisplayPart> parts,
-      {required bool user, required bool stable}) {
+  Widget _parts(
+    List<DisplayPart> parts, {
+    required bool user,
+    required bool stable,
+  }) {
     final visible = <DisplayPart>[];
     for (final p in parts) {
       if (user && p.type != 'text' && p.type != 'file' && p.type != 'subtask') {
@@ -1338,7 +1366,8 @@ class _ConversationScreenState extends State<ConversationScreen>
     final children = <Widget>[];
     for (var i = 0; i < visible.length; i++) {
       children.add(
-          _part(visible[i], user: user, isFirst: i == 0, stable: stable));
+        _part(visible[i], user: user, isFirst: i == 0, stable: stable),
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1346,8 +1375,12 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  Widget _part(DisplayPart p,
-      {required bool user, bool isFirst = false, required bool stable}) {
+  Widget _part(
+    DisplayPart p, {
+    required bool user,
+    bool isFirst = false,
+    required bool stable,
+  }) {
     switch (p.type) {
       case 'subtask':
         final commandName = p.command ?? 'subtask';
@@ -1393,8 +1426,11 @@ class _ConversationScreenState extends State<ConversationScreen>
     _messageChildCache.clear();
   }
 
-  Widget _markdownPart(String data,
-      {required bool user, required bool stable}) {
+  Widget _markdownPart(
+    String data, {
+    required bool user,
+    required bool stable,
+  }) {
     final sheet = user ? _mdStyleUser : _mdStyleAssistant;
     if (_autolinkCache.length >= _kAutolinkCacheMax) {
       _autolinkCache.remove(_autolinkCache.keys.first);
@@ -1574,7 +1610,7 @@ class _TodoCard extends StatelessWidget {
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight:
-                    MediaQuery.of(context).size.height *
+                    MediaQuery.sizeOf(context).height *
                     _kFooterCardContentHeightFactor,
               ),
               child: SingleChildScrollView(
@@ -1889,6 +1925,9 @@ class _ToolChipState extends State<_ToolChip>
   final GlobalKey _contentKey = GlobalKey();
   final GlobalKey _headerKey = GlobalKey();
   double _lastV = 0;
+  // Header width captured at toggle time (a gesture callback), never read
+  // during build — reading `.size` during build throws.
+  double _headerW = 0.0;
   late final AnimationController _ctrl = AnimationController(
     duration: const Duration(milliseconds: 150),
     vsync: this,
@@ -1910,6 +1949,13 @@ class _ToolChipState extends State<_ToolChip>
     if (_expanded) {
       _lastV = 1.0;
       _ctrl.value = 1.0;
+      // Capture header width after first frame so that a later collapse
+      // animation interpolates from the real header width, not 0.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _headerW = _headerKey.currentContext?.size?.width ?? _headerW;
+        }
+      });
     }
   }
 
@@ -1926,6 +1972,9 @@ class _ToolChipState extends State<_ToolChip>
   }
 
   void _toggle() {
+    // Capture the laid-out header width here (gesture callback), since it
+    // cannot be read during build.
+    _headerW = _headerKey.currentContext?.size?.width ?? _headerW;
     setState(() {
       _expanded = !_expanded;
       if (_expanded) {
@@ -2004,10 +2053,9 @@ class _ToolChipState extends State<_ToolChip>
                   return AnimatedBuilder(
                     animation: _curved,
                     builder: (context, child) {
-                      final headerW =
-                          _headerKey.currentContext?.size?.width ?? 0.0;
                       return SizedBox(
-                        width: headerW + (c.maxWidth - headerW) * _curved.value,
+                        width:
+                            _headerW + (c.maxWidth - _headerW) * _curved.value,
                         child: SizeTransition(
                           sizeFactor: _curved,
                           alignment: Alignment.topCenter,
@@ -2255,8 +2303,9 @@ class _FileChipState extends State<_FileChip> {
           return GestureDetector(
             onTap: () => _openFullScreen(ctx, bytes),
             child: ConstrainedBox(
-              constraints:
-                  const BoxConstraints(maxHeight: imageBubbleMaxHeight),
+              constraints: const BoxConstraints(
+                maxHeight: imageBubbleMaxHeight,
+              ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: Image.memory(
@@ -2310,9 +2359,7 @@ class _FileChipState extends State<_FileChip> {
               onPressed: () => Navigator.of(context).pop(),
             ),
           ),
-          body: SafeArea(
-            child: ImageView(bytes: bytes, isSvg: false),
-          ),
+          body: SafeArea(child: ImageView(bytes: bytes, isSvg: false)),
         ),
       ),
     );
@@ -2327,8 +2374,9 @@ class _FileChipState extends State<_FileChip> {
     try {
       final ok = await launchUrl(uri);
       if (!ok && context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
       }
     } catch (e) {
       if (context.mounted) {
@@ -2348,11 +2396,7 @@ class _FileChipState extends State<_FileChip> {
     if (path.isEmpty) return;
     Navigator.of(context).push(
       slideLeftRoute(
-        FileViewScreen(
-          sessionId: sid,
-          path: path,
-          directory: directory,
-        ),
+        FileViewScreen(sessionId: sid, path: path, directory: directory),
       ),
     );
   }
@@ -2538,7 +2582,7 @@ class _PermissionCardState extends State<_PermissionCard> {
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight:
-                    MediaQuery.of(context).size.height *
+                    MediaQuery.sizeOf(context).height *
                     _kFooterCardContentHeightFactor,
               ),
               child: SingleChildScrollView(
@@ -2743,7 +2787,7 @@ class _QuestionCardState extends State<_QuestionCard> {
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight:
-                    MediaQuery.of(context).size.height *
+                    MediaQuery.sizeOf(context).height *
                     _kFooterCardContentHeightFactor,
               ),
               child: SingleChildScrollView(
@@ -3128,6 +3172,28 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
   }
 }
 
+/// Applies the software-keyboard inset as bottom padding in place of
+/// `Scaffold.resizeToAvoidBottomInset` (which is disabled on the conversation
+/// Scaffold). A `resizeToAvoidBottomInset:true` Scaffold registers a dependency
+/// on `MediaQuery` viewInsets, so during the keyboard animation it (and every
+/// offstage conversation route left mounted in the navigator) rebuilds each
+/// frame. Here only this small widget depends on viewInsets; its [child] is the
+/// same widget instance across animation frames, so the subtree is pruned by
+/// identity and only this padding rebuilds.
+class _KeyboardAvoider extends StatelessWidget {
+  final Widget child;
+  const _KeyboardAvoider({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottom),
+      child: child,
+    );
+  }
+}
+
 class _KeepAliveMessage extends StatefulWidget {
   final String msgId;
   final ValueNotifier<Set<String>> keepAliveIds;
@@ -3269,7 +3335,7 @@ class _BottomBar extends StatelessWidget {
           ),
         ),
       ),
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).padding.bottom),
+      padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -3328,8 +3394,7 @@ class _ComposeBar extends StatefulWidget {
   State<_ComposeBar> createState() => _ComposeBarState();
 }
 
-class _ComposeBarState extends State<_ComposeBar>
-    with WidgetsBindingObserver {
+class _ComposeBarState extends State<_ComposeBar> with WidgetsBindingObserver {
   bool _aborting = false;
   final _kbFocus = FocusNode();
   final _fieldFocus = FocusNode();
@@ -3396,9 +3461,7 @@ class _ComposeBarState extends State<_ComposeBar>
   @override
   Widget build(BuildContext context) {
     final showStop =
-        widget.busy &&
-        widget.ctl.text.trim().isEmpty &&
-        widget.pending.isEmpty;
+        widget.busy && widget.ctl.text.trim().isEmpty && widget.pending.isEmpty;
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 8, top: 8, bottom: 8),
       child: Row(
@@ -3555,10 +3618,7 @@ class _CommandHints extends StatelessWidget {
               (c) => ListTile(
                 dense: true,
                 leading: const Icon(Icons.terminal, size: 18),
-                title: Text(
-                  c.slash,
-                  style: const TextStyle(fontSize: 13),
-                ),
+                title: Text(c.slash, style: const TextStyle(fontSize: 13)),
                 subtitle: c.description.isNotEmpty
                     ? Text(
                         c.description,
@@ -3580,7 +3640,7 @@ class _CommandHints extends StatelessWidget {
 
   Widget _shell(BuildContext context, Widget child) => Container(
     constraints: BoxConstraints(
-      maxHeight: MediaQuery.of(context).size.height * 0.3,
+      maxHeight: MediaQuery.sizeOf(context).height * 0.3,
     ),
     decoration: BoxDecoration(
       color: Theme.of(context).colorScheme.surface,
@@ -3942,10 +4002,12 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     final muted = scheme.outline;
 
     return MediaQuery(
+      // Freeze viewInsets so the bar subtree does not rebuild on every
+      // keyboard-animation frame; the bar is positioned by _KeyboardAvoider
+      // padding and never reads viewInsets itself.
       data: MediaQuery.of(context).copyWith(
-        textScaler: MediaQuery.textScalerOf(
-          context,
-        ).clamp(maxScaleFactor: 1.0),
+        textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.0),
+        viewInsets: EdgeInsets.zero,
       ),
       child: _buildBar(context, muted),
     );
@@ -3958,17 +4020,9 @@ class _AgentModelBarState extends State<_AgentModelBar> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _Chip(
-              icon: Icons.smart_toy_outlined,
-              label: '—',
-              muted: muted,
-            ),
+            _Chip(icon: Icons.smart_toy_outlined, label: '—', muted: muted),
             const SizedBox(width: 8),
-            _Chip(
-              icon: Icons.memory,
-              label: '—',
-              muted: muted,
-            ),
+            _Chip(icon: Icons.memory, label: '—', muted: muted),
           ],
         ),
       );
@@ -4040,8 +4094,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                     const SizedBox(width: 8),
                     _Chip(
                       icon: Icons.psychology_outlined,
-                      label:
-                          session?.model?.variant ?? l(context).defaultLabel,
+                      label: session?.model?.variant ?? l(context).defaultLabel,
                       onTap: _switching
                           ? null
                           : () => _showVariantSheet(

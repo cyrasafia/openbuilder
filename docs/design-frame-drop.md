@@ -49,7 +49,7 @@ Timer(Duration(milliseconds: 1300), () {
 | 编号 | 问题点 | 状态 | 详情 |
 |------|--------|------|------|
 | **JANK-1** | 浮层（bottom sheet）展开掉帧 | ✅ 已修（模型列表拍平）；门控方案预留 | [§2](#2-jank-1-浮层展开掉帧) |
-| JANK-2 | （预留）页面转场掉帧 | 待立项 | §3 |
+| **JANK-2** | 键盘展开/收起掉帧（后台屏幕整片重建） | ✅ 已修（MediaQuery 三属性冻结） | [§3](#3-jank-2-键盘展开收起掉帧) |
 | JANK-3 | （预留）其他 | 待立项 | §4 |
 
 > 后续每确认一个新掉帧点：在清单加一行，并按 §2 的结构（问题 → 定位过程 → 根因 → 方案 → 验证 → 决策 → 不做的事）补一节。
@@ -124,15 +124,97 @@ Timer(Duration(milliseconds: 1300), () {
 
 ---
 
-## 3. JANK-2（预留）页面转场掉帧
+## 3. JANK-2 键盘展开/收起掉帧
 
-> 占位。确认立项后按 §2 结构展开：问题 → 定位过程 → 根因 → 方案 → 验证 → 决策 → 不做的事。可复用 §0.2 探针与 §0.3 方法论。
+### 3.1 问题
+
+会话页（`ConversationScreen`）打开/关闭键盘时严重掉帧，**新会话（空消息列表）尤其明显**：build 时间最高 165ms，每帧重建 1822 个 widget。已有消息的会话也卡（build 40–80ms）。
+
+### 3.2 定位过程（KbPerf 诊断 + 四轮迭代）
+
+临时诊断类 `KbPerf`（`lib/features/conversation/kb_perf.dart`，定位完成后删除）：用 `debugOnRebuildDirtyWidget` 按帧聚合重建的 widget 类型与"所在屏幕"landmark，配合 `FrameTiming` 输出 build/raster 耗时。日志字段：`rebuild=N` / `where=Landmark:count,...` / `chain= Type < ... < Type`（脏 widget 祖先链）。
+
+| 轮 | 假设 | 数据 | 结论 |
+|----|------|------|------|
+| 1 | 后台 tab 因 `resizeToAvoidBottomInset` 默认 true 而重建 | 各 tab Scaffold 已设 `false`，仍重建 | ❌ 不是根因 |
+| 1 | 后台 shell 依赖 `MediaQuery.viewInsets` | `where=` 显示 SessionsTab:597 + ProjectsTab:590 + ProjectDetailScreen:299，每帧 1659 重建 | ✅ 确认后台整片重建 |
+| 2 | 给 shell 子树冻 `viewInsets:zero` 即可 | 冻后仍重建，`where=` 不变；`shell=0` 但 `MainShell:36` 仍在 | ❌ 冻结没生效 |
+| 3 | `MediaQuery.of(context)` 在 `ListenableBuilder` **内部**，导致 ListenableBuilder 注册根 viewInsets 依赖 → 每帧重建 → 重建 `widget.shell` → 级联所有 tab | 把冻结移到 ListenableBuilder **外面** | ✅ SessionsTab/ProjectsTab 降到 ~294，但 ProjectDetailScreen 仍 6971 |
+| 4 | ProjectDetailScreen 是 pushed route，在 MainShell 冻结之外，需独立冻结 | 给 ProjectDetailScreen 同样加冻结 | SessionsTab/ProjectsTab **归零**，但 ProjectDetailScreen 仍每帧 303 |
+| 5 | 冻结值每帧仍变 → 加诊断 log 看 `same=` | `same=false`，`pad` 从 16→0 随键盘变化 | ✅ **真正根因**：Android 键盘弹起时 `view.padding.bottom` 被压缩，不只 `viewInsets` 变 |
+| 6 | 同时冻 `viewInsets + padding + viewPadding` | `same=true`，子树静止 | ✅ 全部归零 |
+
+### 3.3 根因（三层）
+
+1. **后台屏幕整片重建**：键盘动画期间，根 `_MediaQueryFromView.didChangeMetrics` 每帧 `setState`，通知所有依赖 MediaQuery 的 widget。后台挂着的 MainShell（含 SessionsTab/ProjectsTab/SettingsTab）和 ProjectDetailScreen 都因依赖 MediaQuery 每帧整片重建——它们本无文本输入，完全不需要响应键盘。Scaffold 内部 `_addIfNonNull` 调 `MediaQuery.of(context)`（全量依赖），即使 `resizeToAvoidBottomInset:false` 也照重建。
+
+2. **冻结位置错误**：`MediaQuery.of(context)` 放在 `ListenableBuilder` 内部，注册了根 viewInsets 依赖到 ListenableBuilder 本身 → 它每帧重建 → 重新创建 `widget.shell` → 级联所有 tab。必须放在独立 widget 中、且在 ListenableBuilder **外面**。
+
+3. **只冻 viewInsets 不够**（真正的根因）：Android 键盘弹起时**不止 `viewInsets` 变，`view.padding.bottom` 也被压缩**（16→0，系统导航栏让位给键盘）。`MediaQueryData.fromView` 中 `padding = EdgeInsets.fromViewPadding(view.padding)`，而 `view.padding` 随键盘变化。`copyWith(viewInsets: zero)` 只冻了 viewInsets，`padding` 仍每帧变 → 冻结的 MediaQueryData 每帧不同 → `updateShouldNotify` 返回 true → 子树照常重建。
+
+### 3.4 方案
+
+`_ViewInsetsFreezer`：独立轻量 StatelessWidget，读 `MediaQuery.of(context)` 后同时冻结三项属性：
+
+```dart
+class _ViewInsetsFreezer extends StatelessWidget {
+  const _ViewInsetsFreezer({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final parent = MediaQuery.of(context);
+    return MediaQuery(
+      data: parent.copyWith(
+        viewInsets: EdgeInsets.zero,       // 键盘
+        padding: parent.viewPadding,        // 用 viewPadding 替代（键盘无关）
+        viewPadding: parent.viewPadding,    // 本身不变
+      ),
+      child: child,
+    );
+  }
+}
+```
+
+- `viewPadding` 是系统装饰区（状态栏/导航栏），键盘弹起时不变。`padding` 原本 = `viewPadding - viewInsets`（被键盘压缩），现固定为 `viewPadding`。三项都固定后，冻结值每帧相同，`updateShouldNotify` 返回 false，子树完全静止。
+- 只有 `_ViewInsetsFreezer.build()` 每帧重建（读 `MediaQuery.of`），但它只产一个 `MediaQuery` widget，成本可忽略。
+
+挂在两处：
+- **MainShell**（`main_shell.dart`）：`_ViewInsetsFreezer` 包裹 `Scaffold`（Scaffold 内部 `_addIfNonNull` 调 `MediaQuery.of`，必须在冻结内）。
+- **ProjectDetailScreen**（`project_detail_screen.dart`）：后台 pushed route，同理包裹。编辑项目的底部弹窗是独立 modal route，在冻结之外，仍能正常响应键盘。
+
+### 3.5 验证数据（新会话 s=4，msgs=0）
+
+| 指标 | 修复前 | 修复后 | 改善 |
+|------|--------|--------|------|
+| build median | 33.8ms | **15.7ms** | -54% |
+| build max | 165.2ms | **98.1ms** | -40% |
+| rebuild median | 429 | **93** | -78% |
+| rebuild max | 1822 | **843** | -54% |
+| SessionsTab | 5176 | **0**（键盘帧） | ✅ |
+| ProjectsTab | 4584 | **0** | ✅ |
+| ProjectDetailScreen | 9364 | **0** | ✅ |
+| MainShell | 1116 | ~420（轻量） | ✅ |
+
+残余的 over 帧（58/122）是 SSE 事件（commands refreshed）和 ConversationScreen 自身重建，后台屏幕重建问题已彻底解决。
+
+### 3.6 关键设计决策
+
+- **冻三项而非一项**：Android 键盘弹起时 `view.padding` 随 `viewInsets` 联动变化，只冻 `viewInsets` 无效。必须同时冻 `viewInsets + padding + viewPadding`，用 `viewPadding`（键盘无关）固定 `padding`。
+- **冻结必须在独立 widget 中、在 ListenableBuilder 外面**：否则 `MediaQuery.of(context)` 的依赖会注册到 ListenableBuilder，导致它每帧重建并级联子树。
+- **Scaffold 必须在冻结内部**：Scaffold 的 `_addIfNonNull` 调 `MediaQuery.of(context)`（全量依赖），在冻结外则照常重建。
+- **ProjectDetailScreen 独立冻结**：它是 pushed route，在 MainShell 冻结之外，需自带 `_ViewInsetsFreezer`。编辑弹窗是独立 modal route 不受影响。
+- **诊断用完即删**：`KbPerf` 定位完成后删除，方法留档在此节供复用。
+
+### 3.7 不做的事
+
+- 不在根 `MaterialApp` 层冻结——顶层 MediaQuery 是 ConversationScreen 键盘回避（`_KeyboardAvoider`）的数据源，冻了键盘回避失效。
+- 不改 Scaffold 框架——`_addIfNonNull` 调 `MediaQuery.of` 是框架行为，只能在应用侧用冻结屏蔽。
+- 不针对残余 over 帧继续优化——它们是 SSE 事件和 ConversationScreen 自身重建，与键盘动画无关，属另一问题域。
 
 ---
 
 ## 4. JANK-3（预留）
-
-> 占位。
 
 ---
 

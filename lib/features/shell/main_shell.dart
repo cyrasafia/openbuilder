@@ -59,16 +59,24 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: ListenableBuilder(
-        listenable: serverStore,
-        builder: (context, _) => Column(
-          children: [
-            Expanded(child: widget.shell),
-            if (serverStore.showDisconnectBanner) const _DisconnectBanner(),
-          ],
+    // Delegate the viewInsets freeze to a dedicated lightweight widget so that
+    // MainShell.build() itself does NOT register a root-viewInsets dependency.
+    // Only _ViewInsetsFreezer rebuilds on keyboard frames (a handful of
+    // widgets); the Scaffold + ListenableBuilder + all tab lists below stays
+    // inert. The Scaffold internally calls MediaQuery.of (in _addIfNonNull) so
+    // it MUST be inside the freeze, not outside.
+    return _ViewInsetsFreezer(
+      child: Scaffold(
+        resizeToAvoidBottomInset: false,
+        body: ListenableBuilder(
+          listenable: serverStore,
+          builder: (context, _) => Column(
+            children: [
+              Expanded(child: widget.shell),
+              if (serverStore.showDisconnectBanner) const _DisconnectBanner(),
+            ],
+          ),
         ),
-      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: widget.shell.currentIndex,
         onDestinationSelected: (i) =>
@@ -91,6 +99,25 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
           ),
         ],
       ),
+      ),
+    );
+  }
+}
+
+class _ViewInsetsFreezer extends StatelessWidget {
+  const _ViewInsetsFreezer({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final parent = MediaQuery.of(context);
+    return MediaQuery(
+      data: parent.copyWith(
+        viewInsets: EdgeInsets.zero,
+        padding: parent.viewPadding,
+        viewPadding: parent.viewPadding,
+      ),
+      child: child,
     );
   }
 }

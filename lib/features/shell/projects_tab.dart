@@ -40,6 +40,8 @@ class _ProjectsTabState extends State<ProjectsTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // See MainShell: background behind pushed routes; no text input here.
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(title: Text(l(context).tabProjects)),
       body: ListenableBuilder(
         listenable: serverStore,

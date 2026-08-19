@@ -26,9 +26,15 @@ class ProjectDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: serverStore,
-      builder: (context, _) {
+    // Delegate the viewInsets freeze to a dedicated lightweight widget so that
+    // ProjectDetailScreen.build() itself does NOT register a root-viewInsets
+    // dependency. Only _ViewInsetsFreezer rebuilds on keyboard frames (a handful
+    // of widgets); the heavy ListenableBuilder + Scaffold + session list below
+    // stays inert.
+    return _ViewInsetsFreezer(
+      child: ListenableBuilder(
+        listenable: serverStore,
+        builder: (context, _) {
         final project = serverStore.projectOf(projectId);
         final loc = l(context);
         if (project == null && directory == null) {
@@ -62,6 +68,12 @@ class ProjectDetailScreen extends StatelessWidget {
             project != null && (!isGlobal || directory != null);
 
         return Scaffold(
+          // This screen stays mounted behind a pushed ConversationScreen (new
+          // sessions are created from here). resizeToAvoidBottomInset:true
+          // (default) registers a viewInsets dependency, so the whole screen
+          // rebuilt every frame of the conversation's keyboard animation. It
+          // has no text input of its own, so it must not resize for the keyboard.
+          resizeToAvoidBottomInset: false,
           body: Column(
             children: [
               _ProjectCard(
@@ -137,6 +149,7 @@ class ProjectDetailScreen extends StatelessWidget {
               : null,
         );
       },
+      ),
     );
   }
 
@@ -540,6 +553,24 @@ class ProjectDetailScreen extends StatelessWidget {
       );
     }
     return out;
+  }
+}
+
+class _ViewInsetsFreezer extends StatelessWidget {
+  const _ViewInsetsFreezer({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final parent = MediaQuery.of(context);
+    return MediaQuery(
+      data: parent.copyWith(
+        viewInsets: EdgeInsets.zero,
+        padding: parent.viewPadding,
+        viewPadding: parent.viewPadding,
+      ),
+      child: child,
+    );
   }
 }
 
