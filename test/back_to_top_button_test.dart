@@ -145,9 +145,16 @@ void main() {
         ),
       ];
       await _pumpConversation(tester, sessionId: sid, entries: entries);
+      // A turn is user + its replies: the run top is u1, which starts
+      // unmounted above the cache window. The pre-assembly driver must
+      // expand cacheExtent to measure it before the target can be computed,
+      // so settle on the button actually appearing (not just the text).
       await _settle(
         tester,
-        () => find.textContaining('line 79').evaluate().isNotEmpty,
+        () =>
+            find.textContaining('line 79').evaluate().isNotEmpty &&
+            find.byIcon(Icons.vertical_align_top).evaluate().isNotEmpty &&
+            _buttonState(tester).opacity == 1.0,
       );
 
       final s = _buttonState(tester);
@@ -158,6 +165,18 @@ void main() {
             'and its top is out of view (height cache must be populated)',
       );
       expect(s.ignoring, isFalse, reason: 'visible button must be tappable');
+
+      await tester.tap(find.byIcon(Icons.vertical_align_top));
+      await tester.pumpAndSettle(const Duration(milliseconds: 100));
+      final vpTop = tester.getTopLeft(find.byType(Viewport).first).dy;
+      final qTop = tester.getTopLeft(find.text('question')).dy;
+      expect(
+        qTop - vpTop,
+        inInclusiveRange(0, 40),
+        reason: 'tap must anchor to the top of the run\'s user message '
+            '(u1 bubble padding 10 + container padding 12 ≈ 22px below '
+            'the viewport top), not the first assistant reply',
+      );
     },
   );
 

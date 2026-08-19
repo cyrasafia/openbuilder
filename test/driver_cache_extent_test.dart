@@ -97,9 +97,10 @@ void main() {
     'driver expands cacheExtent when run top is unmounted (gap present)',
     (tester) async {
       const sid = 'driver-gap';
-      // 1 user (own run) + 25 consecutive assistant messages = one long run.
-      // Each assistant reply is tall enough that, pinned at the bottom, the
-      // run top (a0) sits well outside the initial 250px cache window → gap.
+      // 1 user + 25 consecutive assistant replies = one long run (a turn is
+      // user + its replies). Each assistant reply is tall enough that, pinned
+      // at the bottom, the run top (u1) sits well outside the initial 250px
+      // cache window → gap.
       final entries = <MessageEntry>[
         MessageEntry(
           info: MessageInfo(

@@ -40,6 +40,14 @@ import 'message_autolink.dart';
 /// [SingleChildScrollView].
 const double _kFooterCardContentHeightFactor = 0.3;
 
+/// 用户消息折叠门槛：自然高度超过「整屏高度 × 该比例」即可折叠（默认折叠，
+/// 折叠后 clamp 到该高度）。用整屏高度（MediaQuery.size，键盘无关）而非列表
+/// 视口高，保证门槛固定、不随键盘弹起/收起变化。
+const double _kUserCollapseFraction = 0.4;
+
+/// 折叠最小收益：自然高度超出门槛不足该值时不提供折叠（避免为几像素挂控件）。
+const double _kUserCollapseMinGain = 24.0;
+
 class ConversationScreen extends StatefulWidget {
   final String sessionId;
   const ConversationScreen({super.key, required this.sessionId});
@@ -133,6 +141,12 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   final _sizeKeys = <String, GlobalKey>{};
   final _heightCache = <String, double>{};
+
+  // 用户消息折叠：自然（展开）高度按 id 记录，与 _heightCache 分离——折叠渲染
+  // 时 _heightCache 存 clamp 后高度（滚动几何用），自然高度另行保存供判定。
+  final _userNaturalHeight = <String, double>{};
+  final _expandedUserIds = <String>{};
+  bool _collapseRebuildScheduled = false;
 
   final _sliverKey = GlobalKey();
   final _footerSizeKey = GlobalKey();
@@ -304,6 +318,11 @@ class _ConversationScreenState extends State<ConversationScreen>
       _widthBaseline = w;
       _textScaleBaseline = ts;
       _heightCache.clear();
+      _userNaturalHeight.clear(); // 文本重排使自然高度全部失效，重测后再判定
+      // 折叠态 host 的渲染尺寸是固定 clamp 高，不会自发产生尺寸变化通知；
+      // 主动重建一次让 host 拿到 naturalHeight=null 透传，尺寸变化走既有
+      // 通知路径重判（否则收窄重排后不再超门槛的消息会残留折叠壳）。
+      _scheduleCollapseRebuild();
       _driverResetMode = true;
       _driverAbortedRunTop = null; // 基线变化使先前中止失效，重置上限生效
     }
@@ -395,15 +414,19 @@ class _ConversationScreenState extends State<ConversationScreen>
       topEdge -= mi;
     }
     if (visLowIdx >= 0) {
+      // run = 一轮：user 消息 + 其后全部 assistant 回复（newest-first 下回复在
+      // 更小 index）。run 顶锚定该 user 消息；无归属 user 的连续 assistant
+      // （列表头/用户消息仍在上一页）沿用旧语义自成一 run。
       var lo = visLowIdx;
       var hi = visLowIdx;
-      if (msgs[visLowIdx].info.role != 'user') {
-        while (lo > 0 && msgs[lo - 1].info.role != 'user') {
-          lo--;
-        }
+      if (msgs[hi].info.role != 'user') {
         while (hi < msgCount - 1 && msgs[hi + 1].info.role != 'user') {
           hi++;
         }
+        if (hi < msgCount - 1) hi++;
+      }
+      while (lo > 0 && msgs[lo - 1].info.role != 'user') {
+        lo--;
       }
       // runTop = msgs[hi] 的 trailing 边，相对 lastTop 锚。
       var gap = false;
@@ -585,6 +608,7 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   Widget _measuredMessage(DisplayMessage msg) {
     final id = msg.info.id;
+    final isUser = msg.info.role == 'user';
     _noteMessageBuilt(id);
     final key = _sizeKeys.putIfAbsent(id, () => GlobalKey());
     // SizeChangedLayoutNotifier 跳过首次布局（_oldSize==null），静态消息
@@ -599,17 +623,27 @@ class _ConversationScreenState extends State<ConversationScreen>
         final ro = key.currentContext?.findRenderObject();
         if (ro is! RenderBox || !ro.hasSize) return;
         final h = ro.size.height;
-        if (h > 0 && _heightCache[id] != h) {
+        if (h <= 0) return;
+        // 评估帧的 seed 循环可能已先写入同值高度——缓存写入跳过，但用户消息
+        // 的折叠判定仍需该高度（seed 路径不做折叠判定）。
+        if (_heightCache[id] != h) {
           _heightCache[id] = h;
           _scheduleFrameEval();
         }
+        if (isUser) _noteUserHeight(id, h);
       });
     }
     return NotificationListener<SizeChangedLayoutNotification>(
       onNotification: (_) {
-        final h = key.currentContext?.size?.height;
-        if (h != null && h > 0 && _heightCache[id] != h) {
+        // 通知在本 render object 自己的 performLayout 内派发——此时它是
+        // dirty 的，Element.size 的 debug 断言会抛"marked dirty for layout"。
+        // 直接读 RenderBox.size（performLayout 内允许，尺寸此刻已定）。
+        final ro = key.currentContext?.findRenderObject();
+        if (ro is! RenderBox || !ro.hasSize) return false;
+        final h = ro.size.height;
+        if (h > 0 && _heightCache[id] != h) {
           _heightCache[id] = h;
+          if (isUser) _noteUserHeight(id, h);
           _scheduleFrameEval();
         }
         return false;
@@ -623,10 +657,70 @@ class _ConversationScreenState extends State<ConversationScreen>
           key: ValueKey(id),
           msgId: id,
           keepAliveIds: _keepAliveIds,
-          child: _cachedMessage(msg),
+          // 折叠壳在实例缓存之外：展开/收起只重建壳，缓存的内容子树走等值剪枝。
+          child: isUser ? _userCollapseHost(msg) : _cachedMessage(msg),
         ),
       ),
     );
+  }
+
+  Widget _userCollapseHost(DisplayMessage msg) {
+    final id = msg.info.id;
+    return _UserCollapseHost(
+      key: ValueKey('uc:$id'),
+      naturalHeight: _userNaturalHeight[id],
+      expanded: _expandedUserIds.contains(id),
+      onToggle: () => _toggleUserExpanded(id),
+      child: _cachedMessage(msg),
+    );
+  }
+
+  /// 折叠 clamp 高度 = 整屏高（MediaQuery.size，键盘无关）× 比例。屏幕旋转/
+  /// 分屏才变；键盘弹起只改 viewInsets 不改 size，故门槛固定。
+  double get _userCollapseMaxHeight =>
+      MediaQuery.sizeOf(context).height * _kUserCollapseFraction;
+
+  bool _userCollapsibleHeight(double natural) =>
+      natural > _userCollapseMaxHeight + _kUserCollapseMinGain;
+
+  /// 用户消息测高回调（事件驱动：首次布局补偿 / 尺寸变化通知，非每帧）。
+  /// 折叠渲染时测得的是 clamp 高度，不更新自然高度；展开渲染时测得的即自然
+  /// 高度，跨过折叠门槛时调度一次重建切入默认折叠。
+  void _noteUserHeight(String id, double h) {
+    if (!mounted) return;
+    if (_userCollapsedRender(id)) return;
+    final natural = _userNaturalHeight[id];
+    if (natural == h) return;
+    final wasCollapsible = natural != null && _userCollapsibleHeight(natural);
+    _userNaturalHeight[id] = h;
+    final isCollapsible = _userCollapsibleHeight(h);
+    if (wasCollapsible != isCollapsible) _scheduleCollapseRebuild();
+  }
+
+  bool _userCollapsedRender(String id) {
+    final natural = _userNaturalHeight[id];
+    if (natural == null) return false;
+    if (!_userCollapsibleHeight(natural)) return false;
+    return !_expandedUserIds.contains(id);
+  }
+
+  void _scheduleCollapseRebuild() {
+    if (_collapseRebuildScheduled) return;
+    _collapseRebuildScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _collapseRebuildScheduled = false;
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _toggleUserExpanded(String id) {
+    setState(() {
+      if (_expandedUserIds.contains(id)) {
+        _expandedUserIds.remove(id);
+      } else {
+        _expandedUserIds.add(id);
+      }
+    });
   }
 
   Widget _footerRow(ConversationStore conv) {
@@ -644,7 +738,10 @@ class _ConversationScreenState extends State<ConversationScreen>
     }
     return NotificationListener<SizeChangedLayoutNotification>(
       onNotification: (_) {
-        final h = _footerSizeKey.currentContext?.size?.height ?? 0;
+        // 同 _measuredMessage：通知在本对象自己的 performLayout 内派发，
+        // Element.size 的 dirty 断言会抛；直读 RenderBox.size。
+        final ro = _footerSizeKey.currentContext?.findRenderObject();
+        final h = (ro is RenderBox && ro.hasSize) ? ro.size.height : 0.0;
         if (h != _footerRowHeight) {
           _footerRowHeight = h;
           _scheduleFrameEval();
@@ -682,7 +779,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   /// 挂载但不参与 layout（高度是流式前的旧值），同样按未测驱逐。
   void _onBusyEnd(List<DisplayMessage> msgs) {
     for (final m in msgs) {
-      if (m.info.role == 'user') break;
+      final isUser = m.info.role == 'user';
       final id = m.info.id;
       final rb = _sizeKeys[id]?.currentContext?.findRenderObject();
       final laidOut =
@@ -690,6 +787,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       if (!laidOut) {
         _heightCache.remove(id);
       }
+      if (isUser) break;
     }
   }
 
@@ -697,6 +795,8 @@ class _ConversationScreenState extends State<ConversationScreen>
     final ids = <String>{for (final m in msgs) m.info.id};
     _sizeKeys.removeWhere((id, _) => !ids.contains(id));
     _heightCache.removeWhere((id, _) => !ids.contains(id));
+    _userNaturalHeight.removeWhere((id, _) => !ids.contains(id));
+    _expandedUserIds.removeWhere((id) => !ids.contains(id));
     _keepAliveLru.removeWhere((id) => !ids.contains(id));
     if (_driverAbortedRunTop != null && !ids.contains(_driverAbortedRunTop)) {
       _driverAbortedRunTop = null;
@@ -3284,6 +3384,147 @@ class _BackToTurnTopButton extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// 高用户消息折叠壳（在 _messageChildCache 之外：展开/收起只重建壳层，内容
+/// 子树走实例等值剪枝）。自然高度未跨过门槛时原样透传；跨过后默认折叠——
+/// clamp 到整屏高 × [_kUserCollapseFraction]（MediaQuery.size，键盘无关）。
+/// 折叠渲染用 OverflowBox 让内容按自然高度布局、ClipRect 裁剪，被裁部分不
+/// 参与命中测试；底部渐变 + 展开按钮。
+class _UserCollapseHost extends StatelessWidget {
+  final double? naturalHeight;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final Widget child;
+
+  const _UserCollapseHost({
+    super.key,
+    required this.naturalHeight,
+    required this.expanded,
+    required this.onToggle,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final n = naturalHeight;
+    final collapseHeight =
+        MediaQuery.sizeOf(context).height * _kUserCollapseFraction;
+    if (n == null || n <= collapseHeight + _kUserCollapseMinGain) {
+      return child;
+    }
+    if (expanded) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          child,
+          Padding(
+            padding: const EdgeInsets.only(left: 40, top: 2),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _UserCollapseToggle(onTap: onToggle),
+            ),
+          ),
+        ],
+      );
+    }
+    return SizedBox(
+      height: collapseHeight,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: ClipRect(
+              child: OverflowBox(
+                alignment: Alignment.topCenter,
+                minHeight: 0,
+                maxHeight: double.infinity,
+                child: child,
+              ),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _UserCollapseFade(onTap: onToggle),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 折叠态底部渐变 + 展开按钮。水平几何复刻用户气泡（left 40 内右对齐、
+/// maxWidth 320）；窄屏上气泡略窄于渐变属可接受误差（能跨过折叠门槛的长
+/// 消息几乎必然撑满 320 宽）。
+class _UserCollapseFade extends StatelessWidget {
+  final VoidCallback onTap;
+  const _UserCollapseFade({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    const radius = BorderRadius.vertical(bottom: Radius.circular(14));
+    return Padding(
+      padding: const EdgeInsets.only(left: 40),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Material(
+            type: MaterialType.transparency,
+            child: Ink(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [colors.userBubble.withAlpha(0), colors.userBubble],
+                ),
+                borderRadius: radius,
+              ),
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: radius,
+                child: SizedBox(
+                  height: 56,
+                  width: double.infinity,
+                  child: Icon(
+                    Icons.expand_more,
+                    size: 20,
+                    color: colors.userText,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UserCollapseToggle extends StatelessWidget {
+  final VoidCallback onTap;
+  const _UserCollapseToggle({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Icon(
+            Icons.expand_less,
+            size: 18,
+            color: Theme.of(context).colorScheme.outline,
+          ),
+        ),
+      ),
     );
   }
 }

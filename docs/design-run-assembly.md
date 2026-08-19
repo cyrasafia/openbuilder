@@ -81,7 +81,7 @@ v2 的 `index - footer` 换算（"最易错位点"）整个删除，消息 index
 
 ### 4.3 run 模型
 
-沿用 v1/v2 的定义：单条 user 消息自成一个 run；连续 assistant 消息合并为一个 run；范围只取 `renderableMessages`（`segments[0]`，未桥接 gap 之上的历史段不参与）。跨分页：run 的用户消息可能在上一页，接近顶部触发分页加载后该 run 才完整——预组装只在 run 完整（其首条消息已在 renderableMessages 中）后启动。
+一轮 = 一个 run：user 消息 + 其后全部 assistant 回复。`renderableMessages`（newest-first）上自某条 user 消息起、直到下一条 user 消息之前的全部连续非 user 消息（回复，位于更小 index）归入该 run；run 顶（首条）即该 user 消息，回顶锚定 user 消息顶部，跨度门槛（≥2 屏）按 user + 回复合计高度判定。尚无回复的 user 消息自成一 run；无归属 user 的连续 assistant（会话开头，或 user 消息仍在未加载的上一页）仍合并为一 run，顶为其中最上条。范围只取 `renderableMessages`（`segments[0]`，未桥接 gap 之上的历史段不参与）。跨分页：run 的用户消息可能在上一页，接近顶部触发分页加载后该 run 才完整——预组装只在 run 完整（其首条消息已在 renderableMessages 中）后启动。
 
 ### 4.4 高度缓存与失效规则
 

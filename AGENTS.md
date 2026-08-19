@@ -165,7 +165,8 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design-migrate-flutter-markdown-plus.md` | 迁移 flutter_markdown → flutter_markdown_plus（已停用包替换，drop-in） |
 | `design-scroll-to-turn-top.md` | 回到轮次顶部悬浮按钮（几何判定、run 合并、reversed 坐标偏移） |
 | `design-conversation-scroll-perf.md` | 会话列表滚动卡顿优化（根因记录：包 2 屏 cacheExtent × 重条目 × 每帧 O(N)，keep-alive/降频/控件收口三层方案；§7.5 键盘掉帧两连修：有界 keep-alive + 消息 widget 实例记忆化） |
-| `design-run-assembly.md` | 会话列表按 run 组装重构（最终方案：弃 scrollable_positioned_list，原生 SliverList + run 渐进预组装 + 几何回顶；含方案演化史、备选对比、八轮评审） |
+| `design-run-assembly.md` | 会话列表按 run 组装重构（最终方案：弃 scrollable_positioned_list，原生 SliverList + run 渐进预组装 + 几何回顶；run=一轮即 user+其全部回复，回顶锚定 user 消息顶；含方案演化史、备选对比、八轮评审） |
+| `design-user-message-collapse.md` | 高用户消息折叠/展开（自然高度 > 整屏×0.4 默认折叠，门槛键盘无关；自然/渲染高度分账防振荡、判定挂既有测高事件非每帧、OverflowBox+ClipRect 壳在实例缓存外；含 onNotification 读高 debug 断言修复） |
 | `design-image-attachment-thumbnail.md` | 图片附件缩略图统一渲染（乐观↔权威一致：判定改由 fileMime 驱动、ImageDataCache 异步解码 + native 缩放、复用 ImageView 放大、限最大高度；化解 CR-2 内存/掉帧顾虑） |
 | `design-bump-minsdk-34.md` | 提升 minSdk 至 34 + 清理冗余兼容代码（移除 core library desugaring、`Build.VERSION` 死分支、`-v21` 资源限定符；解锁通知运行时权限 / 暗色 uiMode / 预测性返回 / HCPP；不含 Markdown→WebView） |
 | `design-markdown-webview.md` | 文件详情页 Markdown 预览 Flutter Markdown → WebView（mar→HTML + CSS 复刻三档字重 + JS 桥 + 预热池；依赖 HCPP，前提为 minSdk 34；含原生缓解/分块/换渲染器/WebView 四方向选型否决理由） |
