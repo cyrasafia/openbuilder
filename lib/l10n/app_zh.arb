@@ -117,7 +117,6 @@
   "probeMethodBasic": "Basic 认证",
   "probeMethodNone": "无需认证",
   "probeContinue": "继续",
-  "probeConnect": "保存并连接",
   "probeIssuerRequired": "OAuth 需要填写 OIDC Issuer（如 https://auth.example.com）",
   "fieldClientId": "Client ID",
   "fieldIssuer": "OIDC Issuer",

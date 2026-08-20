@@ -117,7 +117,6 @@
   "probeMethodBasic": "Basic auth",
   "probeMethodNone": "No auth required",
   "probeContinue": "Continue",
-  "probeConnect": "Save & connect",
   "probeIssuerRequired": "OAuth needs the OIDC issuer (e.g. https://auth.example.com)",
   "fieldClientId": "Client ID",
   "fieldIssuer": "OIDC Issuer",

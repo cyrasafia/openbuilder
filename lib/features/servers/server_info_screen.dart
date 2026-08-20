@@ -46,8 +46,15 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
   String? _probeError;
   bool _saving = false;
   AuthMethod? _manualMethod;
+  String? _savedId;
+  int _probeGeneration = 0;
 
   bool get _isEdit => widget.id != null;
+
+  ConnectionProfile? get _existing {
+    final id = widget.id ?? _savedId;
+    return id == null ? null : connectionStore.byId(id);
+  }
 
   @override
   void initState() {
@@ -70,6 +77,7 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
   }
 
   void _invalidateProbe() {
+    _probeGeneration++;
     if (_probeState != _ProbeState.idle || _probe != null || _probeError != null) {
       setState(() {
         _probeState = _ProbeState.idle;
@@ -96,8 +104,12 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
       _probeError = null;
       _probe = null;
     });
+    final generation = _probeGeneration;
     final result = await AuthProbe().probe(_draft().baseUrl);
     if (!mounted) return;
+    // The address may have been edited (or a newer probe started) while this
+    // one was in flight — a stale result must not route anywhere.
+    if (generation != _probeGeneration) return;
     setState(() {
       _probeState = _ProbeState.done;
       _probe = result;
@@ -105,15 +117,26 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
         _issuer.text = result.oidc!.issuer;
       }
     });
+    switch (result.outcome) {
+      case AuthProbeOutcome.oauth:
+        await _proceed(AuthMethod.oauth);
+      case AuthProbeOutcome.basic:
+        await _proceed(AuthMethod.basic);
+      case AuthProbeOutcome.none:
+        await _proceed(AuthMethod.none);
+      case AuthProbeOutcome.unknown:
+      case AuthProbeOutcome.unreachable:
+        break;
+    }
   }
 
   ConnectionProfile _draft({AuthMethod? method}) {
-    final old = widget.id == null ? null : connectionStore.byId(widget.id!);
+    final old = _existing;
     final sameTarget = old != null &&
         old.address.trim() == _address.text.trim() &&
         old.authMethod == method;
     return ConnectionProfile(
-      id: widget.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
+      id: old?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       name: _name.text.trim(),
       address: _address.text.trim(),
       username: sameTarget ? old.username : 'opencode',
@@ -148,8 +171,7 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
           setState(() => _probeError = 'issuer');
           return;
         }
-        final preSave =
-            widget.id == null ? null : connectionStore.byId(widget.id!);
+        final preSave = _existing;
         // Persist the issuer the login actually uses (probed metadata wins
         // over a stale/edited field) so later re-logins can re-fetch config.
         final withMeta = profile.copyWith(
@@ -204,10 +226,13 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
   }
 
   Future<void> _saveProfile(ConnectionProfile p) async {
-    if (_isEdit) {
+    // Branch on the live store entry, not _savedId: if the entry vanished,
+    // update() would silently no-op and nothing would be persisted.
+    if (_existing != null) {
       await connectionStore.update(p);
     } else {
       await connectionStore.add(p);
+      _savedId = p.id;
     }
   }
 
@@ -318,7 +343,10 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
               ),
               const SizedBox(height: 8),
               FilledButton.icon(
-                onPressed: _probeState == _ProbeState.running ? null : _runProbe,
+                onPressed:
+                    _probeState == _ProbeState.running || _saving
+                        ? null
+                        : _runProbe,
                 icon: _probeState == _ProbeState.running
                     ? const SizedBox(
                         width: 16,
@@ -357,8 +385,7 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
   }
 
   List<Widget> _probeResults(AppLocalizations loc) {
-    final probe = _probe!;
-    switch (probe.outcome) {
+    switch (_probe!.outcome) {
       case AuthProbeOutcome.unreachable:
         return [
           const SizedBox(height: 12),
@@ -387,42 +414,11 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
             ),
           ],
         ];
+      // oauth / basic / none route away immediately after the probe.
       case AuthProbeOutcome.oauth:
-        return [
-          const SizedBox(height: 12),
-          _methodCard(loc, loc.probeMethodOauth, Icons.key,
-              probe.oidc?.issuer ?? probe.version),
-          ..._manualOauthFields(loc),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _saving ? null : () => _proceed(AuthMethod.oauth),
-            icon: const Icon(Icons.login),
-            label: Text(loc.probeContinue),
-          ),
-        ];
       case AuthProbeOutcome.basic:
-        return [
-          const SizedBox(height: 12),
-          _methodCard(loc, loc.probeMethodBasic, Icons.lock_outline, null),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _saving ? null : () => _proceed(AuthMethod.basic),
-            icon: const Icon(Icons.login),
-            label: Text(loc.probeContinue),
-          ),
-        ];
       case AuthProbeOutcome.none:
-        return [
-          const SizedBox(height: 12),
-          _methodCard(loc, loc.probeMethodNone, Icons.check_circle_outline,
-              probe.version),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _saving ? null : () => _proceed(AuthMethod.none),
-            icon: const Icon(Icons.bolt),
-            label: Text(loc.probeConnect),
-          ),
-        ];
+        return const [];
     }
   }
 
@@ -439,7 +435,7 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
         label: loc.fieldIssuer,
         controller: _issuer,
         icon: Icons.verified_outlined,
-        hint: _probe?.outcome == AuthProbeOutcome.oauth ? null : 'https://',
+        hint: 'https://',
       ),
       if (_probeError == 'issuer')
         Padding(
@@ -450,24 +446,6 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
           ),
         ),
     ];
-  }
-
-  Widget _methodCard(
-      AppLocalizations loc, String label, IconData icon, String? subtitle) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: ListTile(
-        leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-        title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: subtitle == null
-            ? null
-            : Text(
-                subtitle,
-                style: AppTheme.mono.copyWith(fontSize: 11),
-                overflow: TextOverflow.ellipsis,
-              ),
-      ),
-    );
   }
 
   Future<void> _discover() async {
