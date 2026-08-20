@@ -507,9 +507,6 @@ class _FileViewScreenState extends State<FileViewScreen> {
         widget.path,
         _file!,
       );
-      _maybePrepareMarkdownHtml();
-      _maybePrepareCodeSpans();
-      _scheduleScrollRestore();
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
         // Probe-induced cancellation is expected; the finally block drops the
@@ -528,6 +525,18 @@ class _FileViewScreenState extends State<FileViewScreen> {
         setState(() => _downloading = false);
       }
     }
+    // Kick the pre-builds only after the finally block has cleared
+    // _downloading: their _isMarkdown/_isCodeFile guards read that flag, and
+    // a kick from inside the try block above would see it still true, skip
+    // the markdown HTML build, and strand the preview gate on its spinner.
+    // The token check mirrors the finally guard: a superseded download must
+    // not interfere with the active one's derived state or scroll restore.
+    if (!mounted || _cancelToken != token || _error != null || _file == null) {
+      return;
+    }
+    _maybePrepareMarkdownHtml();
+    _maybePrepareCodeSpans();
+    _scheduleScrollRestore();
   }
 
   void _cancelDownload() {

@@ -251,3 +251,9 @@ widget build/layout 只能在 UI 线程的某一帧内同步完成；该帧期�
 | 编号 | 状态 |
 |---|---|
 | DR2-7 ~ DR2-8 | ✅ 闭环；`analyze --fatal-infos` 0 issue、444 测试全过 |
+
+### 四次评审（实机缺陷回归）
+
+| 编号 | 级别 | 问题 | 处理 |
+|---|---|---|---|
+| DR3-1 | 🔴 | 实机进入 .md 详情页（下载路径，非缓存命中）预览模式永久 spinner，切源码再切回预览才恢复。根因：`_download()` 在 try 块内（`finally` 清 `_downloading` **之前**）调 `_maybePrepareMarkdownHtml()`，其 `_isMarkdown` 守卫因 `_downloading == true` 早退，microtask 从未排入 → `_mdHtml` 永不构建 → 预览门控死锁（该门控无超时兜底）。代码文件侥幸不受影响：同一时刻 `_isMarkdown` 为 false 恰使 `_isCodeFile` 为 true，spans 预构建照常进行。缓存命中路径（initState 时 `_downloading` 已为 false）不受影响，故既有门控测试全绿、缺陷漏网 | 三个 kick（`_maybePrepareMarkdownHtml` / `_maybePrepareCodeSpans` / `_scheduleScrollRestore`）移出 try/finally，在 `_downloading` 清除后以 `mounted && _error == null && _file != null` 守卫统一触发；新增下载路径回归测试（`file_browser_collapse_test.dart` 'downloaded (uncached) markdown still opens the preview gate'，修复前失败、修复后通过），478 测试全过 |

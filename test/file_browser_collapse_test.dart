@@ -1,8 +1,10 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_builder/app_state.dart';
 import 'package:open_builder/core/session/file_browsing_store.dart';
+import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 import 'package:open_builder/features/files/code_view.dart';
 import 'package:open_builder/features/files/file_browsing_container.dart';
@@ -10,6 +12,28 @@ import 'package:open_builder/features/files/file_list_screen.dart';
 import 'package:open_builder/features/files/file_view_screen.dart';
 import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
+
+class _DownloadMockClient extends OpencodeClient {
+  _DownloadMockClient(this._file) : super(_noopDio());
+
+  final StreamedFile _file;
+
+  @override
+  Future<StreamedFile> readFileStream({
+    required String directory,
+    required String path,
+    void Function(int received, int total)? onProgress,
+    CancelToken? cancelToken,
+  }) async =>
+      _file;
+}
+
+Dio _noopDio() => Dio(
+      BaseOptions(
+        connectTimeout: const Duration(milliseconds: 1),
+        receiveTimeout: const Duration(milliseconds: 1),
+      ),
+    );
 
 GoRouter _buildTestRouter() {
   return GoRouter(
@@ -75,6 +99,10 @@ FileBrowsingSnapshot _seal(
 }
 
 void main() {
+  tearDown(() {
+    serverStore.client = null;
+  });
+
   testWidgets(
     'collapse from file view pops whole container and seals snapshot',
     (tester) async {
@@ -601,5 +629,50 @@ void main() {
 
     expect(find.byType(CodeView), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets('downloaded (uncached) markdown still opens the preview gate', (
+    tester,
+  ) async {
+    // Regression: the download success path kicked _maybePrepareMarkdownHtml()
+    // while _downloading was still true (the flag is only cleared in the
+    // finally block), so the _isMarkdown guard rejected the kick and _mdHtml
+    // was never built — the preview gate spun forever until a source→preview
+    // toggle re-kicked the build. The cache-hit tests above never hit this
+    // because initState calls the kick with _downloading already false.
+    serverStore.client = _DownloadMockClient(
+      const StreamedFile(
+        type: 'text',
+        mimeType: 'text/markdown',
+        text: '# title\n\nbody\n',
+      ),
+    );
+    final router = await _pumpApp(tester);
+    const sid = 'defer-gate-dl';
+    router.push('/session/$sid/files?directory=');
+    await _flush(tester);
+    expect(find.byType(FileListScreen), findsOneWidget);
+
+    final container = serverStore.fileBrowsing
+        .containerFor<FileBrowsingContainerState>(sid, '')!;
+    container.openFile('a/b/c.md');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+
+    // Download and inner transition done; the off-isolate HTML build gates
+    // the preview mount (compute never completes under FakeAsync).
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    // Let the real-isolate HTML build land. The gate then opens and
+    // MarkdownWebView mounts; in the test environment that build fails an
+    // assert (no WebViewPlatform registered), so the AssertionError is the
+    // proof the gate released. Without the kick the spinner would stay and
+    // no exception would ever surface.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isA<AssertionError>());
   });
 }
