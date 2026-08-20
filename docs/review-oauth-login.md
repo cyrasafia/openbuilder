@@ -124,3 +124,25 @@
 1. 真机双端验证 WebView → `http://127.0.0.1:8901/callback` 投递（Android 已有全局 cleartext 允许；iOS 已加 `NSAllowsLocalNetworking`）。
 2. 真机全链路（design-oauth-login.md 测试要点 §端到端 4 项）。
 3. Authelia `redirect_uris` 固定 8901 精确匹配（服务端已配，见 todo-authelia-bearer-authz.md 验证记录）。
+
+## 问题清单（第六轮：真机联调回归——授权成功后闪回授权页）
+
+现象：授权成功（loopback 成功页可见）后页面闪一下，又跳回授权页；预期应关闭 WebView 进入 `/sessions`（首台服务器）或回服务器管理页并选中（非首台）。
+
+| # | 级别 | 问题 | 修复 |
+|---|---|---|---|
+| OL-33 | 🔴 | **refresh 重挂登录页**：`GoRouter(refreshListenable: connectionStore)` 使每次 store 变更（token 落库、setActive）触发 `refresh()` → 重新解析路由信息 → go_router 对 `push` 型导航**重新生成 imperative match 的 pageKey**（`parser.dart` `_getUniqueValueKey()`）→ 登录页整页重挂（旧 state dispose、新 state initState）。后果链：① 旧 state 的 `_persistAndLeave` 在 `await update` 后 `mounted=false` 提前退出，`go('/sessions')` 永不执行；② 新 state 创建全新 controller 重走 PAR → WebView 重新载入授权页（用户所见"闪一下又跳回授权页"） | `refreshListenable` 改为 presence 门控（`_PresenceRefreshListenable`：仅 empty↔non-empty 翻转才 notify）——redirect 只依赖 `store.isEmpty`，语义等价且根除整类重挂 |
+| OL-34 | 🟡 | **成功导航跨 await 依赖 context**：`_persistAndLeave` 在 `await update/setActive` 之后才 `context.go/pop`，任何挂载中断都会吞掉导航 | 两登录屏（oauth/basic）改为**await 前捕获 `GoRouter.of(context)`**，router 实例跨重挂存活，导航不再依赖 mounted |
+| OL-35 | 🟡 | **成功后导航语义与预期不符**：`newlyAdded` 一律 `go('/sessions')`（非首台服务器时把用户拽进 APP 而非回管理页），且非新增路径不 `setActive`（无"选中"） | 区分首台（`newlyAdded && servers.length == 1` → `go('/sessions')`）与非首台（`setActive` + `popToServerManagement`：逐层 pop 至 `/servers`，栈中无 `/servers` 兜底 `go`）；basic 屏同步收口 |
+| OL-36 | 🟡低 | **被取代轮次污染共享相位**（本轮测试加深挖发现）：cancel→restart 交叠时，旧轮 `finally` 会拆掉**新轮**的 loopback；且旧轮的 `on Object`/`DioException` catch 检查的是共享 `_phase`——新轮已处于 `waitingAuth` 时被旧轮写 `flowError` 覆盖。现网路径不可达（错误重试时旧轮已完全退出），属防御性修复 | 轮次身份守卫：`start()` 内所有 await 之后与 catch/finally 均校验 `_loopback == loopback`（本轮安装的接收器），被取代轮次对共享状态完全 inert；新增回归测试（cancel→restart 交叠 → 新轮成功） |
+| OL-37 | ℹ️ | `popToServerManagement` 依赖"`/servers` 在登录页下方"这一现网栈形（管理页 FAB / 未登录 chip / 编辑重登均为 push 链）；异常栈形走 `go('/servers')` 兜底（丢失底部导航，可接受） | 记录在案 |
+
+### 修复复审
+
+- OL-33 ✅ 高保真 widget 回归测试（`test/oauth_login_flow_test.dart`）：注入 controller + 假 OIDC client + raw socket 投递 loopback 回调 + 假 WebView platform——首台用例断言落 `/sessions`、登录页消失、授权 URL 仅加载一次、token 落库、activeId 指向新服务器；非首台用例断言落 `/servers` 且选中。修复前该测试复现"location 停留 /servers/new + PAL mounted=false"。
+- OL-34 ✅ 两屏导航均走预捕获 router；analyze `use_build_context_synchronously` 清零。
+- OL-35 ✅ 非首台用例断言 `activeId == 新服务器` 且 location == `/servers`。
+- OL-36 ✅ `cancel→restart: superseded round must not close the new receiver` 回归测试；修复前旧轮覆盖新轮为 `flowError`，修复后新轮走完 exchanging→success。**复审补充（独立 review 后）**：守卫最初漏了 preparing 段——`startLogin` 的 `DioException` catch（parError 路径）与 bind 后/startLogin 后的两处 phase 复查均未校验轮次身份，已被指出与 OL-36 不变式不符（现网 restart 仅从终态触发故不可达，属一致性缺口）；已补齐：portBusy/parError 两 catch 与全部 post-await 复查统一 `_loopback == loopback` 守卫。测试端口同时去冲突：该用例 round-1 改绑 18901（原用默认口 8901，与并发执行的 flow widget 套件抢同一端口，CI 上是概率性 flake）。
+- 测试基建备注：flutter_test 会把 `HttpClient` 全量桩成 400，全链路 widget 测试需绕行——OIDC 端点用可注入 fake（`OAuthLoginScreen.controller` / `ServerLoginArgs.controller` 测试缝）、loopback 回调用 raw `Socket`（不受桩影响）；`providedLoopback` seam 先在真实 zone 绑定、controller 链保持在 fake zone 驱动。
+
+**终态验证（第六轮后）**：`flutter analyze --fatal-infos` = No issues found；`flutter test` = **531 passed**（本轮 +3：flow 首台 / flow 非首台 / 被取代轮次守卫）。

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/connection_profile.dart';
 import '../../core/net/dio_factory.dart';
@@ -50,6 +51,7 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
   Future<void> _testAndSave() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     final loc = l(context);
+    final router = GoRouter.of(context);
     // Known platform limit (ported from the old form screen): web's
     // EventSource can't send auth headers, so a non-empty basic password
     // breaks SSE live updates there. Mobile (IO transport) is unaffected.
@@ -92,14 +94,15 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
       });
       return;
     }
+    final firstServer =
+        widget.newlyAdded && connectionStore.servers.length == 1;
     await connectionStore.update(draft);
-    if (!mounted) return;
-    setState(() => _testing = false);
-    if (widget.newlyAdded) {
-      await connectionStore.setActive(draft.id);
-      if (mounted) context.go('/sessions');
+    if (mounted) setState(() => _testing = false);
+    await connectionStore.setActive(draft.id);
+    if (firstServer) {
+      router.go('/sessions');
     } else {
-      context.pop();
+      popToServerManagement(router);
     }
   }
 

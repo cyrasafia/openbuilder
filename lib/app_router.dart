@@ -37,9 +37,43 @@ CustomTransitionPage<void> _slideUpPage(GoRouterState state, Widget child) {
   );
 }
 
+/// go_router re-parses (and thus re-keys) imperative matches on every
+/// refresh, so a per-change refreshListenable would remount any pushed page
+/// on each store mutation. The redirect only depends on presence
+/// (empty <-> non-empty), so gate refreshes on that transition alone.
+class _PresenceRefreshListenable extends ChangeNotifier {
+  bool _empty;
+  final ConnectionStore _store;
+
+  _PresenceRefreshListenable(this._store) : _empty = _store.isEmpty {
+    _store.addListener(_onStoreChanged);
+  }
+
+  void _onStoreChanged() {
+    final empty = _store.isEmpty;
+    if (empty != _empty) {
+      _empty = empty;
+      notifyListeners();
+    }
+  }
+}
+
+/// Pop imperative routes until the server-management list is on top. Falls
+/// back to a cold `go` when the stack has no /servers below (not reachable
+/// from the current flows, but keeps the exit total).
+void popToServerManagement(GoRouter router) {
+  while (router.routerDelegate.currentConfiguration.uri.path != '/servers' &&
+      router.canPop()) {
+    router.pop();
+  }
+  if (router.routerDelegate.currentConfiguration.uri.path != '/servers') {
+    router.go('/servers');
+  }
+}
+
 GoRouter buildRouter(ConnectionStore store) {
   return GoRouter(
-    refreshListenable: store,
+    refreshListenable: _PresenceRefreshListenable(store),
     initialLocation: '/sessions',
     redirect: (context, state) {
       final loc = state.matchedLocation;
@@ -77,6 +111,7 @@ GoRouter buildRouter(ConnectionStore store) {
                 profile: profile,
                 metadata: args?.metadata,
                 newlyAdded: args?.newlyAdded ?? false,
+                controller: args?.controller,
               );
             case AuthMethod.basic:
               return BasicAuthScreen(

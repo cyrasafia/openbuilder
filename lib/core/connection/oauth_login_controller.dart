@@ -89,10 +89,12 @@ class OAuthLoginController extends ChangeNotifier {
     try {
       await loopback.start(port: loopbackPort, message: callbackMessage);
     } on Object {
-      _set(OAuthLoginPhase.portBusy);
+      if (_loopback == loopback) _set(OAuthLoginPhase.portBusy);
       return;
     }
-    if (_phase != OAuthLoginPhase.preparing) return;
+    if (_phase != OAuthLoginPhase.preparing || _loopback != loopback) {
+      return;
+    }
     try {
       final session = await client.startLogin(
         meta: meta,
@@ -100,15 +102,21 @@ class OAuthLoginController extends ChangeNotifier {
         audience: profile.baseUrl,
         redirectUri: LoopbackCallbackServer.redirectUriFor(loopbackPort),
       );
-      if (_phase != OAuthLoginPhase.preparing) return;
+      if (_phase != OAuthLoginPhase.preparing || _loopback != loopback) {
+        return;
+      }
       _session = session;
       _authorizationUrl = session.authorizationUrl;
       _set(OAuthLoginPhase.waitingAuth);
     } on DioException catch (e) {
-      _errorDetail = e.response?.data?.toString() ?? e.message;
-      AppLogger.I.e(_tag, 'par failed: $_errorDetail');
-      await _teardown();
-      _set(OAuthLoginPhase.parError);
+      // Same round-identity rule as the tail of start(): a superseded round
+      // must not tear down the successor's receiver or clobber its phase.
+      if (_loopback == loopback) {
+        _errorDetail = e.response?.data?.toString() ?? e.message;
+        AppLogger.I.e(_tag, 'par failed: $_errorDetail');
+        await _teardown();
+        _set(OAuthLoginPhase.parError);
+      }
       return;
     }
     _timeoutTimer = Timer(callbackTimeout, () {
@@ -119,7 +127,9 @@ class OAuthLoginController extends ChangeNotifier {
     });
     try {
       final params = await loopback.params;
-      if (_phase != OAuthLoginPhase.waitingAuth) return;
+      if (_phase != OAuthLoginPhase.waitingAuth || _loopback != loopback) {
+        return;
+      }
       _timeoutTimer?.cancel();
       final error = params['error'];
       if (error != null) {
@@ -142,22 +152,33 @@ class OAuthLoginController extends ChangeNotifier {
         code: params['code']!,
         verifier: _session!.codeVerifier,
       );
-      if (_phase != OAuthLoginPhase.exchanging) return;
+      if (_phase != OAuthLoginPhase.exchanging || _loopback != loopback) {
+        return;
+      }
       _tokenResult = tokens;
       _set(OAuthLoginPhase.success);
     } on DioException catch (e) {
       _errorDetail = e.response?.data?.toString() ?? e.message;
       AppLogger.I.e(_tag, 'token exchange failed: $_errorDetail');
-      _set(OAuthLoginPhase.exchangeError);
+      // A superseded round (cancel/restart installed a newer receiver) must
+      // not overwrite the successor's phase.
+      if (_loopback == loopback) {
+        _set(OAuthLoginPhase.exchangeError);
+      }
     } on Object {
       // Loopback closed while awaiting params (timeout/cancel already set a
-      // terminal phase) — never override a terminal phase here.
-      if (_phase == OAuthLoginPhase.waitingAuth ||
-          _phase == OAuthLoginPhase.exchanging) {
+      // terminal phase) — never override a terminal phase or a newer round.
+      if (_loopback == loopback &&
+          (_phase == OAuthLoginPhase.waitingAuth ||
+              _phase == OAuthLoginPhase.exchanging)) {
         _set(OAuthLoginPhase.flowError);
       }
     } finally {
-      await _teardown();
+      // Only tear down the receiver this round installed: a superseded round
+      // (cancel/restart raced its exit) must not close the live one.
+      if (_loopback == loopback) {
+        await _teardown();
+      }
     }
   }
 

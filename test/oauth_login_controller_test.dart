@@ -272,6 +272,34 @@ void main() {
     c.dispose();
   });
 
+  test('cancel→restart: superseded round must not close the new receiver',
+      () async {
+    final fake = _FakeClient();
+    // Round 0 parks on a seam receiver bound to an ephemeral port; round 1
+    // binds its own fixed port — distinct from defaultPort (8901) so this
+    // suite never collides with the concurrently-running flow widget suite,
+    // and no port reuse, so the restart's bind can't race the old receiver's
+    // asynchronous close.
+    const roundPort = 18901;
+    final seam = LoopbackCallbackServer();
+    await seam.start(port: 0);
+    final c = OAuthLoginController(
+        client: fake, providedLoopback: seam, loopbackPort: roundPort);
+    final started = c.start(profile: profile, meta: meta);
+    await _waitForPhase(c, OAuthLoginPhase.waitingAuth);
+    c.cancel();
+    // Round 0's start() is still unwinding when round 1 installs its own
+    // receiver; that leftover teardown must not close round 1's receiver.
+    await c.restart(profile: profile, meta: meta);
+    await _waitForPhase(c, OAuthLoginPhase.waitingAuth);
+    expect(c.isLoopbackBoundForTesting, isTrue);
+    await _hitCallback(roundPort, 'code=abc&state=st-fixed');
+    await _waitForPhase(c, OAuthLoginPhase.success);
+    expect(c.tokenResult?.accessToken, 'at1');
+    await started;
+    c.dispose();
+  });
+
   test('port already bound → portBusy', () async {
     final holder = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final c = OAuthLoginController(

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/auth_probe.dart';
 import '../../core/connection/connection_profile.dart';
+import '../../core/connection/oauth_login_controller.dart';
 import '../../l10n/gen/app_localizations.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -14,11 +15,13 @@ class ServerLoginArgs {
   final ConnectionProfile profile;
   final OidcMetadata? metadata;
   final bool newlyAdded;
+  final OAuthLoginController? controller;
 
   const ServerLoginArgs({
     required this.profile,
     required this.metadata,
     required this.newlyAdded,
+    this.controller,
   });
 }
 

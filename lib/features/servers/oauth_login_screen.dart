@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../app_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/auth_probe.dart';
 import '../../core/connection/connection_profile.dart';
@@ -22,12 +23,14 @@ class OAuthLoginScreen extends StatefulWidget {
   final ConnectionProfile profile;
   final OidcMetadata? metadata;
   final bool newlyAdded;
+  final OAuthLoginController? controller;
 
   const OAuthLoginScreen({
     super.key,
     required this.profile,
     required this.metadata,
     required this.newlyAdded,
+    this.controller,
   });
 
   @override
@@ -44,7 +47,8 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = OAuthLoginController()..addListener(_onPhase);
+    _controller = (widget.controller ?? OAuthLoginController())
+      ..addListener(_onPhase);
     final meta = widget.metadata;
     if (meta != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -186,6 +190,11 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
     final tokens = _controller.tokenResult;
     final meta = _meta;
     if (tokens == null || meta == null) return;
+    // Capture the router before any await: store writes notify listeners and
+    // must never leave navigation on a possibly-unmounted context.
+    final router = GoRouter.of(context);
+    final firstServer =
+        widget.newlyAdded && connectionStore.servers.length == 1;
     final updated = widget.profile.copyWith(
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -193,12 +202,11 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
       tokenEndpoint: meta.tokenEndpoint,
     );
     await connectionStore.update(updated);
-    if (!mounted) return;
-    if (widget.newlyAdded) {
-      await connectionStore.setActive(updated.id);
-      if (mounted) context.go('/sessions');
+    await connectionStore.setActive(updated.id);
+    if (firstServer) {
+      router.go('/sessions');
     } else {
-      context.pop();
+      popToServerManagement(router);
     }
   }
 
