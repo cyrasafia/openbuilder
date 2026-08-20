@@ -139,6 +139,7 @@ class OidcMetadata {
 
 - **oauth 优先于 health 结果**：一个 oauth 服务器完全可能让 health 裸返 200 或 302；元数据才是可靠信号。
 - **P2b 的现实依据（实测）**：前置网关拓扑下元数据不在 opencode 主机而在认证主机。实测 `GET {oc主机}/.well-known/...` → 302 `https://{auth主机}/?rd=...`；直接请求 `{auth主机}/.well-known/oauth-authorization-server` → 200 完整元数据。
+- **探测请求的 Accept 必须含 `text/html`（实测坑）**：Authelia forward-auth 按 Accept 分流——Accept 含 `text/html`（或 `*/*`）→ 302 重定向到门户；仅 `application/json` → 直接 401。若探测只发 `Accept: application/json`，P2 拿到 401 而非 302，P2b 永不触发，且 P1 的 401 被误判为 **basic**。故探测 Dio 默认 `Accept: text/html, application/json`；auth 主机自身的 well-known 不受此门控，任意 Accept 均 200。
 - 发现失败但用户确知是网关 → 服务器表单提供**手填 OIDC issuer** 兜底字段。
 - 元数据缓存进 profile，重登不再重复探测。
 

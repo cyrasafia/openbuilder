@@ -41,7 +41,7 @@ class AuthProbe {
             Dio(BaseOptions(
               connectTimeout: const Duration(seconds: 8),
               receiveTimeout: const Duration(seconds: 8),
-              headers: {'Accept': 'application/json'},
+              headers: {'Accept': 'text/html, application/json'},
               validateStatus: (_) => true,
               followRedirects: false,
               maxRedirects: 0,

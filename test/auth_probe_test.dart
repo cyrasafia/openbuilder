@@ -14,7 +14,8 @@ class _Resp {
 
 class _Router implements HttpClientAdapter {
   final Map<String, _Resp> routes;
-  _Router(this.routes);
+  final bool autheliaAcceptGate;
+  _Router(this.routes, {this.autheliaAcceptGate = false});
 
   @override
   void close({bool force = false}) {}
@@ -25,6 +26,13 @@ class _Router implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    final accept = options.headers['Accept']?.toString() ?? '';
+    if (autheliaAcceptGate &&
+        options.uri.host == 'oc.test' &&
+        !accept.contains('text/html') &&
+        !accept.contains('*/*')) {
+      return ResponseBody.fromString('', 401);
+    }
     final resp = routes[options.uri.toString()];
     if (resp == null) {
       return ResponseBody.fromString('', 404);
@@ -85,6 +93,26 @@ void main() {
             const _Resp(200, body: metaBody),
       }));
       final r = await probe.probe('http://oc.test');
+      expect(r.outcome, AuthProbeOutcome.oauth);
+      expect(r.oidc, isNotNull);
+    });
+
+    test('oauth via Authelia gateway: 302 only when Accept includes text/html',
+        () async {
+      final dio = Dio(BaseOptions(
+        headers: AuthProbe().dio.options.headers,
+        validateStatus: (_) => true,
+        followRedirects: false,
+      ))..httpClientAdapter = _Router({
+          'http://oc.test/global/health': const _Resp(302,
+              headers: {'location': 'https://auth.test/?rd=x'}),
+          'http://oc.test/.well-known/oauth-authorization-server': const _Resp(
+              302,
+              headers: {'location': 'https://auth.test/?rd=y'}),
+          'https://auth.test/.well-known/oauth-authorization-server':
+              const _Resp(200, body: metaBody),
+        }, autheliaAcceptGate: true);
+      final r = await AuthProbe(dio: dio).probe('http://oc.test');
       expect(r.outcome, AuthProbeOutcome.oauth);
       expect(r.oidc, isNotNull);
     });
