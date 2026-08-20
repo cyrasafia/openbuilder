@@ -7,8 +7,13 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.MimeTypeMap
+import android.webkit.WebView
 import androidx.core.content.FileProvider
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -19,6 +24,7 @@ class MainActivity : FlutterActivity() {
 
     private val channel = "com.openbuilder.app/font_weight"
     private val filesChannel = "com.openbuilder.app/files"
+    private val passkeyChannel = "com.openbuilder.app/passkey"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -95,6 +101,40 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, passkeyChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "enableForAttachedWebViews" -> result.success(enableWebAuthnForAttachedWebViews())
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    /// Enables WebAuthn (passkeys) for every WebView currently attached to this
+    /// activity's view tree, via Credential Manager (app identity + Digital
+    /// Asset Links). Returns "ok", "no_view" (retry later) or "unsupported".
+    private fun enableWebAuthnForAttachedWebViews(): String {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
+            Log.w(TAG, "WebView WEB_AUTHENTICATION not supported; passkeys unavailable")
+            return "unsupported"
+        }
+        val decor = window?.decorView ?: return "no_view"
+        var applied = 0
+        forEachWebView(decor) { webView ->
+            WebSettingsCompat.setWebAuthenticationSupport(
+                webView.settings,
+                WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP
+            )
+            applied++
+        }
+        return if (applied > 0) "ok" else "no_view"
+    }
+
+    private fun forEachWebView(view: View, visit: (WebView) -> Unit) {
+        if (view is WebView) visit(view)
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) forEachWebView(view.getChildAt(i), visit)
+        }
     }
 
     /// Save [srcPath] into the public Download folder via MediaStore.

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -6,6 +8,7 @@ import '../../app_state.dart';
 import '../../core/connection/auth_probe.dart';
 import '../../core/connection/connection_profile.dart';
 import '../../core/connection/oauth_login_controller.dart';
+import '../../core/connection/webview_passkey.dart';
 import '../../ui/l10n_ext.dart';
 
 /// In-app WebView login: keeps the app foregrounded so the loopback receiver
@@ -68,6 +71,7 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
       ..setNavigationDelegate(
         NavigationDelegate(onNavigationRequest: _onNavigation),
       );
+    unawaited(WebviewPasskey.enableForLoginWebView());
     _controller.start(
       profile: widget.profile,
       meta: meta,
