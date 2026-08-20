@@ -854,6 +854,9 @@ class ServerStore extends ChangeNotifier {
       // Load cached data first for instant offline UI, then _bootstrap refreshes.
       await _loadCache();
       final dio = dioFor(profile, store: _connectionStore);
+      _agentsModelsCache.clear();
+      _agentsModelsInFlight.clear();
+      _agentsModelsFetchedAt.clear();
       client = OpencodeClient(dio);
       refreshSseAuth(profile);
       final ok = await _bootstrap();
@@ -2074,6 +2077,9 @@ class ServerStore extends ChangeNotifier {
     client = null;
     _profile = null;
     _cacheStore = null;
+    _agentsModelsCache.clear();
+    _agentsModelsInFlight.clear();
+    _agentsModelsFetchedAt.clear();
     notifyListeners();
   }
 
@@ -2090,13 +2096,77 @@ class ServerStore extends ChangeNotifier {
     super.dispose();
   }
 
+  static const _agentsModelsTtl = Duration(seconds: 30);
+  final _agentsModelsCache =
+      <String, Future<(List<AgentInfo>, List<ModelInfo>)>>{};
+  final _agentsModelsInFlight =
+      <String, Future<(List<AgentInfo>, List<ModelInfo>)>>{};
+  final _agentsModelsFetchedAt = <String, DateTime>{};
+  int _agentsModelsEpoch = 0;
+
+  Future<(List<AgentInfo>, List<ModelInfo>)> fetchAgentsAndModels({
+    String? directory,
+  }) {
+    final c = client;
+    if (c == null) {
+      throw StateError('server not connected');
+    }
+    final key = directory ?? '';
+    final cached = _agentsModelsCache[key];
+    if (cached != null &&
+        _agentsModelsFetchedAt[key] != null &&
+        DateTime.now().difference(_agentsModelsFetchedAt[key]!) <
+            _agentsModelsTtl) {
+      return cached;
+    }
+    return _agentsModelsInFlight[key] ??= _startAgentsModelsFetch(
+      c,
+      key,
+      directory,
+    );
+  }
+
+  Future<(List<AgentInfo>, List<ModelInfo>)> _startAgentsModelsFetch(
+    OpencodeClient c,
+    String key,
+    String? directory,
+  ) {
+    late final Future<(List<AgentInfo>, List<ModelInfo>)> fut;
+    final epoch = _agentsModelsEpoch;
+    fut = Future.wait([
+      c.listAgents(directory: directory),
+      c.listConfigProviders(directory: directory),
+    ]).then((results) {
+      final entry = (
+        results[0] as List<AgentInfo>,
+        results[1] as List<ModelInfo>,
+      );
+      if (identical(c, client) && epoch == _agentsModelsEpoch) {
+        _agentsModelsCache[key] = Future.value(entry);
+        _agentsModelsFetchedAt[key] = DateTime.now();
+      }
+      return entry;
+    }).whenComplete(() {
+      if (identical(_agentsModelsInFlight[key], fut)) {
+        _agentsModelsInFlight.remove(key);
+      }
+    });
+    return fut;
+  }
+
   /// Manual refresh (from pull-to-refresh). Returns true on success.
   /// Never throws — all network errors are swallowed and surfaced via
   /// the return value so RefreshIndicator / onRefresh callers stay safe.
   Future<bool> refresh() async {
     if (client == null) return false;
     try {
-      return await refreshListAndWorkingSse(force: true);
+      final ok = await refreshListAndWorkingSse(force: true);
+      if (ok) {
+        _agentsModelsEpoch++;
+        _agentsModelsCache.clear();
+        _agentsModelsFetchedAt.clear();
+      }
+      return ok;
     } catch (e) {
       AppLogger.I.e(_tag, 'refresh failed: $e');
       return false;

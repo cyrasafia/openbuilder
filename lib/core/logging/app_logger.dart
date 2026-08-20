@@ -33,6 +33,7 @@ class AppLogger {
   IOSink? _sink;
   String? _currentDate;
   final List<LogEntry> _buffer = [];
+  final List<String> _retryLines = [];
   static const _maxBuffer = 2000;
   static const _retentionDays = 7;
 
@@ -54,7 +55,18 @@ class AppLogger {
     final file = File('${_dir!.path}/$date.log');
     final old = _sink;
     _sink = file.openWrite(mode: FileMode.append);
-    unawaited(old?.close());
+    if (_retryLines.isNotEmpty) {
+      final lines = _retryLines.toList();
+      _retryLines.clear();
+      try {
+        _sink!.writeln(lines.join('\n'));
+      } catch (_) {
+        _retryLines.addAll(lines);
+      }
+    }
+    try {
+      unawaited(old?.close());
+    } catch (_) {}
   }
 
   void _cleanup() {
@@ -84,7 +96,13 @@ class AppLogger {
       _buffer.removeRange(0, _buffer.length - _maxBuffer);
     }
     _rotate();
-    _sink?.writeln(entry.line);
+    final lines = [..._retryLines, entry.line];
+    _retryLines.clear();
+    try {
+      _sink?.writeln(lines.join('\n'));
+    } catch (_) {
+      _retryLines.addAll(lines);
+    }
   }
 
   void d(String tag, String message) => log(LogLevel.debug, tag, message);
@@ -101,7 +119,7 @@ class AppLogger {
     if (_dir == null) {
       return _buffer.map((e) => e.line).join('\n');
     }
-    await _sink?.flush();
+    await flush();
     _rotate();
     return readDiskLogs(_dir!, _currentDate, todayOnly: todayOnly);
   }
@@ -139,6 +157,11 @@ class AppLogger {
     I._sink = null;
   }
 
+  @visibleForTesting
+  void overrideSinkForTesting(IOSink sink) {
+    _sink = sink;
+  }
+
   Future<File> exportFileRecent(Duration since, {String? filename}) async {
     final entries = exportRecent(since);
     return _writeTemp(entries.map((e) => e.line).join('\n'), filename);
@@ -161,12 +184,25 @@ class AppLogger {
   static String _p(int n) => n.toString().padLeft(2, '0');
 
   Future<void> flush() async {
-    await _sink?.flush();
+    if (_retryLines.isNotEmpty) {
+      final lines = _retryLines.toList();
+      _retryLines.clear();
+      try {
+        _sink?.writeln(lines.join('\n'));
+      } catch (_) {
+        _retryLines.addAll(lines);
+      }
+    }
+    try {
+      await _sink?.flush();
+    } catch (_) {}
   }
 
   Future<void> dispose() async {
-    await _sink?.flush();
-    await _sink?.close();
+    await flush();
+    try {
+      await _sink?.close();
+    } catch (_) {}
     _sink = null;
   }
 
@@ -176,5 +212,6 @@ class AppLogger {
     I._dir = null;
     I._sink = null;
     I._currentDate = null;
+    I._retryLines.clear();
   }
 }

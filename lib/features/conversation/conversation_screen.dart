@@ -3576,29 +3576,43 @@ class _BottomBar extends StatelessWidget {
           ),
         ),
       ),
-      padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (pending.isNotEmpty)
-            _FilePreviewBar(pending: pending, onRemove: onRemove),
-          _ComposeBar(
-            ctl: ctl,
-            busy: busy,
-            disabled: disabled,
-            onAbort: onAbort,
-            onChanged: onChanged,
-            onSend: onSend,
-            farFromBottom: farFromBottom,
-            onScrollToBottom: onScrollToBottom,
-            pending: pending,
-            shellMode: shellMode,
-            onExitShellMode: onExitShellMode,
-            onPickAttachments: onPickAttachments,
-          ),
-          _AgentModelBar(sessionId: sessionId, directory: directory),
-        ],
+      child: _BottomSafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (pending.isNotEmpty)
+              _FilePreviewBar(pending: pending, onRemove: onRemove),
+            _ComposeBar(
+              ctl: ctl,
+              busy: busy,
+              disabled: disabled,
+              onAbort: onAbort,
+              onChanged: onChanged,
+              onSend: onSend,
+              farFromBottom: farFromBottom,
+              onScrollToBottom: onScrollToBottom,
+              pending: pending,
+              shellMode: shellMode,
+              onExitShellMode: onExitShellMode,
+              onPickAttachments: onPickAttachments,
+            ),
+            _AgentModelBar(sessionId: sessionId, directory: directory),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _BottomSafeArea extends StatelessWidget {
+  final Widget child;
+  const _BottomSafeArea({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
+      child: child,
     );
   }
 }
@@ -4045,14 +4059,13 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     if (client == null) return;
     setState(() => _loading = true);
     try {
-      final results = await Future.wait([
-        client.listAgents(directory: widget.directory),
-        client.listConfigProviders(directory: widget.directory),
-      ]);
+      final (agents, models) = await serverStore.fetchAgentsAndModels(
+        directory: widget.directory,
+      );
       if (mounted) {
         setState(() {
-          _agents = results[0] as List<AgentInfo>;
-          _models = results[1] as List<ModelInfo>;
+          _agents = agents;
+          _models = models;
           _loading = false;
         });
       }
@@ -4242,16 +4255,7 @@ class _AgentModelBarState extends State<_AgentModelBar> {
     final scheme = Theme.of(context).colorScheme;
     final muted = scheme.outline;
 
-    return MediaQuery(
-      // Freeze viewInsets so the bar subtree does not rebuild on every
-      // keyboard-animation frame; the bar is positioned by _KeyboardAvoider
-      // padding and never reads viewInsets itself.
-      data: MediaQuery.of(context).copyWith(
-        textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.0),
-        viewInsets: EdgeInsets.zero,
-      ),
-      child: _buildBar(context, muted),
-    );
+    return _BarMetricsScope(child: _buildBar(context, muted));
   }
 
   Widget _buildBar(BuildContext context, Color muted) {
@@ -4351,6 +4355,25 @@ class _AgentModelBarState extends State<_AgentModelBar> {
           ),
         );
       },
+    );
+  }
+}
+
+class _BarMetricsScope extends StatelessWidget {
+  final Widget child;
+  const _BarMetricsScope({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return MediaQuery(
+      // Freeze viewInsets so the bar subtree does not rebuild on every
+      // keyboard-animation frame; the bar is positioned by _KeyboardAvoider
+      // padding and never reads viewInsets itself.
+      data: MediaQuery.of(context).copyWith(
+        textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.0),
+        viewInsets: EdgeInsets.zero,
+      ),
+      child: child,
     );
   }
 }

@@ -243,12 +243,9 @@ class ProjectDetailScreen extends StatelessWidget {
     if (client == null) return;
     bool switched = false;
     try {
-      final results = await Future.wait([
-        client.listAgents(directory: directory),
-        client.listConfigProviders(directory: directory),
-      ]);
-      final agents = results[0] as List<AgentInfo>;
-      final models = results[1] as List<ModelInfo>;
+      final (agents, models) = await serverStore.fetchAgentsAndModels(
+        directory: directory,
+      );
       final session = serverStore.sessionById(sessionId);
       if (agents.isNotEmpty && session?.agent != agents.first.name) {
         await client.switchAgent(sessionId, agents.first.name);

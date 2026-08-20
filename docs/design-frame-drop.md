@@ -50,7 +50,7 @@ Timer(Duration(milliseconds: 1300), () {
 |------|--------|------|------|
 | **JANK-1** | 浮层（bottom sheet）展开掉帧 | ✅ 已修（模型列表拍平）；门控方案预留 | [§2](#2-jank-1-浮层展开掉帧) |
 | **JANK-2** | 键盘展开/收起掉帧（后台屏幕整片重建） | ✅ 已修（MediaQuery 三属性冻结） | [§3](#3-jank-2-键盘展开收起掉帧) |
-| JANK-3 | （预留）其他 | 待立项 | §4 |
+| **JANK-3** | 新会话加载窗口键盘展开掉帧（双份模型解码 + 切换/刷新风暴 + 底部条每帧重建税） | ✅ 已修（1+2，真机复测达标）；残余 refresh 长帧留档 | [§4](#4-jank-3-新会话加载窗口键盘展开掉帧) |
 
 > 后续每确认一个新掉帧点：在清单加一行，并按 §2 的结构（问题 → 定位过程 → 根因 → 方案 → 验证 → 决策 → 不做的事）补一节。
 
@@ -214,10 +214,161 @@ class _ViewInsetsFreezer extends StatelessWidget {
 
 ---
 
-## 4. JANK-3（预留）
+## 4. JANK-3 新会话加载窗口键盘展开掉帧
+
+> 状态：**✅ 已修（2026-08-20 真机复测达标，探针已删）**。方案 1+2 见 §4.7；复测数据见 §4.5.1；残余限制（refresh 长帧）见 §4.7 末尾，后续如需再优化单独立项。
+
+### 4.1 问题
+
+新建会话后、底部模型/agent 条仍为占位（`_loading`，显示 `—` chip）时点击输入框，键盘展开动画掉帧；条加载完成后不明显。JANK-2 修的是**后台屏幕**整片重建（MainShell / ProjectDetailScreen 冻结），本问题是**前台会话页自身**在新建会话后特定时间窗口内的掉帧——两个修复互不覆盖。
+
+### 4.2 代码证据链：为何恰好是"模型/agent 加载出来之前"这个窗口
+
+新会话创建（`project_detail_screen.dart:220 _createSession` → push `/session/<id>`）后的 ~0.3–1s 内，一串重活全部落在 UI isolate，与键盘动画窗口高度重叠：
+
+| # | 事件 | 代码位置 | 成本 |
+|---|------|---------|------|
+| 1 | **双份重复请求**：`_applyDefaultAgentModel` 与 `_AgentModelBar._loadOptions` **各自**发 `listAgents` + `listConfigProviders` | project_detail_screen.dart:246 / conversation_screen.dart:4048 | 模型列表响应大（数百模型），`jsonDecode` + `fromJson ×N` ×2 份，全在 UI isolate，单帧可 >8ms |
+| 2 | 默认 agent/model 切换 | project_detail_screen.dart:254,293 `switchAgent`/`switchModel` | 两次 POST + 触发 SSE `session.updated` 突发 |
+| 3 | **全量 refresh 风暴** | project_detail_screen.dart:296 → server_store.dart:1237 `refreshListAndWorkingSse(force:true)` | projects + 全部 sessions + 全部 statuses 拉取解码，`notifyListeners` 全局广播；refresh 尾部再触发 `refreshCommands`（server_store.dart:1294，JANK-2 §3.5 残余已点名） |
+| 4 | 占位→真实条切换 | conversation_screen.dart:4053 `setState(_loading=false)` | 一次中等重建（chips + IntrinsicHeight 首次布局） |
+| 5 | SSE `session.updated` ×N | serverStore/conv notify → AppBar 多个 ListenableBuilder + body ListenableBuilder + bar 内层 ListenableBuilder | 每次 notify 全量重建可见页面 |
+
+用户"新建后立刻点输入框"的时机，恰好把键盘动画（~300ms，每帧本就贴预算，见 §4.3）与 #1–#5 的多个一次性长帧撞在一起。
+
+### 4.3 键盘每帧税（放大器，常在但平时无感）
+
+- `_BottomBar`（conversation_screen.dart:3579）读 `MediaQuery.paddingOf(context).bottom` 做底部安全区。JANK-2 §3.2 轮5 已证 Android 键盘弹起时 `view.padding.bottom` 16→0 **逐帧变** → `_BottomBar` 每键盘帧重建，连带 `_ComposeBar`（TextField 子树，重建较贵）+ `_AgentModelBar`。
+- `_AgentModelBar.build`（conversation_screen.dart:4249）用 `MediaQuery.of(context).copyWith(viewInsets: zero)` 构造冻结——`MediaQuery.of` 是**全 aspect 依赖**，该 widget 自己反而注册了根 MediaQuery 每帧通知；冻结只保护了子树、没保护自己（自噬式冻结）。
+- 净效果：键盘动画每帧 = 不可省的 relayout（`_KeyboardAvoider` padding 变化）+ `_BottomBar` 整个子树 rebuild（含 TextField）。120Hz 预算 8.3ms 下本身就无余量，§4.2 风暴一来必掉帧。JANK-2 修复后的残余 over 帧（其 §3.5）与本条同源。
+
+### 4.4 根因（真机数据已证实）
+
+- **主因（一次性长帧，解释"仅加载窗口卡"）**：§4.2 #1–#5 的风暴落在键盘动画窗口。实测点击后 2.3s 仅产出 16 帧、单帧 build 333.5ms（全量 refresh 的 projects/sessions/statuses 解码突发），`commands refreshed` 亦落在窗口内；双份请求实测成立（`applyDefault fetched 788ms` + `loadOptions 156ms`，agents=2 / models=65 各解码一遍）。
+- **次因/放大器（每帧税，常在）**：§4.3 的依赖问题使稳态下键盘每帧仍重建底部条子树（`_AgentModelBar` ~38 widget/帧、`_ComposeBar` ~18/帧），稳态 buildMed 11.6ms 已超 8.3ms 预算——键盘动画平时就贴预算，长帧一撞必掉。
+- **raster 恒低**（max ≤4.8ms）：纯 UI 线程 build 侧问题，与光栅化无关。
+
+### 4.5 验证数据（真机 debug，2026-08-20）
+
+新建会话 → 底部条占位期间点输入框（probe 1）vs 条加载完成后再点（probe 2，稳态对照）：
+
+| 指标 | 加载窗口（probe 1） | 稳态对照（probe 2） |
+|------|--------------------|--------------------|
+| frames | **16**（2.3s 内，UI 线程被长帧哽死） | 83 |
+| build max | **333.5ms** | 25.8ms |
+| build median | 14.4ms | 11.6ms |
+| raster max | 4.8ms | 2.4ms |
+| over 8.3ms | 16/16 全超 | 56/83 |
+| rebuilds | 7548（~470/帧） | 7624（~92/帧） |
+| landmarks 峰值 | _AgentModelBar:703、ConversationScreen:406 | _AgentModelBar:3198（~38/帧）、_ComposeBar:1538（~18/帧） |
+
+probe 1 时间线（KbPerf 事件流）：`applyDefault refresh start` → +294ms 点击（probe start）→ 窗口内 `commands refreshed` → refresh 全链 6.3s（`applyDefault refresh done`）。即点击瞬间 refresh 的解码突发正在 UI isolate 上执行。
+
+#### 4.5.1 修复后复测（真机 debug，2026-08-20，方案 1+2 实施后）
+
+| 指标 | 修复前 | 复测 | 判定 |
+|------|--------|------|------|
+| 稳态 buildMed | 11.6ms | **4.5–7.3ms** | ✅ 进入 8.3ms 预算 |
+| 稳态 over8.3 | 56/83（67%） | **6/74（8%）** | ✅ 每帧税已除 |
+| 稳态 `_AgentModelBar`/帧 | ~38 | **~1.5** | ✅ |
+| 稳态 `_ComposeBar`/帧 | ~18 | **~3** | ✅（加载窗口 probe 中归零） |
+| 加载窗口 buildMax | 333.5ms | 118–232ms | ⚠️ 改善，残余见下 |
+| 双份请求 | 788ms + 156ms（两次网络+解码） | 86ms/196ms（缓存命中，耗时为忙窗口事件循环排队） | ✅ 解码减半 |
+
+复测证据：第二次 `loadOptions` 命中缓存近零成本返回；稳态键盘展开 `_BottomBar` landmark 降至 1–16（原 85），`_AgentModelBar` 168–119（原 3198）。
+
+**残余（已知限制，留档）**：点击落在 refresh 风暴进行中（复测 probe A 内 refresh 于 +1133ms 才完成）时，仍出现 100–230ms 单帧——全量 refresh 的 projects/sessions/statuses 解码仍在 UI isolate，1+2 不消除它（§4.7 末尾预估成立）。发生条件较窄（新建会话后 ~1–4s 内点击输入框且 refresh 未完成），中位帧已达标。后续如需根治，方向：refresh 解码挪 `compute`、notify 合帧、或错峰；单独立项。
+
+### 4.6 探针用法（留档，验证修复时复用）
+
+临时探针 `KbPerf`（定位完成后删除，方法留档 §0.2/§3.2）：
+
+- `_ComposeBar` 在 viewInsets 0→>0 时自动开测，settle 400ms 后输出汇总：`frames / buildMax / buildMed / rasterMax / over8.3 / over16.7 / rebuilds / types / landmarks / events`。
+- `loadOptions`（start/done/fail）与 `applyDefault`（start/fetched/switchAgent/switchModel/refresh start/done）逐段打点，与帧数据同一日志流（`KbPerf` tag，debugPrint + AppLogger 双写）。
+- rebuild 明细依赖 `debugOnRebuildDirtyWidget`，需 **debug** 模式；**profile** 模式仍有帧耗时与 events。
+- 判读：
+  - `events` 里 `loadOptions done` / `applyDefault fetched` / `refresh done` 落在 probe 窗口内、且窗口内 buildMax 飙高 → 证实主因；
+  - `types`/`landmarks` 中 `TextField`/`InputDecorator`/`_BottomBar`/`_AgentModelBar` 计数 ≈ 帧数 → 证实每帧税；
+  - 两者同时成立 → 按 §4.6 1+2 组合修。
+
+### 4.7 修复方向（已实施 1+2）
+
+1. **去重请求**（✅ 已实施）：`ServerStore.fetchAgentsAndModels({directory})`——TTL 30s 结果缓存 + in-flight 去重（connect/disconnect 时清空）。`_applyDefaultAgentModel` 与 `_AgentModelBar._loadOptions` 均改走该方法，解码量减半。注：实测两请求是**先后**发出（非并发），纯 in-flight 去重碰不上，故必须带 TTL 缓存。陈旧度收窄：`refresh()` 成功即清缓存（R2-1 缓解），窗口上界 = 一个 refresh 周期而非 TTL。
+2. **消除键盘每帧税**（✅ 已实施）：
+   - `_BottomBar` 底部安全区下沉到专职叶子 `_BottomSafeArea`（读 `paddingOf`，child 跨帧同实例）——只有该 Padding 每帧重建，`_ComposeBar`/`_AgentModelBar` 子树静止；
+   - `_AgentModelBar` 的冻结下沉到专职叶子 `_BarMetricsScope`（`MediaQuery.of` + textScaler clamp + viewInsets 冻零），State.build 本身不再注册 MediaQuery 依赖。
+3. **错峰**（❌ 未实施，后手）：默认 agent/model 应用与 bar 首次挂内容延后到键盘动画稳定后——条加载完成时间后移，有 UX 取舍；1+2 复测不够再考虑。
+
+残余风险：全量 refresh 的解码突发（probe 1 的 333.5ms 单帧主因之一）仍在 UI isolate，1+2 不消除它——若复测仍偶发长帧，再立项把 refresh 解码挪 `compute` 或做 notify 合帧。
+
+### 4.8 不做的事
+
+- 不把 `_BottomBar` 的安全区 padding 冻死为 0 或 `viewPadding`——键盘关闭时条会压到导航栏/手势条；padding 语义（= viewPadding − viewInsets）本身就该逐帧跟随，要修的是"谁为它重建"。
+- 不把 JSON 解码挪 `compute` isolate 作为首选——先去重减半；若真机数据证明单份解码仍超预算再单独立项。
+- 不砍新会话的默认 agent/model 应用逻辑——这是既有功能行为，只做去重与错峰。
 
 ---
 
 ## 5. 评审意见
 
 > 迭代追加。每轮评审标注问题编号（JANK-R*）、优先级（🔴 阻塞 / 🟡 中 / 🟢 低）、修复建议；修复后追加"修复复审"表格逐条核对。
+
+### 1次评审意见（JANK-3 实现，代码评审 2026-08-20）
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| JANK-R1-1 | 🟡 中（窗口一个 RTT，需请求在途时切服务器） | `fetchAgentsAndModels` 在途响应晚于 connect/disconnect 的清空落盘，旧服务器数据灌进新连接缓存（TTL 30s 内持续，`switchModel` 可能打到新服务器不存在的模型）；`whenComplete` 误删新连接的在途表项 | 已修：缓存写入与在途移除均加 `identical(c, client)` / `identical(map[key], fut)` 守卫 |
+| JANK-R1-2 | 🟢 低 | `_agentsModelsFetchedAt` 未随另两张表在 connect/disconnect 清空（当前无害，TTL 判定被 `cached != null` 前置门控） | 已修：两处补 `.clear()` |
+| JANK-R1-3 | 🟢 低 | `KbPerf` 探针无 debug 守卫，release 构建仍会装 timings 回调写日志 | 已修：`noteInset`/`logEvent` 加 `kDebugMode` 早退（release 树摇为空）；复测通过后整文件删除 |
+
+#### 修复复审
+
+| 编号 | 结论 |
+|------|------|
+| JANK-R1-1 | ✅ 旧客户端的响应不再写缓存；在途表只删自己的表项 |
+| JANK-R1-2 | ✅ connect/disconnect 两处补齐 |
+| JANK-R1-3 | ✅ kDebugMode 早退；删除计划不变（§4 状态注明） |
+
+评审同时确认无误：叶子化模式（`_BottomSafeArea`/`_BarMetricsScope`）正确复用 child 实例；缓存 key `directory ?? ''` 与 client 的 null/'' 等价语义一致；错误路径不写缓存、两调用方均前置判空；`model_management_screen` 仍走 client 直取，设置页数据保持权威。
+
+### 2次评审意见（JANK-R1 修复复审轮，代码评审 2026-08-20）
+
+结论：**无阻塞项**。R1 修复全部核实：并发交错下守卫正确（旧客户端响应被 `identical(c, client)` 拒绝；在途移除守卫不会误删后继表项；`late final fut` 自引用安全）；叶子化模式与视觉等价性确认；文档复审表与实际代码一致。
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| JANK-R2-1 | 🟡 中（仅当服务器模型集在 TTL 窗口内变更） | agents/models 最多 30s 陈旧：`_applyDefaultAgentModel` 可能用已下线模型调 `switchModel`（服务端拒绝、已捕获、会话保持默认）或错过新增默认模型 | 已修：`refresh()` 成功即清 `_agentsModelsCache`/`_agentsModelsFetchedAt`（失败不清，离线保留兜底），陈旧上界收窄为一个 refresh 周期 |
+| JANK-R2-2 | 🟢 低 | TTL 时间戳在响应落盘时打而非请求发起时，慢请求拉长有效陈旧窗口 | 接受：与 R2-1 同源，已随 refresh 清缓存一并收窄 |
+| JANK-R2-3 | 🟢 低 | `KbPerf._finish` 无条件清全局 `debugOnRebuildDirtyWidget`，会覆盖中途装入的其他调试回调 | 接受：仓库内无其他使用方，release 已早退，文件按计划复测后删除 |
+
+#### 修复复审
+
+| 编号 | 结论 |
+|------|------|
+| JANK-R2-1 | ✅ `refresh()` 成功路径清缓存；失败路径保留（离线兜底） |
+| JANK-R2-2 | ✅ 接受留档 |
+| JANK-R2-3 | ✅ 接受留档，删除计划见 §4 状态 |
+
+复测判读备注（评审提示）：`_BarMetricsScope` 内只冻了 `viewInsets`/`textScaler`，`padding`/`viewPadding` 在 scope 内仍逐帧变——当前 bar 子树无人读它们，但将来 scope 下若有 widget 调 `MediaQuery.paddingOf`，每帧重建会复现，复测数据解读时留意。
+
+### 3次评审意见（终审轮，代码评审 2026-08-20）
+
+结论：**无阻塞项**。R1/R2 修复全部核实：竞态守卫、缓存 key 语义、叶子化提取与视觉等价、调用方守卫均确认正确；探针删除后无残留。附加发现（AppLogger 后台竞态修复一并送审）：
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| JANK-R3-1 | 🟢 低 | `_retryLines` 只捕获同步抛（`writeln` 的异步 I/O 失败走未 await 的 Future，属既有行为，非回归）；"排队重试"保证范围比字面窄 | 接受留档：同步 `StateError`（bound/closed）是本次修复的目标场景，异步 I/O 错误处理是独立的既有问题，不在本次范围 |
+| JANK-R3-2 | 🟢 低（窗口窄：恰有排队行时执行磁盘导出） | `exportDiskText` 直调 `_sink?.flush()` 绕过重试队列，导出文件漏排队行 | 已修：改走 `flush()`（先补写排队行再 flush） |
+| JANK-R3-3 | 🟢 低（陈旧增量 ≤ 一个网络往返） | refresh 前发出的在途 fetch 落在 refresh 后，会把 pre-refresh 数据盖进缓存并打新时间戳，超出 R2-1"一个 refresh 周期"的承诺 | 已修：引入 `_agentsModelsEpoch`，fetch 起始记 epoch、落盘时 epoch 变了（refresh 成功过）则不写缓存 |
+| JANK-R3-4 | 🟢 低 | `resetForTesting` 未清 `_retryLines`，未来测试可能跨用例泄漏 | 已修：补 `.clear()` |
+
+#### 修复复审
+
+| 编号 | 结论 |
+|------|------|
+| JANK-R3-1 | ✅ 接受留档（既有异步 I/O 错误行为，范围外） |
+| JANK-R3-2 | ✅ `exportDiskText` 走 `flush()` |
+| JANK-R3-3 | ✅ epoch 守卫，跨 refresh 的在途响应不再入缓存 |
+| JANK-R3-4 | ✅ 已清 |
+
+行为变更（有意、已记录）：agents/models 现可容忍最多 30s/一个 refresh 周期的陈旧（原为每次直取），`model_management_screen` 仍直取保持权威；`switchModel` 打到已下线模型的失败模式有捕获兜底。见 §4.7 与 R2-1。

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -148,6 +149,31 @@ void main() {
       final text = await AppLogger.I.exportDiskText(todayOnly: true);
       expect(text, '');
       expect(text.contains('past content'), isFalse);
+    });
+  });
+
+  group('flush race', () {
+    late Directory tmp;
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('applog_flushrace');
+    });
+    tearDown(() async {
+      await AppLogger.I.dispose();
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('writeln during bound sink is queued and retried, not thrown', () async {
+      final sinkFile = File('${tmp.path}/race.log');
+      final sink = sinkFile.openWrite(mode: FileMode.append);
+      AppLogger.I.overrideSinkForTesting(sink);
+      final controller = StreamController<List<int>>();
+      final addDone = sink.addStream(controller.stream);
+      AppLogger.I.i('T', 'during-bound');
+      await controller.close();
+      await addDone;
+      await AppLogger.I.flush();
+      await sink.close();
+      expect(await sinkFile.readAsString(), contains('during-bound'));
     });
   });
 }
