@@ -136,6 +136,7 @@
   "oauthErrFlow": "授权流程出错",
   "oauthErrIssuerFetch": "无法获取 OIDC 配置，请检查服务器设置中的 Issuer 地址",
   "oauthRetry": "重新开始",
+  "oauthCallbackReceived": "已收到授权，请返回 Open Builder",
   "basicTitle": "Basic 认证",
   "basicTestSave": "测试并保存",
   "basicWrongCredentials": "用户名或密码错误",

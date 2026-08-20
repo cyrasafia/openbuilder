@@ -136,6 +136,7 @@
   "oauthErrFlow": "Authorization flow error",
   "oauthErrIssuerFetch": "Could not fetch OIDC configuration — check the issuer in server settings",
   "oauthRetry": "Start over",
+  "oauthCallbackReceived": "Authorization received. You can return to Open Builder.",
   "basicTitle": "Basic auth",
   "basicTestSave": "Test & save",
   "basicWrongCredentials": "Incorrect username or password",

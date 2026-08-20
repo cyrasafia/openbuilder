@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -55,6 +56,17 @@ void main() {
       await _get(port, 'error_description=denied+by+user%21');
       final params = await server.params;
       expect(params['error_description'], 'denied by user!');
+    });
+
+    test('renders the localized callback message, HTML-escaped', () async {
+      final server = LoopbackCallbackServer();
+      await server.start(port: 0, message: '已收到授权 <Open Builder>');
+      final port = server.boundPort;
+      final resp = await _get(port, 'code=abc&state=st1');
+      expect(resp.statusCode, 200);
+      final body = await resp.transform(utf8.decoder).join();
+      expect(body, contains('已收到授权 &lt;Open Builder&gt;'));
+      expect(body, isNot(contains('<Open Builder>')));
     });
 
     test('close() before any request errors the params future', () async {

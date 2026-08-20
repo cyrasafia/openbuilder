@@ -11,7 +11,7 @@ class LoopbackCallbackServer {
   Future<Map<String, String>> get params => Future.error(
       UnsupportedError('loopback callback requires dart:io (mobile)'));
 
-  Future<void> start({int port = defaultPort}) async =>
+  Future<void> start({int port = defaultPort, String? message}) async =>
       throw UnsupportedError('loopback callback requires dart:io (mobile)');
 
   void mergeQuery(Map<String, String> into, String query) {}

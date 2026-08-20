@@ -22,7 +22,7 @@ class LoopbackCallbackServer {
 
   Future<Map<String, String>> get params => _params.future;
 
-  Future<void> start({int port = defaultPort}) async {
+  Future<void> start({int port = defaultPort, String? message}) async {
     if (_server != null || _closed) return;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
     if (_closed) {
@@ -41,6 +41,7 @@ class LoopbackCallbackServer {
         );
         mergeQuery(params, body);
       }
+      final text = message ?? 'Authorization received. You can return to Open Builder.';
       request.response.statusCode = HttpStatus.ok;
       request.response.headers.contentType = ContentType.html;
       request.response.write(
@@ -48,7 +49,7 @@ class LoopbackCallbackServer {
         'content="width=device-width, initial-scale=1"></head>'
         '<body style="font-family:sans-serif;text-align:center;padding-top:40px">'
         '<div style="font-size:48px">&#10004;</div>'
-        '<p>Authorization received. You can return to Open Builder.</p>'
+        '<p>${htmlEscape.convert(text)}</p>'
         '</body></html>',
       );
       await request.response.close();

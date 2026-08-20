@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -108,6 +109,30 @@ void main() {
     await _waitForPhase(c, OAuthLoginPhase.success);
     expect(c.tokenResult?.accessToken, 'at1');
     expect(fake.exchangeCalls, 1);
+    await started;
+    c.dispose();
+  });
+
+  test('callbackMessage propagates to the rendered callback page', () async {
+    final holder = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final port = holder.port;
+    await holder.close();
+    final c = OAuthLoginController(
+      client: _FakeClient(),
+      loopbackPort: port,
+    );
+    final started = c.start(
+      profile: profile,
+      meta: meta,
+      callbackMessage: '已收到授权，请返回 Open Builder',
+    );
+    await _waitForPhase(c, OAuthLoginPhase.waitingAuth);
+    final resp = await _hitCallback(port, 'code=abc&state=st-fixed');
+    expect(resp.statusCode, 200);
+    final body =
+        await resp.transform(const Utf8Decoder()).join();
+    expect(body, contains('已收到授权，请返回 Open Builder'));
+    await _waitForPhase(c, OAuthLoginPhase.success);
     await started;
     c.dispose();
   });

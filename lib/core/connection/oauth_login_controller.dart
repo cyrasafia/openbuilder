@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../logging/app_logger.dart';
 import 'auth_code_client.dart';
 import 'auth_probe.dart';
 import 'connection_profile.dart';
 import 'loopback_callback_server.dart';
+
+const _tag = 'OAuth';
 
 enum OAuthLoginPhase {
   idle,
@@ -53,7 +56,6 @@ class OAuthLoginController extends ChangeNotifier {
   OAuthLoginPhase get phase => _phase;
   String? get authorizationUrl => _authorizationUrl;
   TokenResult? get tokenResult => _tokenResult;
-  String? get errorDetail => _errorDetail;
   String get loopbackOrigin =>
       'http://127.0.0.1:$loopbackPort';
 
@@ -74,6 +76,7 @@ class OAuthLoginController extends ChangeNotifier {
   Future<void> start({
     required ConnectionProfile profile,
     required OidcMetadata meta,
+    String? callbackMessage,
   }) async {
     if (_phase != OAuthLoginPhase.idle) return;
     _set(OAuthLoginPhase.preparing);
@@ -84,7 +87,7 @@ class OAuthLoginController extends ChangeNotifier {
     final loopback = seam ?? LoopbackCallbackServer();
     _loopback = loopback;
     try {
-      await loopback.start(port: loopbackPort);
+      await loopback.start(port: loopbackPort, message: callbackMessage);
     } on Object {
       _set(OAuthLoginPhase.portBusy);
       return;
@@ -103,6 +106,7 @@ class OAuthLoginController extends ChangeNotifier {
       _set(OAuthLoginPhase.waitingAuth);
     } on DioException catch (e) {
       _errorDetail = e.response?.data?.toString() ?? e.message;
+      AppLogger.I.e(_tag, 'par failed: $_errorDetail');
       await _teardown();
       _set(OAuthLoginPhase.parError);
       return;
@@ -120,6 +124,7 @@ class OAuthLoginController extends ChangeNotifier {
       final error = params['error'];
       if (error != null) {
         _errorDetail = params['error_description'] ?? error;
+        AppLogger.I.e(_tag, 'callback error: $_errorDetail');
         _set(error == 'access_denied'
             ? OAuthLoginPhase.denied
             : OAuthLoginPhase.flowError);
@@ -142,6 +147,7 @@ class OAuthLoginController extends ChangeNotifier {
       _set(OAuthLoginPhase.success);
     } on DioException catch (e) {
       _errorDetail = e.response?.data?.toString() ?? e.message;
+      AppLogger.I.e(_tag, 'token exchange failed: $_errorDetail');
       _set(OAuthLoginPhase.exchangeError);
     } on Object {
       // Loopback closed while awaiting params (timeout/cancel already set a
@@ -164,6 +170,7 @@ class OAuthLoginController extends ChangeNotifier {
   Future<void> restart({
     required ConnectionProfile profile,
     required OidcMetadata meta,
+    String? callbackMessage,
   }) async {
     if (!_terminal || _disposed) return;
     await _teardown();
@@ -176,7 +183,8 @@ class OAuthLoginController extends ChangeNotifier {
     notifyListeners();
     // Fire-and-forget: start() resolves only after the (up to 5 min) auth
     // wait; callers must not block on that.
-    unawaited(start(profile: profile, meta: meta));
+    unawaited(start(
+        profile: profile, meta: meta, callbackMessage: callbackMessage));
   }
 
   Future<void> _teardown() async {

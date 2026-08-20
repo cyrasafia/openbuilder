@@ -44,7 +44,9 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
     _controller = OAuthLoginController()..addListener(_onPhase);
     final meta = widget.metadata;
     if (meta != null) {
-      _start(meta);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _start(meta);
+      });
     } else {
       AuthProbe()
           .metadataForIssuer(widget.profile.oidcIssuer)
@@ -66,7 +68,11 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
       ..setNavigationDelegate(
         NavigationDelegate(onNavigationRequest: _onNavigation),
       );
-    _controller.start(profile: widget.profile, meta: meta);
+    _controller.start(
+      profile: widget.profile,
+      meta: meta,
+      callbackMessage: l(context).oauthCallbackReceived,
+    );
   }
 
   NavigationDecision _onNavigation(NavigationRequest request) {
@@ -141,9 +147,7 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         title: Text(loc.oauthErrTitle),
-        content: Text(_controller.errorDetail == null
-            ? _errorText()
-            : '${_errorText()}\n\n${_controller.errorDetail}'),
+        content: Text(_errorText()),
         actions: [
           TextButton(
             onPressed: () {
@@ -161,7 +165,11 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
                 return;
               }
               setState(() => _dialogShown = false);
-              _controller.restart(profile: widget.profile, meta: meta);
+              _controller.restart(
+                profile: widget.profile,
+                meta: meta,
+                callbackMessage: l(context).oauthCallbackReceived,
+              );
             },
             child: Text(loc.oauthRetry),
           ),
