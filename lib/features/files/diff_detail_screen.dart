@@ -54,7 +54,6 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
   double? _headerHeight;
   double? _lineHeight;
   List<double> _headerTops = const [];
-  double _contentHeight = 0;
   int _firstLineItemIndex = -1;
   final _sticky = ValueNotifier<_StickyState>(const _StickyState(-1, 0));
 
@@ -119,7 +118,6 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
     _headerHeight = null;
     _lineHeight = null;
     _headerTops = const [];
-    _contentHeight = 0;
     _sticky.value = const _StickyState(-1, 0);
     _beginHighlight();
   }
@@ -157,7 +155,6 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
       }
     }
     _headerTops = tops;
-    _contentHeight = y;
   }
 
   void _jumpToHunk(int hunkIndex) {
@@ -476,11 +473,13 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
         final viewportWidth = constraints.maxWidth;
         final viewportHeight = constraints.maxHeight;
         final effectiveWidth = totalWidth < viewportWidth ? viewportWidth : totalWidth;
-        final double bottomPad = _headerTops.isEmpty
-            ? 8.0
-            : (_headerTops.last + viewportHeight - _contentHeight > 8
-                ? _headerTops.last + viewportHeight - _contentHeight
-                : 8.0);
+        final double bottomPad;
+        if (_headerTops.isEmpty || _lineHeight == null || _headerHeight == null) {
+          bottomPad = 8.0;
+        } else {
+          final extra = viewportHeight - _lineHeight! - _headerHeight!;
+          bottomPad = extra > 8.0 ? extra : 8.0;
+        }
         if (_headerHeight == null) {
           WidgetsBinding.instance.addPostFrameCallback((_) => _measureItemHeights());
         }

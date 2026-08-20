@@ -17,6 +17,13 @@ const codeFontSize = 12.5;
 const codeLineHeight = 1.44;
 const codeListVerticalPadding = 8.0;
 
+// Extra bottom padding appended to the code list so the user can keep
+// scrolling past the last line until it reaches the top of the viewport.
+// Sized to the available viewport height (minus the list's own top/bottom
+// padding and a one-row buffer so the last line isn't flush against the
+// top edge) via LayoutBuilder, so it scales correctly with font size, text
+// scaler, and screen size.
+
 TextStyle codeTextStyle({double fontSize = codeFontSize}) =>
     AppTheme.mono.copyWith(fontSize: fontSize, height: codeLineHeight);
 
@@ -169,21 +176,39 @@ class _CodeViewState extends State<CodeView> {
       );
     }
 
-    final listView = ListView.builder(
-      controller: widget.scrollController,
-      padding: const EdgeInsets.only(left: _padLeft, right: _padRight, top: codeListVerticalPadding, bottom: codeListVerticalPadding),
-      itemCount: _lines.length,
-      itemBuilder: rowBuilder,
-    );
+    final rowHeight =
+        MediaQuery.textScalerOf(context).scale(codeFontSize) * codeLineHeight;
 
-    if (widget.wrap) return listView;
+    Widget buildList(double viewportHeight) {
+      final extra = (viewportHeight - codeListVerticalPadding * 2 - rowHeight)
+          .clamp(0.0, double.infinity);
+      return ListView.builder(
+        controller: widget.scrollController,
+        padding: EdgeInsets.only(
+          left: _padLeft,
+          right: _padRight,
+          top: codeListVerticalPadding,
+          bottom: codeListVerticalPadding + extra,
+        ),
+        itemCount: _lines.length,
+        itemBuilder: rowBuilder,
+      );
+    }
+
+    if (widget.wrap) {
+      return LayoutBuilder(
+        builder: (_, constraints) => buildList(constraints.maxHeight),
+      );
+    }
 
     final contentWidth = _maxContentWidth();
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SizedBox(
         width: gutterWidth + _gutterGap + contentWidth + _padLeft + _padRight,
-        child: listView,
+        child: LayoutBuilder(
+          builder: (_, constraints) => buildList(constraints.maxHeight),
+        ),
       ),
     );
   }
