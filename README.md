@@ -31,10 +31,48 @@ openBuilder 是 opencode 远程服务器的**瘦客户端**（以只读 + 轻交
 - **Diff 查看**：只读查看 Agent 改动的代码 diff，行级增删高亮，按文件切换。
 - **文件浏览**：查看文件树与文件内容、搜索文件与符号。
 - **下指令**：在会话中发送消息、斜杠命令与 shell 指令。
-- **连接与发现**：自动通过 mDNS 发现局域网内的 opencode 服务，也支持手动填写 Tailscale / IP 连接，连接配置安全存储于本地。
+- **连接与鉴权**：自动通过 mDNS 发现局域网内的 opencode 服务，也支持手动填写 Tailscale / IP 连接；添加服务器时自动探测鉴权方式（OAuth / Basic / 无鉴权），连接配置与令牌安全存储于本地。
 - **设置**：服务端状态、服务器管理、主题（Material 3 深浅色跟随系统）。
 
 平台：Android + iOS（Flutter 单代码库）。
+
+### 鉴权方式
+
+添加服务器时，openBuilder 会自动探测服务端支持的鉴权方式，并按 **OAuth → Basic → 无鉴权** 的优先级分流：
+
+| 方式 | 适用场景 | 说明 |
+|---|---|---|
+| **OAuth**（推荐） | **公网**部署，或置于鉴权网关之后 | 标准 OIDC `authorization_code` + PKCE (S256) + PAR + loopback 回调，在应用内 WebView 中完成登录与授权；令牌自动刷新、过期后可重登。服务端需按下方「推荐网关」配置 |
+| **Basic** | 内网 / Tailscale 直连 | opencode 原生鉴权（`OPENCODE_SERVER_PASSWORD`），用户名默认 `opencode` |
+| **无鉴权** | 本地 / 受信内网 | 未设密码的 opencode，探测通过后直连 |
+
+> ⚠️ Basic 与无鉴权仅建议用于内网 / Tailscale。opencode 自身的鉴权不是为公网暴露设计的——公网请使用 OAuth（网关鉴权）。
+
+### 推荐服务端（公网鉴权网关）：Authelia
+
+公网场景推荐在 opencode 之前部署 [Authelia](https://www.authelia.com/)（开源、单组件，同时充当 OIDC 提供方与 forward-auth 鉴权网关）：
+
+```
+openBuilder ──①OAuth 登录（应用内 WebView）──> Authelia
+openBuilder ──②Bearer token──> 反向代理(Caddy/nginx) ──forward-auth──> Authelia 校验 ──> opencode（内网）
+```
+
+**对 Authelia 配置的要求**（客户端对接的前提）：
+
+1. 启用 OIDC provider，并注册一个**公共客户端**（public client，无 secret），满足 Authelia 对 Bearer 授权客户端的硬性限制：
+   - `grant_types`: `authorization_code` + `refresh_token`
+   - `require_pkce: true` + `pkce_challenge_method: S256`
+   - `require_pushed_authorization_requests: true`（强制 PAR）
+   - `response_modes: form_post`（或允许 loopback 回调的 query 模式）
+   - `scopes`: `offline_access` + `authelia.bearer.authz`
+   - `audience`: 你的 opencode 公网地址（如 `https://oc.example.com`）
+   - `redirect_uris`: 精确匹配 `http://127.0.0.1:8901/callback`（openBuilder 固定监听此回环地址）
+2. forward-auth 鉴权端点开启 Bearer scheme（`HeaderAuthorization` 策略的 `schemes` 含 `Bearer`）。
+3. `access_control` 规则放行授权用户访问 opencode 域名（支持 2FA）。
+
+完整配置样例与已实测的端到端流程见 [docs/todo-authelia-bearer-authz.md](docs/todo-authelia-bearer-authz.md)，客户端协议细节见 [docs/design-oauth-login.md](docs/design-oauth-login.md)。
+
+> 也兼容其他标准 OIDC 提供方（Keycloak、Authentik、Zitadel 等）：只要支持 PKCE + loopback 重定向并在网关层校验 Bearer token 即可接入；Authelia 是当前文档化、经过完整实测的推荐方案。
 
 ### 使用方法（构建）
 
@@ -53,7 +91,7 @@ flutter pub get
 flutter run
 ```
 
-首次启动会进入欢迎页，按提示「添加服务器」——可自动发现局域网内的 opencode 服务，或手动填写主机、端口、用户名/密码与默认工作目录。连接测试会返回服务端版本，确认后即可进入主界面。
+首次启动会进入欢迎页，按提示「添加服务器」——输入名称与地址后，openBuilder 会自动探测鉴权方式（OAuth / Basic / 无鉴权）并分流到对应登录流程；也可通过 mDNS 自动发现局域网内的 opencode 服务。探测/登录成功后即可进入主界面。
 
 #### 构建安装包
 
@@ -114,10 +152,48 @@ openBuilder is a **thin client** for the remote opencode server (read-mostly, wi
 - **Diff viewer**: read-only code diffs with line-level add/delete highlighting and per-file switching.
 - **File browser**: browse the file tree and file contents, search files and symbols.
 - **Send instructions**: post messages, slash commands, and shell commands in a session.
-- **Connection & discovery**: auto-discover opencode over mDNS on the LAN, or manually enter Tailscale / IP connections; connection config is stored securely on device.
+- **Connection & auth**: auto-discover opencode over mDNS on the LAN, or manually enter Tailscale / IP connections; when adding a server the auth method (OAuth / Basic / none) is auto-detected, and connection config & tokens are stored securely on device.
 - **Settings**: server status, server management, theme (Material 3 light/dark, follows system).
 
 Platforms: Android + iOS (single Flutter codebase).
+
+### Authentication
+
+When adding a server, openBuilder auto-detects the auth method and routes by priority **OAuth → Basic → none**:
+
+| Method | Best for | Notes |
+|---|---|---|
+| **OAuth** (recommended) | **Public-internet** deployments, or behind an auth gateway | Standard OIDC `authorization_code` + PKCE (S256) + PAR + loopback redirect; sign-in & consent happen in an in-app WebView. Tokens auto-refresh; re-login when expired. Server side must be configured per "Recommended gateway" below |
+| **Basic** | LAN / Tailscale direct | opencode's native auth (`OPENCODE_SERVER_PASSWORD`), username defaults to `opencode` |
+| **None** | Local / trusted LAN | opencode without a password; connect directly once probed |
+
+> ⚠️ Basic and none are meant for LAN / Tailscale only. opencode's built-in auth is not designed for public exposure — use OAuth (gateway auth) on the public internet.
+
+### Recommended server (public auth gateway): Authelia
+
+For public deployments we recommend putting [Authelia](https://www.authelia.com/) in front of opencode (open-source, single component acting as both the OIDC provider and the forward-auth gateway):
+
+```
+openBuilder ──①OAuth sign-in (in-app WebView)──> Authelia
+openBuilder ──②Bearer token──> reverse proxy (Caddy/nginx) ──forward-auth──> Authelia verifies ──> opencode (internal)
+```
+
+**Authelia configuration requirements** (prerequisites for the client to work):
+
+1. Enable the OIDC provider and register a **public client** (no secret) that satisfies Authelia's hard restrictions for Bearer-auth clients:
+   - `grant_types`: `authorization_code` + `refresh_token`
+   - `require_pkce: true` + `pkce_challenge_method: S256`
+   - `require_pushed_authorization_requests: true` (PAR mandatory)
+   - `response_modes: form_post` (or a query mode that allows a loopback redirect)
+   - `scopes`: `offline_access` + `authelia.bearer.authz`
+   - `audience`: your opencode's public origin (e.g. `https://oc.example.com`)
+   - `redirect_uris`: exactly `http://127.0.0.1:8901/callback` (openBuilder listens on this fixed loopback address)
+2. Enable the Bearer scheme on the forward-auth authz endpoint (`HeaderAuthorization` strategy with `schemes` including `Bearer`).
+3. `access_control` rules granting authorized users (2FA supported) access to the opencode domain.
+
+See [docs/todo-authelia-bearer-authz.md](docs/todo-authelia-bearer-authz.md) for a full config sample and the end-to-end flow verified against a live deployment; client-side protocol details live in [docs/design-oauth-login.md](docs/design-oauth-login.md).
+
+> Other standard OIDC providers (Keycloak, Authentik, Zitadel, …) also work: any setup supporting PKCE + a loopback redirect with Bearer-token verification at the gateway can be used. Authelia is the documented, fully-tested recommended path.
 
 ### How to Build & Use
 
@@ -136,7 +212,7 @@ flutter pub get
 flutter run
 ```
 
-On first launch you'll see a welcome screen. Tap "Add server" to auto-discover an opencode instance on your LAN via mDNS, or manually enter host, port, username/password, and a default working directory. A connection test returns the server version — once confirmed, you'll enter the main interface.
+On first launch you'll see a welcome screen. After entering a name and address, openBuilder probes the server's auth method (OAuth / Basic / none) and routes to the matching sign-in flow; LAN instances can also be auto-discovered via mDNS. Once probing/sign-in succeeds you'll enter the main interface.
 
 #### Build a release package
 

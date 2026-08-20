@@ -25,6 +25,8 @@ class ServersScreen extends StatelessWidget {
             itemBuilder: (context, i) {
               final s = servers[i];
               final active = s.id == activeId;
+              final authBroken = connectionStore.isAuthBroken(s.id);
+              final needsLogin = !authBroken && s.needsLogin;
               return ListTile(
                 leading: Icon(
                   Icons.dns_outlined,
@@ -47,7 +49,8 @@ class ServersScreen extends StatelessWidget {
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primaryContainer,
+                          color:
+                              Theme.of(context).colorScheme.primaryContainer,
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
@@ -57,6 +60,30 @@ class ServersScreen extends StatelessWidget {
                             color: Theme.of(
                               context,
                             ).colorScheme.onPrimaryContainer,
+                          ),
+                        ),
+                      ),
+                    if (authBroken || needsLogin)
+                      Container(
+                        margin: const EdgeInsets.only(left: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: authBroken
+                              ? Colors.red.withAlpha(25)
+                              : Colors.orange.withAlpha(25),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          authBroken
+                              ? loc.serverAuthBroken
+                              : loc.serverNotLoggedIn,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: authBroken ? Colors.red : Colors.orange,
                           ),
                         ),
                       ),
@@ -70,7 +97,13 @@ class ServersScreen extends StatelessWidget {
                   icon: const Icon(Icons.edit_outlined),
                   onPressed: () => context.push('/servers/${s.id}/edit'),
                 ),
-                onTap: () => connectionStore.setActive(s.id),
+                onTap: () {
+                  if (authBroken || needsLogin) {
+                    context.push('/servers/${s.id}/login');
+                    return;
+                  }
+                  connectionStore.setActive(s.id);
+                },
               );
             },
           ),

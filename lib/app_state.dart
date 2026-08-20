@@ -142,6 +142,13 @@ Future<void> initSettings() async {
 /// change / disconnect when none). Idempotent; call once after [connectionStore]
 /// is loaded.
 void wireServerStore() {
+  serverStore.connectionStore = connectionStore;
+
+  void syncAuth() {
+    final active = connectionStore.active;
+    if (active != null) serverStore.refreshSseAuth(active);
+  }
+
   void sync() {
     final active = connectionStore.active;
     if (active != null) {
@@ -151,6 +158,7 @@ void wireServerStore() {
     }
   }
 
+  connectionStore.addListener(syncAuth);
   connectionStore.addListener(sync);
   sync();
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'core/connection/connection_profile.dart';
 import 'core/connection/connection_store.dart';
 import 'core/session/file_browsing_store.dart';
 import 'domain/models.dart';
@@ -10,7 +11,9 @@ import 'features/files/diff_list_screen.dart';
 import 'features/files/file_browsing_container.dart';
 import 'features/models/model_management_screen.dart';
 import 'features/projects/project_detail_screen.dart';
-import 'features/servers/server_form_screen.dart';
+import 'features/servers/basic_auth_screen.dart';
+import 'features/servers/oauth_login_screen.dart';
+import 'features/servers/server_info_screen.dart';
 import 'features/servers/servers_screen.dart';
 import 'features/servers/welcome_screen.dart';
 import 'features/settings/settings_tab.dart';
@@ -40,8 +43,10 @@ GoRouter buildRouter(ConnectionStore store) {
     initialLocation: '/sessions',
     redirect: (context, state) {
       final loc = state.matchedLocation;
-      final isPublic =
-          loc == '/welcome' || loc == '/servers/new' || loc.endsWith('/edit');
+      final isPublic = loc == '/welcome' ||
+          loc == '/servers/new' ||
+          loc.endsWith('/edit') ||
+          loc.endsWith('/login');
       if (store.isEmpty && !isPublic) return '/welcome';
       if (!store.isEmpty && loc == '/welcome') return '/sessions';
       return null;
@@ -51,11 +56,37 @@ GoRouter buildRouter(ConnectionStore store) {
       GoRoute(path: '/servers', builder: (_, _) => const ServersScreen()),
       GoRoute(
         path: '/servers/new',
-        builder: (_, _) => const ServerFormScreen(),
+        builder: (_, _) => const ServerInfoScreen(),
       ),
       GoRoute(
         path: '/servers/:id/edit',
-        builder: (_, s) => ServerFormScreen(id: s.pathParameters['id']!),
+        builder: (_, s) => ServerInfoScreen(id: s.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/servers/:id/login',
+        builder: (_, s) {
+          final args = s.extra is ServerLoginArgs
+              ? s.extra as ServerLoginArgs
+              : null;
+          final profile =
+              args?.profile ?? store.byId(s.pathParameters['id']!);
+          if (profile == null) return const ServersScreen();
+          switch (profile.authMethod) {
+            case AuthMethod.oauth:
+              return OAuthLoginScreen(
+                profile: profile,
+                metadata: args?.metadata,
+                newlyAdded: args?.newlyAdded ?? false,
+              );
+            case AuthMethod.basic:
+              return BasicAuthScreen(
+                profile: profile,
+                newlyAdded: args?.newlyAdded ?? false,
+              );
+            case AuthMethod.none:
+              return const ServersScreen();
+          }
+        },
       ),
       GoRoute(
         path: '/session/:id',

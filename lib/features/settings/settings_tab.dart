@@ -57,7 +57,7 @@ class _SettingsTabState extends State<SettingsTab> {
       _error = null;
     });
     try {
-      final h = await OpencodeClient(dioFor(server)).health();
+      final h = await OpencodeClient(dioFor(server, store: connectionStore)).health();
       setState(() => _health = h);
     } catch (e) {
       setState(() => _error = e);

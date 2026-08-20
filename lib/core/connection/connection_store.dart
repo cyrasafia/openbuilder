@@ -14,11 +14,22 @@ class ConnectionStore extends ChangeNotifier {
   List<ConnectionProfile> _servers = [];
   String? _activeId;
   bool _loaded = false;
+  final Set<String> _authBrokenIds = {};
 
   List<ConnectionProfile> get servers => List.unmodifiable(_servers);
   String? get activeId => _activeId;
   bool get loaded => _loaded;
   bool get isEmpty => _servers.isEmpty;
+
+  bool isAuthBroken(String id) => _authBrokenIds.contains(id);
+
+  void markAuthBroken(String id) {
+    if (_authBrokenIds.add(id)) notifyListeners();
+  }
+
+  void clearAuthBroken(String id) {
+    if (_authBrokenIds.remove(id)) notifyListeners();
+  }
 
   ConnectionProfile? byId(String id) {
     for (final s in _servers) {
@@ -66,6 +77,7 @@ class ConnectionStore extends ChangeNotifier {
         break;
       }
     }
+    clearAuthBroken(p.id);
     await _save();
   }
 
@@ -74,6 +86,7 @@ class ConnectionStore extends ChangeNotifier {
     if (_activeId == id) {
       _activeId = _servers.isEmpty ? null : _servers.first.id;
     }
+    clearAuthBroken(id);
     await _save();
     // Drop the profile's whole cache namespace (server + all conv_*). Needs
     // only the profile id — the per-profile directory is the mapping.

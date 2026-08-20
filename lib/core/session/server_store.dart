@@ -8,6 +8,7 @@ import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
 import '../../l10n/gen/app_localizations.dart';
 import '../connection/connection_profile.dart';
+import '../connection/connection_store.dart';
 import '../cache/cache_store.dart';
 import '../logging/app_logger.dart';
 import '../net/dio_factory.dart';
@@ -35,7 +36,7 @@ class ServerStore extends ChangeNotifier {
   final Map<String, StreamSubscription<OpencodeEvent>> _sseSubs = {};
   final Map<String, StreamSubscription<SseState>> _sseStateSubs = {};
   final Map<String, bool> _sseRequired = {}; // dir -> protected from LRU
-  Map<String, String> _sseHeaders = {};
+  final Map<String, String> _sseHeaders = {};
   Timer? _reconcileTimer;
   Timer? _previewNotifyTimer;
   Timer? _cacheSaveTimer;
@@ -852,10 +853,9 @@ class ServerStore extends ChangeNotifier {
       _suspiciousEmptyStreak = 0;
       // Load cached data first for instant offline UI, then _bootstrap refreshes.
       await _loadCache();
-      final dio = dioFor(profile);
+      final dio = dioFor(profile, store: _connectionStore);
       client = OpencodeClient(dio);
-      _sseHeaders = Map.from(dio.options.headers.map(
-          (k, v) => MapEntry(k, v is String ? v : v.toString())));
+      refreshSseAuth(profile);
       final ok = await _bootstrap();
       bootstrapFailed = !ok;
       if (!ok) {
@@ -930,7 +930,23 @@ class ServerStore extends ChangeNotifier {
   }
 
   String _signature(ConnectionProfile p) =>
-      '${p.baseUrl}|${p.username}|${p.password}';
+      '${p.baseUrl}|${p.authMethod.name}|${p.username}|${p.password}';
+
+  /// ConnectionStore reference for auth-token lifecycle (interceptor
+  /// persistence + authBroken). Assigned by app wiring (cannot import
+  /// app_state); null in unit tests.
+  ConnectionStore? _connectionStore;
+
+  set connectionStore(ConnectionStore? value) => _connectionStore = value;
+
+  /// Rebuild `_sseHeaders` IN PLACE: SseClient instances hold this map by
+  /// reference and spread it on every (re)connect, so a rotated token is
+  /// picked up by the existing reconnect path without new machinery.
+  void refreshSseAuth(ConnectionProfile profile) {
+    _sseHeaders
+      ..clear()
+      ..addAll(authHeadersFor(profile));
+  }
 
   /// Pure sandboxes filter: intersect each project's `sandboxes` with its
   /// already-fetched worktree list (server-side sandboxes ∩ real git
