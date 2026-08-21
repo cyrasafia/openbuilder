@@ -923,7 +923,7 @@ class ConversationStore extends ChangeNotifier {
       // Migrated legacy blobs carry no `v` and load as-is (compatible).
       final v = j['v'];
       if (v != null && v != 1) return;
-      _loadCacheFromJson(j);
+      _loadCacheFromJson(j, terminal: true);
     } catch (e) {
       AppLogger.I.e(_tag, 'loadCache failed: $e');
     }
@@ -932,14 +932,36 @@ class ConversationStore extends ChangeNotifier {
   /// Restore `_messages` + `_segments` + `_todos` from a cache JSON map.
   /// Does NOT check the MA-2 guard (caller is responsible). Used by both
   /// offline fallback ([_loadCache]) and online preheat ([_maybePreheatCache]).
-  void _loadCacheFromJson(Map<String, dynamic> j) {
+  ///
+  /// [terminal]（仅离线路径）：流式中途被杀进程 → 离线重启时，无 SSE 也无
+  /// reconcile 会来 settle 这条 finish==null 的半截消息，整段回复将永远停留
+  /// 在流式降级渲染（裸 markdown 文本）。补 'stop' 使其走稳定 Markdown 路径。
+  /// 预热路径必须传 false：session 可能仍在流式，合成 'stop' 会让
+  /// _cachedMessage 把在流消息当 stable 缓存成半截 widget，且 part delta 不
+  /// bump messagesVersion → 屏幕冻在半截文本直到 reconcile 成功。
+  /// 在线恢复后 reconcile/message.updated 的权威 info 会覆盖合成值（若服务端
+  /// 仍在跑，finish 仍为 null → 回到流式降级，行为正确）。
+  void _loadCacheFromJson(Map<String, dynamic> j, {bool terminal = false}) {
     _touchMessages();
     final msgs = j['messages'] as List? ?? [];
     _messages.clear();
     for (final m in msgs) {
       final m2 = m as Map<String, dynamic>;
-      final info = MessageInfo.fromJson(
+      final rawInfo = MessageInfo.fromJson(
           (m2['info'] as Map).cast<String, dynamic>());
+      final info = terminal && rawInfo.role != 'user' && rawInfo.finish == null
+          ? MessageInfo(
+              id: rawInfo.id,
+              role: rawInfo.role,
+              sessionID: rawInfo.sessionID,
+              created: rawInfo.created,
+              completed: rawInfo.completed,
+              cost: rawInfo.cost,
+              modelID: rawInfo.modelID,
+              finish: 'stop',
+              error: rawInfo.error,
+            )
+          : rawInfo;
       final dm = DisplayMessage(info);
       for (final p in (m2['parts'] as List? ?? [])) {
         final p2 = p as Map<String, dynamic>;
@@ -1369,6 +1391,11 @@ class ConversationStore extends ChangeNotifier {
 
   @visibleForTesting
   Future<void> loadCacheForTest() async => _loadCache();
+
+  /// Test seam：走在线预热路径恢复缓存（finish==null 保持，JANK-4 R2-1）。
+  /// 需先置好 sessionUpdated 与缓存的 cachedSessionUpdated 一致。
+  @visibleForTesting
+  Future<void> preheatCacheForTest() async => _maybePreheatCache();
 
   @visibleForTesting
   static bool shouldHidePartForTest(Map<String, dynamic> raw) =>

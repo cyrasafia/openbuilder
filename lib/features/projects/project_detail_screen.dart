@@ -33,7 +33,9 @@ class ProjectDetailScreen extends StatelessWidget {
     // stays inert.
     return _ViewInsetsFreezer(
       child: ListenableBuilder(
-        listenable: serverStore,
+        // JANK-5：预览走独立 previewVersion（120ms 节流）；merge 保证
+        // connect/error 等全局通知仍到达，流式期间会话行预览不冻结。
+        listenable: Listenable.merge([serverStore, serverStore.previewVersion]),
         builder: (context, _) {
         final project = serverStore.projectOf(projectId);
         final loc = l(context);

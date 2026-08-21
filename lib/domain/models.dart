@@ -256,13 +256,24 @@ class AgentIndicatorState {
     this.pauseReason,
     this.pendingCount = 0,
   }) : assert(
-         (state == AgentRunState.paused &&
-                 pauseReason != null &&
-                 pendingCount >= 1) ||
-             (state != AgentRunState.paused &&
-                 pauseReason == null &&
-                 pendingCount == 0),
-       );
+          (state == AgentRunState.paused &&
+                  pauseReason != null &&
+                  pendingCount >= 1) ||
+              (state != AgentRunState.paused &&
+                  pauseReason == null &&
+                  pendingCount == 0),
+        );
+
+  @override
+  bool operator ==(Object other) =>
+      other is AgentIndicatorState &&
+      other.state == state &&
+      other.pauseReason == pauseReason &&
+      other.pendingCount == pendingCount;
+
+  @override
+  int get hashCode =>
+      Object.hash(state, pauseReason, pendingCount);
 }
 
 class MessageInfo {

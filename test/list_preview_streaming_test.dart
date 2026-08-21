@@ -80,7 +80,7 @@ void main() {
     const sid = 's1';
     store.ensureConversation(sid)!.addOptimisticUserMessage('hi');
     var count = 0;
-    store.addListener(() => count++);
+    store.previewVersion.addListener(() => count++);
     // 20 rapid calls: the first notifies immediately, the rest are coalesced
     // into the trailing 120ms timer (still pending when we assert, then dispose
     // cancels it).
@@ -102,7 +102,9 @@ void main() {
     // Seed a message so lastMessagePreview() is non-null (preview write happens).
     store.ensureConversation(sid)!.addOptimisticUserMessage('seed');
     var count = 0;
-    store.addListener(() => count++);
+    var globalCount = 0;
+    store.previewVersion.addListener(() => count++);
+    store.addListener(() => globalCount++);
     for (var i = 0; i < 20; i++) {
       store.onEventForTesting(const OpencodeEvent(
         type: 'message.part.updated',
@@ -117,10 +119,12 @@ void main() {
         },
       ));
     }
-    // break->return (LPS-1): case returns, only _notifyPreviewChanged (throttled)
-    // fires → 1 immediate notify. If regressed to break: each event hits :790
-    // unthrottled → count==20 → fails.
+    // break->return (LPS-1): case returns, only _notifyPreviewChanged (throttled
+    // via previewVersion) fires → 1 immediate bump, 0 global notifies. If
+    // regressed to break: each event hits the switch's trailing unthrottled
+    // notifyListeners → globalCount==20 → fails.
     expect(count, 1);
+    expect(globalCount, 0);
     store.dispose();
   });
 
@@ -131,7 +135,7 @@ void main() {
     final store = ServerStore()..client = _fakeClient()..activeLoc = _zhLoc;
     const sid = 's1';
     var count = 0;
-    store.addListener(() => count++);
+    store.previewVersion.addListener(() => count++);
     await tester.pumpWidget(const SizedBox.shrink());
     for (var i = 0; i < 5; i++) {
       store.onEventForTesting(OpencodeEvent(

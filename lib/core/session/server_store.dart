@@ -124,6 +124,12 @@ class ServerStore extends ChangeNotifier {
 
   final ValueNotifier<List<CommandInfo>> commandsNotifier =
       ValueNotifier(const []);
+
+  /// JANK-5：预览变更独立通道。流式期间 `_notifyPreviewChanged` 只 bump 此
+  /// notifier（120ms 节流），不再走全局 notifyListeners——只有会话列表的
+  /// tile 需要跟预览刷新，项目 tab / 详情页 / AppBar 不该跟着每 120ms 重建。
+  /// SessionsTab 的列表体改听此 notifier（连同 serverStore 本体）。
+  final ValueNotifier<int> previewVersion = ValueNotifier(0);
   bool _commandsRefreshing = false;
   String? _commandsRefreshDir;
   bool get commandsRefreshing => _commandsRefreshing;
@@ -362,16 +368,18 @@ class ServerStore extends ChangeNotifier {
       _lastPreviewNotifyAt = now;
       _previewNotifyTimer?.cancel();
       _previewNotifyTimer = null;
-      notifyListeners();
+      _bumpPreview();
     } else {
       // Ensure a trailing notify so the final streaming state is reflected.
       _previewNotifyTimer ??= Timer(_previewNotifyInterval, () {
         _lastPreviewNotifyAt = DateTime.now();
         _previewNotifyTimer = null;
-        notifyListeners();
+        _bumpPreview();
       });
     }
   }
+
+  void _bumpPreview() => previewVersion.value++;
 
   bool hasPendingPermission(String sessionId) =>
       _pendingPermissions.containsKey(sessionId);
@@ -1904,7 +1912,7 @@ class ServerStore extends ChangeNotifier {
         hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     if (preview != null) {
       _lastMessage[sid] = preview;
-      notifyListeners();
+      _bumpPreview();
     }
   }
 
@@ -2093,6 +2101,7 @@ class ServerStore extends ChangeNotifier {
     _cacheSaveTimer?.cancel();
     _cacheSaveTimer = null;
     commandsNotifier.dispose();
+    previewVersion.dispose();
     super.dispose();
   }
 

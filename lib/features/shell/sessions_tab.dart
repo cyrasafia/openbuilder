@@ -20,6 +20,13 @@ class SessionsTab extends StatefulWidget {
 class _SessionsTabState extends State<SessionsTab> {
   Timer? _periodicRefreshTimer;
 
+  // JANK-5：tile 实例缓存。serverStore 任意 notify（SSE 事件尾部/refresh/SSE
+  // 状态）都会重跑 itemBuilder；_SessionTile 是值对象，内容未变时复用同一
+  // widget 实例 → element 等值剪枝，整条子树跳过 rebuild。流式期间预览走
+  // previewVersion（120ms 节流）也只重建预览变了的 tile。缓存键含全部显示
+  // 字段——以 sessions 快照+索引为键，列表结构变化（增删/排序）自然失配。
+  final _tileCache = <String, _SessionTile>{};
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -37,6 +44,36 @@ class _SessionsTabState extends State<SessionsTab> {
     super.dispose();
   }
 
+  _SessionTile _cachedTile(SessionModel s) {
+    final projectLabel = serverStore.projectDisplayOf(s);
+    final sseConnected = serverStore.isSessionSseConnected(s.id);
+    final tile = _tileCache[s.id];
+    if (tile != null &&
+        tile.session == s &&
+        tile.projectLabel == projectLabel &&
+        tile.worktreeLabel == serverStore.worktreeDisplayOf(s) &&
+        tile.projectName == projectLabel &&
+        identical(tile.project, serverStore.projectOf(s.projectID)) &&
+        tile.agentState == serverStore.agentIndicatorStateOf(s.id) &&
+        tile.preview == serverStore.lastMessageOf(s.id) &&
+        tile.sseConnected == sseConnected &&
+        tile.sseReconnecting == serverStore.sseReconnecting) {
+      return tile;
+    }
+    return _tileCache[s.id] = _SessionTile(
+      session: s,
+      projectLabel: projectLabel,
+      worktreeLabel: serverStore.worktreeDisplayOf(s),
+      projectName: projectLabel,
+      project: serverStore.projectOf(s.projectID),
+      agentState: serverStore.agentIndicatorStateOf(s.id),
+      preview: serverStore.lastMessageOf(s.id),
+      sseConnected: sseConnected,
+      sseReconnecting: serverStore.sseReconnecting,
+      onTap: () => context.push('/session/${s.id}'),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -47,7 +84,9 @@ class _SessionsTabState extends State<SessionsTab> {
         title: Text(l(context).tabSessions),
       ),
       body: ListenableBuilder(
-        listenable: serverStore,
+        // JANK-5：预览走独立 previewVersion（120ms 节流），不随 serverStore
+        // 全局广播；两者 merge 后，流式期间列表只在预览 tick 时重建。
+        listenable: Listenable.merge([serverStore, serverStore.previewVersion]),
         builder: (context, _) {
           final hasCache = serverStore.sessions.isNotEmpty;
           if (!serverStore.connected && !hasCache) {
@@ -66,6 +105,7 @@ class _SessionsTabState extends State<SessionsTab> {
             return const Center(child: CircularProgressIndicator());
           }
           final sessions = serverStore.sortedSessions().toList();
+          _pruneTileCache(sessions);
           return RefreshIndicator(
             onRefresh: () async {
               final ok = await refreshOrReconnect();
@@ -93,25 +133,18 @@ class _SessionsTabState extends State<SessionsTab> {
               separatorBuilder: (_, _) =>
                   const Divider(height: 1, indent: 76),
               itemBuilder: (context, i) {
-                final s = sessions[i];
-                return _SessionTile(
-                  session: s,
-                  projectLabel: serverStore.projectDisplayOf(s),
-                  worktreeLabel: serverStore.worktreeDisplayOf(s),
-                  projectName: serverStore.projectDisplayOf(s),
-                  project: serverStore.projectOf(s.projectID),
-                  agentState: serverStore.agentIndicatorStateOf(s.id),
-                  preview: serverStore.lastMessageOf(s.id),
-                  sseConnected:
-                      serverStore.isSessionSseConnected(s.id),
-                  onTap: () => context.push('/session/${s.id}'),
-                );
+                return _cachedTile(sessions[i]);
               },
             ),
           );
         },
       ),
     );
+  }
+
+  void _pruneTileCache(List<SessionModel> sessions) {
+    final ids = {for (final s in sessions) s.id};
+    _tileCache.removeWhere((id, _) => !ids.contains(id));
   }
 }
 
@@ -124,6 +157,7 @@ class _SessionTile extends StatelessWidget {
   final AgentIndicatorState agentState;
   final String? preview;
   final bool sseConnected;
+  final bool sseReconnecting;
   final VoidCallback onTap;
 
   const _SessionTile({
@@ -134,7 +168,8 @@ class _SessionTile extends StatelessWidget {
     required this.project,
     required this.agentState,
     required this.preview,
-    this.sseConnected = true,
+    required this.sseConnected,
+    required this.sseReconnecting,
     required this.onTap,
   });
 
@@ -153,7 +188,7 @@ class _SessionTile extends StatelessWidget {
             bottom: -2,
             child: SseStatusDot(
               connected: sseConnected,
-              reconnecting: !sseConnected && serverStore.sseReconnecting,
+              reconnecting: !sseConnected && sseReconnecting,
               size: 10,
             ),
           ),

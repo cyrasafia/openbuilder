@@ -51,6 +51,8 @@ Timer(Duration(milliseconds: 1300), () {
 | **JANK-1** | 浮层（bottom sheet）展开掉帧 | ✅ 已修（模型列表拍平）；门控方案预留 | [§2](#2-jank-1-浮层展开掉帧) |
 | **JANK-2** | 键盘展开/收起掉帧（后台屏幕整片重建） | ✅ 已修（MediaQuery 三属性冻结） | [§3](#3-jank-2-键盘展开收起掉帧) |
 | **JANK-3** | 新会话加载窗口键盘展开掉帧（双份模型解码 + 切换/刷新风暴 + 底部条每帧重建税） | ✅ 已修（1+2，真机复测达标）；残余 refresh 长帧留档 | [§4](#4-jank-3-新会话加载窗口键盘展开掉帧) |
+| **JANK-4** | 流式输出逐 token 全量 Markdown 重解析 + 全文 autolink（O(L)/token，长回复时 UI isolate 被哽死，全 app 卡顿主因） | ✅ 已修（流式降级渲染，三轮评审通过）；离线半截消息 settle 留档 | [§5](#5-jank-4-流式输出逐-token-全量-markdown-重解析) |
+| **JANK-5** | serverStore 全局广播放大：任意 notify → 会话/项目/详情页全量重建（流式期间每 120ms 一次 ~500 widget） | ✅ 已修（预览拆独立 notifier + tile 实例缓存，重建 498→90）；周期 refresh 解码挪 compute 留作后续 | [§6](#6-jank-5-serverstore-全局广播放大) |
 
 > 后续每确认一个新掉帧点：在清单加一行，并按 §2 的结构（问题 → 定位过程 → 根因 → 方案 → 验证 → 决策 → 不做的事）补一节。
 
@@ -309,7 +311,91 @@ probe 1 时间线（KbPerf 事件流）：`applyDefault refresh start` → +294m
 
 ---
 
-## 5. 评审意见
+## 5. JANK-4 流式输出逐 token 全量 Markdown 重解析
+
+> 状态：**✅ 已修（2026-08-21，方案 = 流式降级渲染，三轮代码评审通过，评审记录见 §7.2）**。
+
+### 5.1 问题
+
+任意会话流式输出期间，长回复（几 KB 起）逐 token 追加时 UI isolate 被单帧长任务哽死：不仅会话页掉帧，同 isolate 上的所有页面（列表/项目/设置）都卡。
+
+### 5.2 定位过程（临时探针 test/tmp_frame_probe_test.dart，debug test env，用完即删）
+
+| 实验 | 假设 | 数据 | 结论 |
+|----|------|------|------|
+| C | `lastMessagePreview` 每 token 全文扫描贵 | 44–143us @ 2–128KB | ❌ 便宜，排除 |
+| D | `sortedSessions` 每 notify 全量排序贵 | 44–108us @ 600 会话 | ❌ 便宜，排除 |
+| A1 | `autolinkMarkdownLinks` 流式路径（stable=false）逐 token 全文重跑 | 0.83ms @2.1KB / 2.3ms @8.1KB / **5.0ms @32KB** / 21.2ms @128KB（线性） | ✅ O(L)/token |
+| A2 | `MarkdownBody` 每 token 全量重建 | med **143ms @2.1KB / 311ms @8.1KB / 1302ms @32KB**（debug test env，粗放折算 profile 约 ÷5–10，但规模不变） | ✅ 主因，O(L)/token |
+
+### 5.3 根因链（代码位置）
+
+1. `conversation_store.dart:1238`：`onPartUpdated` 每 token `dp.text += delta` + `notifyListeners()`（无节流，设计上依赖 widget 层剪枝兜底）。
+2. `conversation_screen.dart:919`：body `ListenableBuilder(conv)` 每 token 重建 → SliverList 重跑 itemBuilder。已完成消息靠 `_messageChildCache` 实例剪枝（`_cachedMessage`，:602）——**唯独未完成 assistant 消息走 stable=false 全量重建**。
+3. `conversation_screen.dart:1538-1540`：stable=false 时 `autolinkMarkdownLinks(全文)` 不走缓存，每 token 重跑（A1）。
+4. `conversation_screen.dart:1543`：`MarkdownBody(data: 全文)` —— flutter_markdown_plus **无增量解析**，每 token 从零重解析整篇文档 + 重建全部子树（A2）。`selectable: true` 再叠加 SelectionRegistrar 成本。
+5. 净效果：单帧成本 = autolink O(L) + markdown 解析/布局 O(L)，随回复线性涨；整条流总成本 O(L²)。120Hz 预算 8.3ms，几 KB 回复即每帧超预算一个量级，UI isolate 被占满 → 全 app 卡。
+
+### 5.4 修复（已实施：流式降级渲染 + settle 切换）
+
+- **流式降级**（`conversation_screen.dart` `_markdownPart`）：`stable=false`（未完成 assistant 的 text part）改渲染 `SelectableText`（样式对齐 MarkdownBody 的 p 档：fontSize 14 / height 1.45），**跳过 autolink 与 MarkdownBody**——单帧成本从 O(L) 全文重解析降为 O(delta) 文本追加。
+- **settle 切换**：`message.updated(finish!=null)` → `onMessageUpdated` → `_sort()` → `_touchMessages()` → `messagesVersion` 变 → `_messageChildCache.clear()` → 同一 part 切回 MarkdownBody + autolink 缓存路径，终态渲染与既有完全一致。
+- **subtask 流式分支**：降级期间 label 不用 `**` markdown 语法拼接（纯文本 `subtask: <cmd>`），避免裸标记。
+- **离线半截消息 settle**（评审 R1-3/R2-1 修复）：`_loadCacheFromJson(terminal:)`——离线 `_loadCache` 恢复的 `finish==null` 非 user 消息合成 `finish:'stop'`（缓存快照按终态渲染，防离线裸 markdown 永久停留）；**在线预热 `_maybePreheatCache` 保持 false**（session 可能仍在流式，合成会使 `_cachedMessage` 缓存半截 widget 且 part delta 不 bump version → 冻屏）。回归锁：`test/conversation_store_test.dart` 末两条 + `test/streaming_markdown_downgrade_test.dart`。
+
+**效果**：流式期间单帧 markdown 成本 143ms@2KB～1302ms@32KB（debug 探针）→ 降级渲染仅一次 `SelectableText` 文本更新；总成本 O(L²)→O(L)。settle 后一次全量 markdown 渲染（同旧首帧成本，用户无感）。
+
+**已接受的取舍**：流式期间纯文本无富文本/链接（打字机阶段）；单换行在降级期呈换行、settle 后按 markdown 规则折叠（瞬间轻微重排）；流式文本不可点链（settle 后可）。
+
+### 5.5 不做的事
+
+- 不换 Markdown 引擎（已有 design-migrate-flutter-markdown-plus 迁移记录，引擎非根因，无增量解析是共性）。
+- 不给 `onPartUpdated` 加节流来掩盖（会牺牲打字机即时性，且 60Hz 下仍超预算）。
+
+---
+
+## 6. JANK-5 serverStore 全局广播放大
+
+> 状态：**✅ 已修（2026-08-21，方案 = 预览拆独立 notifier + 会话 tile 实例缓存，三轮代码评审通过）；周期 refresh 解码挪 `compute` 未做（与 JANK-3 §4.7 残余同源，后续合并立项）**。
+
+### 6.1 问题
+
+`serverStore` 是单例 ChangeNotifier，任意一处 `notifyListeners()` 都广播到**所有**页面级 `ListenableBuilder`。流式期间预览节流每 120ms 通知一次，加上各类 SSE 事件尾部 notify，会话列表/项目列表/项目详情/会话页 AppBar 全部整片重建——包括压在路由栈下面不可见的 shell 页面。
+
+### 6.2 定位过程
+
+探针 B（300 会话、~15 挂载 tile）：一次无关紧要的 notify（`setWorkspaceEnabled` 单项目开关）→ **498 widget rebuilds / 20–70ms (debug)**，即所有挂载 tile 全量重建，无逐 tile 剪枝。
+
+触发源清单（均无差别全局广播）：
+
+- `server_store.dart:1868`：`_onEvent` 尾部 notify——每个非 part 类 SSE 事件（`session.status` 等）各一次。
+- `server_store.dart:358`：`_notifyPreviewChanged` 120ms 节流——**任一会话流式期间持续触发**。
+- `server_store.dart:1496`：`_onSseState`——每条目录 SSE 连接状态变化。
+- `server_store.dart:1348`：refresh 完成；`sessions_tab.dart:29` 与 `projects_tab.dart:29` 各挂一个 30s 周期 refresh（shell 下两 tab 常驻、定时器并发，30s 窗口内可触发两次；全量 REST 解码在 UI isolate，JANK-3 §4.7 已留档的残余，叠加长帧）。
+
+监听方：MainShell（main_shell.dart:71）、SessionsTab（sessions_tab.dart:49）、ProjectsTab（projects_tab.dart:46）、ProjectDetailScreen（project_detail_screen.dart:35）、ConversationScreen AppBar ×3（conversation_screen.dart:842/876/891）。pushed route 不卸载 shell 子树，后台页照常重建。
+
+### 6.3 根因
+
+单一 ChangeNotifier 承载六类状态（会话列表/预览/SSE 状态/权限/工作区开关/命令表），无变更粒度；列表 tile 无实例缓存，`itemBuilder` 每 notify 产新 `_SessionTile` → 可见 tile 全链重建。单独看每项 20–70ms(debug) 尚可，但它与 JANK-4 的长帧共享同一 UI isolate：流式期间每 120ms 的列表重建挤在 markdown 长帧缝隙里，互为放大器。
+
+### 6.4 修复（已实施：预览独立通道 + tile 实例缓存）
+
+- **预览独立通道**（`server_store.dart`）：新增 `ValueNotifier<int> previewVersion`；`_notifyPreviewChanged`（120ms 节流）与 `_backfillPreview` 改为只 bump 它，不再全局 `notifyListeners`。流式期间的全局广播源就此消除——`_onEvent` 尾部 notify 只剩非 part 类事件（低频）。
+- **监听方迁移**：SessionsTab 与 ProjectDetailScreen 的列表体改 `Listenable.merge([serverStore, previewVersion])`——预览 tick 只重建列表自身，ProjectsTab/MainShell/AppBar 不再跟流式每 120ms 重建（评审 R1-1：详情页漏 merge 会冻预览，已修）。
+- **tile 实例缓存**（`sessions_tab.dart`）：`_tileCache` 按 sessionId 缓存 `_SessionTile` 实例，全部显示字段（session 引用/projectLabel/worktreeLabel/project 引用/agentState/preview/sseConnected/sseReconnecting）等值才复用 → element 等值剪枝。配套：`AgentIndicatorState` 补值语义 `==`/`hashCode`（models.dart）；`sseReconnecting` 从 tile 内直读 store 改为字段（防缓存滞后）；`_pruneTileCache` 防泄漏。
+- **效果（探针，300 会话）**：无关全局 notify 一次的重建 498→90 widget（-82%；剩余为 ListView framework 重跑 itemBuilder 的固定成本，tile 子树剪枝为 0）。
+
+**留档（未做）**：30s 周期 refresh 的 REST 解码仍在 UI isolate（两个 tab 的定时器并发，§6.2），与 JANK-3 §4.7 残余同源，后续合并立项挪 `compute`。
+
+### 6.5 不做的事
+
+- 不引入第三方状态库/selector（项目约定 ChangeNotifier 裸用）。
+- 不为 shell 后台页做可见性门控（细分通知后收益不成立，复杂度高）。
+
+---
+
+## 7. 评审意见
 
 > 迭代追加。每轮评审标注问题编号（JANK-R*）、优先级（🔴 阻塞 / 🟡 中 / 🟢 低）、修复建议；修复后追加"修复复审"表格逐条核对。
 
@@ -372,3 +458,32 @@ probe 1 时间线（KbPerf 事件流）：`applyDefault refresh start` → +294m
 | JANK-R3-4 | ✅ 已清 |
 
 行为变更（有意、已记录）：agents/models 现可容忍最多 30s/一个 refresh 周期的陈旧（原为每次直取），`model_management_screen` 仍直取保持权威；`switchModel` 打到已下线模型的失败模式有捕获兜底。见 §4.7 与 R2-1。
+
+### 7.2 JANK-4/JANK-5 评审记录（代码评审 2026-08-21，三轮）
+
+#### 4次评审意见（JANK-4+5 实现轮）
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| J4R1-1 | 🟡 中 | ProjectDetailScreen 读 `lastMessageOf` 但只听 serverStore——预览改走 previewVersion 后详情页流式期间预览冻结（LPS-7 回归） | 已修：详情页 ListenableBuilder 同样 merge previewVersion |
+| J4R1-2 | 🟢 低 | 流式 subtask 走降级渲染会显示裸 `**subtask:**` 标记（该 part 的 label 是客户端合成的 markdown） | 已修：subtask 降级分支纯文本 label，不用 `**` 拼接 |
+| J4R1-3 | 🟢 低（离线恢复场景） | 流式中途杀进程 → 离线缓存恢复的半截消息永远停留降级渲染（无 SSE/reconcile settle） | 已修：`_loadCacheFromJson(terminal: true)` 离线恢复合成 finish='stop'（见 4R2-1 的路径区分） |
+
+评审同时确认：settle 链在 abort/finish 全路径闭合；tile 缓存字段覆盖完整（relTime 随 SessionModel 实例更换刷新）；`AgentIndicatorState` 值语义 `==` 三字段齐；onTap 闭包捕获 State context 无失效风险；previewVersion dispose 顺序正确（timer 先取消）。
+
+#### 5次评审意见（R1 修复复审轮）
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| J4R2-1 | 🟡 中（在线预热路径，评审实证复现） | `_loadCacheFromJson` 无差别合成 finish='stop'：在线预热（session 仍在流式、缓存 sessionUpdated 匹配）把在流消息当 stable 缓存半截 widget，part delta 不 bump messagesVersion → 屏幕冻在半截文本直到 reconcile 成功 | 已修：合成收窄到离线 `_loadCache`（terminal:true）；预热路径保持 finish==null（降级渲染正确且不缓存） |
+| J4R2-2 | 🟢 低（未验证服务端是否存在该行为） | 服务端持久 finish==null 时在线 reconcile 每次都带回降级渲染（缓存的合成值只救离线） | 接受留档：opencode 正常路径 settle 会带 finish；若真出现，方向是"session idle 时尾消息按终态渲染" |
+
+#### 6次评审意见（终审轮）
+
+结论：**无中高优先级问题**。R2-1 修复核实（terminal 仅离线路径；预热默认 false；9 字段完整拷贝；两条回归测试经真实 FileCacheStore JSON round-trip 锁定行为）。低优先级：
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| J4R3-1 | 🟢 低（仅测试锁） | LPS-1 break→return 回归锁被 previewVersion 迁移削弱（return→break 回归时 global notify 20 次但 previewVersion 仍节流 1 次，测试仍过） | 已修：测试补 globalCount 监听断言 0 |
+
+修复复审：R2-1 ✅ terminal 路径区分 + 回归锁；R3-1 ✅ 双计数断言。全量 `flutter analyze --fatal-infos` 无 issue、`flutter test` 533 全绿（独立复跑核实）。

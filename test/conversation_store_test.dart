@@ -1055,7 +1055,7 @@ void main() {
         () {
       // Send-while-busy edge: two optimistic user messages pending. The server
       // creates in send order, so the first authoritative to land must pick up
-      // the FIRST optimistic's parts — not the newer send's.
+      // the FIRST optimistic's parts — not the newer send.
       final conv = _conv('ob6', _fakeClient());
       conv.addOptimisticUserMessage('A', fileRefs: const [_fileRef]);
       conv.addOptimisticUserMessage('B');
@@ -1064,6 +1064,49 @@ void main() {
       final a = conv.renderableMessages.firstWhere((m) => m.info.id == 'mA');
       expect(a.parts.where((p) => p.type == 'text').single.text, 'A');
       expect(a.parts.where((p) => p.type == 'file').length, 1);
+    });
+
+    test('offline cache restore settles unfinished assistant message (JANK-4 R1-3)', () async {
+      // Cache saved mid-stream (finish==null) then restored OFFLINE: the
+      // half-streamed assistant message must be settled to finish='stop' so it
+      // renders via the stable markdown path, not the streaming downgrade.
+      final conv = _conv('j4a', _fakeClient());
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'm1', role: 'assistant', sessionID: 'j4a', created: 100));
+      conv.onPartUpdated({
+        'id': 'p1',
+        'messageID': 'm1',
+        'type': 'text',
+        'text': 'partial **bold**',
+      }, null);
+      await conv.saveCacheForTest();
+
+      final restored = _conv('j4a', _fakeClient());
+      await restored.loadCacheForTest();
+      expect(restored.messages.single.info.finish, 'stop');
+    });
+
+    test('preheat restore keeps unfinished assistant message streaming (JANK-4 R2-1)', () async {
+      // Online preheat: the session may still be streaming. A finish==null
+      // cache entry must stay finish==null — synthesizing 'stop' here would
+      // make _cachedMessage cache a half-text widget that part deltas never
+      // invalidate (messagesVersion is not bumped per token).
+      final conv = _conv('j4b', _fakeClient());
+      conv.onMessageUpdated(const MessageInfo(
+          id: 'm1', role: 'assistant', sessionID: 'j4b', created: 100));
+      conv.onPartUpdated({
+        'id': 'p1',
+        'messageID': 'm1',
+        'type': 'text',
+        'text': 'partial',
+      }, null);
+      conv.sessionUpdated = 1234;
+      await conv.saveCacheForTest();
+
+      final preheated = _conv('j4b', _fakeClient());
+      preheated.sessionUpdated = 1234;
+      await preheated.preheatCacheForTest();
+      expect(preheated.messages.single.info.finish, isNull);
     });
   });
 }
