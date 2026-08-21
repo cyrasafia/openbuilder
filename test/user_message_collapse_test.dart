@@ -15,6 +15,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// gain) renders collapsed by default — clamped to 240px with an expand
 /// affordance — and tapping toggles expand/collapse. Short messages get no
 /// affordance at all.
+///
+/// 二期：折叠裁切保留气泡底圆角（ClipRRect bottom 14）；整个气泡可点
+/// （类 tool chip）切换折叠/展开；切换带高度动画（中间高度严格介于 clamp
+/// 与自然高度之间）。
 class _MockClient extends OpencodeClient {
   final List<MessageEntry> entries;
   _MockClient(this.entries) : super(_noopDio());
@@ -121,6 +125,21 @@ void main() {
         of: host,
         matching: find.byIcon(Icons.expand_less),
       );
+      // The collapsed bubble must keep its bottom rounded corners: the clip
+      // is a bottom-only 14px ClipRRect (markdown may add its own clips, so
+      // match on the specific border geometry, not the widget type).
+      bool hasBottomRoundedClip() => find
+          .descendant(of: host, matching: find.byType(ClipRRect))
+          .evaluate()
+          .any((e) {
+            final w = e.widget as ClipRRect;
+            final r = w.borderRadius;
+            return r is BorderRadius &&
+                r.topLeft == Radius.zero &&
+                r.topRight == Radius.zero &&
+                r.bottomLeft == const Radius.circular(14) &&
+                r.bottomRight == const Radius.circular(14);
+          });
       await _settle(tester, () {
         if (host.evaluate().isEmpty) return false;
         return tester.getSize(host).height == 240.0;
@@ -132,19 +151,51 @@ void main() {
             'screen height by default',
       );
       expect(expandMore, findsOneWidget);
+      expect(hasBottomRoundedClip(), isTrue);
 
-      await tester.tap(expandMore);
+      // Tap anywhere on the bubble (its center — no affordance there).
+      await tester.tap(host);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final midHeight = tester.getSize(host).height;
       await _settle(tester, () {
         if (expandLess.evaluate().isEmpty) return false;
         return tester.getSize(host).height > 240.0;
       });
+      final fullHeight = tester.getSize(host).height;
       expect(
-        tester.getSize(host).height,
+        fullHeight,
         greaterThan(240.0),
         reason: 'expanding must restore the natural height',
       );
+      expect(
+        midHeight,
+        allOf(greaterThan(240.0), lessThan(fullHeight)),
+        reason: 'expansion must animate through intermediate heights',
+      );
+      expect(hasBottomRoundedClip(), isFalse);
 
+      // The expansion scrolls with the reveal (bubble top stays anchored), so
+      // the text body — selectable markdown whose EditableText consumes taps —
+      // is not a toggle target while expanded. The pill floats at the bubble's
+      // top-right, which the anchoring keeps on screen.
+      final scroll = tester.state<ScrollableState>(
+        find.byType(Scrollable).first,
+      );
       await tester.tap(expandLess);
+      // Mid-animation: the collapse correction must never drive pixels below
+      // the min extent — collapsed content (240px bubble + short reply)
+      // under-fills the 600px viewport, exactly the under-filled case where
+      // an unclamped correction used to go negative and fight the physics.
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(const Duration(milliseconds: 40));
+        expect(
+          scroll.position.pixels,
+          greaterThanOrEqualTo(scroll.position.minScrollExtent),
+          reason: 'collapse correction must keep pixels in range '
+              '(frame $i: ${scroll.position.pixels})',
+        );
+      }
       await _settle(tester, () => tester.getSize(host).height == 240.0);
       expect(
         tester.getSize(host).height,
@@ -152,6 +203,7 @@ void main() {
         reason: 'collapsing again must clamp back to the threshold',
       );
       expect(expandMore, findsOneWidget);
+      expect(hasBottomRoundedClip(), isTrue);
     },
   );
 

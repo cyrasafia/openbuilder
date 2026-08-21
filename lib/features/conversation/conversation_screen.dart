@@ -5,6 +5,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show
+        BoxParentData,
+        RenderAbstractViewport,
+        RenderShiftedBox,
         RenderSliverMultiBoxAdaptor,
         ScrollCacheExtent,
         SliverMultiBoxAdaptorParentData;
@@ -47,6 +50,13 @@ const double _kUserCollapseFraction = 0.4;
 
 /// 折叠最小收益：自然高度超出门槛不足该值时不提供折叠（避免为几像素挂控件）。
 const double _kUserCollapseMinGain = 24.0;
+
+/// 用户消息外层垂直 padding（top/bottom 各 10）：自然高度按整条消息测量，
+/// 壳层在气泡级 clamp，换算时扣掉这两段。
+const double _kUserMsgVerticalPadding = 10.0;
+
+/// 折叠/展开高度动画时长。
+const Duration _kUserCollapseAnimDuration = Duration(milliseconds: 200);
 
 class ConversationScreen extends StatefulWidget {
   final String sessionId;
@@ -146,6 +156,8 @@ class _ConversationScreenState extends State<ConversationScreen>
   // 时 _heightCache 存 clamp 后高度（滚动几何用），自然高度另行保存供判定。
   final _userNaturalHeight = <String, double>{};
   final _expandedUserIds = <String>{};
+  // 展开动画进行中的消息 id：动画中间高度不是自然高度，测高回调须忽略。
+  final _userAnimatingIds = <String>{};
   bool _collapseRebuildScheduled = false;
 
   final _sliverKey = GlobalKey();
@@ -599,11 +611,27 @@ class _ConversationScreenState extends State<ConversationScreen>
     // Only an unfinished non-user (streaming assistant) message mutates in
     // place per token; its cached widget would be a stale snapshot. User
     // messages and finished assistant messages have stable content → cache.
-    if (msg.info.role != 'user' && msg.info.finish == null) {
+    if (msg.info.role == 'user') {
+      return _messageChildCache[id] ??= _userBubble(msg);
+    }
+    if (msg.info.finish == null) {
       _messageChildCache.remove(id);
       return _message(msg, stable: false);
     }
     return _messageChildCache[id] ??= _message(msg, stable: true);
+  }
+
+  /// 用户气泡（无外层 Padding/Align——折叠壳挂在气泡级，裁剪宽度即气泡宽）。
+  Widget _userBubble(DisplayMessage msg) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _userBubbleColor(),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      constraints: const BoxConstraints(maxWidth: 320),
+      child: _parts(msg.parts, user: true, stable: true),
+    );
   }
 
   Widget _measuredMessage(DisplayMessage msg) {
@@ -666,12 +694,24 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   Widget _userCollapseHost(DisplayMessage msg) {
     final id = msg.info.id;
-    return _UserCollapseHost(
-      key: ValueKey('uc:$id'),
-      naturalHeight: _userNaturalHeight[id],
-      expanded: _expandedUserIds.contains(id),
-      onToggle: () => _toggleUserExpanded(id),
-      child: _cachedMessage(msg),
+    return Padding(
+      key: ValueKey(id),
+      padding: const EdgeInsets.only(
+        left: 40,
+        top: _kUserMsgVerticalPadding,
+        bottom: _kUserMsgVerticalPadding,
+      ),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: _UserCollapseHost(
+          key: ValueKey('uc:$id'),
+          naturalHeight: _userNaturalHeight[id],
+          expanded: _expandedUserIds.contains(id),
+          onToggle: () => _toggleUserExpanded(id),
+          onAnimating: (animating) => _setUserAnimating(id, animating),
+          child: _cachedMessage(msg),
+        ),
+      ),
     );
   }
 
@@ -685,10 +725,12 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   /// 用户消息测高回调（事件驱动：首次布局补偿 / 尺寸变化通知，非每帧）。
   /// 折叠渲染时测得的是 clamp 高度，不更新自然高度；展开渲染时测得的即自然
-  /// 高度，跨过折叠门槛时调度一次重建切入默认折叠。
+  /// 高度，跨过折叠门槛时调度一次重建切入默认折叠。展开动画期间的中间高度
+  /// 既非自然高也非 clamp 高，一并忽略（否则阈值振荡会打断动画）。
   void _noteUserHeight(String id, double h) {
     if (!mounted) return;
     if (_userCollapsedRender(id)) return;
+    if (_userAnimatingIds.contains(id)) return;
     final natural = _userNaturalHeight[id];
     if (natural == h) return;
     final wasCollapsible = natural != null && _userCollapsibleHeight(natural);
@@ -721,6 +763,15 @@ class _ConversationScreenState extends State<ConversationScreen>
         _expandedUserIds.add(id);
       }
     });
+  }
+
+  /// 折叠壳动画启停回调（无 setState：仅作测高回调的守卫标记，不影响渲染）。
+  void _setUserAnimating(String id, bool animating) {
+    if (animating) {
+      _userAnimatingIds.add(id);
+    } else {
+      _userAnimatingIds.remove(id);
+    }
   }
 
   Widget _footerRow(ConversationStore conv) {
@@ -797,6 +848,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     _heightCache.removeWhere((id, _) => !ids.contains(id));
     _userNaturalHeight.removeWhere((id, _) => !ids.contains(id));
     _expandedUserIds.removeWhere((id) => !ids.contains(id));
+    _userAnimatingIds.removeWhere((id) => !ids.contains(id));
     _keepAliveLru.removeWhere((id) => !ids.contains(id));
     if (_driverAbortedRunTop != null && !ids.contains(_driverAbortedRunTop)) {
       _driverAbortedRunTop = null;
@@ -1344,24 +1396,6 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Widget _message(DisplayMessage m, {required bool stable}) {
-    if (m.info.role == 'user') {
-      return Padding(
-        key: ValueKey(m.info.id),
-        padding: const EdgeInsets.only(left: 40, top: 10, bottom: 10),
-        child: Align(
-          alignment: Alignment.centerRight,
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: _userBubbleColor(),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            constraints: const BoxConstraints(maxWidth: 320),
-            child: _parts(m.parts, user: true, stable: stable),
-          ),
-        ),
-      );
-    }
     return Padding(
       key: ValueKey(m.info.id),
       padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
@@ -3420,14 +3454,19 @@ class _BackToTurnTopButton extends StatelessWidget {
 }
 
 /// 高用户消息折叠壳（在 _messageChildCache 之外：展开/收起只重建壳层，内容
-/// 子树走实例等值剪枝）。自然高度未跨过门槛时原样透传；跨过后默认折叠——
-/// clamp 到整屏高 × [_kUserCollapseFraction]（MediaQuery.size，键盘无关）。
-/// 折叠渲染用 OverflowBox 让内容按自然高度布局、ClipRect 裁剪，被裁部分不
-/// 参与命中测试；底部渐变 + 展开按钮。
-class _UserCollapseHost extends StatelessWidget {
+/// 子树走实例等值剪枝）。壳挂在气泡级（消息 Padding/Align 之内），裁剪宽度
+/// 即气泡宽：折叠裁切用与气泡同半径的底圆角 ClipRRect，收起后仍是圆角矩形。
+/// 自然高度（整条消息，含外层垂直 padding）未跨过门槛时原样透传；跨过后
+/// 默认折叠——气泡 clamp 到整屏高 × [_kUserCollapseFraction]（MediaQuery.size，
+/// 键盘无关）。整个气泡可点（类 tool chip）：点击任意位置切换折叠/展开；
+/// 切换带高度动画，动画期间按帧增量校正反向列表滚动（气泡顶部视觉锚定，
+/// 复刻 _ToolChip 的 _syncReversedScroll 思路）。折叠渲染用 _TopClampBox
+/// 让内容按自然尺寸布局，被裁部分不参与命中测试。
+class _UserCollapseHost extends StatefulWidget {
   final double? naturalHeight;
   final bool expanded;
   final VoidCallback onToggle;
+  final ValueChanged<bool> onAnimating;
   final Widget child;
 
   const _UserCollapseHost({
@@ -3435,51 +3474,174 @@ class _UserCollapseHost extends StatelessWidget {
     required this.naturalHeight,
     required this.expanded,
     required this.onToggle,
+    required this.onAnimating,
     required this.child,
   });
 
   @override
+  State<_UserCollapseHost> createState() => _UserCollapseHostState();
+}
+
+class _UserCollapseHostState extends State<_UserCollapseHost>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: _kUserCollapseAnimDuration,
+  );
+  late final Animation<double> _curved = _ctrl.drive(
+    CurveTween(curve: Curves.easeInOutCubic),
+  );
+  double _lastV = 0;
+  double _collapseHeight = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _curved.addListener(_onTick);
+    _curved.addStatusListener(_onStatus);
+    _lastV = widget.expanded ? 1 : 0;
+    _ctrl.value = _lastV;
+  }
+
+  @override
+  void didUpdateWidget(_UserCollapseHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.expanded != widget.expanded) {
+      widget.onAnimating(true);
+      _ctrl.animateTo(widget.expanded ? 1 : 0);
+    }
+  }
+
+  void _onStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed ||
+        status == AnimationStatus.dismissed) {
+      widget.onAnimating(false);
+    }
+  }
+
+  /// 反向列表中条目增高的偏移锚在底缘：不做校正时内容顶端会向上飞出视口。
+  /// 校正量按自身实测几何算：本帧增量先被「壳顶距视口顶的剩余上升空间」
+  /// 自然吸收，余量才滚动补偿——展开时气泡顶部视觉锚定、向下展开，收起
+  /// 时向上折回（与 _ToolChip 的 _syncReversedScroll 同一意图）。展开方向
+  /// 按构造不越上界（tick 先于本帧布局，maxScrollExtent 滞后一帧，不能
+  /// clamp 上界否则校正被逐帧吃掉、锚定失效）；收起方向显式 clamp 下界
+  /// ——展开锚定把壳顶钉在视口顶（top ≥ 0），全额回撤会在内容不足视口
+  /// （maxScrollExtent=0）时把 pixels 打到负值，与视口 overscroll 物理逐帧
+  /// 打架。pixels 触 0 后内容已贴底，让壳顶随收缩自然下沉即是正确视觉。
+  /// _collapseHeight 在 build 中刷新，动画期间属性稳定。
+  void _onTick() {
+    final v = _curved.value;
+    final dv = v - _lastV;
+    _lastV = v;
+    final n = widget.naturalHeight;
+    if (dv == 0 || n == null || _collapseHeight <= 0) return;
+    final span = (n - _kUserMsgVerticalPadding * 2) - _collapseHeight;
+    if (span <= 0) return;
+    final ro = context.findRenderObject();
+    final vp = ro == null ? null : RenderAbstractViewport.maybeOf(ro);
+    if (ro is! RenderBox || vp is! RenderBox || !ro.attached) return;
+    final pos = context.findAncestorStateOfType<ScrollableState>()?.position;
+    if (pos == null || !pos.hasContentDimensions) return;
+    final top = ro.localToGlobal(Offset.zero, ancestor: vp).dy;
+    final corr = dv > 0
+        ? math.max(0.0, span * dv - math.max(0.0, top))
+        : math.min(0.0, span * dv + math.max(0.0, -top));
+    if (corr == 0) return;
+    // 只 clamp 下界：tick 先于本帧布局，maxScrollExtent 还是上一帧的值，
+    // 展开校正按构造 ≤ 布局后的新 max——clamp 上界会把校正逐帧吃掉、
+    // 锚定失效（气泡整体上飘）。
+    final target = math.max(pos.pixels + corr, pos.minScrollExtent);
+    if (target == pos.pixels) return;
+    pos.correctPixels(target);
+  }
+
+  @override
+  void dispose() {
+    if (_ctrl.isAnimating) widget.onAnimating(false);
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final n = naturalHeight;
+    final n = widget.naturalHeight;
     final collapseHeight =
         MediaQuery.sizeOf(context).height * _kUserCollapseFraction;
+    _collapseHeight = collapseHeight;
     if (n == null || n <= collapseHeight + _kUserCollapseMinGain) {
-      return child;
+      return widget.child;
     }
-    if (expanded) {
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          child,
-          Padding(
-            padding: const EdgeInsets.only(left: 40, top: 2),
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: _UserCollapseToggle(onTap: onToggle),
-            ),
+    return AnimatedBuilder(
+      animation: _curved,
+      builder: (context, _) {
+        final t = _curved.value;
+        if (t >= 1) return _expandedBubble(context);
+        final h =
+            collapseHeight + (n - _kUserMsgVerticalPadding * 2 - collapseHeight) * t;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onToggle,
+          child: Stack(
+            children: [
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(14),
+                ),
+                // 折叠/过渡态忽略内容指针：正文是 selectable markdown
+                // （内部 EditableText 会吃掉文本区 tap 做光标/选区），且被裁
+                // 内容的选择本就无意义——整面气泡交给壳层手势，tool chip 式
+                // 任意位置点击展开。展开态正文恢复可选、链接可点，收起由右
+                // 上角指示浮标承担。
+                child: _TopClampBox(
+                  height: h,
+                  child: IgnorePointer(child: widget.child),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Opacity(
+                  opacity: 1 - t,
+                  child: const _UserCollapseFade(),
+                ),
+              ),
+            ],
           ),
-        ],
-      );
-    }
-    return SizedBox(
-      height: collapseHeight,
+        );
+      },
+    );
+  }
+
+  /// 展开态：气泡原样渲染（零额外盒子，内容增高可自发产生尺寸通知），右上
+  /// 角浮一枚收起方向指示（纯覆盖层，不占布局高度，不影响测高）。展开时顶
+  /// 部被滚动校正锚定在视口顶，收起钮放顶部才始终可达；放底部会随超长消息
+  /// 沉到数屏之外。
+  Widget _expandedBubble(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.onToggle,
       child: Stack(
         children: [
-          Positioned.fill(
-            child: ClipRect(
-              child: OverflowBox(
-                alignment: Alignment.topCenter,
-                minHeight: 0,
-                maxHeight: double.infinity,
-                child: child,
+          widget.child,
+          Positioned(
+            right: 6,
+            top: 6,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.black.withAlpha(80),
+                shape: BoxShape.circle,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(
+                  Icons.expand_less,
+                  size: 18,
+                  color: colors.userText,
+                ),
               ),
             ),
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _UserCollapseFade(onTap: onToggle),
           ),
         ],
       ),
@@ -3487,73 +3649,93 @@ class _UserCollapseHost extends StatelessWidget {
   }
 }
 
-/// 折叠态底部渐变 + 展开按钮。水平几何复刻用户气泡（left 40 内右对齐、
-/// maxWidth 320）；窄屏上气泡略窄于渐变属可接受误差（能跨过折叠门槛的长
-/// 消息几乎必然撑满 320 宽）。
+/// 折叠/过渡态的裁剪盒：child 按自然尺寸布局（高度不受限），盒子宽度贴
+/// child（shrink-wrap），高度 clamp 到给定值、child 顶对齐。替代
+/// SizedBox+OverflowBox——OverflowBox 默认 fit: OverflowBoxFit.max 会把
+/// 盒子撑到父级最大宽（气泡级壳会变 736 宽而非气泡宽 320）。
+class _TopClampBox extends SingleChildRenderObjectWidget {
+  final double height;
+
+  const _TopClampBox({required this.height, super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderTopClampBox(height);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderTopClampBox renderObject,
+  ) {
+    renderObject.height = height;
+  }
+}
+
+class _RenderTopClampBox extends RenderShiftedBox {
+  _RenderTopClampBox(this._height) : super(null);
+
+  double _height;
+
+  set height(double value) {
+    if (_height == value) return;
+    _height = value;
+    markNeedsLayout();
+  }
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) {
+    final child = this.child;
+    if (child == null) return constraints.smallest;
+    final childSize = child.getDryLayout(
+      constraints.copyWith(minHeight: 0, maxHeight: double.infinity),
+    );
+    return constraints.constrain(
+      Size(childSize.width, _height.clamp(0.0, childSize.height)),
+    );
+  }
+
+  @override
+  void performLayout() {
+    final child = this.child;
+    if (child == null) {
+      size = constraints.smallest;
+      return;
+    }
+    child.layout(
+      constraints.copyWith(minHeight: 0, maxHeight: double.infinity),
+      parentUsesSize: true,
+    );
+    size = constraints.constrain(
+      Size(child.size.width, _height.clamp(0.0, child.size.height)),
+    );
+    (child.parentData! as BoxParentData).offset = Offset.zero;
+  }
+}
+
+/// 折叠态底部渐变 + 展开方向指示（纯视觉；点击由壳层全气泡手势接管，宽度
+/// 即气泡宽——壳挂在气泡级，无需再复刻 left 40 / maxWidth 320 几何）。
 class _UserCollapseFade extends StatelessWidget {
-  final VoidCallback onTap;
-  const _UserCollapseFade({required this.onTap});
+  const _UserCollapseFade();
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
-    const radius = BorderRadius.vertical(bottom: Radius.circular(14));
-    return Padding(
-      padding: const EdgeInsets.only(left: 40),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 320),
-          child: Material(
-            type: MaterialType.transparency,
-            child: Ink(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [colors.userBubble.withAlpha(0), colors.userBubble],
-                ),
-                borderRadius: radius,
-              ),
-              child: InkWell(
-                onTap: onTap,
-                borderRadius: radius,
-                child: SizedBox(
-                  height: 56,
-                  width: double.infinity,
-                  child: Icon(
-                    Icons.expand_more,
-                    size: 20,
-                    color: colors.userText,
-                  ),
-                ),
-              ),
-            ),
+    return SizedBox(
+      height: 56,
+      width: double.infinity,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [colors.userBubble.withAlpha(0), colors.userBubble],
+          ),
+          borderRadius: const BorderRadius.vertical(
+            bottom: Radius.circular(14),
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _UserCollapseToggle extends StatelessWidget {
-  final VoidCallback onTap;
-  const _UserCollapseToggle({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: Icon(
-            Icons.expand_less,
-            size: 18,
-            color: Theme.of(context).colorScheme.outline,
-          ),
+        child: Center(
+          child: Icon(Icons.expand_more, size: 20, color: colors.userText),
         ),
       ),
     );

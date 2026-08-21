@@ -41,19 +41,25 @@
 
 时序：新消息首帧按展开渲染（自然高度未知）→ 帧后测得自然高度、跨过门槛 → 下一帧切入折叠。即 tall 消息有一次约 1 帧的"先展开后折叠"，属可接受误差（要求已声明）；此后自然高度常驻，keep-alive 驱逐 / 实例缓存剪枝 / 重新挂载都不会重放（判定数据在 State，不在 widget）。
 
-### 2.4 渲染：折叠壳在实例缓存之外
+### 2.4 渲染：折叠壳在实例缓存之外、挂在气泡级
 
-消息内容实例缓存（`_messageChildCache`）保留不动；折叠壳 `_UserCollapseHost` 包在缓存外层（`_measuredMessage` 里 `_KeepAliveMessage` 之子）：
+消息内容实例缓存（`_messageChildCache`）保留不动；用户消息的缓存 child 改为**裸气泡**（无外层 Padding/Align——这两层移入 `_userCollapseHost` 挂载处），折叠壳 `_UserCollapseHost`（StatefulWidget，自带动画）包在缓存外层（`_measuredMessage` 里 `_KeepAliveMessage` 之子）：
 
 - **不可折叠**：原样透传 child（零额外盒子）。
-- **折叠**：`SizedBox(门槛高) > Stack[ Positioned.fill(ClipRect(OverflowBox(maxHeight: ∞, topCenter, child))), 底部渐变+展开按钮 ]`。OverflowBox 让内容按自然高度布局、ClipRect 裁剪——内容布局成本与展开态相同（无回归），绘制被 clip 裁剪（净收益）；被裁部分在 ClipRect 之外不参与命中测试（隐藏区的链接不可点，符合预期）。
-- **展开（可折叠）**：child + 气泡下方右对齐收起按钮（`expand_less`）。
+- **折叠**：`Stack[ ClipRRect(底圆角 14) > _TopClampBox(clamp 高, child) , 底部渐变+指示 ]`，外层 `GestureDetector(opaque)`。`_TopClampBox`（自定义 RenderShiftedBox）让 child 按自然尺寸布局、盒子宽度贴 child、高度 clamp 到门槛、顶对齐——替代 SizedBox+OverflowBox（OverflowBox 默认 fit: OverflowBoxFit.max 会把盒子撑到父级最大宽）。裁剪用与气泡同半径的**底圆角 ClipRRect**：折叠裁切线在圆角区内，收起后仍是圆角矩形（一期整条消息级裁剪丢掉下圆角的问题由此修复）。折叠态对 child 套 `IgnorePointer`：正文是 selectable markdown（内部 EditableText 会吃掉文本区 tap 做光标/选区），被裁内容的选择本就无意义——整个气泡面交给壳层手势，tool chip 式任意位置点击展开。
+- **展开（可折叠）**：child 原样渲染（零额外盒子，内容增高可自发产生尺寸通知），顶部右上角浮一枚收起方向指示（纯覆盖层，不占布局高度、不影响测高）。展开时气泡顶部被滚动校正锚定在视口顶，收起钮放顶部才始终可达；放底部会随超长消息沉到数屏之外。展开态正文保持可选、链接可点（tap 被 EditableText 消费是既定取舍），收起由浮标/气泡空白区承担。
 
 展开/收起只重建壳层；内容子树是同一缓存实例，`updateChild` 等值剪枝，不重解析 markdown——切换对滚动性能无放大影响。流式 body 重建期间壳层参数不变 → 同样被剪枝。
 
+### 2.4.1 切换动画与滚动锚定
+
+- 壳内 `AnimationController`（200ms，easeInOutCubic）驱动高度在 clamp 高与气泡自然高之间插值；`didUpdateWidget` 时 `animateTo` 目标态，重复点击/中途反向安全。折叠渐变随插值淡出（`1 - t`）。
+- 展开动画期间由 State 侧 `_userAnimatingIds` 标记，测高回调忽略中间高度（既非自然高也非 clamp 高，写入会阈值振荡打断动画）；动画结束/壳 dispose 时清标记。
+- **滚动校正（reversed 列表钉顶）**：反向列表中条目增高的偏移锚在底缘，不做校正时气泡顶部会向上飞出视口。逐帧校正量按自身实测几何算：本帧增量先被「壳顶距视口顶的剩余上升空间」自然吸收，余量才 `correctPixels` 补偿——展开时气泡顶部视觉锚定在视口顶、向下展开，收起时向上折回（与 `_ToolChip` 的 `_syncReversedScroll` 同一意图）。写回目标**只 clamp 下界**：展开方向按构造不越上界（tick 先于本帧布局，maxScrollExtent 滞后一帧——clamp 上界会把展开校正逐帧吃掉、锚定失效使气泡整体上飘，实测踩过）；收起方向须显式 clamp 下界——展开锚定把壳顶钉在视口顶（top ≥ 0），全额回撤会在内容不足视口（maxScrollExtent=0）时把 pixels 打到负值，与视口 overscroll 物理逐帧打架（评审实测：负值可残留 ~500ms 回弹）。pixels 触 0 后内容已贴底，让壳顶随收缩自然下沉即是正确视觉。
+
 ### 2.5 折叠态视觉
 
-底部渐变条复刻气泡水平几何（left 40 内右对齐、maxWidth 320、底圆角 14），渐变 `userBubble α0 → userBubble`，中央 `expand_more`（userText 色），整条可点。窄气泡（短行堆高）时渐变略宽于气泡——能跨过 40% 屏高门槛的消息几乎必然撑满 320 宽，残余误差为纯视觉、可接受（要求已声明）。
+折叠裁切带气泡同款底圆角 14（ClipRRect，见 2.4）。底部渐变条复刻气泡水平几何与渐变 `userBubble α0 → userBubble`，中央 `expand_more`（userText 色）——壳挂在气泡级，渐变宽度即气泡宽，无需再复刻一期整条消息级的 left 40 / maxWidth 320 几何（窄屏误差问题随之消失）。整面气泡可点（壳层手势），渐变条纯视觉。
 
 ### 2.6 失效联动
 
@@ -75,25 +81,27 @@
 
 | 场景 | 预期 |
 |------|------|
-| 自然高度 ~5× 门槛的用户消息 | 稳定后折叠 clamp 到 240（600px 测试屏 × 0.4）；点 `expand_more` 恢复自然高度并出现 `expand_less`；再点回 240 |
+| 自然高度 ~5× 门槛的用户消息 | 稳定后折叠 clamp 到 240（600px 测试屏 × 0.4），折叠裁切为底圆角 14 的 ClipRRect；点气泡任意位置展开（高度动画，中间高度严格介于 clamp 与自然高之间），顶部出现收起浮标；点浮标回 240 |
 | 短用户消息 | 无 `expand_more`/`expand_less`，高度 < 门槛 |
 | 回顶按钮与折叠共存 | 全量测试回归（run 跨度按 `_heightCache` 即渲染高度求和，折叠后几何自洽） |
 
-`flutter analyze --fatal-infos` 零 issue；`flutter test` 477 全过。真机回归（长粘贴消息、图片附件用户消息、旋转）待做。
+`flutter analyze --fatal-infos` 零 issue；`flutter test` 530 全过（含折叠圆角/任意位置点击/动画中间高度断言）。真机回归（长粘贴消息、图片附件用户消息、旋转）待做。
 
 ---
 
 ## 4. 关键设计决策
 
 1. **门槛取 `MediaQuery.size` 整屏高**：键盘无关是硬要求；列表视口高随键盘变化被排除（与回顶按钮门槛同一理由）。
-2. **自然高度与渲染高度分账**：单一 `_heightCache` 无法同时服务"滚动几何要真实渲染高"与"折叠判定要自然高"，分两个 map 各取所需，判定防振荡。
+2. **自然高度与渲染高度分账**：单一 `_heightCache` 无法同时服务"滚动几何要真实渲染高"与"折叠判定要自然高"，分两个 map 各取所需，判定防振荡；展开动画中间高度由 `_userAnimatingIds` 一并豁免。
 3. **判定挂在既有测高事件上**：满足"非每帧、误差可接受"；代价是首帧展开闪现一次，接受。
-4. **OverflowBox+ClipRect 而非真实约束内容高度**：对内容子树零侵入（markdown/图片/子任务渲染路径不改），布局成本与展开态持平、绘制有收益；被裁区自动退出命中测试。
+4. **壳挂气泡级 + 自定义 `_TopClampBox` 而非真实约束内容高度**：对内容子树零侵入（markdown/图片/子任务渲染路径不改），布局成本与展开态持平；裁切线落在圆角区内由 ClipRRect 收口。壳在气泡级使裁剪/渐变宽度即气泡宽（一期整条消息级裁剪丢下圆角、渐变需复刻气泡几何两类问题一并消除）。
 5. **壳在实例缓存外**：切换不重建内容子树，滚动性能不受切换影响。
+6. **滚动校正按自身实测几何 + 仅下界 clamp 写回**：校正量先被"壳顶距视口顶的剩余空间"吸收，余量才滚动；写回 pixels 只 clamp 下界（上界不能 clamp——tick 先于布局、maxScrollExtent 滞后一帧，clamp 上界会吃掉展开校正致锚定失效；不 clamp 下界则内容不足视口时收起回撤打到负值，与 overscroll 物理打架）。
+7. **折叠态整面可点、展开态尊重 selectable 文本**：正文 markdown `selectable: true`，其内部 EditableText 消费文本区 tap（光标/选区）。折叠态对 child 套 IgnorePointer 换取 tool chip 式整面点击（被裁内容选择无意义）；展开态保持可选 + 链接可点，收起由顶部浮标/空白区承担——不是牺牲哪边，而是各取默认态。
 
 ## 5. 不做的事
 
-- 不做折叠/展开动画（高度突变即可，动画需处理 reversed 钉底 + 变高竞态，收益低）。
 - 不做"记住每条消息展开态"的持久化（会话内保持即可，`_expandedUserIds`）。
 - 不做 assistant 消息折叠（agent 回复是对话主体，折叠违背阅读目的；长回复已有回顶按钮兜底）。
 - 不做离屏预估高度消除首帧闪现（估算失真 > 闪现成本）。
+- 不做展开态文本区整面点击（与 selectable markdown 的选区/光标 tap 冲突，见决策 7）。
