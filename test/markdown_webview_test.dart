@@ -161,6 +161,61 @@ void main() {
       expect(body, isNot(contains('<span class="tok-')));
     });
   });
+
+  group('GitHub alerts', () {
+    String docFor(String content) => buildMarkdownPreviewHtml(
+          content: content,
+          brightness: Brightness.dark,
+          scaffoldBg: const Color(0xFF0E0F12),
+          onSurface: const Color(0xFFDFE4DC),
+          appColors: AppColors.dark,
+        );
+
+    String cssFor(Brightness b) => markdownPreviewCss(
+          brightness: b,
+          scaffoldBg: b == Brightness.dark
+              ? const Color(0xFF0E0F12)
+              : const Color(0xFFF7F8FA),
+          onSurface: const Color(0xFFDFE4DC),
+          appColors: b == Brightness.dark ? AppColors.dark : AppColors.light,
+        );
+
+    test('renders > [!NOTE] as a styled alert div, not a blockquote', () {
+      final html = docFor('> [!NOTE]\n> Useful information.');
+      expect(html, contains('class="markdown-alert markdown-alert-note"'));
+      expect(html, contains('class="markdown-alert-title">Note'));
+      expect(html, isNot(contains('<blockquote>')));
+    });
+
+    test('supports all five severities and keeps body content', () {
+      const kinds = ['TIP', 'IMPORTANT', 'WARNING', 'CAUTION'];
+      for (final k in kinds) {
+        final html = docFor('> [!$k]\n> Body of $k');
+        final slug = k.toLowerCase();
+        expect(html, contains('markdown-alert-$slug'));
+        expect(html, contains('Body of $k'));
+      }
+    });
+
+    test('keeps plain blockquotes untouched', () {
+      final html = docFor('> just a quote\n\ntext [!NOTE] inline');
+      final body = html.substring(html.indexOf('<body>'));
+      expect(body, contains('<blockquote>'));
+      expect(body, isNot(contains('markdown-alert')));
+    });
+
+    test('styles every severity for both brightnesses within weight scale',
+        () {
+      for (final b in Brightness.values) {
+        final css = cssFor(b);
+        for (final k in ['note', 'tip', 'important', 'warning', 'caution']) {
+          expect(css, contains('.markdown-alert-$k{'));
+        }
+        expect(css, isNot(contains('font-weight:500')));
+        expect(css, isNot(contains('font-weight:700')));
+      }
+    });
+  });
 }
 
 String docOfLang(String lang) => buildMarkdownPreviewHtml(

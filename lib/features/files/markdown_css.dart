@@ -16,6 +16,42 @@ String _cssColor(Color c) {
 
 String _hexByte(int v) => v.toRadixString(16).padLeft(2, '0');
 
+const _alertPalette = {
+  Brightness.light: {
+    'note': ('#0969da', '#ddf4ff'),
+    'tip': ('#1a7f37', '#dafbe1'),
+    'important': ('#8250df', '#fbefff'),
+    'warning': ('#9a6700', '#fff8c5'),
+    'caution': ('#cf222e', '#ffebe9'),
+  },
+  Brightness.dark: {
+    'note': ('#4493f8', 'rgba(56,139,253,0.15)'),
+    'tip': ('#3fb950', 'rgba(63,185,80,0.15)'),
+    'important': ('#ab7df8', 'rgba(171,125,248,0.15)'),
+    'warning': ('#d29922', 'rgba(187,128,9,0.15)'),
+    'caution': ('#f85149', 'rgba(248,81,73,0.15)'),
+  },
+};
+
+String _markdownAlertCss(Brightness brightness) {
+  final buf = StringBuffer()
+    ..write('.markdown-alert{')
+    ..write('margin:0 0 10px;padding:8px 12px;border-left:3px solid ')
+    ..write('transparent;border-radius:6px;}')
+    ..write('.markdown-alert>:last-child{margin-bottom:0;}')
+    ..write('.markdown-alert-title{margin:0 0 4px;font-size:12px;')
+    ..write('font-weight:600;letter-spacing:0.5px;text-transform:uppercase;}');
+  for (final e in _alertPalette[brightness]!.entries) {
+    final kind = e.key;
+    final (accent, bg) = e.value;
+    buf
+      ..write('.markdown-alert-$kind{border-left-color:$accent;')
+      ..write('background:$bg;}')
+      ..write('.markdown-alert-$kind .markdown-alert-title{color:$accent;}');
+  }
+  return buf.toString();
+}
+
 String _sanitizeScope(String scope) =>
     scope.replaceAll('.', '-').replaceAll(':', '-');
 
@@ -119,6 +155,7 @@ img{max-width:100%;height:auto;}
   letter-spacing:0.4px;margin-bottom:2px;
 }
 .fm-val{font-size:13px;line-height:1.4;color:var(--text);word-break:break-word;}
+${_markdownAlertCss(brightness)}
 ${codeHighlightCss(brightness)}
 ''';
 }
