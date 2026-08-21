@@ -187,10 +187,13 @@ void main() {
       // The expansion scrolls with the reveal (bubble top stays anchored), so
       // the text body — selectable markdown whose EditableText consumes taps —
       // is not a toggle target while expanded. The pill floats at the bubble's
-      // top-right, which the anchoring keeps on screen.
+      // bottom-center, mirroring the collapsed affordance position — on a tall
+      // expanded bubble that is below the fold, so scroll it into view first.
       final scroll = tester.state<ScrollableState>(
         find.byType(Scrollable).first,
       );
+      await tester.ensureVisible(expandLess);
+      await tester.pump();
       await tester.tap(expandLess);
       // Mid-animation: the collapse correction must never drive pixels below
       // the min extent — collapsed content (240px bubble + short reply)

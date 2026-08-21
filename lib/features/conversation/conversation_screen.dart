@@ -3667,11 +3667,12 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
     );
   }
 
-  /// 展开态：气泡原样渲染（零额外盒子，内容增高可自发产生尺寸通知），右上
-  /// 角浮一枚收起方向指示（纯覆盖层，不占布局高度，不影响测高）。展开时顶
-  /// 部被滚动校正锚定在视口顶，收起钮放顶部才始终可达；放底部会随超长消息
-  /// 沉到数屏之外。短按任意位置收起：空白/浮标 tap 由壳层 GestureDetector
-  /// 赢出，文本区 tap 经 onTapText 观察切换，链接 tap 分流不收起。
+  /// 展开态：气泡原样渲染（零额外盒子，内容增高可自发产生尺寸通知），底部
+  /// 居中浮一枚收起方向指示（纯覆盖层，不占布局高度，不影响测高），与收起
+  /// 态底部指示位置一致——读完正文即达收起点；且整面 tap 均可收起，浮标随
+  /// 超长消息沉底不损失可达性。短按任意位置收起：空白/浮标 tap 由壳层
+  /// GestureDetector 赢出，文本区 tap 经 onTapText 观察切换，链接 tap 分流
+  /// 不收起。
   Widget _expandedBubble(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
     return GestureDetector(
@@ -3681,19 +3682,27 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
         children: [
           ExcludeFocus(child: widget.child),
           Positioned(
-            right: 6,
-            top: 6,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.black.withAlpha(80),
-                shape: BoxShape.circle,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.expand_less,
-                  size: 18,
-                  color: colors.userText,
+            left: 0,
+            right: 0,
+            bottom: 6,
+            // 纯视觉浮标不参与命中测试：末行居中的链接（用户消息尾部贴
+            // URL/路径常见）tap 穿透到链接 recognizer，空白处仍由壳层
+            // GestureDetector 收起。
+            child: IgnorePointer(
+              child: Center(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(80),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(
+                      Icons.expand_less,
+                      size: 18,
+                      color: colors.userText,
+                    ),
+                  ),
                 ),
               ),
             ),
