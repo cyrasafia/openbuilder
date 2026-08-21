@@ -97,11 +97,67 @@
 4. **壳挂气泡级 + 自定义 `_TopClampBox` 而非真实约束内容高度**：对内容子树零侵入（markdown/图片/子任务渲染路径不改），布局成本与展开态持平；裁切线落在圆角区内由 ClipRRect 收口。壳在气泡级使裁剪/渐变宽度即气泡宽（一期整条消息级裁剪丢下圆角、渐变需复刻气泡几何两类问题一并消除）。
 5. **壳在实例缓存外**：切换不重建内容子树，滚动性能不受切换影响。
 6. **滚动校正按自身实测几何 + 仅下界 clamp 写回**：校正量先被"壳顶距视口顶的剩余空间"吸收，余量才滚动；写回 pixels 只 clamp 下界（上界不能 clamp——tick 先于布局、maxScrollExtent 滞后一帧，clamp 上界会吃掉展开校正致锚定失效；不 clamp 下界则内容不足视口时收起回撤打到负值，与 overscroll 物理打架）。
-7. **折叠态整面可点、展开态尊重 selectable 文本**：正文 markdown `selectable: true`，其内部 EditableText 消费文本区 tap（光标/选区）。折叠态对 child 套 IgnorePointer 换取 tool chip 式整面点击（被裁内容选择无意义）；展开态保持可选 + 链接可点，收起由顶部浮标/空白区承担——不是牺牲哪边，而是各取默认态。
+7. **折叠态整面可点、展开态尊重 selectable 文本**（一期/二期决策，三期已被 §6 取代）：正文 markdown `selectable: true`，其内部 EditableText 消费文本区 tap（光标/选区）。折叠态对 child 套 IgnorePointer 换取 tool chip 式整面点击（被裁内容选择无意义）；展开态保持可选 + 链接可点，收起由顶部浮标/空白区承担——不是牺牲哪边，而是各取默认态。三期经 `onTapText` 观察内部 tap + `ExcludeFocus` 收口副作用后，两态统一为整面可点且正文保持可交互（见 §6）。
 
 ## 5. 不做的事
 
 - 不做"记住每条消息展开态"的持久化（会话内保持即可，`_expandedUserIds`）。
 - 不做 assistant 消息折叠（agent 回复是对话主体，折叠违背阅读目的；长回复已有回顶按钮兜底）。
 - 不做离屏预估高度消除首帧闪现（估算失真 > 闪现成本）。
-- 不做展开态文本区整面点击（与 selectable markdown 的选区/光标 tap 冲突，见决策 7）。
+
+---
+
+## 6. 三期：收起/展开手势行为统一
+
+### 6.1 问题（一期/二期遗留）
+
+二期折叠态对正文套 `IgnorePointer`、整面交给壳层 GestureDetector（tool chip 式点击），展开态正文保持 selectable：
+
+- 折叠态：URL 不可点、不支持长按复制、代码块/表格无法横向滚动；
+- 展开态：正文 tap 被 SelectableText 内部手势赢走，仅空白区/浮标可收起。
+
+目标：两态行为一致——短按任意位置折叠/展开、长按复制文字、点击 URL 跳转、代码块/表格横向滚动。
+
+### 6.2 手势分流的可行性：竞技场注册序
+
+手势竞技场按命中测试路径注册 recognizer（子先父后），tap 在 pointer-up 时按注册序依次 declare victory——**最深者赢**。用户气泡正文的 selectable markdown（`SelectableText.rich`）自带 `TextSelectionGestureDetector`（TapAndHorizontalDrag + LongPress），天然赢走文本区手势；链接 span 的 TapGestureRecognizer 注册序比 SelectableText 更深，赢走链接 tap。由此得到免费分流：
+
+| 触点 | 竞技场赢家 | 观察手段 |
+|------|-----------|---------|
+| 链接 tap | 链接 span recognizer | `MarkdownBody.onTapLink`（不触发 onTapText） |
+| 文本 tap | SelectableText 内部 tap | `MarkdownBody.onTapText`（flutter_markdown_plus 透传 `SelectableText.onTap`，仅在内部 tap 赢出时回调） |
+| 长按 | SelectableText 内部 long press | 原生选词 + 复制工具栏 |
+| 空白/渐变条/浮标 tap | 无竞争者 | 壳层 GestureDetector.onTap |
+
+壳层只需把 `onTapText` 接到 `_toggleUserExpanded`（经 `_parts`/`_part`/`_markdownPart` 透传，仅 user 消息），两态即统一可切换。回调内守卫可折叠性（tap 时读 `_userNaturalHeight` 最新值，闭包不受实例缓存影响）：短消息不触发无谓重建；更关键是首帧自然高度未测出时 tap 不得抢先标记 expanded——否则跨过门槛后该消息不再默认折叠。
+
+### 6.3 正文 tap 的副作用收口：ExcludeFocus
+
+内部 tap 赢出会 `selectPosition(cause: tap)` → `requestKeyboard()` → EditableText 抢焦点——若输入框正在输入，点气泡收起会关键盘。用户气泡正文整体包 `ExcludeFocus`：祖先 `descendantsAreFocusable=false` 使内部 `requestFocus` 被 `canRequestFocus` 门控直接忽略（focus_manager `_doRequestFocus` 早退）。副作用收口后正文 tap 仅剩不可见的 collapsed selection 写入。长按选词 + 工具栏不依赖焦点（`onSingleLongTapStart` Android 分支无条件 selectWord；`showToolbar` 无焦点门控），复制动经 EditableText 自身 Actions 分发，均不受影响。只读正文本无焦点需求，a11y 影响可忽略。
+
+### 6.4 代码块/表格横向滚动：_HScrollForwarder 裸 Listener 转发
+
+正文横向拖动被 SelectableText 的 `TapAndHorizontalDragGestureRecognizer`（Android `eagerVictoryOnDrag=true`，横向超 slop 即赢）赢走，代码块/表格外层的横向 `SingleChildScrollView` 永远拿不到拖动——**展开态原本就如此**（触摸端无焦点时该赢家是纯 no-op：`onDragSelectionStart/Update` 的 Android/iOS touch 分支均门控 `renderEditable.hasFocus`）。ExcludeFocus 使正文恒无焦点，no-op 恒成立。
+
+`_HScrollForwarder`（壳层最外）以裸 `Listener` 旁路竞技场——raw 指针事件路由不受竞技场胜负影响，赢家 no-op 期间 Listener 照常收到 move：
+
+1. down：从壳层 render box 发起命中测试，收集命中路径上的 render object 集合；遍历子树找**最深的横向 `Scrollable`**，其 render box（`ScrollableState.context.findRenderObject()`，viewport 祖先必在命中路径中）在命中集合内且 `maxScrollExtent > 0` 才认。只认命中路径保证折叠裁切线以下、渐变覆盖区内不误转发。
+2. move：横向位移超 `kTouchSlop` 且横向主导（与内部 recognizer 同门槛、同判据）→ `position.drag(...)` 接管，后续 `DragUpdateDetails(primaryDelta: dx)` 转发；纵向主导不接管（列表滚动不受影响）。
+3. up：`VelocityTracker` 速度给 `drag.end` 产生 fling；cancel 走 `drag.cancel()`。目标以 `ScrollableState.mounted` 守卫防 prune 竞态。
+4. **轴锁定**：接管后累计位移转为纵向主导 → `drag.cancel()` 且本指针不再接管。转发器旁路竞技场、无人能拒绝它，而两处起手列表的 VerticalDrag 不会被预先拒绝——代码块 padding 带（无 SelectableText recognizer 入局）、iOS 文本区（`eagerVictoryOnDrag=false` 不抢赢）——斜拖会双滚动；轴锁定止血。代价：Android 文本区 TapAndHorizontalDrag 抢赢时列表 VerticalDrag 已被拒，接管后手势转纵向则转发器中止、该指针剩余行程无人滚动（死区）——需 Android + 代码正文起手 + 中途转向三条件叠加，罕见，接受（不锁的代价是双滚动，更糟）。
+
+选区手柄拖动不受干扰：手柄渲染在 Overlay，命中路径不含气泡子树，Listener 收不到该指针。
+
+### 6.5 折叠态正文解禁
+
+折叠分支移除 `IgnorePointer`：链接/长按/横滚与展开态一致。被裁部分由 `_TopClampBox` 盒子尺寸挡在命中测试外（`RenderBox.hitTest` 的 `size.contains` 门控），裁切线以下的可见外内容不可触达。过渡动画帧（0<t<1）同折叠态。
+
+### 6.6 已知取舍
+
+- 双击选词让位于单击切换：首 tap 即切换，第二 tap 落点布局已变（需求明确短按=切换，复制走长按）。
+- 正文横向拖动（非代码块/表格区）为 no-op——与原生聊天应用一致，复制走长按。
+- 转发器仅挂用户气泡（需求范围）；assistant 消息代码块同样存在横拖被 TapAndHorizontalDrag 赢走的问题，`_HScrollForwarder` 为通用件，后续可平移。
+
+### 6.7 验证
+
+`user_message_collapse_test.dart` 新增：展开态文本 tap 收起、折叠态链接 tap 跳转且不展开（launchUrl 测试环境异常落 SnackBar 断言）、折叠态长按选词 + `AdaptiveTextSelectionToolbar`、折叠态代码块横拖 `position.pixels > 0` 且不误展开、正文 tap 不抢输入框焦点（`primaryFocus` 同一性）、文本区纵向拖动仍滚动会话列表。全量 542 测试通过，`analyze --fatal-infos` 零 issue。

@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show
+        BoxHitTestResult,
         BoxParentData,
         RenderAbstractViewport,
+        RenderBox,
         RenderShiftedBox,
         RenderSliverMultiBoxAdaptor,
         ScrollCacheExtent,
@@ -623,6 +626,7 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   /// 用户气泡（无外层 Padding/Align——折叠壳挂在气泡级，裁剪宽度即气泡宽）。
   Widget _userBubble(DisplayMessage msg) {
+    final id = msg.info.id;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -630,7 +634,22 @@ class _ConversationScreenState extends State<ConversationScreen>
         borderRadius: BorderRadius.circular(14),
       ),
       constraints: const BoxConstraints(maxWidth: 320),
-      child: _parts(msg.parts, user: true, stable: true),
+      // 正文 tap 被 selectable markdown 的内部手势赢走（光标/选区），壳层的
+      // onTap 够不到文本区——改由 onTapText 在文本 tap 落点观察并切换折叠，
+      // 链接 tap 由 link recognizer 赢出、不触发 onTapText，两者天然分流。
+      // 守卫可折叠性：短消息无需切换；且首帧自然高度未测出时 tap 不得抢先
+      // 标记 expanded（否则跨过门槛后不再默认折叠）。闭包在 tap 时读最新
+      // 测量值，不受实例缓存影响。
+      child: _parts(
+        msg.parts,
+        user: true,
+        stable: true,
+        onTextTap: () {
+          final natural = _userNaturalHeight[id];
+          if (natural == null || !_userCollapsibleHeight(natural)) return;
+          _toggleUserExpanded(id);
+        },
+      ),
     );
   }
 
@@ -1489,6 +1508,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     List<DisplayPart> parts, {
     required bool user,
     required bool stable,
+    VoidCallback? onTextTap,
   }) {
     final visible = <DisplayPart>[];
     for (final p in parts) {
@@ -1500,7 +1520,13 @@ class _ConversationScreenState extends State<ConversationScreen>
     final children = <Widget>[];
     for (var i = 0; i < visible.length; i++) {
       children.add(
-        _part(visible[i], user: user, isFirst: i == 0, stable: stable),
+        _part(
+          visible[i],
+          user: user,
+          isFirst: i == 0,
+          stable: stable,
+          onTextTap: onTextTap,
+        ),
       );
     }
     return Column(
@@ -1514,6 +1540,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     required bool user,
     bool isFirst = false,
     required bool stable,
+    VoidCallback? onTextTap,
   }) {
     switch (p.type) {
       case 'subtask':
@@ -1533,9 +1560,19 @@ class _ConversationScreenState extends State<ConversationScreen>
         final label = '**subtask: $commandName**';
         final body = p.text;
         final combined = body.isEmpty ? label : '$label\n\n$body';
-        return _markdownPart(combined, user: user, stable: stable);
+        return _markdownPart(
+          combined,
+          user: user,
+          stable: stable,
+          onTextTap: onTextTap,
+        );
       case 'text':
-        return _markdownPart(p.text, user: user, stable: stable);
+        return _markdownPart(
+          p.text,
+          user: user,
+          stable: stable,
+          onTextTap: onTextTap,
+        );
       case 'reasoning':
         if (!showThinking.value) return const SizedBox.shrink();
         return _Reasoning(
@@ -1576,6 +1613,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     String data, {
     required bool user,
     required bool stable,
+    VoidCallback? onTextTap,
   }) {
     // JANK-4：流式（stable=false）part 降级为 plain Text。MarkdownBody 无增量
     // 解析，逐 token 全量重解析是 O(L)/token（长回复单帧 >100ms，见
@@ -1603,6 +1641,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         selectable: true,
         softLineBreak: user,
         onTapLink: (text, href, title) => _onMdLink(href),
+        onTapText: onTextTap,
         styleSheet: sheet ?? _buildMdStyle(user: user),
       ),
     );
@@ -3458,10 +3497,23 @@ class _BackToTurnTopButton extends StatelessWidget {
 /// 即气泡宽：折叠裁切用与气泡同半径的底圆角 ClipRRect，收起后仍是圆角矩形。
 /// 自然高度（整条消息，含外层垂直 padding）未跨过门槛时原样透传；跨过后
 /// 默认折叠——气泡 clamp 到整屏高 × [_kUserCollapseFraction]（MediaQuery.size，
-/// 键盘无关）。整个气泡可点（类 tool chip）：点击任意位置切换折叠/展开；
-/// 切换带高度动画，动画期间按帧增量校正反向列表滚动（气泡顶部视觉锚定，
-/// 复刻 _ToolChip 的 _syncReversedScroll 思路）。折叠渲染用 _TopClampBox
-/// 让内容按自然尺寸布局，被裁部分不参与命中测试。
+/// 键盘无关）。切换带高度动画，动画期间按帧增量校正反向列表滚动（气泡顶部
+/// 视觉锚定，复刻 _ToolChip 的 _syncReversedScroll 思路）。折叠渲染用
+/// _TopClampBox 让内容按自然尺寸布局，被裁部分不参与命中测试。
+///
+/// 手势（三期：收起/展开行为一致）：正文保持完全可交互——链接可点、长按
+/// 选词复制、代码块/表格横向滚动；短按任意位置切换折叠/展开：
+/// - 文本区 tap 被 selectable markdown 的内部手势赢走（光标/选区副作用由
+///   [ExcludeFocus] 收口，不抢输入框焦点），壳层经 MarkdownBody.onTapText
+///   观察该 tap 并切换；链接 tap 由 span recognizer 赢出、不触发 onTapText，
+///   天然分流不折叠。
+/// - 空白区/渐变条/浮标 tap 无内部竞争者，壳层 GestureDetector 直接赢出。
+/// - 长按由 SelectableText 内部 LongPress 赢出（选词 + 工具栏），两态一致。
+/// - 代码块/表格正文上的横向拖动会被 SelectableText 的 TapAndHorizontalDrag
+///   赢走（无焦点时触摸端纯 no-op），[_HScrollForwarder] 以裸 Listener 旁路
+///   手势竞技场，把横向拖动转发给内部横向 Scrollable，实现横向滚动。
+/// 折叠态不再 IgnorePointer 正文（一期做法），被裁部分由 _TopClampBox 的
+/// 盒子尺寸挡在命中测试外。
 class _UserCollapseHost extends StatefulWidget {
   final double? naturalHeight;
   final bool expanded;
@@ -3569,54 +3621,57 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
         MediaQuery.sizeOf(context).height * _kUserCollapseFraction;
     _collapseHeight = collapseHeight;
     if (n == null || n <= collapseHeight + _kUserCollapseMinGain) {
-      return widget.child;
+      return _HScrollForwarder(
+        child: ExcludeFocus(child: widget.child),
+      );
     }
-    return AnimatedBuilder(
-      animation: _curved,
-      builder: (context, _) {
-        final t = _curved.value;
-        if (t >= 1) return _expandedBubble(context);
-        final h =
-            collapseHeight + (n - _kUserMsgVerticalPadding * 2 - collapseHeight) * t;
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: widget.onToggle,
-          child: Stack(
-            children: [
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  bottom: Radius.circular(14),
+    return _HScrollForwarder(
+      child: AnimatedBuilder(
+        animation: _curved,
+        builder: (context, _) {
+          final t = _curved.value;
+          if (t >= 1) return _expandedBubble(context);
+          final h =
+              collapseHeight + (n - _kUserMsgVerticalPadding * 2 - collapseHeight) * t;
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onToggle,
+            child: Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(14),
+                  ),
+                  // 折叠态正文保持可交互（链接/长按复制/代码横滚，与展开态
+                  // 一致）；文本区 tap 经 onTapText 切换展开。被裁部分由
+                  // _TopClampBox 的盒子尺寸挡在命中测试外。
+                  child: _TopClampBox(
+                    height: h,
+                    child: ExcludeFocus(child: widget.child),
+                  ),
                 ),
-                // 折叠/过渡态忽略内容指针：正文是 selectable markdown
-                // （内部 EditableText 会吃掉文本区 tap 做光标/选区），且被裁
-                // 内容的选择本就无意义——整面气泡交给壳层手势，tool chip 式
-                // 任意位置点击展开。展开态正文恢复可选、链接可点，收起由右
-                // 上角指示浮标承担。
-                child: _TopClampBox(
-                  height: h,
-                  child: IgnorePointer(child: widget.child),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: Opacity(
+                    opacity: 1 - t,
+                    child: const _UserCollapseFade(),
+                  ),
                 ),
-              ),
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Opacity(
-                  opacity: 1 - t,
-                  child: const _UserCollapseFade(),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
   /// 展开态：气泡原样渲染（零额外盒子，内容增高可自发产生尺寸通知），右上
   /// 角浮一枚收起方向指示（纯覆盖层，不占布局高度，不影响测高）。展开时顶
   /// 部被滚动校正锚定在视口顶，收起钮放顶部才始终可达；放底部会随超长消息
-  /// 沉到数屏之外。
+  /// 沉到数屏之外。短按任意位置收起：空白/浮标 tap 由壳层 GestureDetector
+  /// 赢出，文本区 tap 经 onTapText 观察切换，链接 tap 分流不收起。
   Widget _expandedBubble(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
     return GestureDetector(
@@ -3624,7 +3679,7 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
       onTap: widget.onToggle,
       child: Stack(
         children: [
-          widget.child,
+          ExcludeFocus(child: widget.child),
           Positioned(
             right: 6,
             top: 6,
@@ -3646,6 +3701,151 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
         ],
       ),
     );
+  }
+}
+
+/// 用户气泡内的横向滚动转发器：代码块/表格正文上的横向拖动会被
+/// SelectableText 的 TapAndHorizontalDragGestureRecognizer 赢走（气泡内正文
+/// 被 [ExcludeFocus] 收口后，触摸端该赢家是纯 no-op），内部的横向
+/// SingleChildScrollView 拿不到拖动。此 widget 以裸 [Listener] 旁路手势
+/// 竞技场（raw 事件路由不受竞技场胜负影响），在指针按下时命中测试找出
+/// 指针下的横向 [Scrollable]，横向位移超过 slop 且横向主导时，用
+/// [ScrollPosition.drag] 把后续位移转发给它（带速度跟踪，抬手给 fling）。
+/// 纵向拖动不转发（列表滚动不受影响）；tap/长按/链接点按走原手势系统。
+class _HScrollForwarder extends StatefulWidget {
+  final Widget child;
+
+  const _HScrollForwarder({required this.child});
+
+  @override
+  State<_HScrollForwarder> createState() => _HScrollForwarderState();
+}
+
+class _HScrollForwarderState extends State<_HScrollForwarder> {
+  int? _pointer;
+  Offset _down = Offset.zero;
+  ScrollableState? _target;
+  Drag? _drag;
+  VelocityTracker? _tracker;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: _onDown,
+      onPointerMove: _onMove,
+      onPointerUp: _onUp,
+      onPointerCancel: _onCancel,
+      child: widget.child,
+    );
+  }
+
+  void _onDown(PointerDownEvent e) {
+    if (_pointer != null) return;
+    _pointer = e.pointer;
+    _down = e.position;
+    _tracker = VelocityTracker.withKind(e.kind)
+      ..addPosition(e.timeStamp, e.position);
+    _target = _findHorizontalScrollable(e.position);
+  }
+
+  void _onMove(PointerMoveEvent e) {
+    if (e.pointer != _pointer) return;
+    _tracker?.addPosition(e.timeStamp, e.position);
+    final target = _target;
+    if (target == null || !target.mounted) return;
+    final d = e.position - _down;
+    if (_drag == null) {
+      // 与内部 TapAndHorizontalDrag 同一门槛（kTouchSlop）判定横向拖动；
+      // 横向主导才接管，纵向留给会话列表滚动。
+      if (d.dx.abs() <= kTouchSlop || d.dx.abs() <= d.dy.abs()) return;
+      _drag = target.position.drag(
+        DragStartDetails(
+          globalPosition: _down,
+          sourceTimeStamp: e.timeStamp,
+        ),
+        () => _drag = null,
+      );
+    } else if (d.dy.abs() > d.dx.abs()) {
+      // 接管后手势转为纵向主导：中止转发，避免与列表纵向滚动叠加出双滚动
+      // （代码块 padding 带起手、iOS 文本区斜拖——这两处竞技场无人预先
+      // 拒绝列表的 VerticalDrag）。本指针剩余生命周期不再接管。
+      _drag?.cancel();
+      _reset();
+      return;
+    }
+    _drag?.update(
+      DragUpdateDetails(
+        globalPosition: e.position,
+        delta: Offset(e.delta.dx, 0),
+        primaryDelta: e.delta.dx,
+        sourceTimeStamp: e.timeStamp,
+      ),
+    );
+  }
+
+  void _onUp(PointerUpEvent e) {
+    if (e.pointer != _pointer) return;
+    final drag = _drag;
+    final target = _target;
+    if (drag != null && target != null && target.mounted) {
+      final v = _tracker?.getVelocity() ?? Velocity.zero;
+      drag.end(
+        DragEndDetails(velocity: v, primaryVelocity: v.pixelsPerSecond.dx),
+      );
+    }
+    _reset();
+  }
+
+  void _onCancel(PointerCancelEvent e) {
+    if (e.pointer != _pointer) return;
+    _drag?.cancel();
+    _reset();
+  }
+
+  void _reset() {
+    _pointer = null;
+    _target = null;
+    _drag = null;
+    _tracker = null;
+  }
+
+  /// 命中测试找出指针下最深的可滚动横向 [Scrollable]（代码块/表格的
+  /// SingleChildScrollView）。只认命中路径上的——折叠态裁切线以下、渐变
+  /// 覆盖区内的横向滚动区域不会被误转发。
+  ScrollableState? _findHorizontalScrollable(Offset global) {
+    final rb = context.findRenderObject();
+    if (rb is! RenderBox || !rb.hasSize) return null;
+    final result = HitTestResult();
+    rb.hitTest(
+      BoxHitTestResult.wrap(result),
+      position: rb.globalToLocal(global),
+    );
+    final hit = <RenderObject>{};
+    for (final entry in result.path) {
+      final t = entry.target;
+      if (t is RenderObject) hit.add(t);
+    }
+    ScrollableState? found;
+    void visit(Element el) {
+      final w = el.widget;
+      if (w is Scrollable && w.axis == Axis.horizontal && el is StatefulElement) {
+        final state = el.state;
+        if (state is ScrollableState && state.mounted) {
+          final srb = state.context.findRenderObject();
+          final pos = state.position;
+          if (srb != null &&
+              hit.contains(srb) &&
+              pos.hasContentDimensions &&
+              pos.maxScrollExtent > 0) {
+            found = state;
+          }
+        }
+      }
+      el.visitChildElements(visit);
+    }
+
+    (context as Element).visitChildElements(visit);
+    return found;
   }
 }
 
