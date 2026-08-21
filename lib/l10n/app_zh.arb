@@ -70,7 +70,6 @@
   "disconnectBanner": "网络已断开，重连中…",
   "welcomeIntro": "连接到你的 opencode 服务器\n查看任务进度、下指令、看 diff 与文档。",
   "addServer": "添加服务器",
-  "later": "稍后",
   "cancel": "取消",
   "delete": "删除",
   "create": "创建",

@@ -70,7 +70,6 @@
   "disconnectBanner": "Offline, reconnecting…",
   "welcomeIntro": "Connect to your opencode server\nTrack task progress, send prompts, review diffs and files.",
   "addServer": "Add server",
-  "later": "Later",
   "cancel": "Cancel",
   "delete": "Delete",
   "create": "Create",

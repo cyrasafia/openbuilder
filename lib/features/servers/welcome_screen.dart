@@ -32,11 +32,6 @@ class WelcomeScreen extends StatelessWidget {
                 icon: const Icon(Icons.add),
                 label: Text(l(context).addServer),
               ),
-              const SizedBox(height: 8),
-              TextButton(
-                onPressed: () => context.go('/sessions'),
-                child: Text(l(context).later),
-              ),
               const SizedBox(height: 24),
             ],
           ),
