@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 
+import 'dio_factory.dart';
+
 /// Builds the [Dio] used for the streamed `/file/content` download.
 ///
 /// Transparent gzip decompression is disabled (`autoUncompress = false`) so the
@@ -27,6 +29,7 @@ Dio rawDownloadDio(Dio base) {
       'Accept-Encoding': 'gzip',
     },
   ));
+  copyInterceptors(base, raw);
   (raw.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
     final client = HttpClient();
     client.autoUncompress = false;

@@ -147,6 +147,20 @@ class AuthInterceptor extends Interceptor {
   }
 }
 
+/// Re-attach [base]'s interceptors to [copy]. An [AuthInterceptor] is
+/// REBOUND to [copy] (not shared): its 401 retry runs `dio.fetch` on the dio
+/// it was constructed with, and retrying on [base] would bypass [copy]'s
+/// transport quirks (e.g. raw_download's `autoUncompress = false`, whose
+/// content-encoding accounting would then double-decompress gzip bodies).
+void copyInterceptors(Dio base, Dio copy) {
+  for (final interceptor in base.interceptors) {
+    copy.interceptors.add(interceptor is AuthInterceptor
+        ? AuthInterceptor(copy, interceptor.profile,
+            store: interceptor.store, tokenClient: interceptor.tokenClient)
+        : interceptor);
+  }
+}
+
 /// Authorization headers for a profile — the single source shared by the dio
 /// factory and the SSE transports. Returned map content must be copied into a
 /// long-lived map by the caller (see ServerStore._sseHeaders).
