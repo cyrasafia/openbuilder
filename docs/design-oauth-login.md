@@ -270,7 +270,7 @@ oauth 分支承担 token 生命周期：
 - 新增（非首台）：成功 `setActive` + 逐层 pop 回 `/servers`（服务器管理页），列表呈现"选中"（active chip）。
 - 重登（未登录/失效 chip、编辑后凭证变化）：成功 `setActive` + pop 回 `/servers`。
 - 登录页取消/失败 → profile 保留，回列表， chip"未登录"。
-- 编辑：改名称/地址 → 保存；**地址变更** → 重新探测，authMethod 或 issuer 变化 → 清旧凭证 + 提示"认证方式已变化，请重新登录"，跳登录页。
+- 编辑：改名称/地址 → 保存；**oauth 探测后总是重走登录流程**（与新增一致，即使地址/issuer 未变且已有旧 token，也不做"无变化直接 pop"捷径）；地址/issuer 变化且曾有旧凭证 → 清旧凭证 + 提示"认证方式已变化，请重新登录"，跳登录页。
 - none：探测完直接 `go('/sessions')`（新增）。
 
 > **约束（OL-33）**：登录页经 `push` 挂载，go_router 的 `refresh()` 会为 imperative match 重新生成 pageKey（整页重挂）。因此 router 的 `refreshListenable` 必须是 presence 门控（仅 empty↔non-empty 翻转触发），**不可直连 connectionStore**；且登录成功路径的导航必须使用 await 前捕获的 `GoRouter` 实例，不得跨 await 使用 context。

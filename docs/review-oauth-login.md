@@ -146,3 +146,7 @@
 - 测试基建备注：flutter_test 会把 `HttpClient` 全量桩成 400，全链路 widget 测试需绕行——OIDC 端点用可注入 fake（`OAuthLoginScreen.controller` / `ServerLoginArgs.controller` 测试缝）、loopback 回调用 raw `Socket`（不受桩影响）；`providedLoopback` seam 先在真实 zone 绑定、controller 链保持在 fake zone 驱动。
 
 **终态验证（第六轮后）**：`flutter analyze --fatal-infos` = No issues found；`flutter test` = **531 passed**（本轮 +3：flow 首台 / flow 非首台 / 被取代轮次守卫）。
+
+## 行为变更记录
+
+- **OL-4 的 "unchanged→pop" 捷径移除**（产品决策）：编辑 oauth 服务器点"下一步"不再在探测/保存后直接 pop 完成，而是与新增一致**总是重走登录流程**；`authMethodChanged` snackbar 仅在地址/issuer 实际变化且曾有旧凭证时显示，且此时**显式清空旧凭证**（`_draft` 的 sameTarget 只比较地址+方法，看不到探测返回的 issuer 变化——仅清凭证才能使文案"旧凭证已清除"为真）。见 `design-oauth-login.md` 导航语义编辑条。回归测试 `test/server_oauth_edit_relogin_test.dart` 两例：① 配置未变化 → 推登录页、保留旧 token、无 snackbar；② 探测返回新 issuer → 推登录页、清凭证、有 snackbar（修复前分别以"登录页未推入"/"stale token 未清"失败）。测试基建补充：`HttpOverrides.global` 可整体替换 flutter_test 的 400 桩（fake 需实现 `idleTimeout`/`connectionTimeout` setter 与 `reasonPhrase`，否则 dio 触发 NoSuchMethodError）；snackbar 断言需 scope 到顶层路由——所有注册到同一 messenger 的已挂载 Scaffold 都会渲染当前 snackbar；推入的真实登录屏会自建 controller 绑默认口 8901（为 flow 套件保留），用例尾部用 `runAsync` 延时 + 补 pump 把它驱动到终态（parError）提前释放端口，避免与 `oauth_login_flow_test` 并发抢口。

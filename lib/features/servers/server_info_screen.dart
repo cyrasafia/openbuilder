@@ -182,24 +182,31 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
           tokenEndpoint: meta.tokenEndpoint,
           oidcIssuer: meta.issuer,
         );
-        await _saveProfile(withMeta);
+        // Edit always re-runs the OAuth flow (like add); when the auth
+        // target changed, actually drop the stale credentials the snackbar
+        // below claims cleared (issuer-only changes bypass _draft's
+        // sameTarget reset).
+        final configChanged = preSave != null &&
+            preSave.accessToken.isNotEmpty &&
+            (preSave.authMethod != AuthMethod.oauth ||
+                preSave.address.trim() != withMeta.address.trim() ||
+                preSave.oidcIssuer != withMeta.oidcIssuer);
+        final toSave = configChanged
+            ? withMeta.copyWith(
+                accessToken: '',
+                refreshToken: '',
+                tokenExpiresAt: null,
+              )
+            : withMeta;
+        await _saveProfile(toSave);
         if (!mounted) return;
-        final unchanged = preSave != null &&
-            preSave.authMethod == AuthMethod.oauth &&
-            preSave.address.trim() == withMeta.address.trim() &&
-            preSave.oidcIssuer == withMeta.oidcIssuer &&
-            preSave.accessToken.isNotEmpty;
-        if (unchanged) {
-          context.pop();
-          return;
-        }
-        if (preSave != null && preSave.accessToken.isNotEmpty) {
+        if (configChanged) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(l(context).authMethodChanged)),
           );
         }
-        context.push('/servers/${withMeta.id}/login', extra: ServerLoginArgs(
-          profile: connectionStore.byId(withMeta.id) ?? withMeta,
+        context.push('/servers/${toSave.id}/login', extra: ServerLoginArgs(
+          profile: connectionStore.byId(toSave.id) ?? toSave,
           metadata: meta,
           newlyAdded: widget.id == null,
         ));
