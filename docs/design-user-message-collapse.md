@@ -46,8 +46,8 @@
 消息内容实例缓存（`_messageChildCache`）保留不动；用户消息的缓存 child 改为**裸气泡**（无外层 Padding/Align——这两层移入 `_userCollapseHost` 挂载处），折叠壳 `_UserCollapseHost`（StatefulWidget，自带动画）包在缓存外层（`_measuredMessage` 里 `_KeepAliveMessage` 之子）：
 
 - **不可折叠**：原样透传 child（零额外盒子）。
-- **折叠**：`Stack[ ClipRRect(底圆角 14) > _TopClampBox(clamp 高, child) , 底部渐变+指示 ]`，外层 `GestureDetector(opaque)`。`_TopClampBox`（自定义 RenderShiftedBox）让 child 按自然尺寸布局、盒子宽度贴 child、高度 clamp 到门槛、顶对齐——替代 SizedBox+OverflowBox（OverflowBox 默认 fit: OverflowBoxFit.max 会把盒子撑到父级最大宽）。裁剪用与气泡同半径的**底圆角 ClipRRect**：折叠裁切线在圆角区内，收起后仍是圆角矩形（一期整条消息级裁剪丢掉下圆角的问题由此修复）。折叠态对 child 套 `IgnorePointer`：正文是 selectable markdown（内部 EditableText 会吃掉文本区 tap 做光标/选区），被裁内容的选择本就无意义——整个气泡面交给壳层手势，tool chip 式任意位置点击展开。
-- **展开（可折叠）**：child 原样渲染（零额外盒子，内容增高可自发产生尺寸通知），底部居中浮一枚收起方向指示（纯覆盖层，不占布局高度、不影响测高），与收起态底部指示位置一致——读完正文即达收起点；且整面 tap 均可收起，浮标随超长消息沉底不损失可达性（原「顶部右上角」方案因此废弃：其可达性论证在整面可点（§6）下已不必要）。展开态正文保持可选、链接可点（tap 被 EditableText 消费是既定取舍），收起由浮标/气泡空白区承担。
+- **折叠**：`Stack[ ClipRRect(底圆角 14) > _TopClampBox(clamp 高, child) , 底部渐变+指示 ]`，外层 `GestureDetector(opaque)`。`_TopClampBox`（自定义 RenderShiftedBox）让 child 按自然尺寸布局、盒子宽度贴 child、高度 clamp 到门槛、顶对齐——替代 SizedBox+OverflowBox（OverflowBox 默认 fit: OverflowBoxFit.max 会把盒子撑到父级最大宽）。裁剪用与气泡同半径的**底圆角 ClipRRect**：折叠裁切线在圆角区内，收起后仍是圆角矩形（一期整条消息级裁剪丢掉下圆角的问题由此修复）。折叠态对 child 套 `IgnorePointer`：正文是 selectable markdown（内部 EditableText 会吃掉文本区 tap 做光标/选区），被裁内容的选择本就无意义——整个气泡面交给壳层手势，tool chip 式任意位置点击展开。**过渡动画帧（0<t<1）同此分支，但 child 包 `_UserExpandBase`（气泡 + 底部留白，见展开条）**：`_TopClampBox` 的 clamp 上限是 child 自然高，裸气泡会使上限 = 气泡自然高 < 动画目标（自然高 + 留白）——动画末段停滞后在 t≥1 分支切换帧 +44 单帧跳变、滚动校正随之失准（评审实测捕获），包基底后 clamp 上限与动画目标一致、全程逐帧连续。
+- **展开（可折叠）**：气泡以**同色同半径外壳**（`userBubble` 色 + 圆角 14，与气泡自身描边零差异、无接缝）向下延伸底部留白 44px（`_UserExpandBase`，与过渡动画帧共用同一基底），视觉即气泡变高一截；留白上叠与收起态**同一枚底部渐变遮罩 + 无背景指示**（`_UserCollapseFade` 换 `expand_less` 图标，样式完全对齐；同色底上渐变不可见，仅指示居中）。气泡自身底 padding 12 + 留白 44 = 遮罩高 56：指示恰居中于正文以下的空白区，**不遮挡末行内容**（原黑色圆形角标浮在正文上的问题由此消除）。留白计入渲染高度（滚动几何分账走 `_heightCache` 原值），但**自然高度口径不含留白**——`_noteUserHeight` 对展开分支渲染的测高扣减 44 后记录，壳层动画目标/滚动校正 span 显式加回，保证动画首末帧与中间帧高度接续、切换无跳变。整面 tap 均可收起：指示/遮罩纯视觉（IgnorePointer），空白 tap 由壳层 GestureDetector 赢出，文本区 tap 经 onTapText 观察切换，链接 tap 分流不收起；展开态正文保持可选、链接可点（tap 被 EditableText 消费是既定取舍）。
 
 展开/收起只重建壳层；内容子树是同一缓存实例，`updateChild` 等值剪枝，不重解析 markdown——切换对滚动性能无放大影响。流式 body 重建期间壳层参数不变 → 同样被剪枝。
 
@@ -59,7 +59,7 @@
 
 ### 2.5 折叠态视觉
 
-折叠裁切带气泡同款底圆角 14（ClipRRect，见 2.4）。底部渐变条复刻气泡水平几何与渐变 `userBubble α0 → userBubble`，中央 `expand_more`（userText 色）——壳挂在气泡级，渐变宽度即气泡宽，无需再复刻一期整条消息级的 left 40 / maxWidth 320 几何（窄屏误差问题随之消失）。整面气泡可点（壳层手势），渐变条纯视觉。
+折叠裁切带气泡同款底圆角 14（ClipRRect，见 2.4）。底部渐变条复刻气泡水平几何与渐变 `userBubble α0 → userBubble`，中央 `expand_more`（userText 色）——壳挂在气泡级，渐变宽度即气泡宽，无需再复刻一期整条消息级的 left 40 / maxWidth 320 几何（窄屏误差问题随之消失）。整面气泡可点（壳层手势），渐变条纯视觉。展开态复用同一遮罩组件（`_UserCollapseFade` 参数化图标，展开传 `expand_less`），样式两态一致。
 
 ### 2.6 失效联动
 
@@ -70,6 +70,8 @@
 | busy 结束末 run 驱逐（`_onBusyEnd`） | 只动 `_heightCache`；自然高度不受影响（user 消息内容流式期间不变） |
 
 **已接受的行为（id 换绑）**：optimistic → 权威消息 id 不同，`_expandedUserIds` 随旧 id 被清理——发送后立即展开的长消息在 SSE 确认到达时会回到默认折叠（外加新 id 重测的一帧展开闪现）。窗口窄（发送→确认）、纯视觉，不做跨 id 桥接。
+
+**已接受的行为（基线变化时的 ±44 单帧跳变，二期留白引入）**：展开态下宽度/textScaler 基线变化 → `_userNaturalHeight` 清空 → host 拿 `naturalHeight=null` 走透传分支（裸高渲染，−44），重测跨门槛后再回展开分支（+44）。两分支切换无动画、各一帧。接受理由：发生在全局重排帧（所有消息文本同时 rewrap、几何本就整体突变），单条消息 ±44px 不可感知；备选修复「基线变化时清 `_expandedUserIds`」会违背 §2.6 既有决策（用户选择跨重排保持，旋转不收拢已展开消息），得不偿失。
 
 ### 2.7 顺手修复：onNotification 读高的 debug 断言
 
@@ -161,3 +163,37 @@
 ### 6.7 验证
 
 `user_message_collapse_test.dart` 新增：展开态文本 tap 收起、折叠态链接 tap 跳转且不展开（launchUrl 测试环境异常落 SnackBar 断言）、折叠态长按选词 + `AdaptiveTextSelectionToolbar`、折叠态代码块横拖 `position.pixels > 0` 且不误展开、正文 tap 不抢输入框焦点（`primaryFocus` 同一性）、文本区纵向拖动仍滚动会话列表。全量 542 测试通过，`analyze --fatal-infos` 零 issue。
+
+---
+
+## 7. 四期：展开态收起指示样式对齐 + 底部留白
+
+### 7.1 问题
+
+展开态原为底部居中浮一枚**黑色半透明圆形角标**（`Colors.black α80` 圆 + 18px `expand_less`），与收起态的渐变遮罩 + 无背景指示样式割裂；且角标直接浮在正文上，长消息末行居中为链接时视觉遮挡。
+
+### 7.2 设计
+
+- **样式对齐**：`_UserCollapseFade` 参数化图标（收起 `expand_more` / 展开 `expand_less`），两态复用同一渐变遮罩 + 无背景指示（20px、`userText` 色）；组件自带 `IgnorePointer`（纯视觉契约由组件自身收口，不依赖调用方，EX-2 修复）。
+- **底部留白**：新增 `_UserExpandBase`——气泡以同色（`userBubble`）同半径（14）外壳向下延伸 44px（`_kUserExpandBottomInset`），视觉即气泡变高一截、无接缝；气泡自身底 padding 12 + 留白 44 = 遮罩高 56（`_kUserCollapseFadeHeight`），指示恰居中于正文以下空白区，**不遮挡末行**。
+- **高度口径**：留白计入渲染高度（`_heightCache` 走原值，滚动几何自洽）；**自然高度统一不含留白**——`_noteUserHeight` 仅在「确为展开分支渲染」（`_expandedUserIds` 含 id 且 natural 非空且跨门槛）时对测高扣减 44，透传分支（未测出/不可折叠/旋转重置）不扣；壳层动画目标与 `_onTick` 滚动校正 span 显式加回。展开态与过渡动画帧（`_TopClampBox` child）**共用 `_UserExpandBase` 基底**（EX-1 修复）：clamp 上限与动画目标同为「气泡自然高 + 留白」，全程逐帧连续。
+
+### 7.3 一次评审意见（EX-）
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| EX-1 | 🟡 | 动画分支 `_TopClampBox` child 为裸气泡，clamp 上限 = 气泡自然高 < 动画目标（自然高 + 44）：展开动画末段停滞后在 t≥1 分支切换帧 +44 单帧跳变（收起对称），`_onTick` 校正在停滞后仍按含 44 的 span 发生 → 锚定瞬态漂移； barely-collapsible 消息（真实增量仅 4–24px）约 90% 动画时长渲染静态高度 | ✅ 动画分支 child 包 `_UserExpandBase`，clamp 上限 = 动画目标；新增回归测试 `expand animation grows continuously into the extended height`（8ms 采样高度单调不降 + 末帧前高度距终值 < 24，防单帧跳变复发） |
+| EX-2 | 🟢 | `_UserCollapseFade` 注释称「IgnorePointer 由调用方收口」，实际仅展开态调用点包裹，动画分支未包（行为无害但注释失实） | ✅ `IgnorePointer` 移入组件自身，注释同步修正 |
+
+另核实无问题：`_noteUserHeight` 扣减守卫与渲染分支精确对应（含「展开→重排跌出门槛→再跨回」自校正路径）；`_onBusyEnd` 驱逐后重测 `h - 44 == natural` 早退；56 遮罩不压正文；主题切换经 `didChangeDependencies` 缓存失效收口。
+
+### 7.4 二次评审意见（EX-R）
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| EX-R1 | 🟢 | 基线变化（宽度/textScaler）时展开态消息经透传帧（−44）再回展开分支（+44），±44 单帧无动画跳变 | 接受并记入 §2.6：发生在全局重排帧（所有消息同时 rewrap），不可感知；备选「基线变化清 `_expandedUserIds`」违背既有决策（用户选择跨重排保持），得不偿失 |
+| EX-R2 | 🟢 | 同 EX-2（二次评审同一发现） | ✅ 已随 EX-1 修复轮落地 |
+
+### 7.5 验证
+
+`user_message_collapse_test.dart` 新增：展开动画高度逐帧连续（单调不降 + 末段无 +44 单帧跳变）。全量 557 测试通过，`analyze --fatal-infos` 零 issue。真机回归（长粘贴消息展开态、暗色主题、旋转）待做。

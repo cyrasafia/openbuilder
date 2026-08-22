@@ -61,6 +61,15 @@ const double _kUserMsgVerticalPadding = 10.0;
 /// 折叠/展开高度动画时长。
 const Duration _kUserCollapseAnimDuration = Duration(milliseconds: 200);
 
+/// 底部渐变遮罩高度（折叠/展开态共用）。气泡自身底 padding 12 + 展开留白
+/// 44 = 56：展开态遮罩恰好铺满正文以下的空白区，指示不压正文。
+const double _kUserCollapseFadeHeight = 56.0;
+
+/// 展开态底部留白：气泡以同色同半径外壳向下延伸的空白区，承载渐变遮罩与
+/// 收起指示。计入渲染高度，但自然高度口径不含该值（_noteUserHeight 测高时
+/// 扣减），壳层动画目标显式加回——否则首末帧与动画中间帧高度不接续。
+const double _kUserExpandBottomInset = 44.0;
+
 class ConversationScreen extends StatefulWidget {
   final String sessionId;
   const ConversationScreen({super.key, required this.sessionId});
@@ -746,15 +755,22 @@ class _ConversationScreenState extends State<ConversationScreen>
   /// 折叠渲染时测得的是 clamp 高度，不更新自然高度；展开渲染时测得的即自然
   /// 高度，跨过折叠门槛时调度一次重建切入默认折叠。展开动画期间的中间高度
   /// 既非自然高也非 clamp 高，一并忽略（否则阈值振荡会打断动画）。
+  /// 展开渲染含底部留白：按口径扣减后记录（自然高度统一不含留白）；仅在
+  /// 「确为展开分支渲染」时扣减——naturalHeight 为空/不可折叠时走透传分支，
+  /// 渲染高度本就不含留白。
   void _noteUserHeight(String id, double h) {
     if (!mounted) return;
     if (_userCollapsedRender(id)) return;
     if (_userAnimatingIds.contains(id)) return;
     final natural = _userNaturalHeight[id];
-    if (natural == h) return;
+    final expandedRender = _expandedUserIds.contains(id) &&
+        natural != null &&
+        _userCollapsibleHeight(natural);
+    final basis = expandedRender ? h - _kUserExpandBottomInset : h;
+    if (natural == basis) return;
     final wasCollapsible = natural != null && _userCollapsibleHeight(natural);
-    _userNaturalHeight[id] = h;
-    final isCollapsible = _userCollapsibleHeight(h);
+    _userNaturalHeight[id] = basis;
+    final isCollapsible = _userCollapsibleHeight(basis);
     if (wasCollapsible != isCollapsible) _scheduleCollapseRebuild();
   }
 
@@ -3587,7 +3603,8 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
     _lastV = v;
     final n = widget.naturalHeight;
     if (dv == 0 || n == null || _collapseHeight <= 0) return;
-    final span = (n - _kUserMsgVerticalPadding * 2) - _collapseHeight;
+    final span = (n - _kUserMsgVerticalPadding * 2 + _kUserExpandBottomInset) -
+        _collapseHeight;
     if (span <= 0) return;
     final ro = context.findRenderObject();
     final vp = ro == null ? null : RenderAbstractViewport.maybeOf(ro);
@@ -3631,8 +3648,11 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
         builder: (context, _) {
           final t = _curved.value;
           if (t >= 1) return _expandedBubble(context);
-          final h =
-              collapseHeight + (n - _kUserMsgVerticalPadding * 2 - collapseHeight) * t;
+          final h = collapseHeight +
+              (n - _kUserMsgVerticalPadding * 2 +
+                      _kUserExpandBottomInset -
+                      collapseHeight) *
+                  t;
           return GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: widget.onToggle,
@@ -3644,10 +3664,15 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
                   ),
                   // 折叠态正文保持可交互（链接/长按复制/代码横滚，与展开态
                   // 一致）；文本区 tap 经 onTapText 切换展开。被裁部分由
-                  // _TopClampBox 的盒子尺寸挡在命中测试外。
+                  // _TopClampBox 的盒子尺寸挡在命中测试外。child 包
+                  // _UserExpandBase（自然高度含底部留白）：_TopClampBox 的
+                  // clamp 上限与动画目标同为「气泡自然高 + 留白」，动画末端
+                  // 高度逐帧连续，切 t>=1 展开分支无 +44 单帧跳变。
                   child: _TopClampBox(
                     height: h,
-                    child: ExcludeFocus(child: widget.child),
+                    child: ExcludeFocus(
+                      child: _UserExpandBase(child: widget.child),
+                    ),
                   ),
                 ),
                 Positioned(
@@ -3656,7 +3681,7 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
                   bottom: 0,
                   child: Opacity(
                     opacity: 1 - t,
-                    child: const _UserCollapseFade(),
+                    child: const _UserCollapseFade(icon: Icons.expand_more),
                   ),
                 ),
               ],
@@ -3667,45 +3692,28 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
     );
   }
 
-  /// 展开态：气泡原样渲染（零额外盒子，内容增高可自发产生尺寸通知），底部
-  /// 居中浮一枚收起方向指示（纯覆盖层，不占布局高度，不影响测高），与收起
-  /// 态底部指示位置一致——读完正文即达收起点；且整面 tap 均可收起，浮标随
-  /// 超长消息沉底不损失可达性。短按任意位置收起：空白/浮标 tap 由壳层
-  /// GestureDetector 赢出，文本区 tap 经 onTapText 观察切换，链接 tap 分流
-  /// 不收起。
+  /// 展开态：与过渡动画帧共用 [_UserExpandBase] 基底（气泡 + 同色同半径外壳
+  /// 向下延伸的底部留白，视觉即气泡变高一截，无接缝无额外描边），留白承载
+  /// 底部渐变遮罩 + 无背景收起指示——与收起态样式一致，且遮罩/指示恰居中于
+  /// 正文以下空白，不遮挡内容（内容增高仍可自发产生尺寸通知）。留白计入
+  /// 渲染高度，动画目标按自然高度 + 留白换算（见 [_kUserExpandBottomInset]
+  /// 口径）。短按任意位置收起：空白/指示 tap 由壳层 GestureDetector 赢出，
+  /// 文本区 tap 经 onTapText 观察切换，链接 tap 分流不收起。
   Widget _expandedBubble(BuildContext context) {
-    final colors = Theme.of(context).extension<AppColors>()!;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onToggle,
       child: Stack(
         children: [
-          ExcludeFocus(child: widget.child),
+          ExcludeFocus(child: _UserExpandBase(child: widget.child)),
           Positioned(
             left: 0,
             right: 0,
-            bottom: 6,
-            // 纯视觉浮标不参与命中测试：末行居中的链接（用户消息尾部贴
+            bottom: 0,
+            // 遮罩/指示自带 IgnorePointer：末行居中的链接（用户消息尾部贴
             // URL/路径常见）tap 穿透到链接 recognizer，空白处仍由壳层
             // GestureDetector 收起。
-            child: IgnorePointer(
-              child: Center(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withAlpha(80),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Icon(
-                      Icons.expand_less,
-                      size: 18,
-                      color: colors.userText,
-                    ),
-                  ),
-                ),
-              ),
-            ),
+            child: _UserCollapseFade(icon: Icons.expand_less),
           ),
         ],
       ),
@@ -3921,30 +3929,62 @@ class _RenderTopClampBox extends RenderShiftedBox {
   }
 }
 
-/// 折叠态底部渐变 + 展开方向指示（纯视觉；点击由壳层全气泡手势接管，宽度
-/// 即气泡宽——壳挂在气泡级，无需再复刻 left 40 / maxWidth 320 几何）。
-class _UserCollapseFade extends StatelessWidget {
-  const _UserCollapseFade();
+/// 展开基底：气泡 + 同色（userBubble）同半径（14）外壳向下延伸的底部留白
+/// （[_kUserExpandBottomInset]），展开态与过渡动画帧共用——动画分支的
+/// _TopClampBox child 自然高度因此含留白，clamp 上限与动画目标（气泡
+/// 自然高 + 留白）一致，切换两分支高度连续无跳变。折叠态该留白位于裁切线
+/// 以下不可见；外壳与气泡同色叠印，无接缝无额外描边。
+class _UserExpandBase extends StatelessWidget {
+  final Widget child;
+
+  const _UserExpandBase({required this.child});
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
-    return SizedBox(
-      height: 56,
-      width: double.infinity,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [colors.userBubble.withAlpha(0), colors.userBubble],
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.userBubble,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: _kUserExpandBottomInset),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// 折叠/展开态共用的底部渐变遮罩 + 方向指示（纯视觉，自带 IgnorePointer 不
+/// 参与命中测试；宽度即气泡宽——壳挂在气泡级，无需再复刻 left 40 /
+/// maxWidth 320 几何）。展开态遮罩落在外壳延伸的留白上（同色底上不可见，
+/// 仅指示居中）。
+class _UserCollapseFade extends StatelessWidget {
+  final IconData icon;
+
+  const _UserCollapseFade({required this.icon});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    return IgnorePointer(
+      child: SizedBox(
+        height: _kUserCollapseFadeHeight,
+        width: double.infinity,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [colors.userBubble.withAlpha(0), colors.userBubble],
+            ),
+            borderRadius: const BorderRadius.vertical(
+              bottom: Radius.circular(14),
+            ),
           ),
-          borderRadius: const BorderRadius.vertical(
-            bottom: Radius.circular(14),
+          child: Center(
+            child: Icon(icon, size: 20, color: colors.userText),
           ),
-        ),
-        child: Center(
-          child: Icon(Icons.expand_more, size: 20, color: colors.userText),
         ),
       ),
     );

@@ -186,9 +186,10 @@ void main() {
 
       // The expansion scrolls with the reveal (bubble top stays anchored), so
       // the text body — selectable markdown whose EditableText consumes taps —
-      // is not a toggle target while expanded. The pill floats at the bubble's
-      // bottom-center, mirroring the collapsed affordance position — on a tall
-      // expanded bubble that is below the fold, so scroll it into view first.
+      // is not a toggle target while expanded. The gradient indicator floats
+      // at the bubble's bottom-center, mirroring the collapsed affordance
+      // position — on a tall expanded bubble that is below the fold, so
+      // scroll it into view first.
       final scroll = tester.state<ScrollableState>(
         find.byType(Scrollable).first,
       );
@@ -529,6 +530,66 @@ void main() {
         scroll.position.pixels,
         greaterThan(before),
         reason: 'vertical drag over the text body must scroll the list',
+      );
+    },
+  );
+
+  // 展开目标含底部留白（气泡 + 44 外壳延伸）：过渡动画分支的 _TopClampBox
+  // child 必须同样含留白（_UserExpandBase），否则 clamp 上限 = 气泡自然高，
+  // 动画末端停滞后在 t>=1 分支切换帧 +44 单帧跳变（评审实测捕获）。
+  testWidgets(
+    'expand animation grows continuously into the extended height',
+    (tester) async {
+      const sid = 'uc-anim-cont';
+      final longText = List.generate(
+        30,
+        (i) => 'line $i of the long user message',
+      ).join('\n\n');
+      await _pumpConversation(
+        tester,
+        sessionId: sid,
+        entries: [
+          _user(sid, 'u1', longText, 1000),
+          _assistant(sid, 'a1', 'ok', 2000),
+        ],
+      );
+      final host = find.byKey(const ValueKey('uc:u1'));
+      await _waitCollapsed(tester, host);
+
+      await tester.tap(host);
+      await tester.pump();
+      final heights = <double>[];
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 8));
+        if (host.evaluate().isNotEmpty) {
+          heights.add(tester.getSize(host).height);
+        }
+      }
+      await tester.pumpAndSettle();
+      final settled = tester.getSize(host).height;
+      expect(heights, isNotEmpty);
+
+      for (var i = 1; i < heights.length; i++) {
+        expect(
+          heights[i],
+          greaterThanOrEqualTo(heights[i - 1]),
+          reason: 'expansion heights must be monotonically non-decreasing '
+              '(frame $i: ${heights[i - 1]} -> ${heights[i]})',
+        );
+      }
+      var prev = settled;
+      for (final h in heights.reversed) {
+        if (h < settled) {
+          prev = h;
+          break;
+        }
+      }
+      expect(
+        settled - prev,
+        lessThan(24.0),
+        reason: 'the bottom extension must animate in frame-by-frame, not '
+            'land as a single-frame +44 jump at the t>=1 branch switch '
+            '(prev=$prev, settled=$settled)',
       );
     },
   );
