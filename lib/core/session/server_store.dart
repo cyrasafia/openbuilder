@@ -265,6 +265,30 @@ class ServerStore extends ChangeNotifier {
   /// Whether the initial bootstrap failed (for showing error view + retry).
   bool bootstrapFailed = false;
 
+  /// Whether a [connect] is in flight (bootstrap running). While true and no
+  /// cache is loaded the list tabs show a loading indicator instead of the
+  /// stale error/empty views: adding a server activates the profile before
+  /// credentials exist, so a first connect fails (stale [bootstrapFailed])
+  /// and the credentials save fires connect() again right before the list
+  /// page mounts — without this flag that window flashes 连接失败/无会话.
+  bool _connecting = false;
+  bool get connecting => _connecting;
+
+  /// Overlapping [connect]s are possible (connectionStore notifies once per
+  /// update() and setActive() right after saving credentials); only the most
+  /// recent one may clear [_connecting] when it settles.
+  int _connectGeneration = 0;
+
+  /// Test seam: force the connecting flag (drives the tab loading state
+  /// without a real network bootstrap). Bumps the generation so a later
+  /// in-flight connect cannot clear a test-set true.
+  @visibleForTesting
+  void setConnectingForTesting(bool v) {
+    _connectGeneration++;
+    _connecting = v;
+    notifyListeners();
+  }
+
   /// Whether to show the "network disconnected" banner.
   bool get showDisconnectBanner => _watchdogFailed && !_watchdogConnected;
 
@@ -833,6 +857,12 @@ class ServerStore extends ChangeNotifier {
         connected) {
       return;
     }
+    final generation = ++_connectGeneration;
+    _connecting = true;
+    // A retry is in flight — drop the stale failure so the UI shows the
+    // loading state instead of the previous attempt's error view.
+    bootstrapFailed = false;
+    notifyListeners();
     AppLogger.I.i(_tag, 'connect ${profile.hostDisplay}');
     try {
       // Flush pending cache save for the OUTGOING profile before switching
@@ -893,6 +923,11 @@ class ServerStore extends ChangeNotifier {
       bootstrapFailed = true;
       connected = false;
       notifyListeners();
+    } finally {
+      if (generation == _connectGeneration) {
+        _connecting = false;
+        notifyListeners();
+      }
     }
   }
 

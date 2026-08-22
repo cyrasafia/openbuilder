@@ -89,6 +89,11 @@ class _SessionsTabState extends State<SessionsTab> {
         listenable: Listenable.merge([serverStore, serverStore.previewVersion]),
         builder: (context, _) {
           final hasCache = serverStore.sessions.isNotEmpty;
+          // Initial connect in flight (e.g. right after adding a server):
+          // loading state wins over the stale error/empty views.
+          if (serverStore.connecting && !hasCache) {
+            return const Center(child: CircularProgressIndicator());
+          }
           if (!serverStore.connected && !hasCache) {
             if (serverStore.bootstrapFailed) {
               return RefreshIndicator(

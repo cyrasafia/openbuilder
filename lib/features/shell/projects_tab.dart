@@ -48,6 +48,11 @@ class _ProjectsTabState extends State<ProjectsTab> {
         builder: (context, _) {
           final hasCache = serverStore.projects.isNotEmpty ||
               serverStore.sessions.isNotEmpty;
+          // Initial connect in flight (e.g. right after adding a server):
+          // loading state wins over the stale error/empty views.
+          if (serverStore.connecting && !hasCache) {
+            return const Center(child: CircularProgressIndicator());
+          }
           if (!serverStore.connected && !hasCache) {
             if (serverStore.bootstrapFailed) {
               return RefreshIndicator(
