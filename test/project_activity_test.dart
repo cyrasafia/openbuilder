@@ -225,6 +225,46 @@ void main() {
     store.dispose();
   });
 
+  // PA-6: desktop writes `time.archived: 0` to un-archive (truthy check
+  // there), while the mobile filter used `!= null` — so a desktop-unarchived
+  // session vanished from the mobile session list. `SessionModel.fromJson`
+  // now normalizes falsy `archived` (missing or 0) to null, matching the
+  // desktop truthy semantics at every filter site.
+  test('archived: 0 parses as unarchived (PA-6)', () {
+    expect(_session(id: 's1', projectID: 'p1', directory: '/r', updated: 1000,
+            archived: 0)
+        .archived, isNull);
+    expect(_session(id: 's1', projectID: 'p1', directory: '/r', updated: 1000)
+        .archived, isNull);
+    expect(
+        _session(
+                id: 's1', projectID: 'p1', directory: '/r', updated: 1000,
+                archived: 9999)
+            .archived,
+        9999);
+  });
+
+  test('desktop unarchive (archived: 0 event) keeps session visible (PA-6)',
+      () {
+    final store = ServerStore()..client = _fakeClient();
+    store.onEventForTesting(_sessionEvent(
+        id: 's1', projectID: 'p1', directory: '/r', updated: 1000));
+    // Archive from the mobile UI (real timestamp) — session drops out.
+    store.onEventForTesting(_sessionEvent(
+        id: 's1',
+        projectID: 'p1',
+        directory: '/r',
+        updated: 1000,
+        archived: 9999));
+    expect(store.sessions.where((s) => s.id == 's1'), isEmpty);
+    // Desktop un-archive writes archived: 0 — session must come back.
+    store.onEventForTesting(_sessionEvent(
+        id: 's1', projectID: 'p1', directory: '/r', updated: 2000,
+        archived: 0));
+    expect(store.sessions.where((s) => s.id == 's1'), isNotEmpty);
+    store.dispose();
+  });
+
   // PA-R2a: cache round-trip — an `activity` blob written to SharedPreferences
   // by `_saveCache` is restored by `_loadCache`. Locks the JSON shape (NUL-
   // escaped key encoding, int value) and the v1 schema field name `activity`.

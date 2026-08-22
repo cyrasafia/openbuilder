@@ -176,6 +176,7 @@ class SessionModel {
 
   factory SessionModel.fromJson(Map<String, dynamic> j) {
     final time = (j['time'] as Map?) ?? const {};
+    final archivedAt = _i(time['archived']);
     return SessionModel(
       id: (j['id'] ?? '').toString(),
       projectID: (j['projectID'] ?? '').toString(),
@@ -183,7 +184,7 @@ class SessionModel {
       title: (j['title'] ?? 'Untitled').toString(),
       created: _i(time['created']),
       updated: _i(time['updated']),
-      archived: time['archived'] == null ? null : _i(time['archived']),
+      archived: archivedAt != 0 ? archivedAt : null,
       parentID: j['parentID']?.toString(),
       workspaceID: j['workspaceID']?.toString(),
       cost: _d(j['cost']),
