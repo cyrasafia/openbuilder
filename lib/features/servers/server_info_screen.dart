@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/auth_probe.dart';
 import '../../core/connection/connection_profile.dart';
@@ -208,8 +209,15 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
         await _saveProfile(profile);
         if (!mounted) return;
         if (widget.id == null) {
+          final router = GoRouter.of(context);
+          final firstServer = connectionStore.servers.length == 1;
           await connectionStore.setActive(profile.id);
-          if (mounted) context.go('/sessions');
+          if (!mounted) return;
+          if (firstServer) {
+            router.go('/sessions');
+          } else {
+            popToServerManagement(router);
+          }
         } else {
           context.pop();
         }

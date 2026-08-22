@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../app_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/connection_profile.dart';
+import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
 import '../../data/api/opencode_client.dart';
 import '../../ui/l10n_ext.dart';
@@ -27,6 +28,7 @@ class BasicAuthScreen extends StatefulWidget {
 }
 
 class _BasicAuthScreenState extends State<BasicAuthScreen> {
+  static const _tag = 'BasicAuth';
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _username;
   late final TextEditingController _password;
@@ -96,14 +98,32 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
     }
     final firstServer =
         widget.newlyAdded && connectionStore.servers.length == 1;
-    await connectionStore.update(draft);
-    if (mounted) setState(() => _testing = false);
-    await connectionStore.setActive(draft.id);
+    AppLogger.I.i(_tag, 'test&save ok: id=${draft.id} '
+        'newlyAdded=${widget.newlyAdded} firstServer=$firstServer');
+    try {
+      await connectionStore.update(draft);
+      AppLogger.I.i(_tag, 'profile persisted');
+      if (mounted) setState(() => _testing = false);
+      await connectionStore.setActive(draft.id);
+      AppLogger.I.i(_tag, 'set active done, navigating');
+    } catch (e, s) {
+      // Secure-storage / persist failures used to abort silently here — the
+      // screen stayed on the password page with no feedback. Surface it.
+      AppLogger.I.e(_tag, 'persist failed: $e\n$s');
+      if (mounted) {
+        setState(() {
+          _testing = false;
+          _error = '✗ $e';
+        });
+      }
+      return;
+    }
     if (firstServer) {
       router.go('/sessions');
     } else {
       popToServerManagement(router);
     }
+    AppLogger.I.i(_tag, 'navigation done');
   }
 
   Future<bool> _warnWebBasicAuth() async {

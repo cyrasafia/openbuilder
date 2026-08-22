@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import 'core/connection/connection_profile.dart';
 import 'core/connection/connection_store.dart';
+import 'core/logging/app_logger.dart';
 import 'core/session/file_browsing_store.dart';
 import 'domain/models.dart';
 import 'features/conversation/conversation_screen.dart';
@@ -58,17 +59,26 @@ class _PresenceRefreshListenable extends ChangeNotifier {
   }
 }
 
-/// Pop imperative routes until the server-management list is on top. Falls
-/// back to a cold `go` when the stack has no /servers below (not reachable
-/// from the current flows, but keeps the exit total).
+/// Return to the server-management list. `currentConfiguration.uri` does
+/// not reflect imperative (pushed) matches, so the previous "pop until the
+/// path is /servers" loop never stopped on a pushed /servers and — worse —
+/// after a first fallback `go('/servers')` (declarative top) it popped
+/// NOTHING on the next visit, stranding the login page on top. Instead: pop
+/// every imperative route (canPop is false once only the declarative base
+/// remains), then `go` unless that base already IS /servers.
 void popToServerManagement(GoRouter router) {
-  while (router.routerDelegate.currentConfiguration.uri.path != '/servers' &&
-      router.canPop()) {
+  var pops = 0;
+  while (router.canPop()) {
     router.pop();
+    pops++;
   }
-  if (router.routerDelegate.currentConfiguration.uri.path != '/servers') {
-    router.go('/servers');
-  }
+  final path = router.routerDelegate.currentConfiguration.uri.path;
+  // `go` updates currentConfiguration next frame — don't log the post-go
+  // path (it would still show the stale pre-go location).
+  final fellBack = path != '/servers';
+  if (fellBack) router.go('/servers');
+  AppLogger.I.i('Router', 'popToServerManagement: pops=$pops '
+      'base=$path fallback=$fellBack');
 }
 
 GoRouter buildRouter(ConnectionStore store) {
