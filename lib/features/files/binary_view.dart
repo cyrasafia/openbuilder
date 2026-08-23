@@ -2,12 +2,10 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../../core/logging/app_logger.dart';
 import '../../ui/l10n_ext.dart';
+import 'file_actions.dart';
 
 class BinaryView extends StatefulWidget {
   final String filename;
@@ -32,7 +30,6 @@ class BinaryView extends StatefulWidget {
 }
 
 class _BinaryViewState extends State<BinaryView> {
-  static const _filesChannel = MethodChannel('com.openbuilder.app/files');
   _Action? _busy;
   String? _downloadedUri;
 
@@ -131,22 +128,19 @@ class _BinaryViewState extends State<BinaryView> {
     );
   }
 
-  Future<File> _materializeFile() async {
-    final dir = await getTemporaryDirectory();
-    final file = File('${dir.path}/${widget.filename}');
-    await file.writeAsBytes(widget.downloadedBytes!, flush: true);
-    return file;
+  Future<File> _materializeFile() {
+    return materializeExportFile(widget.filename, widget.downloadedBytes!);
   }
 
   Future<void> _onSave() async {
     setState(() => _busy = _Action.save);
     try {
       final file = await _materializeFile();
-      final uri = await _filesChannel.invokeMethod<String>('saveToDownloads', {
-        'srcPath': file.path,
-        'displayName': widget.filename,
-        'mimeType': widget.mimeType,
-      });
+      final uri = await saveExportToDownloads(
+        srcPath: file.path,
+        displayName: widget.filename,
+        mimeType: widget.mimeType,
+      );
       if (!mounted) return;
       setState(() => _downloadedUri = uri);
       _snack(l(context).fileDownloadSuccess);
@@ -162,7 +156,7 @@ class _BinaryViewState extends State<BinaryView> {
   Future<void> _openFile() async {
     setState(() => _busy = _Action.open);
     try {
-      await _filesChannel.invokeMethod<void>('openFile', {
+      await filesMethodChannel.invokeMethod<void>('openFile', {
         'uri': _downloadedUri,
         'displayName': widget.filename,
         'mimeType': widget.mimeType,
@@ -180,9 +174,7 @@ class _BinaryViewState extends State<BinaryView> {
     setState(() => _busy = _Action.share);
     try {
       final file = await _materializeFile();
-      await SharePlus.instance.share(
-        ShareParams(files: [XFile(file.path)]),
-      );
+      await shareExportFile(file);
     } catch (e) {
       AppLogger.I.w('BinaryView', 'share failed: $e');
       if (!mounted) return;

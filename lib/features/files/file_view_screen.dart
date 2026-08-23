@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state.dart';
+import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
@@ -14,6 +16,7 @@ import '../../ui/widgets.dart';
 import 'binary_view.dart';
 import 'code_view.dart';
 import 'download_policy.dart';
+import 'file_actions.dart';
 import 'file_browsing_container.dart';
 import 'highlight_theme.dart';
 import 'image_view.dart';
@@ -99,6 +102,8 @@ class _FileViewScreenState extends State<FileViewScreen> {
   /// re-probes. Intentional: don't re-cancel what the user explicitly asked
   /// for.
   bool _forceDownload = false;
+
+  bool _exportBusy = false;
 
   @override
   void initState() {
@@ -547,6 +552,54 @@ class _FileViewScreenState extends State<FileViewScreen> {
   bool get _isTextLike =>
       !_downloading && _error == null && _file != null && !_file!.isBinary;
 
+  String get _filename => basenameOf(widget.path);
+
+  Future<File> _materializeTextFile() {
+    return materializeTextExportFile(_filename, _file!.text!);
+  }
+
+  Future<void> _onSaveToDevice() async {
+    if (_exportBusy) return;
+    _exportBusy = true;
+    try {
+      final file = await _materializeTextFile();
+      await saveExportToDownloads(
+        srcPath: file.path,
+        displayName: _filename,
+        mimeType: _file!.mimeType,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l(context).fileDownloadSuccess)),
+      );
+    } catch (e) {
+      AppLogger.I.w('FileViewScreen', 'saveToDownloads failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l(context).fileDownloadFailed(e.toString()))),
+      );
+    } finally {
+      _exportBusy = false;
+    }
+  }
+
+  Future<void> _onShare() async {
+    if (_exportBusy) return;
+    _exportBusy = true;
+    try {
+      final file = await _materializeTextFile();
+      await shareExportFile(file);
+    } catch (e) {
+      AppLogger.I.w('FileViewScreen', 'share failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l(context).fileShareFailed(e.toString()))),
+      );
+    } finally {
+      _exportBusy = false;
+    }
+  }
+
   void _onMenuAction(_MenuAction value) {
     switch (value) {
       case _MenuAction.mdShowSource:
@@ -574,6 +627,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
         if (!_mdShowSource) _maybePrepareMarkdownHtml();
       case _MenuAction.wrap:
         setState(() => _wrap = !_wrap);
+      case _MenuAction.saveToDevice:
+        _onSaveToDevice();
+      case _MenuAction.share:
+        _onShare();
     }
   }
 
@@ -620,6 +677,18 @@ class _FileViewScreenState extends State<FileViewScreen> {
                   child: Text(
                     _wrap ? l(context).fileWrapOff : l(context).fileWrapOn,
                   ),
+                ),
+              if (_isTextLike && !kIsWeb && Platform.isAndroid)
+                PopupMenuItem(
+                  value: _MenuAction.saveToDevice,
+                  enabled: !_exportBusy,
+                  child: Text(l(context).save),
+                ),
+              if (_isTextLike)
+                PopupMenuItem(
+                  value: _MenuAction.share,
+                  enabled: !_exportBusy,
+                  child: Text(l(context).fileShare),
                 ),
             ],
           ),
@@ -811,4 +880,4 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 }
 
-enum _MenuAction { mdShowSource, wrap }
+enum _MenuAction { mdShowSource, wrap, saveToDevice, share }
