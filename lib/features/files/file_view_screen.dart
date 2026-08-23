@@ -19,6 +19,8 @@ import 'download_policy.dart';
 import 'file_actions.dart';
 import 'file_browsing_container.dart';
 import 'highlight_theme.dart';
+import 'html_preview.dart';
+import 'html_view.dart';
 import 'image_view.dart';
 import 'markdown_html.dart';
 import 'markdown_view.dart';
@@ -52,26 +54,28 @@ class _FileViewScreenState extends State<FileViewScreen> {
   double? _progress;
   Object? _error;
   bool _wrap = false;
-  bool _mdShowSource = false;
+  bool _showSource = false;
   CancelToken? _cancelToken;
   final _scrollCtl = ScrollController();
   double? _pendingScrollRestore;
   int? _pendingLine;
   // Markdown preview scrolls inside its own WebView (not via _scrollCtl); we
   // track its offset here via the WebView callback so collapse/restore keeps
-  // the reading position for preview mode.
+  // the reading position for preview mode. HTML preview shares this.
   double _mdScrollOffset = 0;
 
   Animation<double>? _routeAnimation;
   bool _routeAnimInstalled = false;
   bool _routeTransitionDone = false;
 
-  // Markdown preview document, built off the UI isolate while the loading UI
-  // is up (download / route transition). Gates the preview mount: content
-  // appears only after it is ready, so the markdown→HTML conversion never
-  // lands inside a transition-animation frame. _mdHtmlTheme is the theme the
-  // document was built under — a theme flip while the WebView is unmounted
-  // (e.g. source-mode round trip) must invalidate it.
+  // Markdown / HTML preview document, built off the UI isolate (markdown) or
+  // synchronously (HTML — plain string injection) while the loading UI is up
+  // (download / route transition). Gates the preview mount: content appears
+  // only after it is ready, so the document build never lands inside a
+  // transition-animation frame. _mdHtmlTheme is the theme the document was
+  // built under (markdown only — the HTML document is theme-independent) —
+  // a theme flip while the WebView is unmounted (e.g. source-mode round
+  // trip) must invalidate it.
   String? _mdHtml;
   (Brightness, Color, Color, AppColors)? _mdHtmlTheme;
   int _mdHtmlGen = 0;
@@ -111,7 +115,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
     final r = widget.restore;
     if (r != null) {
       _wrap = r.wrap;
-      _mdShowSource = r.mdShowSource;
+      _showSource = r.showSource;
       _pendingScrollRestore = r.scrollOffset;
       _pendingLine = r.initialLine;
       _mdScrollOffset = r.scrollOffset;
@@ -122,7 +126,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       );
       if (cached != null) {
         _file = cached;
-        _maybePrepareMarkdownHtml();
+        _maybePreparePreviewHtml();
         _maybePrepareCodeSpans();
         _scheduleScrollRestore();
         return;
@@ -218,17 +222,17 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 
   OpenFileEntry _currentEntry() => OpenFileEntry(
-        path: widget.path,
-        scrollOffset: _isMarkdownPreview
-            ? _mdScrollOffset
-            : (_scrollCtl.hasClients
-                ? _scrollCtl.position.pixels
-                : (_pendingScrollRestore ?? 0)),
-        wrap: _wrap,
-        mdShowSource: _mdShowSource,
-        hadContent: _file != null,
-        initialLine: _pendingLine,
-      );
+    path: widget.path,
+    scrollOffset: _isPreviewMode
+        ? _mdScrollOffset
+        : (_scrollCtl.hasClients
+              ? _scrollCtl.position.pixels
+              : (_pendingScrollRestore ?? 0)),
+    wrap: _wrap,
+    showSource: _showSource,
+    hadContent: _file != null,
+    initialLine: _pendingLine,
+  );
 
   void _collectSelf() {
     serverStore.fileBrowsing.collectFile(
@@ -268,7 +272,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       if (line != null) {
         _pendingLine = null;
         _pendingScrollRestore = null;
-        if (_isMarkdownPreview || line <= 1) return;
+        if (_isPreviewMode || line <= 1) return;
         final pos = _scrollCtl.position;
         _scrollCtl.jumpTo(
           (codeListVerticalPadding + (line - 1) * _lineHeight())
@@ -311,16 +315,18 @@ class _FileViewScreenState extends State<FileViewScreen> {
     return h;
   }
 
-  /// Kicks the markdown preview document build on a background isolate as
-  /// soon as the content is available (download finished / cache hit) — it
-  /// overlaps the route transition instead of landing in the first content
-  /// frame. Only the preview mode needs it; source mode renders via CodeView.
-  /// Content/theme changes after mount are handled inside MarkdownWebView's
-  /// signature check, not here. Scheduled via microtask so the cache-hit call
-  /// from initState never reads Theme before the state is ready.
-  void _maybePrepareMarkdownHtml() {
-    if (!_isMarkdown || _mdShowSource) return;
-    Future<void>.microtask(_prepareMarkdownHtml);
+  /// Kicks the preview document build as soon as the content is available
+  /// (download finished / cache hit) — it overlaps the route transition
+  /// instead of landing in the first content frame. Only the preview mode
+  /// needs it; source mode renders via CodeView. Markdown goes through the
+  /// off-isolate pipeline (markdown→HTML + code highlighting); HTML is plain
+  /// meta-tag injection, cheap enough to build synchronously. Content/theme
+  /// changes after mount are handled inside PreviewWebView's signature
+  /// check, not here. Scheduled via microtask so the cache-hit call from
+  /// initState never reads Theme before the state is ready.
+  void _maybePreparePreviewHtml() {
+    if (!_isPreviewable || _showSource) return;
+    Future<void>.microtask(_isHtml ? _prepareHtmlDoc : _prepareMarkdownHtml);
   }
 
   (Brightness, Color, Color, AppColors) _themeSignature() {
@@ -334,7 +340,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
   }
 
   void _prepareMarkdownHtml() {
-    if (!mounted || !_isMarkdown || _mdShowSource) return;
+    if (!mounted || !_isMarkdown || _showSource) return;
     final theme = Theme.of(context);
     final themeSig = _themeSignature();
     if (_mdHtml != null) {
@@ -364,7 +370,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
           // And if even the fallback throws, degrade to source mode — the
           // _mdHtml gate must never hold the spinner forever.
           if (!mounted || gen != _mdHtmlGen) return;
-          setState(() => _mdShowSource = true);
+          setState(() => _showSource = true);
           return;
         }
       }
@@ -376,12 +382,51 @@ class _FileViewScreenState extends State<FileViewScreen> {
     }();
   }
 
+  /// HTML counterpart of [_prepareMarkdownHtml]. The document is theme-
+  /// independent (the file's own markup/styles rule), so there is nothing to
+  /// invalidate on theme flips — a single build per content body suffices.
+  /// Typical documents are tiny and built synchronously; content beyond
+  /// [_htmlDocSyncCap] pays a full-copy toLowerCase plus the linear scan, so
+  /// it hops to a background isolate (mirroring the markdown pipeline) —
+  /// otherwise a multi-MB download finishing inside the route transition
+  /// would land that heavy build in an animation frame.
+  void _prepareHtmlDoc() {
+    if (!mounted || !_isHtml || _showSource || _mdHtml != null) return;
+    final text = _file!.text!;
+    if (text.length <= _htmlDocSyncCap) {
+      setState(() => _mdHtml = buildHtmlPreviewDocument(text));
+      return;
+    }
+    final gen = ++_mdHtmlGen;
+    () async {
+      String doc;
+      try {
+        doc = await compute(buildHtmlPreviewDocument, text);
+      } catch (_) {
+        // Isolate failure must not strand the gate; fall back to the UI
+        // isolate (the build is pure string work and cannot realistically
+        // throw — if it somehow does anyway, degrade to source mode).
+        try {
+          doc = buildHtmlPreviewDocument(text);
+        } catch (_) {
+          if (!mounted || gen != _mdHtmlGen) return;
+          setState(() => _showSource = true);
+          return;
+        }
+      }
+      if (!mounted || gen != _mdHtmlGen) return;
+      setState(() => _mdHtml = doc);
+    }();
+  }
+
+  static const _htmlDocSyncCap = 256 * 1024;
+
   /// Whether the content renders via CodeView with syntax highlighting —
   /// text, non-markdown, known language. Such files get their spans
   /// pre-built during the loading phase (see [_maybePrepareCodeSpans]).
   bool get _isCodeFile {
     final f = _file;
-    if (f == null || f.isBinary || _isMarkdown) return false;
+    if (f == null || f.isBinary || _isMarkdown || _isHtml) return false;
     return languageForPath(widget.path) != null;
   }
 
@@ -539,7 +584,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
     if (!mounted || _cancelToken != token || _error != null || _file == null) {
       return;
     }
-    _maybePrepareMarkdownHtml();
+    _maybePreparePreviewHtml();
     _maybePrepareCodeSpans();
     _scheduleScrollRestore();
   }
@@ -602,13 +647,15 @@ class _FileViewScreenState extends State<FileViewScreen> {
 
   void _onMenuAction(_MenuAction value) {
     switch (value) {
-      case _MenuAction.mdShowSource:
+      case _MenuAction.showSource:
         setState(() {
-          _mdShowSource = !_mdShowSource;
+          _showSource = !_showSource;
           // Returning to preview after a theme flip (source-mode round
           // trip): invalidate the stale document synchronously so the gate
           // holds the loading UI from this frame, not one frame later.
-          if (!_mdShowSource &&
+          // Markdown only — the HTML document is theme-independent.
+          if (!_showSource &&
+              _isMarkdown &&
               _mdHtml != null &&
               _mdHtmlTheme != _themeSignature()) {
             _mdHtml = null;
@@ -616,15 +663,15 @@ class _FileViewScreenState extends State<FileViewScreen> {
           // Switching back to preview remounts the WebView, which reloads
           // and repaints asynchronously — re-arm the first-render overlay so
           // that repaint is covered too, not just the initial open.
-          if (!_mdShowSource) _webviewRendered = false;
+          if (!_showSource) _webviewRendered = false;
           // Leaving preview cancels the pending fallback; returning to it
           // re-arms via the next build.
           _cancelWebViewRenderFallback();
         });
         // Opening in source mode (diff line anchor, sealed snapshot) skips
-        // the HTML pre-build; kick it here so the preview toggle can't hit
-        // the _mdHtml gate with nothing ever producing the document.
-        if (!_mdShowSource) _maybePrepareMarkdownHtml();
+        // the document pre-build; kick it here so the preview toggle can't
+        // hit the _mdHtml gate with nothing ever producing the document.
+        if (!_showSource) _maybePreparePreviewHtml();
       case _MenuAction.wrap:
         setState(() => _wrap = !_wrap);
       case _MenuAction.saveToDevice:
@@ -662,16 +709,16 @@ class _FileViewScreenState extends State<FileViewScreen> {
             popUpAnimationStyle: popupMenuAnimationStyle,
             onSelected: _onMenuAction,
             itemBuilder: (_) => [
-              if (_isMarkdown)
+              if (_isPreviewable)
                 PopupMenuItem(
-                  value: _MenuAction.mdShowSource,
+                  value: _MenuAction.showSource,
                   child: Text(
-                    _mdShowSource
+                    _showSource
                         ? l(context).filePreview
                         : l(context).fileSource,
                   ),
                 ),
-              if (_isTextLike && !_isMarkdownPreview)
+              if (_isTextLike && !_isPreviewMode)
                 PopupMenuItem(
                   value: _MenuAction.wrap,
                   child: Text(
@@ -707,13 +754,13 @@ class _FileViewScreenState extends State<FileViewScreen> {
       // Content mounts only when every transition animation is done (the
       // inner route's, and the container root route's for restore/peek flows
       // where the inner route is an un-animated initial route) and, for
-      // markdown preview, the off-isolate HTML build has finished. Until then
+      // markdown/HTML preview, the document build has finished. Until then
       // the cheap loading UI stays up, so no heavy first-content frame can
       // land inside an animation window.
       if (!_routeTransitionDone || !_containerTransitionDone) {
         return const Center(child: CircularProgressIndicator());
       }
-      if (_isMarkdownPreview && _mdHtml == null) {
+      if (_isPreviewMode && _mdHtml == null) {
         return const Center(child: CircularProgressIndicator());
       }
       if (_isCodeFile && !_codeSpansReady) {
@@ -783,6 +830,28 @@ class _FileViewScreenState extends State<FileViewScreen> {
     );
   }
 
+  /// Preview mode: the WebView loads/paints asynchronously after mount; keep
+  /// an opaque loading overlay on top until its first page finishes, so the
+  /// user sees the spinner right up to real content — never a blank WebView.
+  /// The Stack structure stays stable across the overlay swap so the WebView
+  /// element is never remounted (which would reload the document from
+  /// scratch).
+  Widget _previewWithOverlay(Widget view) {
+    _armWebViewRenderFallback();
+    return Stack(
+      children: [
+        view,
+        if (!_webviewRendered)
+          Container(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            child: const Center(child: CircularProgressIndicator()),
+          )
+        else
+          const SizedBox.shrink(),
+      ],
+    );
+  }
+
   Widget _contentDispatch() {
     final f = _file!;
     final ext = extensionOf(widget.path);
@@ -799,7 +868,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
     if (_isMarkdown) {
       final view = MarkdownView(
         content: f.text!,
-        showSource: _mdShowSource,
+        showSource: _showSource,
         wrap: _wrap,
         sessionId: widget.sessionId,
         path: widget.path,
@@ -807,30 +876,26 @@ class _FileViewScreenState extends State<FileViewScreen> {
         scrollController: _scrollCtl,
         initialScrollOffset: _mdScrollOffset,
         onScrolled: (o) => _mdScrollOffset = o,
-        prebuiltHtml: _mdShowSource ? null : _mdHtml,
+        prebuiltHtml: _showSource ? null : _mdHtml,
         onFirstRendered: _onWebViewFirstRendered,
       );
-      // Preview mode: the WebView loads/paints asynchronously after mount;
-      // keep an opaque loading overlay on top until its first page finishes,
-      // so the user sees the spinner right up to real content — never a
-      // blank WebView. The Stack structure stays stable across the overlay
-      // swap so the WebView element is never remounted (which would reload
-      // the document from scratch).
-      if (!_mdShowSource) {
-        _armWebViewRenderFallback();
-        return Stack(
-          children: [
-            view,
-            if (!_webviewRendered)
-              Container(
-                color: Theme.of(context).scaffoldBackgroundColor,
-                child: const Center(child: CircularProgressIndicator()),
-              )
-            else
-              const SizedBox.shrink(),
-          ],
-        );
-      }
+      if (!_showSource) return _previewWithOverlay(view);
+      return view;
+    }
+    if (_isHtml) {
+      final view = HtmlView(
+        content: f.text!,
+        showSource: _showSource,
+        wrap: _wrap,
+        path: widget.path,
+        directory: widget.directory,
+        scrollController: _scrollCtl,
+        initialScrollOffset: _mdScrollOffset,
+        onScrolled: (o) => _mdScrollOffset = o,
+        prebuiltHtml: _showSource ? null : _mdHtml,
+        onFirstRendered: _onWebViewFirstRendered,
+      );
+      if (!_showSource) return _previewWithOverlay(view);
       return view;
     }
     if (!f.isBinary) {
@@ -858,11 +923,21 @@ class _FileViewScreenState extends State<FileViewScreen> {
     return ext == '.md' || ext == '.markdown';
   }
 
-  bool get _isMarkdownPreview => _isMarkdown && !_mdShowSource;
+  bool get _isHtml {
+    if (_downloading || _error != null || _file == null || _file!.isBinary) {
+      return false;
+    }
+    final ext = extensionOf(widget.path);
+    return ext == '.html' || ext == '.htm';
+  }
+
+  bool get _isPreviewable => _isMarkdown || _isHtml;
+
+  bool get _isPreviewMode => _isPreviewable && !_showSource;
 
   /// Whether the mounted content drives [_scrollCtl]. Mirrors the dispatch in
-  /// [_contentDispatch]: CodeView and markdown source mode attach it;
-  /// image/SVG/binary views and the markdown preview (WebView scrolls
+  /// [_contentDispatch]: CodeView and markdown/HTML source mode attach it;
+  /// image/SVG/binary views and the markdown/HTML preview (WebView scrolls
   /// itself) do not.
   bool get _isScrollCtlContent {
     final f = _file;
@@ -874,10 +949,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
       return false;
     }
     if (!f.isBinary && extensionOf(widget.path) == '.svg') return false;
-    if (_isMarkdown && !_mdShowSource) return false;
+    if (_isPreviewMode) return false;
     if (f.isBinary) return false;
     return true;
   }
 }
 
-enum _MenuAction { mdShowSource, wrap, saveToDevice, share }
+enum _MenuAction { showSource, wrap, saveToDevice, share }

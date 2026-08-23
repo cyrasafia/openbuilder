@@ -9,14 +9,14 @@ class OpenFileEntry {
   final String path;
   final double scrollOffset;
   final bool wrap;
-  final bool mdShowSource;
+  final bool showSource;
   final bool hadContent;
   final int? initialLine;
   const OpenFileEntry({
     required this.path,
     required this.scrollOffset,
     required this.wrap,
-    required this.mdShowSource,
+    required this.showSource,
     this.hadContent = false,
     this.initialLine,
   });

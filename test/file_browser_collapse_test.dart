@@ -24,16 +24,15 @@ class _DownloadMockClient extends OpencodeClient {
     required String path,
     void Function(int received, int total)? onProgress,
     CancelToken? cancelToken,
-  }) async =>
-      _file;
+  }) async => _file;
 }
 
 Dio _noopDio() => Dio(
-      BaseOptions(
-        connectTimeout: const Duration(milliseconds: 1),
-        receiveTimeout: const Duration(milliseconds: 1),
-      ),
-    );
+  BaseOptions(
+    connectTimeout: const Duration(milliseconds: 1),
+    receiveTimeout: const Duration(milliseconds: 1),
+  ),
+);
 
 GoRouter _buildTestRouter() {
   return GoRouter(
@@ -115,7 +114,7 @@ void main() {
             path: 'a/b/c.txt',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: false,
+            showSource: false,
           ),
         ],
       );
@@ -185,7 +184,7 @@ void main() {
           path: 'a/b/c.txt',
           scrollOffset: 0,
           wrap: false,
-          mdShowSource: true,
+          showSource: true,
         ),
       ],
       peek: true,
@@ -219,7 +218,7 @@ void main() {
             path: 'a/b/c.txt',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: true,
+            showSource: true,
           ),
         ],
         peek: true,
@@ -252,7 +251,7 @@ void main() {
           path: 'a/b/old.txt',
           scrollOffset: 0,
           wrap: false,
-          mdShowSource: false,
+          showSource: false,
         ),
       ],
     );
@@ -264,7 +263,7 @@ void main() {
           path: 'x/y/new.txt',
           scrollOffset: 0,
           wrap: false,
-          mdShowSource: true,
+          showSource: true,
         ),
       ],
       peek: true,
@@ -297,7 +296,7 @@ void main() {
           path: 'a/b/c.txt',
           scrollOffset: 10,
           wrap: true,
-          mdShowSource: false,
+          showSource: false,
           hadContent: true,
         ),
       ],
@@ -384,7 +383,7 @@ void main() {
             path: 'a/b/c.txt',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: false,
+            showSource: false,
             hadContent: true,
           ),
         ],
@@ -426,7 +425,7 @@ void main() {
             path: 'a/b/c.md',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: false,
+            showSource: false,
             hadContent: true,
           ),
         ],
@@ -469,7 +468,7 @@ void main() {
             path: 'a/b/c.txt',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: false,
+            showSource: false,
             hadContent: true,
           ),
         ],
@@ -509,7 +508,7 @@ void main() {
             path: 'a/b/c.md',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: true,
+            showSource: true,
             hadContent: true,
           ),
         ],
@@ -524,8 +523,9 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
-  testWidgets('source-opened markdown toggling to preview builds HTML',
-      (tester) async {
+  testWidgets('source-opened markdown toggling to preview builds HTML', (
+    tester,
+  ) async {
     final router = await _pumpApp(tester);
     const sid = 'defer-gate-5';
     serverStore.fileBrowsing.cacheContent(
@@ -542,7 +542,7 @@ void main() {
             path: 'a/b/c.md',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: true,
+            showSource: true,
             hadContent: true,
           ),
         ],
@@ -555,8 +555,7 @@ void main() {
     // Open the menu programmatically and let its own transition settle —
     // while the menu route is still animating, taps are swallowed by the
     // modal barrier.
-    final popup =
-        find.byWidgetPredicate((w) => w is PopupMenuButton<dynamic>);
+    final popup = find.byWidgetPredicate((w) => w is PopupMenuButton<dynamic>);
     tester.state<PopupMenuButtonState<dynamic>>(popup).showButtonMenu();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
@@ -573,7 +572,7 @@ void main() {
     expect(find.byType(CodeView), findsNothing);
 
     // compute() runs on a real isolate, which FakeAsync never drains — let
-    // the result land via runAsync. The gate then opens and MarkdownWebView
+    // the result land via runAsync. The gate then opens and PreviewWebView
     // mounts; in the test environment that build fails an assert (no
     // WebViewPlatform registered), so an AssertionError here is the proof
     // the gate opened — without the menu-action kick nothing would ever
@@ -588,8 +587,151 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 
-  testWidgets('code file mount waits for off-isolate highlight',
-      (tester) async {
+  testWidgets('html file defaults to preview mode', (tester) async {
+    final router = await _pumpApp(tester);
+    const sid = 'defer-gate-html-0';
+    serverStore.fileBrowsing.cacheContent(
+      sid,
+      '',
+      'a/b/c.html',
+      StreamedFile(type: 'text', text: '<html><body><p>hi</p></body></html>'),
+    );
+    router.push(
+      '/session/$sid/files?directory=',
+      extra: FileBrowsingSnapshot(
+        openFiles: const [
+          OpenFileEntry(
+            path: 'a/b/c.html',
+            scrollOffset: 0,
+            wrap: false,
+            showSource: false,
+            hadContent: true,
+          ),
+        ],
+        peek: true,
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    // The preview document is plain meta-injection (no isolate), so the
+    // gate opens as soon as the transitions settle and the preview WebView
+    // mounts; in the test environment that build fails an assert (no
+    // WebViewPlatform registered) — the AssertionError is the proof the
+    // default mode is the rendered preview, never CodeView. No pump after
+    // the mount: every further frame would re-throw the same assert.
+    expect(find.byType(CodeView), findsNothing);
+    expect(tester.takeException(), isA<AssertionError>());
+  });
+
+  testWidgets('large html document build hops to an isolate and gates', (
+    tester,
+  ) async {
+    final router = await _pumpApp(tester);
+    const sid = 'defer-gate-html-2';
+    serverStore.fileBrowsing.cacheContent(
+      sid,
+      '',
+      'a/b/c.html',
+      StreamedFile(
+        type: 'text',
+        // Past the sync cap: the document build runs on a real isolate via
+        // compute (lowercase copy + linear scan), gated off the UI thread.
+        text:
+            '${'<!--${'x' * 64}-->}' * 5000}'
+            '<html><head><title>t</title></head></html>',
+      ),
+    );
+    router.push(
+      '/session/$sid/files?directory=',
+      extra: FileBrowsingSnapshot(
+        openFiles: const [
+          OpenFileEntry(
+            path: 'a/b/c.html',
+            scrollOffset: 0,
+            wrap: false,
+            showSource: false,
+            hadContent: true,
+          ),
+        ],
+        peek: true,
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    // Transitions settled but compute() runs on a real isolate, which
+    // FakeAsync never drains — the gate holds the loading UI.
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byType(CodeView), findsNothing);
+
+    // Let the real-isolate build land. The gate then opens and
+    // PreviewWebView mounts; in the test environment that build fails an
+    // assert (no WebViewPlatform registered), so the AssertionError is the
+    // proof the async path produced the document.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 300)),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isA<AssertionError>());
+  });
+
+  testWidgets('source-opened html toggling to preview mounts the webview', (
+    tester,
+  ) async {
+    final router = await _pumpApp(tester);
+    const sid = 'defer-gate-html-1';
+    serverStore.fileBrowsing.cacheContent(
+      sid,
+      '',
+      'a/b/c.html',
+      StreamedFile(
+        type: 'text',
+        text: '<html><head><title>t</title></head><body></body></html>',
+      ),
+    );
+    router.push(
+      '/session/$sid/files?directory=',
+      extra: FileBrowsingSnapshot(
+        openFiles: const [
+          OpenFileEntry(
+            path: 'a/b/c.html',
+            scrollOffset: 0,
+            wrap: false,
+            showSource: true,
+            hadContent: true,
+          ),
+        ],
+        peek: true,
+      ),
+    );
+    await _flush(tester);
+    expect(find.byType(CodeView), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    final popup = find.byWidgetPredicate((w) => w is PopupMenuButton<dynamic>);
+    tester.state<PopupMenuButtonState<dynamic>>(popup).showButtonMenu();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final itemInkWell = find.descendant(
+      of: find.byWidgetPredicate((w) => w is PopupMenuItem<dynamic>),
+      matching: find.byType(InkWell),
+    );
+    await tester.tapAt(tester.getCenter(itemInkWell.first));
+    await tester.pump();
+
+    // Toggled to preview: the sync document build runs as a microtask right
+    // after the tap, so the gate opens within this frame and the preview
+    // WebView mounts — the WebViewPlatform assert is the proof (same trick
+    // as the markdown toggle test, minus the runAsync hop the markdown
+    // off-isolate build needs). No pump after the mount — it would re-throw.
+    expect(find.byType(CodeView), findsNothing);
+    expect(tester.takeException(), isA<AssertionError>());
+  });
+
+  testWidgets('code file mount waits for off-isolate highlight', (
+    tester,
+  ) async {
     final router = await _pumpApp(tester);
     const sid = 'defer-gate-6';
     serverStore.fileBrowsing.cacheContent(
@@ -606,7 +748,7 @@ void main() {
             path: 'a/b/c.dart',
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: false,
+            showSource: false,
             hadContent: true,
           ),
         ],
@@ -665,7 +807,7 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
     // Let the real-isolate HTML build land. The gate then opens and
-    // MarkdownWebView mounts; in the test environment that build fails an
+    // PreviewWebView mounts; in the test environment that build fails an
     // assert (no WebViewPlatform registered), so the AssertionError is the
     // proof the gate released. Without the kick the spinner would stay and
     // no exception would ever surface.

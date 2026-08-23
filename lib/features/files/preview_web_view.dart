@@ -4,32 +4,40 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../ui/theme.dart';
 import 'file_browsing_container.dart';
+import 'html_preview.dart';
 import 'markdown_html.dart';
 
-/// Markdown preview rendered by a full-screen WebView (HCPP on Android 14+).
+enum PreviewKind { markdown, html }
+
+/// Document preview rendered by a full-screen WebView (HCPP on Android 14+).
 ///
-/// `package:markdown` converts the body to HTML, code blocks are pre-highlighted
-/// with the shared `re_highlight` source (`tok-*` spans), and all colors /
-/// three-tier font weights come from a CSS generated from the current theme.
-/// Link taps are intercepted in JS and routed back to Dart so relative links
-/// open in the file browser and external links launch the system browser,
-/// matching the legacy Flutter-Markdown behavior.
+/// Markdown content goes through `buildMarkdownPreviewHtml` (`package:markdown`
+/// → pre-highlighted code blocks → theme-generated CSS); raw HTML files are
+/// previewed as-is with a CSP/viewport meta injected
+/// (`buildHtmlPreviewDocument`).
+/// Both kinds share everything else: link interception via the JS bridge
+/// (relative links open in the file browser, external links launch the system
+/// browser), scroll reporting/restore for the file browser's
+/// collapse/restore, and the O(1) signature check that decides document
+/// rebuilds. The HTML kind's document is theme-independent, so its signature
+/// covers content only — a brightness flip never reloads it.
 ///
 /// The WebView manages its own scrolling; the current offset is reported via
 /// [onScrolled] and restored from [initialScrollOffset] after each load so the
 /// file browser's collapse/restore keeps the reading position.
-class MarkdownWebView extends StatefulWidget {
+class PreviewWebView extends StatefulWidget {
+  final PreviewKind kind;
   final String content;
   final String path;
   final String? directory;
   final double? initialScrollOffset;
   final void Function(double offset)? onScrolled;
 
-  /// Pre-built preview document (from `buildMarkdownPreviewHtmlOffIsolate`).
-  /// Production flows always provide it: FileViewScreen pre-builds during the
-  /// loading phase and gates the mount on it — including the source→preview
-  /// toggle, which kicks the pre-build before switching. Null is only a
-  /// defensive fallback (synchronous in-widget build on first use).
+  /// Pre-built preview document (from the FileViewScreen loading-phase
+  /// pre-build). Production flows always provide it: FileViewScreen pre-builds
+  /// during the loading phase and gates the mount on it — including the
+  /// source→preview toggle, which kicks the pre-build before switching. Null
+  /// is only a defensive fallback (synchronous in-widget build on first use).
   final String? prebuiltHtml;
 
   /// Called once when the initial document finishes loading in the WebView
@@ -37,8 +45,9 @@ class MarkdownWebView extends StatefulWidget {
   /// until the preview is actually painted, not merely mounted.
   final VoidCallback? onFirstRendered;
 
-  const MarkdownWebView({
+  const PreviewWebView({
     super.key,
+    required this.kind,
     required this.content,
     required this.path,
     this.directory,
@@ -49,7 +58,7 @@ class MarkdownWebView extends StatefulWidget {
   });
 
   @override
-  State<MarkdownWebView> createState() => _MarkdownWebViewState();
+  State<PreviewWebView> createState() => _PreviewWebViewState();
 }
 
 const _openLinkChannel = 'OB_OPEN_LINK';
@@ -76,10 +85,10 @@ const _bridgeScript = r'''
 })();
 ''';
 
-class _MarkdownWebViewState extends State<MarkdownWebView> {
+class _PreviewWebViewState extends State<PreviewWebView> {
   WebViewController? _controller;
   String? _html;
-  (String, Brightness, Color, Color, AppColors)? _builtSignature;
+  Object? _builtSignature;
   double _restoreOffset = 0;
   bool _firstRenderReported = false;
 
@@ -124,6 +133,9 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
   Color get _scaffoldBg => Theme.of(context).scaffoldBackgroundColor;
 
   String _buildHtml(BuildContext context) {
+    if (widget.kind == PreviewKind.html) {
+      return buildHtmlPreviewDocument(widget.content);
+    }
     final theme = Theme.of(context);
     final appColors = theme.extension<AppColors>()!;
     return buildMarkdownPreviewHtml(
@@ -157,7 +169,7 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
   }
 
   @override
-  void didUpdateWidget(covariant MarkdownWebView old) {
+  void didUpdateWidget(covariant PreviewWebView old) {
     super.didUpdateWidget(old);
     if (widget.initialScrollOffset != null &&
         widget.initialScrollOffset != old.initialScrollOffset) {
@@ -166,10 +178,11 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
     _maybeRebuild();
   }
 
-  /// Regenerates the document only when content OR theme inputs changed.
-  /// Compares an O(1) signature (content + the theme values the HTML/CSS
-  /// derive from) instead of rebuilding the full document to compare strings —
-  /// the old approach paid the markdown conversion twice per open.
+  /// Regenerates the document only when the inputs the document derives from
+  /// changed. Compares an O(1) signature (content +, for markdown only, the
+  /// theme values the HTML/CSS derive from) instead of rebuilding the full
+  /// document to compare strings — the old approach paid the markdown
+  /// conversion twice per open.
   void _maybeRebuild() {
     final sig = _signature();
     if (sig == _builtSignature) return;
@@ -178,7 +191,8 @@ class _MarkdownWebViewState extends State<MarkdownWebView> {
     _reload();
   }
 
-  (String, Brightness, Color, Color, AppColors) _signature() {
+  Object _signature() {
+    if (widget.kind == PreviewKind.html) return widget.content;
     final theme = Theme.of(context);
     return (
       widget.content,

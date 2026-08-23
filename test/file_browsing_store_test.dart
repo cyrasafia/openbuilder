@@ -5,11 +5,11 @@ import 'package:open_builder/core/session/file_browsing_store.dart';
 import 'package:open_builder/domain/models.dart';
 
 OpenFileEntry entry(String path, {double offset = 0}) => OpenFileEntry(
-      path: path,
-      scrollOffset: offset,
-      wrap: false,
-      mdShowSource: false,
-    );
+  path: path,
+  scrollOffset: offset,
+  wrap: false,
+  showSource: false,
+);
 
 void main() {
   group('collapse protocol', () {
@@ -35,41 +35,59 @@ void main() {
       expect(snap.listScrollOffset, 42);
       expect(snap.searchQuery, 'foo');
       expect(snap.searchExpanded, isTrue);
-      expect(
-        snap.openFiles.map((e) => e.path).toList(),
-        ['f1', 'f2', 'f3'],
-      );
+      expect(snap.openFiles.map((e) => e.path).toList(), ['f1', 'f2', 'f3']);
       expect(snap.openFiles.last.scrollOffset, 300);
     });
 
-    test('openFiles capped at maxOpenFiles, dropping oldest (deepest) layer', () {
-      final s = FileBrowsingStore();
-      s.beginCollapse('s1', null);
-      // top collects first: f9 ... f1
-      for (var i = 9; i >= 1; i--) {
-        s.collectFile('s1', null, entry('f$i'));
-      }
-      s.collectList('s1', null,
-          path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
-      final snap = s.snapshotFor('s1', null)!;
-      expect(snap.openFiles.length, FileBrowsingStore.maxOpenFiles);
-      expect(snap.openFiles.first.path, 'f2');
-      expect(snap.openFiles.last.path, 'f9');
-    });
+    test(
+      'openFiles capped at maxOpenFiles, dropping oldest (deepest) layer',
+      () {
+        final s = FileBrowsingStore();
+        s.beginCollapse('s1', null);
+        // top collects first: f9 ... f1
+        for (var i = 9; i >= 1; i--) {
+          s.collectFile('s1', null, entry('f$i'));
+        }
+        s.collectList(
+          's1',
+          null,
+          path: '',
+          scrollOffset: 0,
+          searchQuery: '',
+          searchExpanded: false,
+        );
+        final snap = s.snapshotFor('s1', null)!;
+        expect(snap.openFiles.length, FileBrowsingStore.maxOpenFiles);
+        expect(snap.openFiles.first.path, 'f2');
+        expect(snap.openFiles.last.path, 'f9');
+      },
+    );
 
     test('collect without beginCollapse is a no-op', () {
       final s = FileBrowsingStore();
       s.collectFile('s1', null, entry('f1'));
-      s.collectList('s1', null,
-          path: 'x', scrollOffset: 0, searchQuery: '', searchExpanded: false);
+      s.collectList(
+        's1',
+        null,
+        path: 'x',
+        scrollOffset: 0,
+        searchQuery: '',
+        searchExpanded: false,
+      );
       expect(s.snapshotFor('s1', null), isNull);
     });
 
     test('resetCollapse preserves sealed snapshot', () {
       final s = FileBrowsingStore();
       s.beginCollapse('s1', null);
-      s.collectList('s1', null,
-          path: 'a', scrollOffset: 1, searchQuery: '', searchExpanded: false);
+      s.collectList(
+        's1',
+        null,
+        path: 'a',
+        scrollOffset: 1,
+        searchQuery: '',
+        searchExpanded: false,
+      );
       s.resetCollapse();
       expect(s.snapshotFor('s1', null), isNotNull);
     });
@@ -96,11 +114,23 @@ void main() {
     test('clearSnapshot removes only the targeted key', () {
       final s = FileBrowsingStore();
       s.beginCollapse('s1', '/a');
-      s.collectList('s1', '/a',
-          path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
+      s.collectList(
+        's1',
+        '/a',
+        path: '',
+        scrollOffset: 0,
+        searchQuery: '',
+        searchExpanded: false,
+      );
       s.beginCollapse('s1', '/b');
-      s.collectList('s1', '/b',
-          path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
+      s.collectList(
+        's1',
+        '/b',
+        path: '',
+        scrollOffset: 0,
+        searchQuery: '',
+        searchExpanded: false,
+      );
       s.clearSnapshot('s1', '/a');
       expect(s.snapshotFor('s1', '/a'), isNull);
       expect(s.snapshotFor('s1', '/b'), isNotNull);
@@ -110,8 +140,14 @@ void main() {
       final s = FileBrowsingStore();
       for (var i = 0; i < FileBrowsingStore.maxSnapshots + 1; i++) {
         s.beginCollapse('sess-$i', null);
-        s.collectList('sess-$i', null,
-            path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
+        s.collectList(
+          'sess-$i',
+          null,
+          path: '',
+          scrollOffset: 0,
+          searchQuery: '',
+          searchExpanded: false,
+        );
       }
       expect(s.snapshotFor('sess-0', null), isNull);
       expect(
@@ -124,13 +160,25 @@ void main() {
       final s = FileBrowsingStore();
       for (var i = 0; i < FileBrowsingStore.maxSnapshots; i++) {
         s.beginCollapse('sess-$i', null);
-        s.collectList('sess-$i', null,
-            path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
+        s.collectList(
+          'sess-$i',
+          null,
+          path: '',
+          scrollOffset: 0,
+          searchQuery: '',
+          searchExpanded: false,
+        );
       }
       expect(s.snapshotFor('sess-0', null), isNotNull); // promote
       s.beginCollapse('sess-new', null);
-      s.collectList('sess-new', null,
-          path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
+      s.collectList(
+        'sess-new',
+        null,
+        path: '',
+        scrollOffset: 0,
+        searchQuery: '',
+        searchExpanded: false,
+      );
       expect(s.snapshotFor('sess-1', null), isNull);
       expect(s.snapshotFor('sess-0', null), isNotNull);
     });
@@ -138,13 +186,35 @@ void main() {
     test('removeSessionData clears snapshots and content for the session', () {
       final s = FileBrowsingStore();
       s.beginCollapse('s1', null);
-      s.collectList('s1', null,
-          path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
-      s.cacheContent('s1', null, 'a.txt', const StreamedFile(type: 'text', text: 'hi'));
+      s.collectList(
+        's1',
+        null,
+        path: '',
+        scrollOffset: 0,
+        searchQuery: '',
+        searchExpanded: false,
+      );
+      s.cacheContent(
+        's1',
+        null,
+        'a.txt',
+        const StreamedFile(type: 'text', text: 'hi'),
+      );
       s.beginCollapse('s2', null);
-      s.collectList('s2', null,
-          path: '', scrollOffset: 0, searchQuery: '', searchExpanded: false);
-      s.cacheContent('s2', null, 'b.txt', const StreamedFile(type: 'text', text: 'hi'));
+      s.collectList(
+        's2',
+        null,
+        path: '',
+        scrollOffset: 0,
+        searchQuery: '',
+        searchExpanded: false,
+      );
+      s.cacheContent(
+        's2',
+        null,
+        'b.txt',
+        const StreamedFile(type: 'text', text: 'hi'),
+      );
       s.removeSessionData('s1');
       expect(s.snapshotFor('s1', null), isNull);
       expect(s.cachedContent('s1', null, 'a.txt'), isNull);
@@ -173,7 +243,8 @@ void main() {
 
   group('content cache', () {
     StreamedFile text(String s) => StreamedFile(type: 'text', text: s);
-    StreamedFile bin(int n) => StreamedFile(type: 'binary', bytes: Uint8List(n));
+    StreamedFile bin(int n) =>
+        StreamedFile(type: 'binary', bytes: Uint8List(n));
 
     test('hit returns cached file and promotes recency', () {
       final s = FileBrowsingStore();
@@ -185,13 +256,20 @@ void main() {
     test('TTL expiry returns null and frees bytes', () {
       final s = FileBrowsingStore();
       s.cacheContent('s1', null, 'a', text('aaa'));
-      final later = DateTime.now().add(FileBrowsingStore.contentTtl + const Duration(seconds: 1));
+      final later = DateTime.now().add(
+        FileBrowsingStore.contentTtl + const Duration(seconds: 1),
+      );
       expect(s.cachedContent('s1', null, 'a', now: later), isNull);
     });
 
     test('single file above maxSingleFileBytes is not cached', () {
       final s = FileBrowsingStore();
-      s.cacheContent('s1', null, 'big', bin(FileBrowsingStore.maxSingleFileBytes + 1));
+      s.cacheContent(
+        's1',
+        null,
+        'big',
+        bin(FileBrowsingStore.maxSingleFileBytes + 1),
+      );
       expect(s.cachedContent('s1', null, 'big'), isNull);
     });
 

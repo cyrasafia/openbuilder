@@ -1741,7 +1741,7 @@ class _ConversationScreenState extends State<ConversationScreen>
             path: rel,
             scrollOffset: 0,
             wrap: false,
-            mdShowSource: line != null,
+            showSource: line != null,
             initialLine: line,
           ),
         ],

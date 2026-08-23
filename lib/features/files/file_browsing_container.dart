@@ -163,7 +163,7 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
 
   OpenFileEntry? _carryEntry(String path) => _fileEntryGetters[path]?.call();
 
-  void openFile(String path, {int? initialLine, bool mdShowSource = false}) {
+  void openFile(String path, {int? initialLine, bool showSource = false}) {
     final nav = _navKey.currentState;
     if (nav == null) return;
     final existing = _fileRoutes[path];
@@ -172,7 +172,7 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
       carry = _carryEntry(path);
       nav.removeRoute(existing);
     }
-    final forceSource = initialLine != null || mdShowSource;
+    final forceSource = initialLine != null || showSource;
     final route = slideLeftRoute(
       FileViewScreen(
         sessionId: widget.sessionId,
@@ -183,7 +183,7 @@ class FileBrowsingContainerState extends State<FileBrowsingContainer> {
                 path: path,
                 scrollOffset: 0,
                 wrap: false,
-                mdShowSource: true,
+                showSource: true,
                 initialLine: initialLine,
               )
             : carry,
