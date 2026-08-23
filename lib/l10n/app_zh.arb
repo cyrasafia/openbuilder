@@ -150,6 +150,8 @@
   "fileSource": "源码",
   "filePreview": "预览",
   "fileMentionInConversation": "在会话中提及",
+  "fileCopyPath": "复制路径",
+  "fileSaveToDevice": "保存到设备",
   "fileRefNoAbsolutePath": "无法定位文件绝对路径",
   "fileLoadCancel": "取消",
   "fileDownload": "下载",

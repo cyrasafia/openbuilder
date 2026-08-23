@@ -150,6 +150,8 @@
   "fileSource": "Source",
   "filePreview": "Preview",
   "fileMentionInConversation": "Mention in conversation",
+  "fileCopyPath": "Copy path",
+  "fileSaveToDevice": "Save to device",
   "fileRefNoAbsolutePath": "Cannot locate file absolute path",
   "fileLoadCancel": "Cancel",
   "fileDownload": "Download",

@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app_state.dart';
 import '../../core/attachments/file_ref.dart';
@@ -8,7 +12,9 @@ import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
+import 'file_actions.dart';
 import 'file_browsing_container.dart';
+import 'download_policy.dart';
 
 class FileListScreen extends StatefulWidget {
   final String sessionId;
@@ -228,32 +234,77 @@ class _FileListScreenState extends State<FileListScreen> {
       overlay.size.width - cx,
       overlay.size.height - origin.dy,
     );
+    final isFile = !n.isDir;
+    final canSaveToDevice = isFile && !kIsWeb && Platform.isAndroid;
     final action = await showMenu<String>(
       context: context,
       position: relative,
       popUpAnimationStyle: popupMenuAnimationStyle,
       items: [
-        PopupMenuItem<String>(
-          value: 'ref',
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.alternate_email, size: 20),
-              const SizedBox(width: 12),
-              Flexible(
-                child: Text(
-                  l(context).fileMentionInConversation,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
+        _menuItem('ref', Icons.alternate_email,
+            l(context).fileMentionInConversation),
+        _menuItem('copyPath', Icons.content_copy, l(context).fileCopyPath),
+        if (canSaveToDevice)
+          _menuItem('save', Icons.save_alt, l(context).fileSaveToDevice),
+        if (isFile)
+          _menuItem('share', Icons.share_outlined, l(context).fileShare),
       ],
     );
-    if (action == 'ref') {
-      _refNode(n);
+    if (!mounted) return;
+    switch (action) {
+      case 'ref':
+        _refNode(n);
+      case 'copyPath':
+        _copyPath(n);
+      case 'save':
+        _exportNode(n, FileExportAction.saveToDevice);
+      case 'share':
+        _exportNode(n, FileExportAction.share);
     }
+  }
+
+  PopupMenuItem<String> _menuItem(String value, IconData icon, String label) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 20),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _copyPath(FileNode n) {
+    final ref = FileRef.fromNode(n, directory: widget.directory);
+    if (ref.absolute.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l(context).fileRefNoAbsolutePath)),
+      );
+      return;
+    }
+    Clipboard.setData(ClipboardData(text: ref.absolute));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(l(context).copied)),
+    );
+  }
+
+  Future<void> _exportNode(FileNode n, FileExportAction action) {
+    return showFileExportDialog(
+      context: context,
+      sessionId: widget.sessionId,
+      directory: widget.directory,
+      path: n.path,
+      filename: basenameOf(n.path),
+      action: action,
+    );
   }
 
   void _refNode(FileNode n) {
