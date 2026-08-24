@@ -21,21 +21,21 @@ import 'file_browsing_store.dart';
 const _tag = 'Server';
 
 /// Live, per-active-server state: projects / sessions / status / latest-message
-/// preview, plus lazy per-session [ConversationStore] caches. Fed by one SSE
-/// subscription to `/event` (specs §5, frontend §2.2).
+/// preview, plus lazy per-session [ConversationStore] caches. Fed by the single
+/// global SSE stream `GET /global/event` (specs §5, frontend §2.2).
 class ServerStore extends ChangeNotifier {
   @visibleForTesting
   static Duration sseStopTimeout = const Duration(seconds: 2);
 
   OpencodeClient? client;
-  /// One SSE subscription per directory + watchdog. opencode's `/event` stream
-  /// is scoped to a `directory` (no directory ⇒ only `server.connected` /
-  /// `server.heartbeat`). We keep a watchdog (bare `/event`) for liveness and
-  /// per-directory SSE only for busy/retry sessions + active conversation.
-  final Map<String, SseClient> _sseByDir = {};
-  final Map<String, StreamSubscription<OpencodeEvent>> _sseSubs = {};
-  final Map<String, StreamSubscription<SseState>> _sseStateSubs = {};
-  final Map<String, bool> _sseRequired = {}; // dir -> protected from LRU
+  /// Single global SSE stream: `GET /global/event` (GlobalBus, server ≥
+  /// v1.0.66) carries every directory's events in one connection; the envelope
+  /// `directory` routes/filters them client-side (`_onGlobalEvent` gate).
+  /// Connection lifecycle is decoupled from the open-session set — see
+  /// design-sse-global-event.md.
+  SseClient? _sse;
+  StreamSubscription<GlobalOpencodeEvent>? _sseSub;
+  StreamSubscription<SseState>? _sseStateSub;
   final Map<String, String> _sseHeaders = {};
   Timer? _reconcileTimer;
   Timer? _previewNotifyTimer;
@@ -44,8 +44,8 @@ class ServerStore extends ChangeNotifier {
   Future<void>? _pauseOperation;
   bool _foreground = true;
   int _healthProbeGeneration = 0;
-  // Health probe interval while the watchdog SSE is reconnecting. Each tick
-  // is one cheap GET /global/health; on success all clients are kicked out
+  // Health probe interval while the global SSE is reconnecting. Each tick
+  // is one cheap GET /global/health; on success the client is kicked out
   // of backoff. 5s bounds recovery detection (vs the 30s backoff ceiling)
   // while staying negligible for battery/traffic during long outages.
   @visibleForTesting
@@ -58,9 +58,6 @@ class ServerStore extends ChangeNotifier {
   // the same per-profile directory).
   CacheStore? _cacheStore;
 
-  // ── On-demand SSE constants ──
-  static const _kGlobalWatchdog = '\u0000__global_watchdog__';
-  static const _kMaxIdleSseConnections = 5;
   static const kMaxRefreshInterval = Duration(seconds: 30);
   DateTime? _lastFullRefreshAt;
 
@@ -241,26 +238,23 @@ class ServerStore extends ChangeNotifier {
 
   bool connected = false;
 
-  /// Whether the global watchdog SSE is actively connected (for status indicator).
-  bool get sseConnected => _sseByDir.containsKey(_kGlobalWatchdog) &&
-      _watchdogConnected;
+  /// Whether the global SSE stream is actively connected (for status indicator).
+  bool get sseConnected => _sse != null && _sseLive;
 
-  /// Whether the watchdog SSE is in reconnecting state.
-  bool get sseReconnecting =>
-      _sseByDir.containsKey(_kGlobalWatchdog) && !_watchdogConnected;
+  /// Whether the global SSE stream is in reconnecting state.
+  bool get sseReconnecting => _sse != null && !_sseLive;
 
-  /// Whether the SSE stream for a session's directory is connected.
+  /// Whether the session's events are being streamed. The single global stream
+  /// covers every directory, so any known session is covered while connected.
   bool isSessionSseConnected(String sessionId) {
-    if (!_watchdogConnected) return false;
-    final session = sessionById(sessionId);
-    if (session == null) return false;
-    return _sseByDir.containsKey(session.directory);
+    if (!_sseLive) return false;
+    return sessionById(sessionId) != null;
   }
-  bool _watchdogConnected = false;
-  // Set true when the watchdog enters reconnecting state (first-connect
-  // failure or post-connect drop). Stays true after recovery — banner is
-  // controlled by !_watchdogConnected, not _watchdogFailed.
-  bool _watchdogFailed = false;
+  bool _sseLive = false;
+  // Set true when the SSE enters reconnecting state (first-connect failure or
+  // post-connect drop). Stays true after recovery — banner is controlled by
+  // !_sseLive, not _sseFailed.
+  bool _sseFailed = false;
 
   /// Whether the initial bootstrap failed (for showing error view + retry).
   bool bootstrapFailed = false;
@@ -290,7 +284,7 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// Whether to show the "network disconnected" banner.
-  bool get showDisconnectBanner => _watchdogFailed && !_watchdogConnected;
+  bool get showDisconnectBanner => _sseFailed && !_sseLive;
 
   List<ProjectModel> get projects => List.unmodifiable(_projects);
   List<SessionModel> get sessions => List.unmodifiable(_sessions);
@@ -508,8 +502,9 @@ class ServerStore extends ChangeNotifier {
   /// otherwise resurrect the old sessions. After the server confirms deletion,
   /// the worktree is removed from the project's `sandboxes`, all sessions in
   /// that directory are dropped from `_sessions` (plus their conversation /
-  /// preview / status caches), and the directory's SSE connection is closed —
-  /// all without a full `refresh()`. Callers should `await` this so the UI
+  /// preview / status caches), and the directory falls out of the global
+  /// stream's event gate — all without a full `refresh()`. Callers should
+  /// `await` this so the UI
   /// behind a confirmation dialog is already in its final state when the
   /// dialog closes.
   Future<void> removeWorktree(
@@ -557,7 +552,6 @@ class ServerStore extends ChangeNotifier {
       _lastMessage.remove(sid);
       _statusMap.remove(sid);
     }
-    _trimSse();
     _scheduleCacheSave();
     notifyListeners();
   }
@@ -700,28 +694,21 @@ class ServerStore extends ChangeNotifier {
   }
 
   void setActiveConversation(String? sid) {
-    final oldId = _activeSessionId;
     _activeSessionId = sid;
-    // Ensure SSE for the new active session's directory (required).
     if (sid != null) {
-      final s = sessionById(sid);
-      if (s != null && s.directory.isNotEmpty) {
-        _startSse(s.directory, required: true);
-      }
-    }
-    // Old active session's SSE may be downgraded — trim.
-    if (oldId != null && oldId != sid) {
-      _trimSse();
+      // Opening a conversation wakes the stream out of reconnect backoff —
+      // parity with the old per-directory `_startSse(required: true)` kick,
+      // so live updates don't wait out the exponential sleep (or the next
+      // health probe) while the user is looking at this session.
+      _sse?.reconnectNow();
     }
   }
 
-  /// Ensure SSE is open for a session's directory (used when user sends a
-  /// message or interacts with permission/question cards in the detail page).
+  /// Wake the global SSE stream out of reconnect backoff on user interaction
+  /// (send message / permission / question cards) — same kick the old
+  /// per-directory `ensureSseForSession` provided, now connection-wide.
   void ensureSseForSession(String sessionId) {
-    final s = sessionById(sessionId);
-    if (s != null && s.directory.isNotEmpty) {
-      _startSse(s.directory, required: true);
-    }
+    _sse?.reconnectNow();
   }
 
   /// Ensure the session has an accumulation container in `_conversations`
@@ -909,10 +896,8 @@ class ServerStore extends ChangeNotifier {
       // Save fresh REST data to cache for next offline open.
       unawaited(_saveCache());
       // _bootstrap already fetched projects + sessions + status.
-      // Just start watchdog + SSE for busy/retry sessions + active conversation.
-      _startSse(_kGlobalWatchdog);
-      _startRequiredSse();
-      _trimSse();
+      // One global stream covers every directory.
+      _startSse();
       _lastFullRefreshAt = DateTime.now();
       connected = true;
       unawaited(_backfillPermissions());
@@ -931,17 +916,16 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Sentinel key for the always-on bare `/event` connection (no `directory`
-  /// query). Kept distinct from any real directory path. Used for liveness
-  /// detection — only receives `server.connected` and `server.heartbeat`.
-  // (defined as class constant _kGlobalWatchdog)
-
-  /// Distinct directories to stream: every project's worktree plus every known
-  /// session directory (covers sandbox worktrees too).
+  /// Directory universe: every project's worktree ∪ its sandboxes ∪ every
+  /// known session directory. Shared source for the SSE event gate
+  /// (`_isGatedDirectory`) and REST fan-out (permission/question backfill).
   Set<String> _eventDirectories() {
     final dirs = <String>{};
     for (final p in _projects) {
       if (p.worktree.isNotEmpty) dirs.add(p.worktree);
+      for (final d in p.sandboxes) {
+        if (d.isNotEmpty) dirs.add(d);
+      }
     }
     for (final s in _sessions) {
       if (s.directory.isNotEmpty) dirs.add(s.directory);
@@ -949,30 +933,38 @@ class ServerStore extends ChangeNotifier {
     return dirs;
   }
 
-  void _startSse(String dir, {bool required = false}) {
-    if (_sseByDir.containsKey(dir)) {
-      // Upgrade to required if needed (don't downgrade). Also wake the
-      // client if it's sleeping in reconnect backoff (e.g., resume after
-      // background Doze) — no reason to wait out the exponential sleep.
-      _sseRequired[dir] = required || (_sseRequired[dir] ?? false);
-      _sseByDir[dir]!.reconnectNow();
+  /// Gate for the single global stream: accept events whose envelope directory
+  /// belongs to this client's universe. The stream carries EVERY project's
+  /// events on the server; without this filter unknown directories would
+  /// pollute `_sessions` / `_statusMap` / `_conversations`.
+  bool _isGatedDirectory(String directory) {
+    // Keep in lockstep with `_eventDirectories()` (same universe, same
+    // empty-string exclusion).
+    if (directory.isEmpty) return false;
+    for (final p in _projects) {
+      if (p.worktree == directory) return true;
+      if (p.sandboxes.contains(directory)) return true;
+    }
+    for (final s in _sessions) {
+      if (s.directory == directory) return true;
+    }
+    return false;
+  }
+
+  void _startSse() {
+    final existing = _sse;
+    if (existing != null) {
+      // Wake the client if it's sleeping in reconnect backoff (e.g., resume
+      // after background Doze) — no reason to wait out the exponential sleep.
+      existing.reconnectNow();
       return;
     }
-    final base = Uri.parse('${_profile!.baseUrl}/event');
-    final uri = dir == _kGlobalWatchdog
-        ? base // bare /event — global watchdog
-        : base.replace(queryParameters: {'directory': dir});
-    final label = dir == _kGlobalWatchdog
-        ? 'watchdog'
-        : (dir.split('/').lastOrNull ?? dir);
-    final c = SseClient(uri: uri, headers: _sseHeaders, label: label);
-    _sseByDir[dir] = c;
-    _sseSubs[dir] =
-        c.events.listen(_onEvent); // SSE errors handled by _onSseState reconnect
-    _sseStateSubs[dir] = c.state.listen((s) => _onSseState(dir, s));
-    _sseRequired[dir] = required;
+    final c = SseClient(baseUrl: _profile!.baseUrl, headers: _sseHeaders);
+    _sse = c;
+    _sseSub = c.events
+        .listen(_onGlobalEvent); // SSE errors handled by _onSseState reconnect
+    _sseStateSub = c.state.listen(_onSseState);
     c.start();
-    _trimSse();
   }
 
   String _signature(ConnectionProfile p) =>
@@ -1284,23 +1276,31 @@ class ServerStore extends ChangeNotifier {
 
   /// Coalesce the many `server.connected` events (one per directory
   /// connection) into a single reconcile shortly after connect.
+  int _reconcileScheduleCount = 0;
+
+  /// Number of times [_scheduleReconcile] was entered (for asserting the
+  /// transition-only scheduling guard, not debounced firings).
+  @visibleForTesting
+  int get reconcileScheduleCountForTesting => _reconcileScheduleCount;
+
   void _scheduleReconcile() {
+    _reconcileScheduleCount++;
     _reconcileTimer?.cancel();
     _reconcileTimer = Timer(const Duration(milliseconds: 800), () {
       unawaited(_reconcile());
     });
   }
 
-  /// Unified refresh entry point: REST fetch + SSE management for busy/retry.
+  /// Unified refresh entry point: REST fetch (+ ensure the global SSE runs).
   ///
-  /// `force: true` — also (re)start the watchdog SSE. Used when watchdog is
+  /// `force: true` — also (re)start the global SSE. Used when the stream is
   ///   missing (resume after pause, refresh recovering a failed connection).
-  /// `force: false` — REST refresh + SSE marking/LRU only. Watchdog untouched.
+  /// `force: false` — REST refresh only; running SSE untouched.
   Future<bool> refreshListAndWorkingSse({bool force = false}) async {
     if (client == null) return false;
     try {
-      if (force || !_sseByDir.containsKey(_kGlobalWatchdog)) {
-        _startSse(_kGlobalWatchdog);
+      if (force || _sse == null) {
+        _startSse();
       }
       List<ProjectModel> newProjects;
       final worktreesByDir = <String, List<String>>{};
@@ -1342,9 +1342,6 @@ class ServerStore extends ChangeNotifier {
         conv.sessionUpdated = fresh?.updated;
         if (fresh != null) conv.clearWorkspaceMissing();
       }
-      // Start SSE for busy/retry sessions + active conversation.
-      _startRequiredSse();
-      _trimSse();
       _lastFullRefreshAt = DateTime.now();
       connected = true;
       _scheduleCacheSave();
@@ -1390,25 +1387,6 @@ class ServerStore extends ChangeNotifier {
     unawaited(_backfillPermissions());
     notifyListeners();
     return true;
-  }
-
-  /// Start SSE for all busy/retry sessions + active conversation directory.
-  void _startRequiredSse() {
-    for (final s in _sessions) {
-      final status = _statusMap[s.id];
-      if (status != null &&
-          (status.type == 'busy' || status.type == 'retry') &&
-          s.directory.isNotEmpty) {
-        _startSse(s.directory, required: true);
-      }
-    }
-    final activeId = _activeSessionId;
-    if (activeId != null) {
-      final s = sessionById(activeId);
-      if (s != null && s.directory.isNotEmpty) {
-        _startSse(s.directory, required: true);
-      }
-    }
   }
 
   Future<void> _reconcile() async {
@@ -1506,34 +1484,38 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  void _onSseState(String dir, SseState s) {
-    if (dir == _kGlobalWatchdog) {
-      _watchdogConnected = s.connected;
-      // Mark "failed" whenever the watchdog enters reconnecting state.
-      // On a normal start the first state event is connected:true (no
-      // reconnecting), so the banner stays suppressed. On a no-network
-      // start the first event is reconnecting:true — the banner shows.
-      // On a post-connect drop, the reconnecting event also fires — same.
-      if (!s.connected && s.reconnecting) {
-        _watchdogFailed = true;
-      }
+  void _onSseState(SseState s) {
+    final wasLive = _sseLive;
+    _sseLive = s.connected;
+    // Mark "failed" whenever the stream enters reconnecting state.
+    // On a normal start the first state event is connected:true (no
+    // reconnecting), so the banner stays suppressed. On a no-network
+    // start the first event is reconnecting:true — the banner shows.
+    // On a post-connect drop, the reconnecting event also fires — same.
+    if (!s.connected && s.reconnecting) {
+      _sseFailed = true;
     }
-    // While ANY SSE client is reconnecting (watchdog or directory — the
-    // server might be unreachable), probe /global/health every 5s. A
-    // successful probe proves reachability long before the exponential
-    // backoff (up to 30s) would fire, so we kick all clients out of their
-    // sleep immediately. Only the watchdog's connected state stops the
+    // While the stream is reconnecting (server might be unreachable), probe
+    // /global/health every 5s. A successful probe proves reachability long
+    // before the exponential backoff (up to 30s) would fire, so we kick the
+    // client out of its sleep immediately. The connected state stops the
     // probe (authoritative reachability signal).
     if (s.reconnecting) {
       _startHealthProbe();
-    } else if (dir == _kGlobalWatchdog && s.connected) {
+    } else if (s.connected) {
       _stopHealthProbe();
     }
-    // Only watchdog's reconnecting → connected triggers a reconcile.
-    if (dir == _kGlobalWatchdog && s.reconnecting) {
+    if (s.reconnecting) {
       _needsStaleMarking = true;
     }
-    if (dir == _kGlobalWatchdog && !s.reconnecting && s.connected) {
+    // Schedule reconcile ONLY on the not-live → live transition. The client
+    // emits connected state on EVERY data frame; scheduling per frame would
+    // reset the 800ms debounce on every token of any active stream, deferring
+    // the post-disconnect reconcile indefinitely while the server is busy.
+    // Reconcile is the sole recovery path for the disconnect window
+    // (design-sse-global-event.md §1.3), so it must fire on reconnect
+    // regardless of stream traffic.
+    if (!s.reconnecting && s.connected && !wasLive) {
       _scheduleReconcile();
     }
     notifyListeners();
@@ -1567,9 +1549,7 @@ class ServerStore extends ChangeNotifier {
       }
       AppLogger.I.i(
           _tag, 'health probe: server reachable, kicking SSE reconnect');
-      for (final sse in _sseByDir.values) {
-        sse.reconnectNow();
-      }
+      _sse?.reconnectNow();
       _stopHealthProbe();
     } catch (e) {
       if (generation != _healthProbeGeneration || _healthProbeTimer == null) {
@@ -1588,20 +1568,28 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// Test seam to drive SSE events directly into [_onEvent] (which is library-
-  /// private). Lets tests assert the `message.part.updated` case's
-  /// `break`->`return` (LPS-1) throttle behavior through the real event route
-  /// (including the switch's trailing :811 notify).
+  /// private), BYPASSING the directory gate. Lets tests assert the
+  /// `message.part.updated` case's `break`->`return` (LPS-1) throttle behavior
+  /// through the real event route (including the switch's trailing notify)
+  /// without seeding projects/sessions for the gate.
   @visibleForTesting
   void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);
 
-  /// Test seam to drive SSE lifecycle states into [_onSseState]. Used by
-  /// health-probe tests to simulate watchdog reconnecting/connected.
+  /// Test seam driving an event through the real global-stream route
+  /// [_onGlobalEvent] INCLUDING the directory gate.
   @visibleForTesting
-  void onSseStateForTesting(String dir, SseState s) => _onSseState(dir, s);
+  void onGlobalEventForTesting(String directory, OpencodeEvent ev) =>
+      _onGlobalEvent(GlobalOpencodeEvent(directory: directory, event: ev));
 
-  /// Test seam exposing the global watchdog key for state-drive tests.
+  /// Test seam exposing the gate for direct assertions.
   @visibleForTesting
-  static const String globalWatchdogKeyForTesting = _kGlobalWatchdog;
+  bool isGatedDirectoryForTesting(String directory) =>
+      _isGatedDirectory(directory);
+
+  /// Test seam to drive SSE lifecycle states into [_onSseState]. Used by
+  /// health-probe tests to simulate reconnecting/connected.
+  @visibleForTesting
+  void onSseStateForTesting(SseState s) => _onSseState(s);
 
   /// Test seam for the REST bulk-fetch path [addSessionsForTesting] merges a
   /// list of sessions into a per-id map exactly as `_fetchAllSessions` does,
@@ -1705,15 +1693,24 @@ class ServerStore extends ChangeNotifier {
   }
 
   @visibleForTesting
-  void installSseForTesting(String directory, SseClient sse) {
-    _sseByDir[directory] = sse;
+  void installSseForTesting(SseClient sse) {
+    _sse = sse;
   }
 
   @visibleForTesting
-  bool hasSseForTesting(String directory) => _sseByDir.containsKey(directory);
+  bool get hasSseForTesting => _sse != null;
 
   @visibleForTesting
   Future<void> stopSseForTesting() => _stopSse(flushCache: false);
+
+  /// Global-stream entry point: gate by envelope directory, then route into
+  /// [_onEvent]. `'global'` frames (`server.connected` / `server.heartbeat`)
+  /// bypass the gate — they carry no directory and drive connection state.
+  void _onGlobalEvent(GlobalOpencodeEvent gev) {
+    final directory = gev.directory;
+    if (directory != 'global' && !_isGatedDirectory(directory)) return;
+    _onEvent(gev.event);
+  }
 
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
@@ -1987,16 +1984,6 @@ class ServerStore extends ChangeNotifier {
     // 回填 directory：question.asked 早于 session 加载时，conv 可能已用空
     // directory 创建；session 到达后补上，让后续 reply/reject 能带上 directory。
     _backfillConversationDirectory(s.id, s.directory);
-    // A new/updated session — only start SSE if it's busy/retry or active.
-    if (s.directory.isNotEmpty) {
-      final status = _statusMap[s.id];
-      final isWorking = status != null &&
-          (status.type == 'busy' || status.type == 'retry');
-      final isActive = _activeSessionId == s.id;
-      if (isWorking || isActive) {
-        _startSse(s.directory, required: true);
-      }
-    }
   }
 
   void _removeSession(String id) {
@@ -2012,71 +1999,7 @@ class ServerStore extends ChangeNotifier {
     // observed session is hard-deleted (PA-5 locks this invariant). The entry
     // is stale only in the sense of "session no longer exists server-side",
     // which doesn't affect sort correctness for the remaining sessions.
-    _trimSse();
     _scheduleCacheSave();
-  }
-
-  /// LRU eviction + stale directory cleanup. Merges the old `_pruneSse()`
-  /// logic with idle SSE pool management.
-  ///
-  /// Rules:
-  /// 1. Watchdog is never evicted.
-  /// 2. Directories not in `_eventDirectories()` are closed immediately.
-  /// 3. Required directories (busy/retry + active conversation) are kept.
-  /// 4. Non-required (idle) SSE are capped at `_kMaxIdleSseConnections`,
-  ///    evicting oldest by `lastEventAt`.
-  void _trimSse() {
-    // 1. Compute required directories.
-    final requiredDirs = <String>{};
-    for (final s in _sessions) {
-      final status = _statusMap[s.id];
-      if (status != null &&
-          (status.type == 'busy' || status.type == 'retry') &&
-          s.directory.isNotEmpty) {
-        requiredDirs.add(s.directory);
-      }
-    }
-    final activeId = _activeSessionId;
-    if (activeId != null) {
-      final s = sessionById(activeId);
-      if (s != null && s.directory.isNotEmpty) {
-        requiredDirs.add(s.directory);
-      }
-    }
-
-    // 2. Clean up + classify.
-    final validDirs = _eventDirectories();
-    final removable = <String>[];
-    for (final dir in _sseByDir.keys.toList()) {
-      if (dir == _kGlobalWatchdog) continue;
-      if (!validDirs.contains(dir)) {
-        _stopSseForDirectory(dir);
-        continue;
-      }
-      if (requiredDirs.contains(dir)) {
-        _sseRequired[dir] = true;
-        continue;
-      }
-      _sseRequired[dir] = false;
-      removable.add(dir);
-    }
-
-    // 3. Evict oldest idle SSE if over limit.
-    removable.sort((a, b) =>
-        _sseByDir[a]!.lastEventAt.compareTo(_sseByDir[b]!.lastEventAt));
-    while (removable.length > _kMaxIdleSseConnections) {
-      final oldest = removable.removeAt(0);
-      _stopSseForDirectory(oldest);
-    }
-  }
-
-  Future<void> _stopSseForDirectory(String dir) {
-    _sseSubs[dir]?.cancel();
-    _sseSubs.remove(dir);
-    _sseStateSubs[dir]?.cancel();
-    _sseStateSubs.remove(dir);
-    _sseRequired.remove(dir);
-    return _sseByDir.remove(dir)?.stop() ?? Future.value();
   }
 
   Future<void> _teardown({bool flushCache = true}) async {
@@ -2251,9 +2174,9 @@ class ServerStore extends ChangeNotifier {
   }
 
   /// Called when the app returns to foreground. Decision logic:
-  /// - No watchdog → SSE was torn down by pause → full refresh.
-  /// - Has watchdog but last refresh >30s ago → refresh.
-  /// - Has watchdog and recent refresh → just backfill permissions.
+  /// - No stream → SSE was torn down by pause → full refresh.
+  /// - Has stream but last refresh >30s ago → refresh.
+  /// - Has stream and recent refresh → just backfill permissions.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
     _foreground = true;
@@ -2265,21 +2188,19 @@ class ServerStore extends ChangeNotifier {
       return;
     }
 
-    // Wake all SSE clients sleeping in reconnect backoff (earned under
+    // Wake the SSE client sleeping in reconnect backoff (earned under
     // background/Doze suspended-network conditions). The app is now in the
     // foreground with the network available — reconnect immediately instead
     // of waiting out the exponential sleep (up to 30s).
-    for (final c in _sseByDir.values) {
-      c.reconnectNow();
-    }
+    _sse?.reconnectNow();
 
-    // No watchdog: SSE was torn down (pause timer fired). Full refresh.
-    if (!_sseByDir.containsKey(_kGlobalWatchdog)) {
+    // No stream: SSE was torn down (pause timer fired). Full refresh.
+    if (_sse == null) {
       await refreshListAndWorkingSse(force: true);
       return;
     }
 
-    // Has watchdog but data is stale.
+    // Stream present but data is stale.
     final stale = _lastFullRefreshAt == null ||
         DateTime.now().difference(_lastFullRefreshAt!) > kMaxRefreshInterval;
     if (stale) {
@@ -2292,24 +2213,23 @@ class ServerStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Stop all SSE connections without clearing cached data (used by pause).
+  /// Stop the global SSE connection without clearing cached data (used by pause).
   Future<void> _stopSse({bool flushCache = true}) async {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
     _stopHealthProbe();
-    final eventSubs = _sseSubs.values.toList();
-    final stateSubs = _sseStateSubs.values.toList();
-    final clients = _sseByDir.values.toList();
-    _sseSubs.clear();
-    _sseStateSubs.clear();
-    _sseByDir.clear();
-    _sseRequired.clear();
-    _watchdogConnected = false;
-    _watchdogFailed = false;
+    final eventSub = _sseSub;
+    final stateSub = _sseStateSub;
+    final client = _sse;
+    _sseSub = null;
+    _sseStateSub = null;
+    _sse = null;
+    _sseLive = false;
+    _sseFailed = false;
     final stops = <Future<void>>[
-      ...eventSubs.map((sub) => sub.cancel()),
-      ...stateSubs.map((sub) => sub.cancel()),
-      ...clients.map((sse) => sse.stop()),
+      if (eventSub != null) eventSub.cancel(),
+      if (stateSub != null) stateSub.cancel(),
+      if (client != null) client.stop(),
     ];
     // Flush pending cache save before canceling — prevents data loss on
     // pause/disconnect (up to 2s of SSE updates would be dropped).

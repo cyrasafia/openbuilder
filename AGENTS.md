@@ -153,7 +153,8 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design-incremental-reconcile.md` | 增量对账 + 分段懒加载（取代全量 reconcile） |
 | `design-message-accumulation.md` | SSE 消息累积 + reconcile 对账 |
 | `design-load-retry.md` | 首次加载退避重试 + 加载动效 |
-| `design-on-demand-sse.md` | 按需 SSE 连接池 |
+| `design-on-demand-sse.md` | 按需 SSE 连接池（**已被取代**，仅存历史；§1.3 误判记录见下条） |
+| `design-sse-global-event.md` | SSE 单全局流 `/global/event` 替代按需多连接池（已定稿待实施；含 2026-07 裸 `/event` 实测误判复盘——过滤端点被泛化为"单流不可用"、Last-Event-ID 从未生效） |
 | `design-local-cache.md` | 离线缓存兜底 |
 | `design-optimistic-messages.md` | 乐观消息插入 |
 | `design-session-status.md` | 会话状态同步 |

@@ -1099,8 +1099,8 @@ class ConversationStore extends ChangeNotifier {
   void markWorkspaceMissing() {
     if (workspaceMissing) return;
     // A session whose worktree is gone cannot be busy; settle the status so
-    // the compose bar drops the stop button and `_startRequiredSse`-style
-    // busy checks don't keep reaching for the dead directory.
+    // the compose bar drops the stop button and busy checks don't keep
+    // reaching for the dead directory.
     setStatus('idle');
     workspaceMissing = true;
     if (!_disposed) notifyListeners();

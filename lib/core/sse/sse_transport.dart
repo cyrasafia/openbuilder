@@ -84,7 +84,8 @@ Stream<String> eventDataStream(Uri uri, Map<String, String> headers,
       } else if (line.startsWith('data')) {
         dataLines.add(line.substring(4).replaceFirst(RegExp(r'^ '), ''));
       }
-      // `event:`, `id:`, comments ignored (id tracked from payload in SseClient)
+      // `event:`, `id:`, comments ignored. Server frames carry no `id:` and
+      // `Last-Event-ID` is not honored — recovery is REST reconciliation.
     }
   }
   // flush trailing

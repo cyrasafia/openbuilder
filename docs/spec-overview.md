@@ -143,8 +143,8 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 | 权限响应 | `POST /session/:id/permissions/:pid` | `PermissionRepo.respond(...)` | body `{response, remember?}` |
 | 文件树 | `GET /file?path=` · `/file/content?path=` | `FileRepo.list/read` | `FileContent{type,content,patch}` |
 | 文件搜索 | `GET /find?pattern=` · `/find/file?query=` · `/find/symbol?query=` | `FileRepo.search*` | |
-| 实时事件 | `GET /event`（SSE） | `EventRepo.stream(dir)` | 首事件 `server.connected` |
-| 全局事件 | `GET /global/event`（SSE） | `EventRepo.globalStream()` | 跨实例，可选 |
+| 实时事件（单全局流，已实施） | `GET /global/event`（SSE，v1.0.66+） | `EventRepo.globalStream()` | GlobalBus 无过滤直通，信封 `{directory, payload}` 客户端路由/闸门，见 [design-sse-global-event.md](design-sse-global-event.md) |
+| 实时事件（历史方案，已替换） | `GET /event?directory=`（SSE） | `EventRepo.stream(dir)` | 同一总线按 directory 过滤的子集；裸 `/event` 不带参数只推 connected/heartbeat（design-on-demand-sse.md §1.3 误判出处） |
 
 > 表中 `Repo.*` 为规划命名，实际未抽独立 `repositories/` 包：原始方法由手写 `OpencodeClient` 提供，`ServerStore` / `ConversationStore`（ChangeNotifier）直接调用并聚合状态。
 
@@ -153,9 +153,10 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 ## 5. SSE 与实时进度（核心）
 
 `SseClient`（`core/sse/`）：
-- 基于 `dio` 的 `send` 拿 `ResponseBody.stream`，按行解析 `data:` / `event:` / `id:`
+- 端点：单条 `GET /global/event` 全局流，信封按 directory 客户端路由/闸门（[design-sse-global-event.md](design-sse-global-event.md)，2026-08-24 已实施）
+- 基于 `dio` 的 `send` 拿 `ResponseBody.stream`，按行解析 `data:`
 - 鉴权头与 baseUrl 复用 `core/net` 的 dio 实例（带可选 basic auth）
-- 自动重连：指数退避（1→30s 上限），重连后重发 `Last-Event-ID`
+- 自动重连：指数退避（1→30s 上限）。~~重连后重发 `Last-Event-ID`~~——server SSE 帧无 `id:` 字段（`id: undefined`），`Last-Event-ID` 从未生效，断线恢复全靠 REST 对账（见 design-sse-global-event.md §1.3）
 - 生命周期：app 进前台→连；进后台→保持 30s 后断（省电），回前台→重连 + 全量对账
 - 事件由 `ServerStore` / `ConversationStore`（ChangeNotifier）直接处理并 `notifyListeners()`，各 feature 用 `ListenableBuilder` 订阅更新
 

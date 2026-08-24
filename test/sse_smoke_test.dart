@@ -7,16 +7,17 @@ import 'package:open_builder/core/sse/sse_client.dart';
 /// Verifies the SSE IO transport against the local opencode server (plan §8).
 /// Expects at least one event (server.connected) within a few seconds.
 void main() {
-  test('SseClient receives an event from /event (localhost:15120)', () async {
-    final client = SseClient(uri: Uri.parse('http://localhost:15120/event'));
-    final completer = Completer<OpencodeEvent>();
+  test('SseClient receives an event from /global/event (localhost:15120)', () async {
+    final client = SseClient(baseUrl: 'http://localhost:15120');
+    final completer = Completer<GlobalOpencodeEvent>();
     final sub = client.events.listen((e) {
       if (!completer.isCompleted) completer.complete(e);
     });
     client.start();
     try {
       final ev = await completer.future.timeout(const Duration(seconds: 8));
-      expect(ev.type, isNotEmpty);
+      expect(ev.event.type, isNotEmpty);
+      expect(ev.directory, isNotEmpty);
     } on TimeoutException {
       // CI / non-dev machines won't have the local server; skip gracefully.
       await sub.cancel();
@@ -34,7 +35,7 @@ void main() {
   test('reconnectNow wakes from backoff and reconnects quickly', () async {
     // Discard port: connection refused instantly, so each _connect() fails
     // immediately and the client walks the backoff ladder deterministically.
-    final client = SseClient(uri: Uri.parse('http://127.0.0.1:9/event'));
+    final client = SseClient(baseUrl: 'http://127.0.0.1:9');
     final attemptTimes = <int, DateTime>{};
     final sub = client.state.listen((s) {
       if (s.reconnecting) attemptTimes[s.attempt] = DateTime.now();
@@ -61,7 +62,7 @@ void main() {
     // Kick landing while NOT pending (e.g., mid-connect) must still take
     // effect: the flag survives into the first _scheduleReconnect, whose
     // sleep loop exits immediately instead of sleeping the full backoff.
-    final client = SseClient(uri: Uri.parse('http://127.0.0.1:9/event'));
+    final client = SseClient(baseUrl: 'http://127.0.0.1:9');
     final attemptTimes = <int, DateTime>{};
     final sub = client.state.listen((s) {
       if (s.reconnecting) attemptTimes[s.attempt] = DateTime.now();
@@ -96,7 +97,7 @@ void main() {
     server.listen((socket) => socket.drain<void>());
 
     final client = SseClient(
-      uri: Uri.parse('http://127.0.0.1:${server.port}/event'),
+      baseUrl: 'http://127.0.0.1:${server.port}',
       label: 'test-hang',
     );
     final attempts = <int>[];

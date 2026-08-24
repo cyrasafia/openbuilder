@@ -6,9 +6,9 @@ import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 
-/// Tests for the health-probe fast-recovery path: while the watchdog SSE is
+/// Tests for the health-probe fast-recovery path: while the global SSE is
 /// reconnecting (network/server down), ServerStore probes GET /global/health
-/// periodically and kicks all clients out of backoff on the first healthy
+/// periodically and kicks the client out of backoff on the first healthy
 /// response — bounding recovery detection to the probe interval instead of
 /// the 30s backoff ceiling.
 
@@ -22,16 +22,14 @@ void main() {
     ServerStore.healthProbeInterval = savedInterval;
   });
 
-  test('probe starts on watchdog reconnecting, stops after healthy kick',
-      () async {
+  test('probe starts on reconnecting, stops after healthy kick', () async {
     final client = _ProbeMockClient(healthy: false);
     final store = ServerStore()..client = client;
-    store.onSseStateForTesting(ServerStore.globalWatchdogKeyForTesting,
-        const SseState(reconnecting: true, attempt: 1));
+    store.onSseStateForTesting(const SseState(reconnecting: true, attempt: 1));
     // Failing probes tick every 200ms.
     await Future.delayed(const Duration(milliseconds: 550));
     expect(client.healthCalls, greaterThanOrEqualTo(1),
-        reason: 'probe should tick while watchdog is reconnecting');
+        reason: 'probe should tick while the SSE is reconnecting');
     // Server comes back — next tick succeeds, probe stops.
     client.healthy = true;
     await Future.delayed(const Duration(milliseconds: 450));
@@ -42,45 +40,29 @@ void main() {
     store.dispose();
   });
 
-  test('probe stops when watchdog connects', () async {
+  test('probe stops when the stream connects', () async {
     final client = _ProbeMockClient(healthy: false);
     final store = ServerStore()..client = client;
-    store.onSseStateForTesting(ServerStore.globalWatchdogKeyForTesting,
-        const SseState(reconnecting: true, attempt: 1));
-    store.onSseStateForTesting(ServerStore.globalWatchdogKeyForTesting,
-        const SseState(connected: true));
+    store.onSseStateForTesting(const SseState(reconnecting: true, attempt: 1));
+    store.onSseStateForTesting(const SseState(connected: true));
     await Future.delayed(const Duration(milliseconds: 450));
     expect(client.healthCalls, 0,
-        reason: 'probe stopped before its first tick when watchdog connects');
-    store.dispose();
-  });
-
-  // B: directory SSE (not just watchdog) reconnecting also triggers probe.
-  test('probe starts on directory SSE reconnecting (B: any client)', () async {
-    final client = _ProbeMockClient(healthy: false);
-    final store = ServerStore()..client = client;
-    // Simulate a directory SSE going reconnecting (not the watchdog).
-    store.onSseStateForTesting(
-        '/some/dir', const SseState(reconnecting: true, attempt: 1));
-    await Future.delayed(const Duration(milliseconds: 450));
-    expect(client.healthCalls, greaterThanOrEqualTo(1),
-        reason:
-            'probe should start when a directory SSE goes reconnecting, not just the watchdog');
+        reason: 'probe stopped before its first tick when the stream connects');
     store.dispose();
   });
 
   test('stale healthy response does not stop a newer probe cycle', () async {
     final client = _DelayedProbeMockClient();
     final store = ServerStore()..client = client;
-    store.onSseStateForTesting(ServerStore.globalWatchdogKeyForTesting,
-        const SseState(reconnecting: true, attempt: 1));
+    store.onSseStateForTesting(const SseState(reconnecting: true, attempt: 1));
     await Future.delayed(const Duration(milliseconds: 250));
     expect(client.healthCalls, 1);
 
-    store.onSseStateForTesting(ServerStore.globalWatchdogKeyForTesting,
-        const SseState(connected: true));
-    store.onSseStateForTesting(
-        '/some/dir', const SseState(reconnecting: true, attempt: 1));
+    // Drop → recover → drop again: the second reconnecting starts a NEW probe
+    // cycle (generation bump). The first cycle's delayed healthy response
+    // resolves after that and must not stop the new timer.
+    store.onSseStateForTesting(const SseState(connected: true));
+    store.onSseStateForTesting(const SseState(reconnecting: true, attempt: 2));
     client.firstResponse.complete(HealthInfo(healthy: true, version: 'test'));
 
     await Future.delayed(const Duration(milliseconds: 500));

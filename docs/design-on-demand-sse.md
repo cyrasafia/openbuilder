@@ -1,5 +1,10 @@
 # 按需 SSE 连接池 — 设计文档
 
+> **⚠️ 已被取代（2026-08-24）**：[design-sse-global-event.md](design-sse-global-event.md)
+> 的单条 `/global/event` 全局流取代本文的多连接模型（watchdog/required/idle 池整体删除）。
+> 本文 §1.3"关键实测结论"是误判——实测的是**裸 `/event`（过滤端点）**而非 `/global/event`，
+> 误判分析与代价记录见该文档 §1。本文以下为历史记录。
+>
 > 目标：解决 mobile 端通过 Tailscale 连接本地 opencode 服务端时，SSE 连接建立慢、列表页长期显示"重连中" banner 的问题。
 >
 > 核心思路：REST 是会话列表与状态的 source of truth；SSE 只保留 watchdog（连接探测） + 工作中的会话 + 当前交互的会话；idle 会话的 SSE 通过 LRU 池动态管理，严格控制连接数量。
@@ -40,6 +45,14 @@ for (final dir in _eventDirectories()) {
 - 不推送任何 `session.*` / `message.*` / `permission.*` 等目录内事件
 - 目录内事件必须通过 `/event?directory=<dir>` 获取
 - 服务端单进程 asyncio 能承载 86 条连接，但 mobile 在 Tailscale 下无法高效建立/维持这么多连接
+
+> **⚠️ 2026-08-24 更正：以上前三点是误判，直接导致本文档的按需池设计。**
+> 实测对象是裸 `/event`——它是按 `event.location.directory === instance.directory`
+> 过滤的端点（源码 `handlers/event.ts`），不带 `directory` 参数时无任何目录匹配，
+> 只剩 connected/heartbeat，观察为真但被泛化成了"单流不可用"。真正的无过滤单流
+> 端点 `/global/event`（GlobalBus 直通，v1.0.66 起可用，彼时已存在 8 个月）从未被测试。
+> 完整分析（含 spec 端点表"可选"标注如何屏蔽了该端点、Last-Event-ID 从未生效、
+> 按需池复杂度作为误判代价）见 [design-sse-global-event.md](design-sse-global-event.md) §1。
 
 ---
 

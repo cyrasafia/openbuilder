@@ -25,6 +25,40 @@ class OpencodeEvent {
       );
 }
 
+/// An [OpencodeEvent] with its `/global/event` envelope directory attached.
+/// `directory` is `'global'` for frames without one (`server.connected` /
+/// `server.heartbeat`).
+class GlobalOpencodeEvent {
+  final String directory;
+  final OpencodeEvent event;
+
+  const GlobalOpencodeEvent({required this.directory, required this.event});
+}
+
+/// Parses one raw SSE `data:` frame from `/global/event`.
+///
+/// Envelope: `{"directory": "/abs/dir"?, "project"?, "payload": {id,type,properties}}`.
+/// Returns null for malformed JSON, non-envelope payloads, and the `sync`
+/// double-emit (each durable event is re-sent wrapped as
+/// `{"payload":{"type":"sync","syncEvent":{…}}}` — the original event already
+/// preceded it, so the wrapper must be dropped).
+GlobalOpencodeEvent? parseGlobalEvent(String data) {
+  final Map<String, dynamic> j;
+  try {
+    j = jsonDecode(data) as Map<String, dynamic>;
+  } catch (_) {
+    return null;
+  }
+  final payload = j['payload'];
+  if (payload is! Map) return null;
+  final map = payload.cast<String, dynamic>();
+  if (map['type'] == 'sync') return null;
+  final ev = OpencodeEvent.fromJson(map);
+  if (ev.type.isEmpty) return null;
+  final directory = j['directory']?.toString() ?? 'global';
+  return GlobalOpencodeEvent(directory: directory, event: ev);
+}
+
 /// Lifecycle state of the SSE connection, for UI indicators (specs §11).
 class SseState {
   final bool connected;
@@ -34,26 +68,28 @@ class SseState {
   const SseState({this.connected = false, this.reconnecting = false, this.attempt = 0});
 }
 
-/// Connects to `/event`, parses events, tracks the last id, and reconnects with
-/// exponential backoff on the IO transport (web's EventSource reconnects by
-/// itself). Reconciliation is driven by `server.connected` (re-emitted on each
-/// connect).
+/// Connects to `GET /global/event` (single GlobalBus stream, server ≥ v1.0.66),
+/// parses envelopes, and reconnects with exponential backoff on the IO
+/// transport (web's EventSource reconnects by itself). Reconciliation is
+/// driven by `server.connected` (re-emitted on each connect).
+///
+/// No `Last-Event-ID`: server SSE frames carry no `id:` and the server never
+/// honors the header — disconnect recovery is REST reconciliation.
+/// See design-sse-global-event.md.
 class SseClient {
   final Uri uri;
   final Map<String, String> headers;
   final String label;
 
   StreamSubscription<String>? _sub;
-  final _controller = StreamController<OpencodeEvent>.broadcast();
+  final _controller = StreamController<GlobalOpencodeEvent>.broadcast();
   final _stateCtl = StreamController<SseState>.broadcast();
-  String? _lastId;
   bool _stopped = true;
   bool _connected = false;
   int _backoff = 1;
   int _reconnectAttempt = 0;
   bool _reconnectPending = false;
   bool _kickReconnect = false;
-  DateTime _lastEventAt = DateTime.now();
   Timer? _heartbeatTimer;
   // Load-bearing, NOT redundant with the transport's `.timeout()`: created
   // before the transport call, so it consistently fires first and cancels the
@@ -71,19 +107,14 @@ class SseClient {
   @visibleForTesting
   static Duration overallTimeout = const Duration(seconds: 15);
 
-  SseClient({required this.uri, this.headers = const {}, String? label})
-      : label = label ?? uri.path;
+  SseClient({required String baseUrl, this.headers = const {}, String? label})
+      : uri = Uri.parse('$baseUrl/global/event'),
+        label = label ?? '/global/event';
 
-  Stream<OpencodeEvent> get events => _controller.stream;
+  Stream<GlobalOpencodeEvent> get events => _controller.stream;
   /// Lifecycle changes (connected / reconnecting + attempt), for UI banners.
   Stream<SseState> get state => _stateCtl.stream;
   bool get isRunning => !_stopped;
-
-  /// Last time an SSE data frame was received. Used for LRU eviction.
-  /// Only updated in `_onData` — NOT on connection establishment.
-  /// Idle directories with no events keep their creation timestamp,
-  /// so LRU correctly prioritizes evicting them.
-  DateTime get lastEventAt => _lastEventAt;
 
   void _emit(SseState s) {
     if (!_stateCtl.isClosed) _stateCtl.add(s);
@@ -111,8 +142,6 @@ class SseClient {
   void _connect() {
     final h = <String, String>{
       ...headers,
-      // ignore: use_null_aware_elements
-      if (_lastId != null) 'Last-Event-ID': _lastId!,
       'Accept': 'text/event-stream',
     };
     _startHeartbeatTimer();
@@ -198,7 +227,6 @@ class SseClient {
   }
 
   void _onData(String data) {
-    _lastEventAt = DateTime.now();
     _backoff = 1; // healthy
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer(_heartbeatTimeout, _onHeartbeatTimeout);
@@ -208,14 +236,8 @@ class SseClient {
       _connectTimer = null;
       AppLogger.I.i(_tag, 'connected $label');
     }
-    try {
-      final j = jsonDecode(data) as Map<String, dynamic>;
-      final ev = OpencodeEvent.fromJson(j);
-      if (ev.id != null) _lastId = ev.id;
-      _controller.add(ev);
-    } catch (_) {
-      // ignore malformed frames
-    }
+    final gev = parseGlobalEvent(data);
+    if (gev != null) _controller.add(gev);
     // Always emit connected on receiving data — covers first connect
     // AND reconnect.
     if (!_stateCtl.isClosed) {
