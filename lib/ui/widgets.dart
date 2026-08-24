@@ -288,10 +288,10 @@ class AgentStatusCountChip extends StatelessWidget {
     return Tooltip(
       message: '$count ${_agentStatusLabel(state, AppLocalizations.of(context)!)}',
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
         decoration: BoxDecoration(
           color: background,
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(100),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
