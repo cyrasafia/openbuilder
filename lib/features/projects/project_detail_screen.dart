@@ -164,9 +164,10 @@ class ProjectDetailScreen extends StatelessWidget {
       await _createSession(context, project.worktree);
       return;
     }
-    final workspaces = project.sandboxes.isNotEmpty
-        ? project.sandboxes
-        : [project.worktree];
+    final workspaces = [
+      project.worktree,
+      ...project.sandboxes.where((dir) => dir != project.worktree),
+    ];
     final directory = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
