@@ -43,7 +43,7 @@ class _RemoveWorktreeMockClient extends OpencodeClient {
   String? lastDirectory;
   String? lastWorktreeDir;
   List<SessionModel> directorySessions = const [];
-  final List<String> archivedIds = [];
+  final List<String> deletedSessionIds = [];
   final List<String> callOrder = [];
 
   _RemoveWorktreeMockClient() : super(_noopDio());
@@ -56,10 +56,9 @@ class _RemoveWorktreeMockClient extends OpencodeClient {
   }
 
   @override
-  Future<void> archive(String sessionId,
-      {String? directory, int? archived}) async {
-    callOrder.add('archive:$sessionId');
-    archivedIds.add(sessionId);
+  Future<void> deleteSession(String sessionId, {String? directory}) async {
+    callOrder.add('delete:$sessionId');
+    deletedSessionIds.add(sessionId);
   }
 
   @override
@@ -145,7 +144,7 @@ void main() {
       expect(store.sessions.any((s) => s.id == 'sb1'), isTrue);
     });
 
-    test('archives worktree sessions before deleting the worktree', () async {
+    test('deletes worktree sessions before deleting the worktree', () async {
       final client = _RemoveWorktreeMockClient()
         ..directorySessions = [
           _session('sb1', _sandboxDir),
@@ -156,16 +155,16 @@ void main() {
 
       await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
 
-      expect(client.archivedIds, containsAll(['sb1', 'sb2']));
+      expect(client.deletedSessionIds, containsAll(['sb1', 'sb2']));
       expect(client.callOrder.first, 'list');
       expect(client.callOrder.last, 'remove');
       expect(client.callOrder.indexOf('remove'),
-          greaterThan(client.callOrder.indexOf('archive:sb1')));
+          greaterThan(client.callOrder.indexOf('delete:sb1')));
       expect(client.callOrder.indexOf('remove'),
-          greaterThan(client.callOrder.indexOf('archive:sb2')));
+          greaterThan(client.callOrder.indexOf('delete:sb2')));
     });
 
-    test('does not re-archive already archived sessions', () async {
+    test('deletes all worktree sessions including archived ones', () async {
       final client = _RemoveWorktreeMockClient()
         ..directorySessions = [
           _session('sb1', _sandboxDir),
@@ -176,7 +175,7 @@ void main() {
 
       await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
 
-      expect(client.archivedIds, ['sb1']);
+      expect(client.deletedSessionIds, containsAll(['sb1', 'sb2']));
       expect(client.removeCalls, 1);
     });
 

@@ -497,16 +497,15 @@ class ServerStore extends ChangeNotifier {
 
   /// `DELETE /experimental/worktree` — delete a worktree and do targeted local
   /// cleanup in one step. Before deletion, every session in the worktree
-  /// directory is archived server-side: the server keys sessions by directory
+  /// directory is deleted server-side: the server keys sessions by directory
   /// path only, so recreating a same-named worktree reuses the path and would
-  /// otherwise resurrect the old sessions. After the server confirms deletion,
-  /// the worktree is removed from the project's `sandboxes`, all sessions in
-  /// that directory are dropped from `_sessions` (plus their conversation /
-  /// preview / status caches), and the directory falls out of the global
-  /// stream's event gate — all without a full `refresh()`. Callers should
-  /// `await` this so the UI
-  /// behind a confirmation dialog is already in its final state when the
-  /// dialog closes.
+  /// otherwise resurrect the old sessions (including archived ones). After
+  /// the server confirms deletion, the worktree is removed from the project's
+  /// `sandboxes`, all sessions in that directory are dropped from `_sessions`
+  /// (plus their conversation / preview / status caches), and the directory
+  /// falls out of the global stream's event gate — all without a full
+  /// `refresh()`. Callers should `await` this so the UI behind a confirmation
+  /// dialog is already in its final state when the dialog closes.
   Future<void> removeWorktree(
     String projectWorktree, {
     required String worktreeDir,
@@ -514,12 +513,10 @@ class ServerStore extends ChangeNotifier {
     final c = client;
     if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
     try {
-      final orphans = (await c.sessionsForDirectory(worktreeDir))
-          .where((s) => s.archived == null);
-      final archivedAt = DateTime.now().millisecondsSinceEpoch;
+      final sessions = await c.sessionsForDirectory(worktreeDir);
       await Future.wait(
-        orphans.map(
-          (s) => c.archive(s.id, directory: worktreeDir, archived: archivedAt),
+        sessions.map(
+          (s) => c.deleteSession(s.id, directory: worktreeDir),
         ),
       );
       await c.removeWorktree(projectWorktree, worktreeDir: worktreeDir);
