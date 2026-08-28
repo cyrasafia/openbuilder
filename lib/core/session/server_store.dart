@@ -72,6 +72,16 @@ class ServerStore extends ChangeNotifier {
   /// Pending questions keyed by questionId (fed by SSE + REST backfill).
   final Map<String, QuestionRequest> _pendingQuestions = {};
 
+  /// Dedup guard: overlapping backfill runs (connect + reconcile, both tabs'
+  /// periodic refresh) would race their snapshots — a slower older run must
+  /// not overwrite a newer one's swap.
+  bool _backfillInFlight = false;
+
+  /// A trigger that arrived while [_backfillInFlight] — the run coalesces into
+  /// exactly one re-run afterwards, so a late trigger isn't dropped until the
+  /// next reconnect/resume/refresh.
+  bool _backfillDirty = false;
+
   /// 近期已解决的 question id → 登记时刻。reply/reject 命中 200 或 404 后
   /// 由 ConversationStore.onQuestionResolved 登记于此；backfill 重建 pending
   /// 时跳过未过期项，避免服务端列表清理延迟导致的「提交后又弹回」。
@@ -1397,47 +1407,72 @@ class ServerStore extends ChangeNotifier {
   Future<void> _backfillPermissions() async {
     final c = client;
     if (c == null) return;
-    _purgeExpiredResolved();
-    final prev = Map.of(_pendingPermissions);
-    _pendingPermissions.clear();
-    // R-Perm-3: fetch per all event directories (includes sandbox worktrees),
-    // not just main project worktrees, so sandbox session permissions are
-    // covered.
-    final dirs = _eventDirectories();
-    final failedDirs = <String>{};
-    for (final dir in dirs) {
-      try {
-        final pending = await c.pendingPermissions(dir);
-        for (final perm in pending) {
-          if (_recentlyResolvedPermissions.containsKey(perm.id)) {
-            AppLogger.I.i(_tag, 'backfill permission skipped (recently resolved) sid=${perm.sessionID} pid=${perm.id} dir=$dir');
-            continue;
+    if (_backfillInFlight) {
+      _backfillDirty = true;
+      return;
+    }
+    _backfillInFlight = true;
+    try {
+      _purgeExpiredResolved();
+      final prev = Map.of(_pendingPermissions);
+      // R-Perm-3: fetch per all event directories (includes sandbox worktrees),
+      // not just main project worktrees, so sandbox session permissions are
+      // covered.
+      final dirs = _eventDirectories();
+      final failedDirs = <String>{};
+      final next = <String, Permission>{};
+      for (final dir in dirs) {
+        try {
+          final pending = await c.pendingPermissions(dir);
+          for (final perm in pending) {
+            if (_recentlyResolvedPermissions.containsKey(perm.id)) {
+              AppLogger.I.i(_tag, 'backfill permission skipped (recently resolved) sid=${perm.sessionID} pid=${perm.id} dir=$dir');
+              continue;
+            }
+            next[perm.sessionID] = perm;
+            _conversations[perm.sessionID]?.onPermission(perm);
+            AppLogger.I.i(_tag, 'backfill permission re-inject sid=${perm.sessionID} pid=${perm.id} dir=$dir');
           }
-          _pendingPermissions[perm.sessionID] = perm;
-          _conversations[perm.sessionID]?.onPermission(perm);
-          AppLogger.I.i(_tag, 'backfill permission re-inject sid=${perm.sessionID} pid=${perm.id} dir=$dir');
+        } catch (_) {
+          failedDirs.add(dir);
         }
-      } catch (_) {
-        failedDirs.add(dir);
+      }
+      // Only restore SSE-delivered permissions whose session's directory had a
+      // failed REST fetch — successful fetches are authoritative.
+      for (final entry in prev.entries) {
+        final session = sessionById(entry.key);
+        final dir = session?.directory ?? '';
+        if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
+          if (_recentlyResolvedPermissions.containsKey(entry.value.id)) continue;
+          next.putIfAbsent(entry.key, () => entry.value);
+        }
+      }
+      _mergeWindowMutations(
+          next: next,
+          prev: prev,
+          live: _pendingPermissions,
+          idOf: (p) => p.id,
+          isResolved: _recentlyResolvedPermissions.containsKey);
+      // R-Perm-1: notify if the permission map changed so list shield updates.
+      final changed = _pendingPermissions.length != next.length ||
+          !_pendingPermissions.keys.toSet().containsAll(next.keys);
+      // The live map is only replaced synchronously here — clearing up front and
+      // refilling per REST response would expose a half-empty snapshot to any
+      // notify during the window (indicator flicker paused ↔ working).
+      _pendingPermissions
+        ..clear()
+        ..addAll(next);
+      if (changed) {
+        notifyListeners();
+      }
+      await _backfillQuestions();
+    } finally {
+      _backfillInFlight = false;
+      if (_backfillDirty) {
+        _backfillDirty = false;
+        unawaited(_backfillPermissions());
       }
     }
-    // Only restore SSE-delivered permissions whose session's directory had a
-    // failed REST fetch — successful fetches are authoritative.
-    for (final entry in prev.entries) {
-      final session = sessionById(entry.key);
-      final dir = session?.directory ?? '';
-      if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
-        if (_recentlyResolvedPermissions.containsKey(entry.value.id)) continue;
-        _pendingPermissions.putIfAbsent(entry.key, () => entry.value);
-      }
-    }
-    // R-Perm-1: notify if the permission map changed so list shield updates.
-    final changed = prev.length != _pendingPermissions.length ||
-        !prev.keys.toSet().containsAll(_pendingPermissions.keys);
-    if (changed) {
-      notifyListeners();
-    }
-    unawaited(_backfillQuestions());
   }
 
   /// Fetch pending questions via REST, same pattern as permissions.
@@ -1446,9 +1481,9 @@ class ServerStore extends ChangeNotifier {
     if (c == null) return;
     _purgeExpiredResolved();
     final prev = Map.of(_pendingQuestions);
-    _pendingQuestions.clear();
     final dirs = _eventDirectories();
     final failedDirs = <String>{};
+    final next = <String, QuestionRequest>{};
     for (final dir in dirs) {
       try {
         final pending = await c.listQuestions(directory: dir);
@@ -1457,7 +1492,7 @@ class ServerStore extends ChangeNotifier {
             AppLogger.I.i(_tag, 'backfill question skipped (recently resolved) sid=${q.sessionID} qid=${q.id} dir=$dir');
             continue;
           }
-          _pendingQuestions[q.id] = q;
+          next[q.id] = q;
           _conversations[q.sessionID]?.onQuestion(q);
           AppLogger.I.i(_tag, 'backfill question re-inject sid=${q.sessionID} qid=${q.id} dir=$dir');
         }
@@ -1472,13 +1507,46 @@ class ServerStore extends ChangeNotifier {
       final dir = session?.directory ?? '';
       if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
         if (_recentlyResolvedQuestions.containsKey(entry.key)) continue;
-        _pendingQuestions.putIfAbsent(entry.key, () => entry.value);
+        next.putIfAbsent(entry.key, () => entry.value);
       }
     }
-    if (prev.length != _pendingQuestions.length ||
-        !prev.keys.toSet().containsAll(_pendingQuestions.keys)) {
+    _mergeWindowMutations(
+        next: next,
+        prev: prev,
+        live: _pendingQuestions,
+        idOf: (q) => q.id,
+        isResolved: _recentlyResolvedQuestions.containsKey);
+    final changed = _pendingQuestions.length != next.length ||
+        !_pendingQuestions.keys.toSet().containsAll(next.keys);
+    _pendingQuestions
+      ..clear()
+      ..addAll(next);
+    if (changed) {
       notifyListeners();
     }
+  }
+
+  /// Fold mutations that hit [live] while an async rebuild was in flight into
+  /// [next]: entries added or replaced by SSE are newer than the REST snapshot
+  /// and win; entries removed from [live] (replied / locally resolved) must not
+  /// be resurrected by a stale snapshot. [isResolved] is re-applied after the
+  /// merge so a card asked and resolved entirely inside the window — its echo
+  /// already recorded into [next] by the REST loop — is dropped too.
+  void _mergeWindowMutations<V>(
+      {required Map<String, V> next,
+      required Map<String, V> prev,
+      required Map<String, V> live,
+      required String Function(V) idOf,
+      required bool Function(String id) isResolved}) {
+    final prevIds = prev.values.map(idOf).toSet();
+    final liveIds = live.values.map(idOf).toSet();
+    next.removeWhere(
+        (_, v) => prevIds.contains(idOf(v)) && !liveIds.contains(idOf(v)));
+    live.forEach((key, v) {
+      final old = prev[key];
+      if (old == null || idOf(old) != idOf(v)) next[key] = v;
+    });
+    next.removeWhere((_, v) => isResolved(idOf(v)));
   }
 
   void _onSseState(SseState s) {
@@ -1680,6 +1748,11 @@ class ServerStore extends ChangeNotifier {
   @visibleForTesting
   Future<void> backfillQuestionsForTesting() => _backfillQuestions();
 
+  /// Test seam: drive `_backfillPermissions` directly (atomic-swap regression:
+  /// the live map must stay populated while the REST fetches are in flight).
+  @visibleForTesting
+  Future<void> backfillPermissionsForTesting() => _backfillPermissions();
+
   /// Test seam: simulate TTL expiry by clearing the resolved-guard sets.
   /// Used to verify the "re-surface if still pending server-side" path
   /// (关键设计决策 4).
@@ -1856,7 +1929,10 @@ class ServerStore extends ChangeNotifier {
             ev.properties['permissionID']?.toString();
         AppLogger.I.i(_tag, 'SSE permission.replied sid=$sid pid=$pid');
         if (sid != null && pid != null) {
-          _pendingPermissions.removeWhere((_, p) => p.id == pid);
+          // Register the resolved guard too (not just live-map removal): a
+          // reply made by another client must not be resurrected by the next
+          // backfill's REST snapshot (same mechanism as the local reply path).
+          _markPermissionResolved(pid);
           _conversations[sid]?.onPermissionReplied(pid);
         }
         break;
@@ -1883,7 +1959,9 @@ class ServerStore extends ChangeNotifier {
         final sid = ev.properties['sessionID']?.toString() ?? existing?.sessionID;
         AppLogger.I.i(_tag, 'SSE ${ev.type} sid=$sid qid=$qid');
         if (qid != null) {
-          _pendingQuestions.remove(qid);
+          // Same as permission.replied: register the resolved guard so a
+          // cross-client reply isn't resurrected by the next backfill.
+          _markQuestionResolved(qid);
         }
         if (sid != null && qid != null) {
           _conversations[sid]?.onQuestionReplied(qid);
