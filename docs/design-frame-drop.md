@@ -16,23 +16,17 @@
 - 掉帧判定：`max(build, raster)` 超过当前刷新率的帧预算。`build` 高 → 构建/布局/排版重；`raster` 高 → 绘制/合成重。两者修法不同，**先分清线程再谈优化**。
 - 本项目 `main.dart:34` 调 `FlutterDisplayMode.setHighRefreshRate()`，目标机多为 120Hz，**预算按 8.3ms 计**——这是掉帧比 60Hz 机型更明显的根本背景。
 
-### 0.2 测量工具：OverlayPerfProbe（已移除，留档可重建）
+### 0.2 测量工具：PerfProbe（常驻版，已入库）
 
-排查 JANK-1 时写过一个临时探针 `lib/core/logging/overlay_perf_probe.dart`（定位完成后已按惯例删除）。核心做法可复用于后续任何问题点：
+排查 JANK-1/3 时的临时探针（OverlayPerfProbe / KbPerf，用完即删）已沉淀为**常驻探针** `lib/core/logging/perf_probe.dart`，供任意页面/转场/SSE 窗口抓帧定位主因：
 
-- 在入口（浮层打开 / 转场开始）调 `markOpen(label)`：装 `SchedulerBinding.instance.addTimingsCallback` 收集每帧 `FrameTiming`，并起一个 `Timer(窗口+300ms)` 到点收尾（不能依赖"窗口后还有帧回调"，idle 时回调不来）。
-- 收尾时汇总：`frames / build max / build avg / raster max / raster avg / over8.4ms / over16.7ms`，`debugPrint` + `AppLogger` 双写。
-- 可选 `buildDone(label, elapsed)`：用 `Stopwatch` 量某段同步构建（如某个 `builder`）的耗时，用于**分离"构建 widget"与"布局/排版"**。注意它只量 widget 对象构建，不含 layout/paint。
-- 窗口取 ~1000ms 覆盖入场动画（bottom sheet 入场约 250ms）+ 余量。
+- **挂载**：`main.dart:55` 在 init 后 `if (kDebugMode || kProfileMode) PerfProbe.I.start()`——release 树摇为空（所有公开 API 未 start 时 no-op），debug/profile 常驻。
+- **帧采集**：`SchedulerBinding.addTimingsCallback` 每帧记录 `buildDuration`/`rasterDuration`；超 8.3ms(120Hz) 的帧**立即**写 AppLogger + debugPrint（profile 下 `flutter run` 控制台可见），并附**邻近事件**（±3 帧内的 `markEvent` 标签）与脏 widget 类型/landmark（仅 debug，profile 无 `debugOnRebuildDirtyWidget`）。
+- **窗口 API**：`beginWindow(label)`/`endWindow(label)`——窗口化抓帧，收尾输出 `frames / buildMax / buildMed / rasterMax / over8.3 / over16.7 / rebuilds / types / landmarks / events` 汇总。已内建：会话页 initState 开 `enter-session:<sid>` 窗口，1.2s 后收尾（覆盖转场+首批加载/SSE）。
+- **事件 API**：`markEvent(label)`——与帧数据同日志流，用于长帧归因。已内建打点：`reconcile-start/done`、`refresh-start/done`、`sse-notify <type>`（`_onEvent` 尾部 notify）、`msg-updated-notify`、`conv-build force-reload`。
+- **运行方式**：`scripts/run_profile.sh`（自动设 Flutter 路径 + JDK 21 + Android SDK 后 `flutter run --profile "$@"`）。日志同时在控制台（`[PerfProbe]` 前缀）与 AppLogger 文件（`files/logs/<date>.log`）。
 
-重建要点（伪代码）：
-
-```dart
-SchedulerBinding.instance.addTimingsCallback((ts) => _frames.addAll(ts));
-Timer(Duration(milliseconds: 1300), () {
-  // removeTimingsCallback + 汇总 max/avg/over8.4/over16.7
-});
-```
+判读要点：`build` 高 → 看 events 归因（reconcile/refresh/SSE）；`raster` 高 build 低 → 光栅化侧（图层隔离/绘制内容）；窗口 `buildMed` 看稳态、`buildMax` 看单帧最重。三轮实战（perfprobe-1/2/3/4）见 §7-§14。
 
 ### 0.3 排查方法论（JANK-1 沉淀，供后续复用）
 
@@ -41,6 +35,9 @@ Timer(Duration(milliseconds: 1300), () {
 3. **横向对比同类、不同内容量的场景**：同一机制（如 bottom sheet）挂不同内容量，看耗时是否与内容量成正比，从而分离"固定开销"与"内容开销"。
 4. **查框架源码确认动画期行为**：入场动画期间框架是否每帧重排/重建内容，直接决定成本模型（JANK-1 靠 bottom_sheet.dart 源码确认）。
 5. **高刷屏放大效应单列**：固定块成本不随刷新率变，但预算减半；每帧 O(N) 类成本随刷新率线性翻倍。分析时分开写。
+6. **长帧归因靠事件同流（JANK-6~13 沉淀）**：帧耗时数据必须与业务事件（reconcile/refresh/SSE 类型）写同一日志流，靠时间邻近（±3 帧）归因——纯帧数据只能看出"卡"，看不出"谁"。PerfProbe 的 `markEvent` 即为此设计。
+7. **先分线程再谈修复（JANK-8/12 沉淀）**：`build` 低（<1ms）`raster` 高（9-40ms）的连续帧是**光栅线程**问题——RepaintBoundary 隔离图层、去掉每帧变化内容上的选区/效果；与 build 侧修法（挪 compute/剪枝/节流）完全不同。
+8. **SSE 尾部 notify 是全局放大器（JANK-6/10 沉淀）**：`_onEvent` 的 switch 未命中的事件类型会 fall through 到尾部 `notifyListeners()`——新增服务端事件类型（heartbeat/delta/file.watcher/pty）会静默变成全局重建源。排查时先数 `sse-notify <type>` 事件频率。
 
 ---
 
@@ -53,6 +50,15 @@ Timer(Duration(milliseconds: 1300), () {
 | **JANK-3** | 新会话加载窗口键盘展开掉帧（双份模型解码 + 切换/刷新风暴 + 底部条每帧重建税） | ✅ 已修（1+2，真机复测达标）；残余 refresh 长帧留档 | [§4](#4-jank-3-新会话加载窗口键盘展开掉帧) |
 | **JANK-4** | 流式输出逐 token 全量 Markdown 重解析 + 全文 autolink（O(L)/token，长回复时 UI isolate 被哽死，全 app 卡顿主因） | ✅ 已修（流式降级渲染，三轮评审通过）；离线半截消息 settle 留档 | [§5](#5-jank-4-流式输出逐-token-全量-markdown-重解析) |
 | **JANK-5** | serverStore 全局广播放大：任意 notify → 会话/项目/详情页全量重建（流式期间每 120ms 一次 ~500 widget） | ✅ 已修（预览拆独立 notifier + tile 实例缓存，重建 498→90）；周期 refresh 解码挪 compute 留作后续 | [§6](#6-jank-5-serverstore-全局广播放大) |
+| **JANK-6** | `server.heartbeat` 未处理事件每 ~5s 触发全局 notifyListeners（AppBar×3+body+tabs 全量重建） | ✅ 已修（perfprobe-1 发现，过滤） | [§7](#7-jank-6-serverheartbeat-全局广播) |
+| **JANK-7** | reconcile 的 REST JSON 解码在 UI isolate（单帧 48-126ms，JANK-3/5 留档残余的实锤） | ✅ 已修（messagesPageCompute 挪 compute） | [§8](#8-jank-7-reconcile-rest-解码在-ui-isolate) |
+| **JANK-8** | raster 9-39ms 连续帧：消息列表无 RepaintBoundary，单消息重绘重组整个 scroll viewport | ✅ 已修（逐消息 + FooterPanel + BottomBar 包 RepaintBoundary） | [§9](#9-jank-8-raster-连续长帧无图层隔离) |
+| **JANK-9** | 进入会话转场动画与 force-reload reconcile + 首帧全量 mount 撞车 → 丢动画 | ✅ 已修（transitionDone 门控 + force-reload 延后）；重进首 mount 残余留档（JANK-14） | [§10](#10-jank-9-转场动画与首帧-mount-撞车) |
+| **JANK-10** | `message.part.delta`（每帧 4-16 个）/ `file.watcher.updated`（每帧 3-9 个）/ `pty.updated` 未处理事件洪水触发全局 notify | ✅ 已修（delta 路由 onPartUpdated + 早退；其余 no-op return） | [§11](#11-jank-10-未处理-sse-事件洪水全局广播) |
+| **JANK-11** | `_saveCache` 的 `jsonEncode` 同步编码阻塞 UI（reconcile/settle 后单帧 163/175ms） | ✅ 已修（`compute(jsonEncode, j)`） | [§12](#12-jank-11-savecache-jsonencode-同步编码) |
+| **JANK-12** | 流式降级渲染 `SelectableText` 的 selection registrar 每帧重建选区 handle（streaming 期间 raster 9-48ms 主因） | ✅ 已修（流式分支改 `Text`，settle 后恢复选区） | [§13](#13-jank-12-流式降级-selectabletext-选区开销) |
+| **JANK-13** | 任意 messagesVersion bump 全清 `_messageChildCache` → 所有可见消息单帧重建 MarkdownBody（reconcile/settle 后 45-164ms） | ✅ 已修（细粒度 id 级缓存失效） | [§14](#14-jank-13-消息缓存全量失效放大) |
+| **JANK-14** | 重进会话 gate-open 首帧全量 mount（50-82ms）；长消息 settle 单帧 52-67ms；启动/refresh 时 raster 尖峰 30-62ms | ⏳ 留档观察（perfprobe-4 残余） | [§15](#15-jank-14-已知残余perfprobe-4) |
 
 > 后续每确认一个新掉帧点：在清单加一行，并按 §2 的结构（问题 → 定位过程 → 根因 → 方案 → 验证 → 决策 → 不做的事）补一节。
 
@@ -313,7 +319,7 @@ probe 1 时间线（KbPerf 事件流）：`applyDefault refresh start` → +294m
 
 ## 5. JANK-4 流式输出逐 token 全量 Markdown 重解析
 
-> 状态：**✅ 已修（2026-08-21，方案 = 流式降级渲染，三轮代码评审通过，评审记录见 §7.2）**。
+> 状态：**✅ 已修（2026-08-21，方案 = 流式降级渲染，三轮代码评审通过，评审记录见 §16.2）**。
 
 ### 5.1 问题
 
@@ -395,7 +401,215 @@ probe 1 时间线（KbPerf 事件流）：`applyDefault refresh start` → +294m
 
 ---
 
-## 7. 评审意见
+## 7. JANK-6 server.heartbeat 全局广播
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-1 发现）**。
+
+### 7.1 问题与定位
+
+perfprobe-1 日志中 `sse-notify server.heartbeat` 每 ~5s 出现一次，且常与 jank 帧同帧。`_onEvent` 的 switch 只处理已知事件类型，`server.heartbeat` 未命中任何 case，fall through 到尾部 `notifyListeners()`（server_store.dart 原 :1911）——每个心跳触发**全局广播**：会话页 AppBar 三个 `ListenableBuilder(serverStore)`、body、各 tab 全量重建。心跳本身不携带任何数据（仅保活），这些重建全部是无用功。
+
+### 7.2 方案
+
+`_onEvent` 加 `case 'server.heartbeat': return;`（server_store.dart:1723）——SSE 连接保活由传输层负责，应用层无需感知。
+
+### 7.3 验证
+
+perfprobe-2 起 `sse-notify server.heartbeat` 零出现。
+
+---
+
+## 8. JANK-7 reconcile REST 解码在 UI isolate
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-1 发现；即 JANK-3 §4.7 / JANK-5 §6.4 留档残余的实锤）**。
+
+### 8.1 问题与定位
+
+perfprobe-1 最重帧全部与 `reconcile-start`/`reconcile-done`/`conv-build force-reload` 邻近：
+
+| 帧 | build | 邻近事件 |
+|----|-------|---------|
+| 4642 | **126ms** | conv-build force-reload |
+| 4680 | **126ms** | reconcile-done |
+| 1328 | **86ms** | reconcile-start |
+| 4488 | **75ms** | reconcile-start |
+
+126ms 单帧 ≈ 120Hz 下跳 56 帧——与 logcat `Choreographer: Skipped 56 frames` 精确对应。成本在 `messagesPage` 的 dio JSON 解码 + `MessageEntry.fromJson` × N + `jsonDecode`（dio 默认 ResponseType.json 在 UI isolate 解码）。
+
+### 8.2 方案
+
+`OpencodeClient.messagesPageCompute`（opencode_client.dart:232）：该请求改 `ResponseType.plain` 拿原始字符串，`compute(decodeMessageEntries, body)` 在后台 isolate 完成 `jsonDecode` + `fromJson`（顶层函数 `decodeMessageEntries`，:726）。`reconcile`（conversation_store.dart:642）与 `loadOnePage`（:720）两处调用点切换。
+
+测试兼容：test mock 均覆写 `messagesPage` 返回预解析结果——`messagesPageCompute` 用 `runtimeType != OpencodeClient` 探测子类直接回落 `messagesPage`，mock 零改动。
+
+### 8.3 验证与留档
+
+perfprobe-2 起 reconcile 相关最重 build 帧降至 ~20ms（残余是 JANK-13 的全量缓存失效，后续单独修复）。**未做**：`refreshListAndWorkingSse` 的 projects/sessions/statuses 批量解码仍在 UI isolate（量级小于消息窗口，perfprobe-4 中 refresh-done 帧 ~12-30ms），如后续成为主因再立项。
+
+---
+
+## 9. JANK-8 raster 连续长帧无图层隔离
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-1 发现；JANK-1~5 均未涉及 raster 侧）**。
+
+### 9.1 问题与定位
+
+perfprobe-1 出现大量 **build < 1ms 但 raster 9-39ms** 的连续帧（如 frame 1976-1980、2202-2208、3001-3007 连续 5-7 帧）——光栅线程超预算，与 UI 线程无关。此前 JANK-1~5 全部是 build 侧问题，raster 侧是**新发现的问题域**。根因：消息列表项无 RepaintBoundary，任何一条消息的重绘（流式 token 追加）都会使整个 scroll viewport 的 display list 重组。
+
+### 9.2 方案
+
+三处 RepaintBoundary（conversation_screen.dart）：
+- 每条消息：`SizeChangedLayoutNotifier` 内包 `_KeepAliveMessage`（:777）——单消息重绘只重组自己的图层，其余消息图层复用；
+- `_FooterPanel`（:1173）与 `_BottomBar`（:1190）各包一层——底部条与 footer 的重建/重绘不连带列表。
+
+### 9.3 验证
+
+perfprobe-2 中连续 raster 长帧消失（个别孤立 raster 帧仍存在，部分归因 JANK-12）。注：进入会话/启动时仍有 30-62ms 孤立 raster 尖峰（新内容首绘 + shader 编译），应用侧可做有限，归入 JANK-14 留档。
+
+---
+
+## 10. JANK-9 转场动画与首帧 mount 撞车
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-1 发现；对应原始症状"进入会话丢动画"）**。
+
+### 10.1 问题
+
+`ConversationScreen` 用默认 MaterialPageRoute 转场（~300ms）。与 `file_browsing_container.dart:61` 的 `transitionDone` 门控不同，会话页**无门控**：`build()` 首帧即触发 `conversationFor(force: true)`（reconcile）+ 全量消息 mount，与转场动画帧抢预算 → 动画丢帧/冻结。进行中会话更糟：SSE 事件流同时涌入。
+
+### 10.2 方案
+
+- `_transitionDone` ValueNotifier（conversation_screen.dart:197），`_installTransitionGate`（:243）在 `didChangeDependencies` 监听 `ModalRoute.animation` 完成态；动画未完成时 body 返回 `SizedBox.shrink()`（AppBar 照常）。
+- **force-reload 延后到动画完成**：`_triggerForceReload()` 从 `build()` 移到 `_onRouteAnimationStatus` 确定性触发——评审发现（§16.3 R6-1）原实现放 `build()` 顶部检查 `_transitionDone.value`，但该 notifier 只重建嵌套 ListenableBuilder、不重跑 State.build，延后路径下 force-reload 永远不会执行。
+
+### 10.3 验证
+
+perfprobe-2 起 `reconcile-start` 与 `conv-build force-reload` 同帧出现在转场完成后；perfprobe-4 首次进入窗口 buildMax 9.8-10.9ms（perfprobe-1 同场景 50-126ms）。残余：重进会话 gate-open 首帧仍 50-82ms（见 JANK-14）。
+
+---
+
+## 11. JANK-10 未处理 SSE 事件洪水全局广播
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-2 发现；与 JANK-6 同病：switch 未命中 → 尾部 notify）**。
+
+### 11.1 问题与定位
+
+perfprobe-2 发现三类未处理事件洪水（频率远超 heartbeat）：
+
+| 事件类型 | 频率 | 场景 |
+|---------|------|------|
+| `message.part.delta` | 每帧 4-16 个 | 流式期间（服务端 token 粒度推送） |
+| `file.watcher.updated` | 每帧 3-9 个 | agent 工作期间文件变更风暴 |
+| `pty.updated` | 偶发 | 终端状态变化 |
+
+每帧多次 fall through 到尾部 `notifyListeners()`——流式期间等效于**绕过了 JANK-5 的 120ms 预览节流**，每 token 批次全局重建一次。`message.part.updated`（LPS-1 早退）与 `message.part.delta` 是**两种不同事件类型**，后者从未被处理。
+
+### 11.2 方案
+
+- `case 'message.part.delta'`（server_store.dart:1806）：与 `message.part.updated` 同语义——路由到 `conv.onPartUpdated`（会话页由 conv.notifyListeners 驱动）+ 预览走 `_notifyPreviewChanged` 120ms 节流，然后 **return**（不走尾部 notify）。
+- `case 'file.watcher.updated'`（:1833）/ `case 'pty.updated'`（:1838）：应用不消费，直接 return。
+
+### 11.3 验证与教训
+
+perfprobe-3 起三类事件零出现。**教训（已入 §0.3 第 8 条）**：服务端新增事件类型会静默变成全局重建源，排查时先数 `sse-notify <type>` 事件频率。
+
+---
+
+## 12. JANK-11 _saveCache jsonEncode 同步编码
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-2 发现）**。
+
+### 12.1 问题与定位
+
+perfprobe-2 最重帧（超过 perfprobe-1 的任何帧）：
+
+```
+frame=1807 build=163ms events=[reconcile-done, msg-updated-notify]
+frame=1809 build=175ms events=[msg-updated-notify ×2, session.status]
+frame=2131 build=131ms events=[reconcile-done, refresh-done]
+```
+
+`_saveCache()` 虽是 `unawaited`，但 `jsonEncode(j)` 是同步调用——整段会话（messages + parts 全文）序列化阻塞 UI 线程，恰好落在 reconcile/settle 的 notify 重建帧上叠加。
+
+### 12.2 方案
+
+Map 组装（廉价字段访问）留在 UI 线程，`await compute(jsonEncode, j)`（conversation_store.dart:987）把序列化挪后台 isolate。`jsonEncode` 是 dart:convert 顶层函数，可直接作 compute 入口。
+
+### 12.3 验证
+
+perfprobe-3 起该量级帧消失（残余 45-70ms 帧归因 JANK-13，单独修复）。
+
+---
+
+## 13. JANK-12 流式降级 SelectableText 选区开销
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-2 发现；JANK-4 降级渲染的 raster 侧补丁）**。
+
+### 13.1 问题与定位
+
+JANK-4 把流式文本降级为 `SelectableText`（当时对齐稳定态渲染）。perfprobe-2 显示 streaming 期间仍有 build<1ms / raster 9-48ms 连续帧——`SelectableText` 的 SelectionRegistrar 在**文本每次变化时**重建选区 handle 并触发所在图层重绘；流式期间文本每帧变，选区机制纯属开销（用户无法有效选取每帧变化的文本）。
+
+### 13.2 方案
+
+流式分支（text :1110 / subtask :1547）`SelectableText` → `Text`。settle 后仍切回 `MarkdownBody(selectable: true)` 恢复选区能力。回归锁 `streaming_markdown_downgrade_test` 断言同步更新（降级期 `findsNothing` SelectableText）。
+
+### 13.3 验证
+
+perfprobe-3 起 streaming 期间连续 raster 长帧消失。
+
+---
+
+## 14. JANK-13 消息缓存全量失效放大
+
+> 状态：**✅ 已修（2026-08-28，perfprobe-3 发现、perfprobe-4 验证）**。
+
+### 14.1 问题与定位
+
+perfprobe-3 中 reconcile-done / msg-updated 后仍有一批 45-164ms build 帧。解码已挪 compute（JANK-7）、编码已挪 compute（JANK-11），残余成本是**notify 触发的全量重建**：任意 `_touchMessages()` bump `messagesVersion` → 屏幕**清空整个 `_messageChildCache`** → 所有可见消息在单帧内重建 MarkdownBody（含同步 markdown 解析 + autolink）。reconcile 只改了尾部窗口 K 条，却把全部消息的缓存清了；消息 settle（version bump 单条）同样全清。
+
+关键洞察：缓存按消息 **id** 键控——结构性增删/重排不影响未变消息的缓存有效性，只有**内容变化**的 id 需要失效。
+
+### 14.2 方案（细粒度 id 级缓存失效）
+
+**Store 侧**（conversation_store.dart）：
+- `_touchMessages([Set<String>? changedIds])`（:299）：null=全量失效；空集=仅结构变化；非空集=这些 id 内容变了。`_fullInvalidationPending` 与 `_contentInvalidations` 累积合并（多次 bump 间全量覆盖 id 集）。
+- `consumeContentInvalidations()`（:310）：屏幕在 version 变化时消费，null→全清，否则只删集合内 id。
+- `_upsertEntries`：`_sameInfo`/`_samePart(s)`（:826-855）逐字段比较合并结果与既有的渲染等价性（map 字段 mapEquals），只标记真正变化的 id；删除产生的陈旧条目由屏幕修剪。
+- `onMessageUpdated`：同法比较，settle 单条只失效该 id。
+- `onPartUpdated`（:1354）：**可缓存消息**（user/finished）的 part 变化（占位符驱逐、迟到 tool 输出）补 `{mid}` 失效——细粒度失效下不再有"任意 bump 全清"兜底，不补会永久陈旧。流式消息（finish==null）仍不 bump（JANK-4 设计保持）。
+- `_loadCacheFromJson` 保持全量（整段替换）。
+
+**屏幕侧**（conversation_screen.dart）：version 变化时消费失效集合；`_pruneMessageCaches` 增加 `_messageChildCache` 陈旧条目修剪（删除的消息）。
+
+### 14.3 验证（perfprobe-4 vs perfprobe-3）
+
+| 指标 | probe-3 | probe-4 |
+|------|---------|---------|
+| reconcile-done 后最重帧 | 45-164ms 多次 | **从最重帧列表消失** ✅ |
+| 首次进入会话 buildMax | 14-163ms | **9.8-10.9ms** ✅ |
+
+### 14.4 关键设计决策
+
+- **渲染等价比较而非实例比较**：DisplayMessage/DisplayPart 每次重建都是新实例，但字段级相等即渲染等价，缓存 widget 仍有效。
+- **删除不清缓存**：按 id 键控的缓存对删除免疫（条目变陈旧），屏幕每帧 `_pruneMessageCaches` 修剪，避免泄漏。
+- **可缓存消息的 part 更新必须补失效**：这是细粒度失效相对全量失效的**新增义务**——全量时代靠任意 bump 的全清兜底，细粒度后必须显式标记，否则占位符驱逐/迟到更新永久陈旧。
+
+---
+
+## 15. JANK-14 已知残余（perfprobe-4）
+
+> 状态：**⏳ 留档观察，未修**。
+
+| # | 现象 | 量级 | 根因方向 | 候选方案（取舍） |
+|---|------|------|---------|----------------|
+| 1 | 重进会话 gate-open 首帧 | build 50-82ms | `_messageChildCache` 是屏幕实例级，每次进入为空，gate 打开后所有可见消息 MarkdownBody 单帧全量 mount | 渐进式首 mount（先挂最新 2-3 条，逐帧 +K 补齐；reversed 列表锚底，最新消息立即可见，旧消息 ~200ms 从上方补齐）。代价：旧消息 pop-in |
+| 2 | 长消息 settle 单帧 | build 52-67ms | 一条长流式回复 settle：autolink(全文) + MarkdownBody 全量解析在单帧（O(消息长度)，每消息一次） | finish 到达时后台 isolate 预跑 autolink（可控部分）；markdown 解析在 flutter_markdown_plus 内部无法 isolate。settle 是一次性成本，修复收益有限 |
+| 3 | 启动/refresh-done/entry 时孤立 raster 尖峰 | raster 30-62ms | 新内容首绘 + shader 编译（图层首次光栅化） | 应用侧可做有限；Impeller 普及后预期自然缓解 |
+
+修复顺序建议：#1 用户感知最明显（重进会话的动画后顿挫）优先；#2/#3 收益比低，观察。
+
+---
+
+## 16. 评审意见
 
 > 迭代追加。每轮评审标注问题编号（JANK-R*）、优先级（🔴 阻塞 / 🟡 中 / 🟢 低）、修复建议；修复后追加"修复复审"表格逐条核对。
 

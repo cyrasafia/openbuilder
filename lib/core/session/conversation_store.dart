@@ -11,6 +11,7 @@ import '../attachments/attachment_pipeline.dart';
 import '../attachments/file_ref.dart';
 import '../cache/cache_store.dart';
 import '../logging/app_logger.dart';
+import '../logging/perf_probe.dart';
 import '../net/net_error.dart';
 
 const _tag = 'Conv';
@@ -287,7 +288,36 @@ class ConversationStore extends ChangeNotifier {
   int _renderableVersion = -1;
   List<DisplayMessage> _renderableCache = const [];
 
-  void _touchMessages() => _messagesVersion++;
+  /// 细粒度缓存失效（perfprobe-3：reconcile/settle 后全量清 _messageChildCache
+  /// 导致所有可见消息单帧重建 MarkdownBody，45-164ms）。null=自上次消费以来
+  /// 有过全量失效（保守），否则为内容变化的消息 id 集合。
+  bool _fullInvalidationPending = false;
+  final Set<String> _contentInvalidations = {};
+
+  /// [changedIds] 为 null 表示全量失效；空集表示仅结构性变化（增删/重排，
+  /// 缓存按 id 键控无需清）；非空集表示这些 id 的渲染内容变了。
+  void _touchMessages([Set<String>? changedIds]) {
+    _messagesVersion++;
+    if (changedIds == null) {
+      _fullInvalidationPending = true;
+      _contentInvalidations.clear();
+    } else if (!_fullInvalidationPending) {
+      _contentInvalidations.addAll(changedIds);
+    }
+  }
+
+  /// 屏幕在 messagesVersion 变化时消费：null→全清；否则只失效集合内的 id。
+  Set<String>? consumeContentInvalidations() {
+    if (_fullInvalidationPending) {
+      _fullInvalidationPending = false;
+      _contentInvalidations.clear();
+      return null;
+    }
+    if (_contentInvalidations.isEmpty) return const <String>{};
+    final s = Set.of(_contentInvalidations);
+    _contentInvalidations.clear();
+    return s;
+  }
 
   /// Bumps only on structural changes (add/remove/reorder/id-swap via
   /// [_sort] etc.), NOT on in-place content updates (streaming part deltas in
@@ -439,14 +469,14 @@ class ConversationStore extends ChangeNotifier {
       }
     }
     _messages.add(msg);
-    _sort();
+    _sort(const <String>{});
     notifyListeners();
   }
 
   /// Remove optimistic messages — called when authoritative data replaces
   /// the local guess (reload, onMessageUpdated with a real user message).
   void _pruneOptimistic() {
-    _touchMessages();
+    _touchMessages(const <String>{});
     _messages.removeWhere((m) => m.optimistic);
   }
 
@@ -606,9 +636,10 @@ class ConversationStore extends ChangeNotifier {
     if (_reconciling) return; // 互斥
     _reconciling = true;
     _lastReloadAt = DateTime.now();
+    PerfProbe.I.markEvent('reconcile-start $sessionId');
     AppLogger.I.d(_tag, 'reconcile start $sessionId');
     try {
-      final page = await client.messagesPage(sessionId, limit: _kWindow);
+      final page = await client.messagesPageCompute(sessionId, limit: _kWindow);
       final entries = page.entries;
       AppLogger.I.d(_tag,
           'reconcile fetched ${entries.length} messages $sessionId hasCursor=${page.nextCursor != null}');
@@ -646,7 +677,8 @@ class ConversationStore extends ChangeNotifier {
       }
       // else: overlapped → merge into existing segments[0], oldest/cursor
       // unchanged (window extended the newest side only).
-      _sort();
+      // 内容失效范围已由 _upsertEntries 记录；sort 本身只重排。
+      _sort(const <String>{});
       try {
         _todos = await client.todos(sessionId);
       } catch (_) {}
@@ -665,6 +697,7 @@ class ConversationStore extends ChangeNotifier {
     } finally {
       _reconciling = false;
     }
+    PerfProbe.I.markEvent('reconcile-done $sessionId');
     if (!_disposed) notifyListeners();
   }
 
@@ -684,7 +717,7 @@ class ConversationStore extends ChangeNotifier {
     notifyListeners();
     try {
       final page =
-          await client.messagesPage(sessionId, limit: _kWindow, before: seg.cursor);
+          await client.messagesPageCompute(sessionId, limit: _kWindow, before: seg.cursor);
       final entries = page.entries;
       AppLogger.I.d(_tag,
           'loadOnePage fetched ${entries.length} older messages $sessionId hasCursor=${page.nextCursor != null}');
@@ -727,7 +760,7 @@ class ConversationStore extends ChangeNotifier {
             ..cursor = page.nextCursor;
         }
       }
-      _sort();
+      _sort(const <String>{});
       unawaited(_saveCache());
       return true;
     } catch (e) {
@@ -742,8 +775,11 @@ class ConversationStore extends ChangeNotifier {
 
   /// Upsert REST entries into `_messages` by id. Existing → replace info
   /// (REST authoritative) + field-level part merge. New → convert + insert.
+  /// 触摸时只标记内容实际变化的 id（合并结果与既有渲染等价则不标记），
+  /// 供屏幕做细粒度缓存失效（perfprobe-3：全量清致 45-164ms 单帧）。
   void _upsertEntries(List<MessageEntry> entries) {
-    if (entries.isNotEmpty) _touchMessages();
+    if (entries.isEmpty) return;
+    final changed = <String>{};
     for (final e in entries) {
       final existing = _findMessage(e.info.id);
       if (existing != null) {
@@ -752,12 +788,18 @@ class ConversationStore extends ChangeNotifier {
         recreated.parts.addAll(_mergeParts(e.parts, existing.parts));
         if (_isEmptyUser(recreated)) continue;
         _messages.add(recreated);
+        if (!_sameInfo(existing.info, recreated.info) ||
+            !_sameParts(existing.parts, recreated.parts)) {
+          changed.add(e.info.id);
+        }
       } else {
         final d = _toDisplay(e);
         if (_isEmptyUser(d)) continue;
         _messages.add(d);
+        changed.add(e.info.id);
       }
     }
+    _touchMessages(changed);
   }
 
   /// Window-range deletion (strict interior): remove local non-optimistic
@@ -770,13 +812,48 @@ class ConversationStore extends ChangeNotifier {
     final hi = entries.last.info.created;
     if (lo == null || hi == null || lo >= hi) return;
     final ids = {for (final e in entries) e.info.id};
-    _touchMessages();
+    // 删除只产生陈旧缓存条目（屏幕按 id 修剪），无需内容失效。
+    _touchMessages(const <String>{});
     _messages.removeWhere((m) =>
         !m.optimistic &&
         m.info.created != null &&
         m.info.created! > lo &&
         m.info.created! < hi &&
         !ids.contains(m.info.id));
+  }
+
+  /// 逐字段比较（细粒度失效用）：info/parts 是否渲染等价。map 字段用 mapEquals。
+  static bool _sameInfo(MessageInfo a, MessageInfo b) =>
+      a.id == b.id &&
+      a.role == b.role &&
+      a.created == b.created &&
+      a.completed == b.completed &&
+      a.cost == b.cost &&
+      a.modelID == b.modelID &&
+      a.finish == b.finish &&
+      mapEquals(a.error, b.error);
+
+  static bool _samePart(DisplayPart a, DisplayPart b) =>
+      a.id == b.id &&
+      a.type == b.type &&
+      a.tool == b.tool &&
+      a.text == b.text &&
+      a.toolStatus == b.toolStatus &&
+      a.toolOutput == b.toolOutput &&
+      a.toolError == b.toolError &&
+      mapEquals(a.toolInput, b.toolInput) &&
+      a.command == b.command &&
+      a.fileMime == b.fileMime &&
+      a.fileUrl == b.fileUrl &&
+      a.filename == b.filename &&
+      mapEquals(a.source, b.source);
+
+  static bool _sameParts(List<DisplayPart> a, List<DisplayPart> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_samePart(a[i], b[i])) return false;
+    }
+    return true;
   }
 
   /// Whether any fetched entry id already exists in `_messages` (non-optimistic).
@@ -868,6 +945,9 @@ class ConversationStore extends ChangeNotifier {
     final cs = cacheStore;
     if (cs == null) return;
     try {
+      // Build the Map on the UI thread (cheap field access), then move the
+      // jsonEncode to a background isolate — it's the expensive part for
+      // large conversations (163ms+ on UI thread in profile runs).
       final j = {
         'v': 1,
         'messages': _messages
@@ -904,7 +984,8 @@ class ConversationStore extends ChangeNotifier {
         'draft': _draftText,
         'draftShell': _draftShell,
       };
-      await cs.write(_cacheKey, jsonEncode(j));
+      final encoded = await compute(jsonEncode, j);
+      await cs.write(_cacheKey, encoded);
     } catch (e) {
       AppLogger.I.e(_tag, 'saveCache failed: $e');
     }
@@ -1130,6 +1211,7 @@ class ConversationStore extends ChangeNotifier {
       _pruneOptimistic();
     }
     final existing = _findMessage(info.id);
+    Set<String>? scope;
     if (existing != null) {
       _messages.remove(existing);
       // Preserve retry error from existing message if the new info lacks one.
@@ -1152,12 +1234,17 @@ class ConversationStore extends ChangeNotifier {
       recreated.parts.addAll(existing.parts);
       if (bridge != null) _bridgeOptimisticParts(recreated, bridge);
       _messages.add(recreated);
+      scope = (!_sameInfo(existing.info, resolvedInfo) ||
+              !_sameParts(existing.parts, recreated.parts))
+          ? <String>{info.id}
+          : const <String>{};
     } else {
       final m = DisplayMessage(info);
       if (bridge != null) _bridgeOptimisticParts(m, bridge);
       _messages.add(m);
+      scope = <String>{info.id};
     }
-    _sort();
+    _sort(scope);
     // 消息完成即异步落盘（off-screen conv 也覆盖，因 ensureConversation 会
     // 创建 conv）。非 per-token，频率低。
     if (info.role == 'user' || (info.finish != null && info.finish!.isNotEmpty)) {
@@ -1192,7 +1279,7 @@ class ConversationStore extends ChangeNotifier {
         final newMsg = DisplayMessage(newInfo, optimistic: msg.optimistic);
         newMsg.parts.addAll(msg.parts);
         _messages.add(newMsg);
-        _sort();
+        _sort(<String>{mid});
         notifyListeners();
       }
       return;
@@ -1251,12 +1338,24 @@ class ConversationStore extends ChangeNotifier {
         }
         break;
     }
-    // No _touchMessages() here: in-place part mutations (text/tool/reasoning
-    // deltas) are visible through the cached renderableMessages refs without a
-    // version bump. Bumping per token would clear the detail screen's widget
-    // cache every token, defeating its identity short-circuit. Structural
-    // changes (new message via _ensureMessage→_sort; retry-error replacement
-    // →_sort) still bump via _sort.
+    // No _touchMessages() here for STREAMING messages (finish==null): in-place
+    // part mutations (text/tool/reasoning deltas) are visible through the
+    // cached renderableMessages refs without a version bump. Bumping per token
+    // would clear the detail screen's widget cache every token, defeating its
+    // identity short-circuit. Structural changes (new message via
+    // _ensureMessage→_sort; retry-error replacement→_sort) still bump.
+    //
+    // CACHEABLE messages (user / finished assistant) DO get an id-scoped bump:
+    // their widget IS cached, and part mutations (placeholder eviction, late
+    // tool output) would otherwise leave the cached widget stale forever under
+    // granular invalidation (previously any version bump's full clear fixed it).
+    // Low frequency (never per-token streams), so the cost is one message
+    // rebuild per event.
+    final cacheable = msg.info.role == 'user' ||
+        (msg.info.finish != null && msg.info.finish!.isNotEmpty);
+    if (cacheable) {
+      _touchMessages(<String>{mid});
+    }
     notifyListeners();
   }
 
@@ -1377,12 +1476,12 @@ class ConversationStore extends ChangeNotifier {
       created: maxCreated + 1,
     ));
     _messages.add(m);
-    _sort();
+    _sort(const <String>{});
     return m;
   }
 
-  void _sort() {
-    _touchMessages();
+  void _sort([Set<String>? changedIds]) {
+    _touchMessages(changedIds);
     _messages.sort((a, b) => (a.info.created ?? 0).compareTo(b.info.created ?? 0));
   }
 

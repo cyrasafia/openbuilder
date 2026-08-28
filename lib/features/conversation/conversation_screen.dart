@@ -24,6 +24,7 @@ import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/attachments/file_ref.dart';
 import '../../core/attachments/image_data_cache.dart';
 import '../../core/net/net_error.dart';
+import '../../core/logging/perf_probe.dart';
 import '../../core/session/conversation_store.dart';
 import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
@@ -189,6 +190,13 @@ class _ConversationScreenState extends State<ConversationScreen>
   bool _driverActive = false;
   bool _driverResetMode = false;
 
+  /// Transition gate: false during the push transition animation, true after.
+  /// Heavy body content (message list, bottom bar) is deferred until the
+  /// animation completes so the ~300ms transition frames don't compete with
+  /// reconcile decode + message layout.
+  final _transitionDone = ValueNotifier<bool>(false);
+  Animation<double>? _routeAnimation;
+
   /// 距底基底 = 8(留白 sliver) + footer 动态行高 + 8(消息 SliverPadding 底侧)。
   double get _footerHeight => 16 + _footerRowHeight;
 
@@ -203,6 +211,15 @@ class _ConversationScreenState extends State<ConversationScreen>
       conv.addListener(_onDraftChange);
       _tryRestoreDraft(conv, allowSetState: false); // 首帧 build 前，仅写字段
     }
+    PerfProbe.I.beginWindow('enter-session:${widget.sessionId}');
+    if (PerfProbe.I.isStarted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        // 转场动画约 300ms；在 ~1.2s 后收尾窗口，覆盖入场 + 首批加载/SSE。
+        Future.delayed(const Duration(milliseconds: 1200), () {
+          if (mounted) PerfProbe.I.endWindow('enter-session:${widget.sessionId}');
+        });
+      });
+    }
   }
 
   @override
@@ -213,7 +230,52 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _installTransitionGate();
+    _mdStyleUser = _buildMdStyle(user: true);
+    _mdStyleAssistant = _buildMdStyle(user: false);
+    // Cached message widgets freeze build-time values (theme/locale/textScaler);
+    // an inherited change must invalidate them so they rebuild with new styles.
+    _messageChildCache.clear();
+  }
+
+  void _installTransitionGate() {
+    if (!mounted || _transitionDone.value || _routeAnimation != null) return;
+    final anim = ModalRoute.of(context)?.animation;
+    if (anim == null || anim.status == AnimationStatus.completed) {
+      _transitionDone.value = true;
+      _triggerForceReload();
+      return;
+    }
+    _routeAnimation = anim;
+    anim.addStatusListener(_onRouteAnimationStatus);
+    if (anim.status == AnimationStatus.completed) {
+      _onRouteAnimationStatus(AnimationStatus.completed);
+    }
+  }
+
+  void _onRouteAnimationStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    _routeAnimation?.removeStatusListener(_onRouteAnimationStatus);
+    _routeAnimation = null;
+    _transitionDone.value = true;
+    _triggerForceReload();
+  }
+
+  /// Deferred force-reload: fires the initial reconcile after the transition
+  /// animation completes. Lives here (not in build()) because _transitionDone
+  /// only rebuilds the nested ListenableBuilder, not the State's build().
+  void _triggerForceReload() {
+    if (_didForceReload) return;
+    _didForceReload = true;
+    serverStore.conversationFor(widget.sessionId, force: true);
+    PerfProbe.I.markEvent('conv-build force-reload ${widget.sessionId}');
+  }
+
+  @override
   void dispose() {
+    _routeAnimation?.removeStatusListener(_onRouteAnimationStatus);
     final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv != null) {
       conv.removeListener(_onDraftChange);
@@ -228,6 +290,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     _backToTopTarget.dispose();
     _farFromBottom.dispose();
     _keepAliveIds.dispose();
+    _transitionDone.dispose();
     _ctl.dispose();
     super.dispose();
   }
@@ -709,12 +772,16 @@ class _ConversationScreenState extends State<ConversationScreen>
         // Finished messages have stable content → cache the widget instance so
         // identity short-circuit prunes the whole subtree on non-content
         // rebuilds (streaming per-token, driver steps, busy/showThinking).
-        child: _KeepAliveMessage(
-          key: ValueKey(id),
-          msgId: id,
-          keepAliveIds: _keepAliveIds,
-          // 折叠壳在实例缓存之外：展开/收起只重建壳，缓存的内容子树走等值剪枝。
-          child: isUser ? _userCollapseHost(msg) : _cachedMessage(msg),
+        // RepaintBoundary: isolate each message's paint layer so streaming
+        // text repaints don't recomposite the entire scroll viewport.
+        child: RepaintBoundary(
+          child: _KeepAliveMessage(
+            key: ValueKey(id),
+            msgId: id,
+            keepAliveIds: _keepAliveIds,
+            // 折叠壳在实例缓存之外：展开/收起只重建壳，缓存的内容子树走等值剪枝。
+            child: isUser ? _userCollapseHost(msg) : _cachedMessage(msg),
+          ),
         ),
       ),
     );
@@ -881,6 +948,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final ids = <String>{for (final m in msgs) m.info.id};
     _sizeKeys.removeWhere((id, _) => !ids.contains(id));
     _heightCache.removeWhere((id, _) => !ids.contains(id));
+    _messageChildCache.removeWhere((id, _) => !ids.contains(id));
     _userNaturalHeight.removeWhere((id, _) => !ids.contains(id));
     _expandedUserIds.removeWhere((id) => !ids.contains(id));
     _userAnimatingIds.removeWhere((id) => !ids.contains(id));
@@ -907,10 +975,6 @@ class _ConversationScreenState extends State<ConversationScreen>
   @override
   Widget build(BuildContext context) {
     serverStore.setActiveConversation(widget.sessionId);
-    if (!_didForceReload) {
-      _didForceReload = true;
-      serverStore.conversationFor(widget.sessionId, force: true);
-    }
     final session = serverStore.sessionById(widget.sessionId);
     final conv = serverStore.conversationFor(widget.sessionId);
     if (conv == null) {
@@ -1004,17 +1068,32 @@ class _ConversationScreenState extends State<ConversationScreen>
       ),
       body: _KeyboardAvoider(
         child: ListenableBuilder(
-          listenable: Listenable.merge([conv, showThinking]),
+          listenable: Listenable.merge([conv, showThinking, _transitionDone]),
           builder: (context, _) {
-            // Only clear on structural message changes (add/remove/reorder/id
-            // swap), not on per-token content updates or non-content notifies
-            // (driver cacheExtent / busy / showThinking). Lets finished
-            // messages' cached widget instances survive → identity short-circuit
-            // prunes them during streaming / driver rebuilds.
+            // Transition gate: defer heavy body content (message list, bottom
+            // bar) until the push transition animation completes. During the
+            // ~300ms animation, show a lightweight placeholder so the first
+            // heavy build/layout frame doesn't compete with animation frames.
+            if (!_transitionDone.value) {
+              return const SizedBox.shrink();
+            }
+            // Granular cache invalidation (perfprobe-3): the store reports
+            // which message ids' rendered content actually changed since the
+            // last version bump. null → full clear (offline cache restore
+            // etc.); a set → remove only those ids. Structural add/remove/
+            // reorder keeps cached widgets valid (cache is id-keyed); stale
+            // entries for removed ids are pruned in _pruneMessageCaches.
             final v = conv.messagesVersion;
             if (_lastMsgVersion != v) {
               _lastMsgVersion = v;
-              _messageChildCache.clear();
+              final invalidations = conv.consumeContentInvalidations();
+              if (invalidations == null) {
+                _messageChildCache.clear();
+              } else {
+                for (final id in invalidations) {
+                  _messageChildCache.remove(id);
+                }
+              }
             }
             // showThinking changes rendered content (reasoning show/hide) but
             // not messagesVersion — track it separately and invalidate.
@@ -1091,11 +1170,13 @@ class _ConversationScreenState extends State<ConversationScreen>
                   ),
                 ),
                 if (showFooter)
-                  _FooterPanel(
-                    todos: conv.todos,
-                    permissions: conv.permissions,
-                    questions: conv.questions,
-                    store: conv,
+                  RepaintBoundary(
+                    child: _FooterPanel(
+                      todos: conv.todos,
+                      permissions: conv.permissions,
+                      questions: conv.questions,
+                      store: conv,
+                    ),
                   ),
                 if (_cmdMode)
                   _CommandHints(
@@ -1106,8 +1187,9 @@ class _ConversationScreenState extends State<ConversationScreen>
                         serverStore.commandsNotifier.value.isEmpty,
                     onPick: _pickCommand,
                   ),
-                _BottomBar(
-                  sessionId: widget.sessionId,
+                RepaintBoundary(
+                  child: _BottomBar(
+                    sessionId: widget.sessionId,
                   directory: directory,
                   ctl: _ctl,
                   busy: conv.busy,
@@ -1153,6 +1235,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                   onExitShellMode: () => setState(() => _shellMode = false),
                   onPickAttachments: _pickAttachments,
                   onRemove: _removePending,
+                ),
                 ),
               ],
             );
@@ -1565,7 +1648,7 @@ class _ConversationScreenState extends State<ConversationScreen>
           // 流式降级渲染不做 markdown——label 直接用纯文本，避免裸 ** 标记。
           return Padding(
             padding: const EdgeInsets.only(top: 4),
-            child: SelectableText(
+            child: Text(
               p.text.isEmpty
                   ? 'subtask: $commandName'
                   : 'subtask: $commandName\n\n${p.text}',
@@ -1615,16 +1698,6 @@ class _ConversationScreenState extends State<ConversationScreen>
   MarkdownStyleSheet? _mdStyleUser;
   MarkdownStyleSheet? _mdStyleAssistant;
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _mdStyleUser = _buildMdStyle(user: true);
-    _mdStyleAssistant = _buildMdStyle(user: false);
-    // Cached message widgets freeze build-time values (theme/locale/textScaler);
-    // an inherited change must invalidate them so they rebuild with new styles.
-    _messageChildCache.clear();
-  }
-
   Widget _markdownPart(
     String data, {
     required bool user,
@@ -1635,10 +1708,14 @@ class _ConversationScreenState extends State<ConversationScreen>
     // 解析，逐 token 全量重解析是 O(L)/token（长回复单帧 >100ms，见
     // design-frame-drop.md §5）；autolink 同理逐 token 全文重跑。settle 后
     // （stable=true）走下方 Markdown + 缓存 autolink 路径，与既有渲染一致。
+    //
+    // 用 Text 而非 SelectableText：streaming 期间文本每帧变化，selection registrar
+    // 每帧重建选区 handle + 触发重绘，是 raster 9-48ms 的主因（perprobe-2 实测）。
+    // settle 后切回 MarkdownBody（selectable: true）恢复选区能力。
     if (!stable) {
       return Padding(
         padding: const EdgeInsets.only(top: 4),
-        child: SelectableText(
+        child: Text(
           data,
           style: _streamingTextStyle(user),
         ),

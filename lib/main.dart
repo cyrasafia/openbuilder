@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode, kProfileMode;
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -10,6 +10,7 @@ import 'app_router.dart';
 import 'app_state.dart';
 import 'core/cache/cache_store.dart';
 import 'core/logging/app_logger.dart';
+import 'core/logging/perf_probe.dart';
 import 'core/notifications/notification_service.dart';
 import 'core/net/system_font_weight.dart';
 import 'l10n/gen/app_localizations.dart';
@@ -51,6 +52,7 @@ void main() {
     await NotificationService.init();
     await SystemFontWeight.init();
     await initSettings();
+    if (kDebugMode || kProfileMode) PerfProbe.I.start();
     runApp(const OpenBuilderApp());
     _appStarted = true;
   }, (error, stack) {

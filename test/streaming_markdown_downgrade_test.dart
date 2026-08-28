@@ -13,9 +13,10 @@ import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// JANK-4 streaming downgrade: an unfinished assistant text part (finish ==
-/// null) must render as plain SelectableText (no full-document markdown
-/// re-parse per token); when the message settles (message.updated carries
-/// finish), the same part switches to MarkdownBody via the cache path.
+/// null) must render as plain Text (no full-document markdown re-parse per
+/// token, no SelectableText selection registrar overhead); when the message
+/// settles (message.updated carries finish), the same part switches to
+/// MarkdownBody via the cache path.
 class _MockClient extends OpencodeClient {
   _MockClient() : super(_noopDio());
 
@@ -115,8 +116,8 @@ void main() {
     ));
     await tester.pump();
 
-    // Unfinished → plain downgrade (SelectableText), not MarkdownBody.
-    expect(find.byType(SelectableText), findsOneWidget);
+    // Unfinished → plain downgrade (Text), not MarkdownBody.
+    expect(find.byType(SelectableText), findsNothing);
     expect(find.text('streaming **bold** body'), findsOneWidget);
     expect(find.byType(MarkdownBody), findsNothing);
 

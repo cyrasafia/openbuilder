@@ -221,6 +221,35 @@ class OpencodeClient {
         _getModelsFromData(r.data, MessageEntry.fromJson), cursor);
   }
 
+  /// Same as [messagesPage] but decodes JSON + parses entries in a background
+  /// isolate via [compute], avoiding UI-isolate jank on large message windows.
+  /// Fetches the response body as plain text (skipping dio's auto-decode),
+  /// then passes the raw string to the isolate for jsonDecode + fromJson.
+  ///
+  /// Subclasses (e.g. test mocks) that override [messagesPage] are automatically
+  /// covered: this method calls [messagesPage] as a fallback when the raw-text
+  /// path is unavailable (mocks return pre-parsed data, not a JSON string).
+  Future<MessagesPage> messagesPageCompute(String sessionId,
+      {required int limit, String? before}) async {
+    // Test mocks override messagesPage with pre-parsed results; detect by
+    // checking if this is a subclass with an overridden messagesPage.
+    if (runtimeType != OpencodeClient) {
+      return messagesPage(sessionId, limit: limit, before: before);
+    }
+    final params = <String, dynamic>{'limit': limit};
+    if (before != null) params['before'] = before;
+    final r = await dio.get<String>(
+      '/session/$sessionId/message',
+      queryParameters: params,
+      options: Options(responseType: ResponseType.plain),
+    );
+    final cursor = r.headers.value('x-next-cursor');
+    final body = r.data ?? '';
+    if (body.isEmpty) return MessagesPage(const [], cursor);
+    final entries = await compute(decodeMessageEntries, body);
+    return MessagesPage(entries, cursor);
+  }
+
   /// `GET /session/:id/message/:messageID`
   Future<MessageEntry> message(String sessionId, String messageId) async {
     final r = await dio.get<dynamic>('/session/$sessionId/message/$messageId');
@@ -690,6 +719,18 @@ class OpencodeClient {
 /// spawning an isolate, avoiding per-open spawn latency for the common
 /// small-file case (mirrors the old ImageView `_syncDecodeLimit` threshold).
 const int _inlineParseLimit = 500 * 1024;
+
+/// Decode a raw JSON string from `GET /session/:id/message` into
+/// [MessageEntry]s. Top-level so it can run via `compute`, off the UI isolate.
+@visibleForTesting
+List<MessageEntry> decodeMessageEntries(String body) {
+  final list = jsonDecode(body);
+  if (list is! List) return const [];
+  return list
+      .whereType<Map>()
+      .map((e) => MessageEntry.fromJson(e.cast<String, dynamic>()))
+      .toList(growable: false);
+}
 
 /// Default number of unchanged context lines requested from `/vcs/diff`.
 ///

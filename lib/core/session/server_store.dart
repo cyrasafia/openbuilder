@@ -11,6 +11,7 @@ import '../connection/connection_profile.dart';
 import '../connection/connection_store.dart';
 import '../cache/cache_store.dart';
 import '../logging/app_logger.dart';
+import '../logging/perf_probe.dart';
 import '../net/dio_factory.dart';
 import '../net/net_error.dart';
 import '../notifications/notification_service.dart';
@@ -1305,6 +1306,7 @@ class ServerStore extends ChangeNotifier {
   /// `force: false` — REST refresh only; running SSE untouched.
   Future<bool> refreshListAndWorkingSse({bool force = false}) async {
     if (client == null) return false;
+    PerfProbe.I.markEvent('refresh-start force=$force');
     try {
       if (force || _sse == null) {
         _startSse();
@@ -1392,6 +1394,7 @@ class ServerStore extends ChangeNotifier {
       _needsStaleMarking = false;
     }
     unawaited(_backfillPermissions());
+    PerfProbe.I.markEvent('refresh-done');
     notifyListeners();
     return true;
   }
@@ -1784,6 +1787,12 @@ class ServerStore extends ChangeNotifier {
 
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
+      case 'server.heartbeat':
+        // No-op: heartbeat carries no data and should not trigger a global
+        // notifyListeners() — every ListenableBuilder(serverStore) would
+        // rebuild (AppBar ×3, body, tabs) for no reason. Just keep the SSE
+        // connection alive (already handled by the transport layer).
+        return;
       case 'server.connected':
         AppLogger.I.i(_tag, 'server.connected');
         _scheduleReconcile();
@@ -1860,6 +1869,42 @@ class ServerStore extends ChangeNotifier {
         final msgSid = msgInfo is Map ? msgInfo['sessionID']?.toString() : null;
         if (msgSid != null) fileBrowsing.invalidateContentForSession(msgSid);
         unawaited(_onMessageUpdated(ev.properties));
+        return;
+      case 'message.part.delta':
+        // Streaming token delta. Route to the conversation's onPartUpdated
+        // (same as message.part.updated) but early-return: the detail page is
+        // driven by conv.notifyListeners() and the list preview by
+        // _notifyPreviewChanged() (120ms throttle). A global notifyListeners()
+        // here would rebuild every ListenableBuilder(serverStore) per token.
+        final dPart = ev.properties['part'];
+        final dSid = dPart is Map ? dPart['sessionID']?.toString() : null;
+        final dDelta = ev.properties['delta']?.toString();
+        final dPtype = dPart is Map ? dPart['type']?.toString() : null;
+        if (dSid != null) fileBrowsing.invalidateContentForSession(dSid);
+        if (dSid != null && dPart is Map) {
+          final conv = ensureConversation(dSid);
+          if (conv != null) {
+            conv.onPartUpdated(dPart.cast(), dDelta);
+            if (dPtype == 'tool' || dPtype == 'text' || dPtype == 'reasoning') {
+              final pv = conv.lastMessagePreview(
+                  hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
+              if (pv != null) {
+                _lastMessage[dSid] = pv;
+                _notifyPreviewChanged();
+                _scheduleCacheSave();
+              }
+            }
+          }
+        }
+        return;
+      case 'file.watcher.updated':
+        // File system change notification — no app state to update. Would
+        // trigger a global notifyListeners() for no reason (every tab + AppBar
+        // rebuilds). fileBrowsing invalidates lazily on next content fetch.
+        return;
+      case 'pty.updated':
+        // Terminal PTY state change — not consumed by the app. Same rationale
+        // as file.watcher.updated: no global rebuild needed.
         return;
       case 'message.part.updated':
         final part = ev.properties['part'];
@@ -1980,6 +2025,7 @@ class ServerStore extends ChangeNotifier {
         }
         break;
     }
+    PerfProbe.I.markEvent('sse-notify ${ev.type}');
     notifyListeners();
   }
 
@@ -1993,6 +2039,7 @@ class ServerStore extends ChangeNotifier {
     conv?.onMessageUpdated(m); // internally _saveCache()s on settle
     // MU-1: notify immediately so the list layer knows a message changed,
     // before the preview fetch (which may be slow on weak networks).
+    PerfProbe.I.markEvent('msg-updated-notify $sid');
     notifyListeners();
     // List preview: refresh on every message event — user msg, in-flight
     // assistant (finish empty), and completed assistant (finish non-empty).
