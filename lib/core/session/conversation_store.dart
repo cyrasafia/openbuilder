@@ -23,9 +23,11 @@ class DisplayPart {
   String? tool;
   String text;
   String? toolStatus;
+  String? toolTitle;
   String? toolOutput;
   String? toolError;
   Map<String, dynamic>? toolInput;
+  Map<String, dynamic>? toolMetadata;
   String? fileMime;
   String? fileUrl;
   String? filename;
@@ -39,9 +41,11 @@ class DisplayPart {
     this.tool,
     this.text = '',
     this.toolStatus,
+    this.toolTitle,
     this.toolOutput,
     this.toolError,
     this.toolInput,
+    this.toolMetadata,
     this.fileMime,
     this.fileUrl,
     this.filename,
@@ -117,10 +121,14 @@ class DisplayPart {
         type: p.type,
         tool: p.tool,
         toolStatus: p.stateStatus,
+        toolTitle: p.stateTitle,
         toolOutput: p.stateOutput,
         toolError: _extractToolError(p.state?['error']),
         toolInput: p.state?['input'] is Map
             ? (p.state!['input'] as Map).cast<String, dynamic>()
+            : null,
+        toolMetadata: p.state?['metadata'] is Map
+            ? (p.state!['metadata'] as Map).cast<String, dynamic>()
             : null,
       );
     }
@@ -910,9 +918,11 @@ class ConversationStore extends ChangeNotifier {
         final merged = DisplayPart.from(rp);
         if (sp.text.length > merged.text.length) merged.text = sp.text;
         if (sp.toolStatus != null) merged.toolStatus = sp.toolStatus;
+        if (sp.toolTitle != null) merged.toolTitle = sp.toolTitle;
         if (sp.toolOutput != null) merged.toolOutput = sp.toolOutput;
         if (sp.toolError != null) merged.toolError = sp.toolError;
         if (sp.toolInput != null) merged.toolInput = sp.toolInput;
+        if (sp.toolMetadata != null) merged.toolMetadata = sp.toolMetadata;
         result.add(merged);
       } else {
         result.add(DisplayPart.from(rp));
@@ -960,9 +970,11 @@ class ConversationStore extends ChangeNotifier {
                             'tool': p.tool,
                             'text': p.text,
                             'toolStatus': p.toolStatus,
+                            'toolTitle': p.toolTitle,
                             'toolOutput': p.toolOutput,
                             'toolError': p.toolError,
                             'toolInput': p.toolInput, // MA-5: 补存
+                            'toolMetadata': p.toolMetadata,
                             'command': p.command,
                             'fileMime': p.fileMime,
                             'fileUrl': p.fileUrl,
@@ -1052,11 +1064,15 @@ class ConversationStore extends ChangeNotifier {
           tool: p2['tool']?.toString(),
           text: p2['text']?.toString() ?? '',
           toolStatus: p2['toolStatus']?.toString(),
+          toolTitle: p2['toolTitle']?.toString(),
           toolOutput: p2['toolOutput']?.toString(),
           toolError: p2['toolError']?.toString(),
           toolInput: p2['toolInput'] is Map
               ? (p2['toolInput'] as Map).cast<String, dynamic>()
               : null, // MA-5: 补读 toolInput
+          toolMetadata: p2['toolMetadata'] is Map
+              ? (p2['toolMetadata'] as Map).cast<String, dynamic>()
+              : null,
           command: p2['command']?.toString(),
           fileMime: p2['fileMime']?.toString(),
           fileUrl: p2['fileUrl']?.toString(),
@@ -1312,11 +1328,18 @@ class ConversationStore extends ChangeNotifier {
       case 'tool':
         if (p.tool != null) dp.tool = p.tool;
         if (p.stateStatus != null) dp.toolStatus = p.stateStatus;
+        if (p.stateTitle != null && p.stateTitle!.isNotEmpty) {
+          dp.toolTitle = p.stateTitle;
+        }
         if (p.stateOutput != null) dp.toolOutput = p.stateOutput;
         final toolError = _extractToolError(p.state?['error']);
         if (toolError != null) dp.toolError = toolError;
         if (p.state?['input'] is Map) {
           dp.toolInput = (p.state!['input'] as Map).cast<String, dynamic>();
+        }
+        if (p.state?['metadata'] is Map) {
+          dp.toolMetadata =
+              (p.state!['metadata'] as Map).cast<String, dynamic>();
         }
         break;
       case 'text':

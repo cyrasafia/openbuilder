@@ -95,6 +95,15 @@ class ServerStore extends ChangeNotifier {
 
   List<ProjectModel> _projects = [];
   List<SessionModel> _sessions = [];
+  /// Subagent 子会话（`parentID` 非空）by id。SSE `session.created` 到达时
+  /// 登记（design-subagent-status §D3 降级路径的数据源）。REST
+  /// `_fetchAllSessions` 不返回它们，列表 UI 也不展示——仅用于
+  /// [findChildSession] 启发式匹配与 [ensureConversation] 的容器上限豁免
+  /// 判定。上限 [_kMaxChildSessions]：server `subagent_depth` 默认 1，
+  /// 正常一次主会话只挂十几个子会话，超出时按到达顺序淘汰（权威路径
+  /// metadata.sessionId 不受影响）。
+  final Map<String, SessionModel> _childSessions = {};
+  static const _kMaxChildSessions = 64;
   final Map<String, SessionStatusValue> _statusMap = {};
   /// Sessions currently known to be ghosts (worktree directory gone). Tracked
   /// separately from `_statusMap` (where they settle to a plain `idle`) so a
@@ -732,7 +741,8 @@ class ServerStore extends ChangeNotifier {
     if (existing != null) return existing;
     final c = client;
     if (c == null) return null;
-    final directory = sessionById(sid)?.directory ?? '';
+    final directory =
+        sessionById(sid)?.directory ?? _childSessions[sid]?.directory ?? '';
     final conv = ConversationStore(sid, c,
         directory: directory, cacheStore: _cacheStore);
     conv.onQuestionResolved = _markQuestionResolved;
@@ -753,6 +763,17 @@ class ServerStore extends ChangeNotifier {
     unawaited(conv.loadDraftOnly()); // CD-1/13：构造后异步读草稿（唯一草稿读路径）
     _evictConversations();
     return conv;
+  }
+
+  /// SubagentPanel 首次展开时的 REST 快照入口（design-subagent-status §D3）：
+  /// SSE 增量已累积（messages 非空）时跳过拉取——避免冗余请求及 reconcile
+  /// 的 idle 副作用对运行中子会话的误判。与 conversationFor 的差别：不走
+  /// LRU promote、不挂 preview backfill（子会话不进会话列表，无预览可回填）。
+  void loadChildSessionMessages(String sid) {
+    final conv = ensureConversation(sid);
+    if (conv == null) return;
+    if (conv.messages.isNotEmpty) return;
+    unawaited(conv.load());
   }
 
   /// 回填已有 conv 的 directory（session 到达后补上，解决 question.asked
@@ -795,7 +816,10 @@ class ServerStore extends ChangeNotifier {
         final st = _statusMap[sid]?.type;
         final streaming =
             st == 'busy' || st == 'retry' || sid == _activeSessionId;
-        if (streaming) continue;
+        // Subagent 子会话不驱逐（design-subagent-status §D3）：驱逐后
+        // ensureConversation 只会重建空容器并跳过 REST（面板无错误态
+        // 渲染），SSE 增量丢失即永久缺失。
+        if (streaming || isChildSession(sid)) continue;
         victim = sid; // LinkedHashMap order = access order; first non-streaming
         break;
       }
@@ -873,6 +897,7 @@ class ServerStore extends ChangeNotifier {
       await _teardown(flushCache: false);
       _projects = [];
       _sessions = [];
+      _childSessions.clear();
       _statusMap.clear();
       _ghostSessionIds.clear();
       _lastMessage.clear();
@@ -1826,9 +1851,14 @@ class ServerStore extends ChangeNotifier {
           }
           if (wasBusy) {
             AppLogger.I.i(_tag, 'session.idle $sid');
-            unawaited(NotificationService.notifyRunComplete(
-                    sessionById(sid)?.title)
-                .catchError((_) {}));
+            // Subagent 子会话完成不单独通知（design-subagent-status）：
+            // 父会话仍在跑，逐个 subagent 弹「运行完成」是噪音；此前
+            // sessionById 对子会话返回 null，通知会以默认标题误弹。
+            if (!isChildSession(sid)) {
+              unawaited(NotificationService.notifyRunComplete(
+                      sessionById(sid)?.title)
+                  .catchError((_) {}));
+            }
             final conv = _conversations[sid];
             if (conv != null && conv.isStale) {
               unawaited(conv.reload());
@@ -2090,9 +2120,25 @@ class ServerStore extends ChangeNotifier {
     // leaves `time.updated` unchanged, so this preserves the project's sort
     // position after the session disappears from `_sessions`.
     _bumpLastActivity(s);
-    // Drop archived sessions and subtask/child sessions from the active list.
-    if (s.archived != null || s.parentID != null) {
+    // Subagent child sessions never enter the visible list, but are kept in
+    // `_childSessions` for SubagentPanel's heuristic fallback + directory
+    // lookup (design-subagent-status §D3). Archived children drop out —
+    // completed tasks always carry metadata.sessionId (authoritative path),
+    // the registry only serves the pre-metadata running window.
+    if (s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
+      if (s.archived != null) {
+        _childSessions.remove(s.id);
+      } else {
+        _upsertChildSession(s);
+      }
+      _scheduleCacheSave();
+      return;
+    }
+    // Archived sessions drop out of the active list.
+    if (s.archived != null) {
+      _sessions.removeWhere((x) => x.id == s.id);
+      _childSessions.remove(s.id);
       _scheduleCacheSave();
       return;
     }
@@ -2108,8 +2154,44 @@ class ServerStore extends ChangeNotifier {
     _backfillConversationDirectory(s.id, s.directory);
   }
 
+  void _upsertChildSession(SessionModel s) {
+    _childSessions.remove(s.id); // re-insert to refresh + keep arrival order
+    _childSessions[s.id] = s;
+    while (_childSessions.length > _kMaxChildSessions) {
+      _childSessions.remove(_childSessions.keys.first);
+    }
+    _backfillConversationDirectory(s.id, s.directory);
+  }
+
+  /// 查找子会话（design-subagent-status §D3 降级路径）：metadata.sessionId
+  /// 缺失时按 parentID 在 `_childSessions` 中匹配，title 前缀消歧
+  /// （server title 派生自 task description），取 created 最新。
+  SessionModel? findChildSession(String parentSessionID,
+      {String? description}) {
+    final candidates = _childSessions.values
+        .where((s) => s.parentID == parentSessionID)
+        .toList();
+    if (candidates.isEmpty) return null;
+    if (description != null && description.isNotEmpty) {
+      final matched = candidates
+          .where((s) => s.title.startsWith(description))
+          .toList();
+      if (matched.isNotEmpty) {
+        matched.sort((a, b) => b.created.compareTo(a.created));
+        return matched.first;
+      }
+    }
+    candidates.sort((a, b) => b.created.compareTo(a.created));
+    return candidates.first;
+  }
+
+  /// Whether the session is a subagent child session (by `_childSessions`).
+  bool isChildSession(String sessionId) =>
+      _childSessions.containsKey(sessionId);
+
   void _removeSession(String id) {
     _sessions.removeWhere((s) => s.id == id);
+    _childSessions.remove(id);
     _conversations.remove(id);
     _lastMessage.remove(id);
     _statusMap.remove(id);
@@ -2148,6 +2230,7 @@ class ServerStore extends ChangeNotifier {
     await _teardown();
     _projects = [];
     _sessions = [];
+    _childSessions.clear();
     _statusMap.clear();
     _ghostSessionIds.clear();
     _lastMessage.clear();

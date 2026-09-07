@@ -291,5 +291,12 @@
   "notifQuestionBody": "「{title}」: {detail}",
   "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
   "notifQuestionDefaultHeader": "问题",
-  "copied": "已复制"
+  "copied": "已复制",
+  "subagentRunning": "运行中",
+  "subagentCompleted": "已完成",
+  "subagentError": "出错",
+  "subagentExpand": "展开子会话",
+  "subagentCollapse": "收起子会话",
+  "subagentNoSession": "子会话未就绪",
+  "subagentLoading": "加载中…"
 }

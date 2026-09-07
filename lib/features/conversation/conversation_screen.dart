@@ -1680,6 +1680,13 @@ class _ConversationScreenState extends State<ConversationScreen>
           partId: p.id,
         );
       case 'tool':
+        if (p.tool == 'task') {
+          return _SubagentPanel(
+            key: PageStorageKey(p.id),
+            part: p,
+            parentSessionId: widget.sessionId,
+          );
+        }
         return _ToolChip(key: PageStorageKey(p.id), part: p);
       case 'file':
         return _FileChip(
@@ -1827,26 +1834,29 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
   }
 
-  Future<void> _openExternalLink(String? href) async {
-    if (href == null || href.isEmpty) return;
-    if (href.startsWith('#')) return;
-    final uri = Uri.tryParse(href);
-    if (uri == null) return;
-    try {
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok && mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l(context).linkOpenFailedDetail(e.toString())),
-          ),
-        );
-      }
+  Future<void> _openExternalLink(String? href) =>
+      openExternalLink(context, href);
+}
+
+Future<void> openExternalLink(BuildContext context, String? href) async {
+  if (href == null || href.isEmpty) return;
+  if (href.startsWith('#')) return;
+  final uri = Uri.tryParse(href);
+  if (uri == null) return;
+  try {
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l(context).linkOpenFailed)));
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l(context).linkOpenFailedDetail(e.toString())),
+        ),
+      );
     }
   }
 }
@@ -2033,6 +2043,51 @@ class _FooterPanelState extends State<_FooterPanel> {
       ),
     );
   }
+}
+
+Widget toolCodeBlock(String body, AppColors appColors) {
+  var text = body;
+  if (text.endsWith('\n')) text = text.substring(0, text.length - 1);
+  return Container(
+    width: double.infinity,
+    clipBehavior: Clip.hardEdge,
+    decoration: BoxDecoration(
+      color: appColors.codeBackground,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: appColors.border),
+    ),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.all(12),
+      child: Text(
+        text,
+        style: AppTheme.mono.copyWith(fontSize: 13, color: appColors.code),
+      ),
+    ),
+  );
+}
+
+void copyToolPartContent(BuildContext context, DisplayPart part) {
+  final buf = StringBuffer();
+  final input = part.toolInput;
+  if (input != null && input.isNotEmpty) {
+    buf.writeln(const JsonEncoder.withIndent('  ').convert(input));
+  }
+  final output = part.toolOutput;
+  if (output != null && output.isNotEmpty) {
+    if (buf.isNotEmpty) buf.writeln();
+    buf.write(output);
+  }
+  final error = part.toolError;
+  if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
+    if (buf.isNotEmpty) buf.writeln();
+    buf.write(error);
+  }
+  if (buf.isEmpty) return;
+  Clipboard.setData(ClipboardData(text: buf.toString()));
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text(l(context).copied)));
 }
 
 void _syncReversedScroll(BuildContext context, GlobalKey key, double dv) {
@@ -2304,7 +2359,7 @@ class _ToolChipState extends State<_ToolChip>
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
         onTap: _toggle,
-        onLongPress: () => _copyContent(part),
+        onLongPress: () => copyToolPartContent(context, part),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           child: Column(
@@ -2389,7 +2444,7 @@ class _ToolChipState extends State<_ToolChip>
     if (input != null && input.isNotEmpty) {
       children.add(const SizedBox(height: 8));
       children.add(
-        _codeBlock(
+        toolCodeBlock(
           const JsonEncoder.withIndent('  ').convert(input),
           appColors,
         ),
@@ -2397,7 +2452,7 @@ class _ToolChipState extends State<_ToolChip>
     }
     if (output != null && output.isNotEmpty) {
       children.add(const SizedBox(height: 8));
-      children.add(_codeBlock(output, appColors));
+      children.add(toolCodeBlock(output, appColors));
     }
     if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
       children.add(const SizedBox(height: 8));
@@ -2421,50 +2476,544 @@ class _ToolChipState extends State<_ToolChip>
     }
     return children;
   }
+}
 
-  Widget _codeBlock(String body, AppColors appColors) {
-    var text = body;
-    if (text.endsWith('\n')) text = text.substring(0, text.length - 1);
+/// subagent 工作状态面板（design-subagent-status）：task 工具的专用渲染——
+/// 替代 _ToolChip，在主消息流中内嵌子会话消息流。收起态 = agent 名 +
+/// 状态图标 + 描述摘要（同 ToolChip 收起观感）；展开态 = 独立滚动（滚动条
+/// 隐藏、贴底跟随）的子会话消息列表，宽度与消息区一致。
+class _SubagentPanel extends StatefulWidget {
+  final DisplayPart part;
+  final String parentSessionId;
+  const _SubagentPanel({
+    super.key,
+    required this.part,
+    required this.parentSessionId,
+  });
+
+  @override
+  State<_SubagentPanel> createState() => _SubagentPanelState();
+}
+
+class _SubagentPanelState extends State<_SubagentPanel>
+    with SingleTickerProviderStateMixin {
+  bool _expanded = false;
+  final GlobalKey _contentKey = GlobalKey();
+  final GlobalKey _headerKey = GlobalKey();
+  double _lastV = 0;
+  double _headerW = 0.0;
+  late final AnimationController _ctrl = AnimationController(
+    duration: const Duration(milliseconds: 150),
+    vsync: this,
+  )..addListener(_onAnimate);
+  late final Animation<double> _curved = _ctrl.drive(
+    CurveTween(curve: Curves.easeOut),
+  );
+
+  /// 已触发 REST 快照的子会话 id（ref 而非布尔：childSessionId 漂移
+  /// ——启发式命中在先 → metadata.sessionId 到达切换——时对新 id 重新
+  /// 触发）。收起即重置：面板无错误态渲染，再展开是 REST 失败后的
+  /// 唯一重试入口。
+  String? _loadedChildId;
+
+  Object get _expansionStorageKey => 'subagent_expanded:${widget.part.id}';
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded =
+        PageStorage.maybeOf(
+          context,
+        )?.readState(context, identifier: _expansionStorageKey) ==
+        true;
+    if (_expanded) {
+      _lastV = 1.0;
+      _ctrl.value = 1.0;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _headerW = _headerKey.currentContext?.size?.width ?? _headerW;
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _onAnimate() {
+    final v = _curved.value;
+    _syncReversedScroll(context, _contentKey, v - _lastV);
+    _lastV = v;
+  }
+
+  void _toggle() {
+    _headerW = _headerKey.currentContext?.size?.width ?? _headerW;
+    setState(() {
+      _expanded = !_expanded;
+      if (_expanded) {
+        _ctrl.forward();
+      } else {
+        _ctrl.reverse();
+        _loadedChildId = null;
+      }
+    });
+    PageStorage.maybeOf(
+      context,
+    )?.writeState(context, _expanded, identifier: _expansionStorageKey);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final part = widget.part;
+    final theme = Theme.of(context);
+    final loc = l(context);
+    final status = part.toolStatus ?? '';
+
+    // 子会话 ID 来源（design-subagent-status §D3）：
+    // 1. tool.state.metadata.sessionId（running/completed 后 server 写入）
+    // 2. 降级：findChildSession 按 parentID + description 启发式匹配
+    final metaSid = part.toolMetadata?['sessionId']?.toString();
+    final description = part.toolInput?['description']?.toString() ?? '';
+    final subagentType = part.toolInput?['subagent_type']?.toString() ?? '';
+    final childSessionId = (metaSid != null && metaSid.isNotEmpty)
+        ? metaSid
+        : serverStore
+            .findChildSession(widget.parentSessionId, description: description)
+            ?.id;
+
+    // 展开挂载后触发 REST 快照（SSE 已累积则 store 内部跳过）。post-frame
+    // 执行 store 变更（不在 build 期间通知），随后 setState 让 body 拿到
+    // 刚创建的 conv 挂 ListenableBuilder——conv 创建本身不通知 store，
+    // 不补这一帧面板会停在「加载中」。
+    if (_expanded &&
+        childSessionId != null &&
+        _loadedChildId != childSessionId) {
+      _loadedChildId = childSessionId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_expanded) return;
+        serverStore.loadChildSessionMessages(childSessionId);
+        setState(() {});
+      });
+    }
+
+    final agentLabel = subagentType.isNotEmpty
+        ? subagentType[0].toUpperCase() + subagentType.substring(1)
+        : loc.convDefaultTitle;
+    final summary = switch (status) {
+      'completed' => (part.toolTitle?.isNotEmpty ?? false)
+          ? part.toolTitle!
+          : description,
+      'error' => part.toolError ?? description,
+      _ => description,
+    };
+    final (icon, color) = switch (status) {
+      'completed' => (Icons.check_circle, const Color(0xFF3FB950)),
+      'running' => (Icons.play_arrow, const Color(0xFF4ADE80)),
+      'error' => (Icons.error, const Color(0xFFF85149)),
+      _ => (Icons.hourglass_top, const Color(0xFF8B949E)),
+    };
+
     return Container(
-      width: double.infinity,
+      margin: const EdgeInsets.only(top: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: _toggle,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LayoutBuilder(
+                builder: (context, c) {
+                  return Row(
+                    key: _headerKey,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, size: 15, color: color),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          agentLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                      if (summary.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            summary,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w400,
+                              color: theme.colorScheme.outline,
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(width: 6),
+                      Icon(
+                        _expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
+                        color: theme.colorScheme.outline,
+                      ),
+                    ],
+                  );
+                },
+              ),
+              LayoutBuilder(
+                builder: (context, c) {
+                  return AnimatedBuilder(
+                    animation: _curved,
+                    builder: (context, child) {
+                      return SizedBox(
+                        width:
+                            _headerW + (c.maxWidth - _headerW) * _curved.value,
+                        child: SizeTransition(
+                          sizeFactor: _curved,
+                          alignment: Alignment.topCenter,
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: Column(
+                      key: _contentKey,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // 收起动画期间保持挂载（SizeTransition 有内容可缩），
+                        // 静止收起态才卸载——同 _ToolChip 的展开语义。
+                        if (_expanded || _ctrl.isAnimating)
+                          _SubagentBody(
+                            childSessionId: childSessionId,
+                            parentSessionId: widget.parentSessionId,
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// SubagentPanel 展开态的子会话消息流。独立滚动（贴底跟随、滚动条隐藏），
+/// 复用 _ToolChip 渲染子会话内的工具 part；text 走稳定 Markdown 路径
+/// （子会话不进 _messageChildCache 实例缓存——面板高度有界、条目少）。
+class _SubagentBody extends StatelessWidget {
+  final String? childSessionId;
+  final String parentSessionId;
+  const _SubagentBody({
+    required this.childSessionId,
+    required this.parentSessionId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appColors = theme.extension<AppColors>()!;
+    final loc = l(context);
+    final sid = childSessionId;
+    if (sid == null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+        child: Text(
+          loc.subagentNoSession,
+          style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
+        ),
+      );
+    }
+    final conv = serverStore.conversationForRead(sid);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(0, 8, 0, 2),
+      constraints: const BoxConstraints(maxHeight: 400),
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         color: appColors.codeBackground,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: appColors.border),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.all(12),
-        child: Text(
-          text,
-          style: AppTheme.mono.copyWith(fontSize: 13, color: appColors.code),
-        ),
+      child: conv == null
+          ? Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(
+                loc.subagentLoading,
+                style: TextStyle(
+                    fontSize: 12, color: theme.colorScheme.outline),
+              ),
+            )
+          : ListenableBuilder(
+              listenable: conv,
+              builder: (context, _) {
+                final msgs = conv.renderableMessages;
+                if (msgs.isEmpty) {
+                  return Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      loc.subagentLoading,
+                      style: TextStyle(
+                          fontSize: 12, color: theme.colorScheme.outline),
+                    ),
+                  );
+                }
+                return _SubagentMessageList(
+                  messages: msgs,
+                  parentSessionId: parentSessionId,
+                );
+              },
+            ),
+    );
+  }
+}
+
+/// reverse ListView：offset 0 = 底部（最新），天然贴底跟随（与主列表同构）。
+/// 滚动条隐藏对齐主消息流。itemExtent 无——条目高度不定。
+class _SubagentMessageList extends StatelessWidget {
+  final List<DisplayMessage> messages;
+  final String parentSessionId;
+  const _SubagentMessageList({
+    required this.messages,
+    required this.parentSessionId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ScrollConfiguration(
+      behavior: const _HiddenScrollbarBehavior(),
+      child: ListView.builder(
+        reverse: true,
+        padding: const EdgeInsets.all(8),
+        itemCount: messages.length,
+        itemBuilder: (context, i) {
+          final m = messages[i];
+          return _SubagentMessage(
+            key: ValueKey(m.info.id),
+            message: m,
+            parentSessionId: parentSessionId,
+          );
+        },
       ),
     );
   }
+}
 
-  void _copyContent(DisplayPart part) {
-    final buf = StringBuffer();
-    final input = part.toolInput;
-    if (input != null && input.isNotEmpty) {
-      buf.writeln(const JsonEncoder.withIndent('  ').convert(input));
+class _HiddenScrollbarBehavior extends ScrollBehavior {
+  const _HiddenScrollbarBehavior();
+
+  @override
+  Widget buildScrollbar(
+          BuildContext context, Widget child, ScrollableDetails details) =>
+      child;
+}
+
+/// 子会话单条消息的轻量渲染：user → 左侧弱化文本；assistant → parts
+/// （text 稳定 Markdown、tool → _ToolChip、reasoning → 灰字、subtask →
+/// 标签行）。流式期间（finish==null）text 降级纯文本，与主列表 JANK-4
+/// 同理——子面板条目少、降级渲染成本低，但保持一致避免逐 token 全量
+/// 重解析。嵌套 task 工具渲染为 ToolChip（input/output 视图）——比桌面端
+/// 依赖 server subagent_depth 更强的 UI 防护。
+class _SubagentMessage extends StatefulWidget {
+  final DisplayMessage message;
+  final String parentSessionId;
+  const _SubagentMessage({
+    super.key,
+    required this.message,
+    required this.parentSessionId,
+  });
+
+  @override
+  State<_SubagentMessage> createState() => _SubagentMessageState();
+}
+
+class _SubagentMessageState extends State<_SubagentMessage> {
+  String? _linkifiedFor;
+  String _linkified = '';
+
+  /// autolink 记忆化：子会话流式期间 ListenableBuilder 每 part 事件重建，
+  /// settled 消息的 text 不变——避免逐次全量重跑（主列表走 _autolinkCache
+  /// 同理，面板内用 per-State 记忆化即可）。
+  String _linkify(String data) {
+    if (_linkifiedFor != data) {
+      _linkifiedFor = data;
+      _linkified = autolinkMarkdownLinks(data);
     }
-    final output = part.toolOutput;
-    if (output != null && output.isNotEmpty) {
-      if (buf.isNotEmpty) buf.writeln();
-      buf.write(output);
+    return _linkified;
+  }
+
+  void _onLink(BuildContext context, String? href) {
+    if (href == null || href.isEmpty) return;
+    if (href.startsWith('ob-file:///')) {
+      final decoded = decodeFileHref(href);
+      if (decoded == null) return;
+      final (raw, line) = decoded;
+      final directory =
+          serverStore.sessionById(widget.parentSessionId)?.directory ?? '';
+      final rel = resolveProjectPath(raw, directory);
+      if (rel == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l(context).fileLinkNotInProject)),
+        );
+        return;
+      }
+      context.push(
+        '/session/${widget.parentSessionId}/files'
+        '?directory=${Uri.encodeQueryComponent(directory)}',
+        extra: FileBrowsingSnapshot(
+          openFiles: [
+            OpenFileEntry(
+              path: rel,
+              scrollOffset: 0,
+              wrap: false,
+              showSource: line != null,
+              initialLine: line,
+            ),
+          ],
+          peek: true,
+        ),
+      );
+      return;
     }
-    final error = part.toolError;
-    if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
-      if (buf.isNotEmpty) buf.writeln();
-      buf.write(error);
+    openExternalLink(context, href);
+  }
+
+  String _errorText(Map<String, dynamic> error) {
+    final data = error['data'];
+    if (data is Map) {
+      final msg = data['message']?.toString();
+      if (msg != null && msg.isNotEmpty) return msg;
+    } else if (data is String && data.isNotEmpty) {
+      return data;
     }
-    if (buf.isEmpty) return;
-    Clipboard.setData(ClipboardData(text: buf.toString()));
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(l(context).copied)));
+    for (final key in ['message', 'error']) {
+      final v = error[key]?.toString();
+      if (v != null && v.isNotEmpty) return v;
+    }
+    return (error['name'] ?? 'Error').toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appColors = theme.extension<AppColors>()!;
+    final m = widget.message;
+    final isUser = m.info.role == 'user';
+    final streaming = !isUser && m.info.finish == null;
+    final text = TextStyle(fontSize: 13, height: 1.45, color: appColors.code);
+
+    final children = <Widget>[];
+    if (m.info.error != null) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(
+            _errorText(m.info.error!),
+            style: const TextStyle(
+              fontSize: 12,
+              color: Color(0xFFF85149),
+            ),
+          ),
+        ),
+      );
+    }
+    for (final p in m.parts) {
+      switch (p.type) {
+        case 'text':
+          if (p.text.trim().isEmpty) break;
+          if (streaming) {
+            children.add(
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Text(p.text, style: text),
+              ),
+            );
+          } else {
+            children.add(
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: MarkdownBody(
+                  data: _linkify(p.text),
+                  softLineBreak: isUser,
+                  onTapLink: (text, href, title) => _onLink(context, href),
+                  styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                    p: TextStyle(
+                        fontSize: 13, height: 1.45, color: appColors.code),
+                    code: TextStyle(
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        color: appColors.code),
+                  ),
+                ),
+              ),
+            );
+          }
+          break;
+        case 'reasoning':
+          if (!showThinking.value || p.text.trim().isEmpty) break;
+          children.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(
+                p.text,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: theme.colorScheme.outline,
+                  height: 1.45,
+                ),
+              ),
+            ),
+          );
+          break;
+        case 'tool':
+          children.add(_ToolChip(part: p));
+          break;
+        case 'subtask':
+          children.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(
+                p.text.isEmpty
+                    ? 'subtask: ${p.command ?? 'subtask'}'
+                    : 'subtask: ${p.command ?? 'subtask'}\n\n${p.text}',
+                style: text.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+          );
+          break;
+        default:
+          break;
+      }
+    }
+    if (children.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: children,
+      ),
+    );
   }
 }
 

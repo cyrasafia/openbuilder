@@ -291,5 +291,12 @@
   "notifQuestionBody": "\"{title}\": {detail}",
   "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
   "notifQuestionDefaultHeader": "Question",
-  "copied": "Copied"
+  "copied": "Copied",
+  "subagentRunning": "Running",
+  "subagentCompleted": "Done",
+  "subagentError": "Error",
+  "subagentExpand": "Expand sub-session",
+  "subagentCollapse": "Collapse sub-session",
+  "subagentNoSession": "Sub-session not ready",
+  "subagentLoading": "Loading…"
 }
