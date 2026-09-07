@@ -396,70 +396,59 @@ class ProjectDetailScreen extends StatelessWidget {
     String worktreeDir,
   ) {
     final wtName = worktreeDir.split('/').last;
-    var deleting = false;
-    showDialog(
+    showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => PopScope(
-          canPop: !deleting,
-          child: AlertDialog(
-            title: Text(l(ctx).projectDeleteWorkspace),
-            content: Text(l(ctx).projectDeleteWorkspaceConfirm(wtName)),
-            actions: [
-              TextButton(
-                onPressed: deleting ? null : () => Navigator.pop(ctx),
-                child: Text(l(ctx).cancel),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: Theme.of(ctx).colorScheme.error,
-                ),
-                onPressed: deleting
-                    ? null
-                    : () async {
-                        setState(() => deleting = true);
-                        try {
-                          await serverStore.removeWorktree(
-                            projectWorktree,
-                            worktreeDir: worktreeDir,
-                          );
-                          if (ctx.mounted) Navigator.pop(ctx);
-                          if (ctx.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  l(context).projectWorktreeDeleted(wtName),
-                                ),
-                              ),
-                            );
-                          }
-                        } catch (e) {
-                          if (ctx.mounted) {
-                            setState(() => deleting = false);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  l(context).deleteFailed(
-                                    friendlyMessage(l(context), e),
-                                  ),
-                                ),
-                              ),
-                            );
-                          }
-                        }
-                      },
-                child: deleting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(l(ctx).delete),
-              ),
-            ],
+      builder: (ctx) => AlertDialog(
+        title: Text(l(ctx).projectDeleteWorkspace),
+        content: Text(l(ctx).projectDeleteWorkspaceConfirm(wtName)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l(ctx).cancel),
           ),
-        ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () {
+              // Non-blocking delete: close the dialog right away — the
+              // deleting state is set synchronously by removeWorktree, the
+              // section header grays out via isWorktreeDeleting, and cleanup
+              // runs in the background. Failure surfaces via SnackBar.
+              Navigator.pop(ctx);
+              unawaited(
+                serverStore
+                    .removeWorktree(projectWorktree, worktreeDir: worktreeDir)
+                    .then(
+                  (_) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          l(context).projectWorktreeDeleted(wtName),
+                        ),
+                      ),
+                    );
+                  },
+                  onError: (e) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          l(context).deleteFailed(
+                            friendlyMessage(l(context), e),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
+            child: Text(l(ctx).delete),
+          ),
+        ],
       ),
     );
   }
@@ -520,6 +509,7 @@ class ProjectDetailScreen extends StatelessWidget {
     final showHeaders = groups.length > 1 || alwaysShowHeaders;
     final out = <Widget>[];
     for (final g in groups) {
+      final deleting = serverStore.isWorktreeDeleting(g.directory);
       if (showHeaders) {
         final name = g.directory == projectWorktree
             ? l(context).projectMainWorkspace
@@ -531,6 +521,7 @@ class ProjectDetailScreen extends StatelessWidget {
           _SectionHeader(
             name: name,
             count: g.sessions.length,
+            deleting: deleting,
             onDelete: canDelete
                 ? () => _confirmRemoveWorktree(
                     context,
@@ -547,6 +538,7 @@ class ProjectDetailScreen extends StatelessWidget {
             session: s,
             agentState: serverStore.agentIndicatorStateOf(s.id),
             preview: serverStore.lastMessageOf(s.id),
+            deleting: deleting,
             onTap: () => context.push('/session/${s.id}'),
           ),
         ),
@@ -776,60 +768,73 @@ class _SectionHeader extends StatelessWidget {
   final String name;
   final int count;
   final VoidCallback? onDelete;
+  final bool deleting;
   const _SectionHeader({
     required this.name,
     required this.count,
     this.onDelete,
+    this.deleting = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        children: [
-          Icon(
-            Icons.call_split,
-            size: 14,
-            color: Theme.of(context).colorScheme.outline,
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: AppTheme.mono.copyWith(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w600,
-                color: Theme.of(context).colorScheme.onSurface,
+    final scheme = Theme.of(context).colorScheme;
+    return Opacity(
+      opacity: deleting ? 0.45 : 1,
+      child: IgnorePointer(
+        ignoring: deleting,
+        child: Container(
+          color: scheme.surfaceContainerHighest,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              Icon(
+                Icons.call_split,
+                size: 14,
+                color: scheme.outline,
               ),
-            ),
-          ),
-          Text(
-            '$count',
-            style: TextStyle(
-              fontSize: 11,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-          ),
-          if (onDelete != null) ...[
-            const SizedBox(width: 8),
-            InkWell(
-              onTap: onDelete,
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.delete_outline,
-                  size: 16,
-                  color: Theme.of(context).colorScheme.error,
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTheme.mono.copyWith(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurface,
+                  ),
                 ),
               ),
-            ),
-          ],
-        ],
+              if (deleting)
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Text(
+                  '$count',
+                  style: TextStyle(fontSize: 11, color: scheme.outline),
+                ),
+              if (onDelete != null && !deleting) ...[
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: onDelete,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(
+                      Icons.delete_outline,
+                      size: 16,
+                      color: scheme.error,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -840,17 +845,19 @@ class _SessionRow extends StatelessWidget {
   final AgentIndicatorState agentState;
   final String? preview;
   final VoidCallback onTap;
+  final bool deleting;
   const _SessionRow({
     required this.session,
     required this.agentState,
     required this.preview,
     required this.onTap,
+    this.deleting = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.outline;
-    return ListTile(
+    final row = ListTile(
       onTap: onTap,
       dense: true,
       title: Row(
@@ -883,6 +890,11 @@ class _SessionRow extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: muted),
               ),
             ),
+    );
+    if (!deleting) return row;
+    return Opacity(
+      opacity: 0.45,
+      child: IgnorePointer(child: row),
     );
   }
 }

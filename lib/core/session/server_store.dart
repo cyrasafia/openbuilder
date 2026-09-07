@@ -128,6 +128,9 @@ class ServerStore extends ChangeNotifier {
   /// entry (see `_removeSession`) — monotonicity holds across deletes too.
   final Map<String, int> _lastActivityByKey = {};
   final Map<String, bool> _workspaceEnabled = {};
+  /// Worktree directories with an in-flight [removeWorktree] (non-blocking
+  /// delete). Drives [isWorktreeDeleting] for the grayed-out section UI.
+  final Set<String> _deletingWorktrees = {};
   bool _projectsFetched = false;
   /// Per-session conversation caches, capped at [_kMaxConversations] with
   /// LRU eviction (oldest accessed evicted on insert). Uses a LinkedHashMap
@@ -524,54 +527,80 @@ class ServerStore extends ChangeNotifier {
   /// `sandboxes`, all sessions in that directory are dropped from `_sessions`
   /// (plus their conversation / preview / status caches), and the directory
   /// falls out of the global stream's event gate — all without a full
-  /// `refresh()`. Callers should `await` this so the UI behind a confirmation
-  /// dialog is already in its final state when the dialog closes.
+  /// `refresh()`.
+  ///
+  /// Session deletion is best-effort: the directory snapshot comes from a
+  /// one-shot REST fetch while the global SSE stream concurrently pushes
+  /// `session.deleted` for the same ids (self-echo of our own DELETEs, plus
+  /// other clients), so an individual DELETE can 404 on an already-deleted
+  /// session — that outcome is treated as "already gone" and swallowed.
+  /// Only a failed `DELETE /experimental/worktree` itself fails the whole
+  /// operation. (Mirror of the desktop client's cascade: single session
+  /// delete failures never block the worktree deletion.)
+  ///
+  /// Non-blocking: the deleting state ([isWorktreeDeleting]) is set
+  /// synchronously so callers can close the confirmation dialog immediately
+  /// and gray the section out while cleanup runs in the background. Re-entry
+  /// for the same directory is rejected; the state is cleared in `finally`
+  /// (success and failure alike) so a failed delete can be retried.
   Future<void> removeWorktree(
     String projectWorktree, {
     required String worktreeDir,
   }) async {
+    if (_deletingWorktrees.contains(worktreeDir)) return;
     final c = client;
     if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
+    _deletingWorktrees.add(worktreeDir);
+    notifyListeners();
     try {
       final sessions = await c.sessionsForDirectory(worktreeDir);
       await Future.wait(
         sessions.map(
-          (s) => c.deleteSession(s.id, directory: worktreeDir),
+          (s) => c.deleteSession(s.id, directory: worktreeDir).catchError((_) {
+            AppLogger.I.w(_tag, 'deleteSession ${s.id} best-effort skipped');
+          }),
         ),
       );
       await c.removeWorktree(projectWorktree, worktreeDir: worktreeDir);
+      final idx = _projects.indexWhere((p) => p.worktree == projectWorktree);
+      if (idx >= 0) {
+        final p = _projects[idx];
+        _projects[idx] = ProjectModel(
+          id: p.id,
+          worktree: p.worktree,
+          vcs: p.vcs,
+          name: p.name,
+          icon: p.icon,
+          commands: p.commands,
+          sandboxes: p.sandboxes
+              .where((d) => d != worktreeDir)
+              .toList(growable: false),
+          created: p.created,
+        );
+      }
+      final removedIds = _sessions
+          .where((s) => s.directory == worktreeDir)
+          .map((s) => s.id)
+          .toSet();
+      _sessions.removeWhere((s) => s.directory == worktreeDir);
+      for (final sid in removedIds) {
+        _conversations.remove(sid);
+        _lastMessage.remove(sid);
+        _statusMap.remove(sid);
+      }
+      _scheduleCacheSave();
     } catch (e) {
       throw OperationException('删除工作区', cause: e);
+    } finally {
+      _deletingWorktrees.remove(worktreeDir);
+      notifyListeners();
     }
-    final idx = _projects.indexWhere((p) => p.worktree == projectWorktree);
-    if (idx >= 0) {
-      final p = _projects[idx];
-      _projects[idx] = ProjectModel(
-        id: p.id,
-        worktree: p.worktree,
-        vcs: p.vcs,
-        name: p.name,
-        icon: p.icon,
-        commands: p.commands,
-        sandboxes: p.sandboxes
-            .where((d) => d != worktreeDir)
-            .toList(growable: false),
-        created: p.created,
-      );
-    }
-    final removedIds = _sessions
-        .where((s) => s.directory == worktreeDir)
-        .map((s) => s.id)
-        .toSet();
-    _sessions.removeWhere((s) => s.directory == worktreeDir);
-    for (final sid in removedIds) {
-      _conversations.remove(sid);
-      _lastMessage.remove(sid);
-      _statusMap.remove(sid);
-    }
-    _scheduleCacheSave();
-    notifyListeners();
   }
+
+  /// Whether a worktree directory has an in-flight [removeWorktree]
+  /// (data source for the grayed-out section header UI).
+  bool isWorktreeDeleting(String worktreeDir) =>
+      _deletingWorktrees.contains(worktreeDir);
 
   void _inferWorkspaceForNewProjects() {
     final hasWorkspaceSession = <String>{};

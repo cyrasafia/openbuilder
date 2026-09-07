@@ -39,6 +39,8 @@ SessionModel _session(String id, String dir,
 /// Mock client whose `removeWorktree` outcome is controllable.
 class _RemoveWorktreeMockClient extends OpencodeClient {
   bool failRemove = false;
+  /// Session ids that should fail DELETE (e.g. 404 race with SSE echo).
+  final Set<String> failDeleteIds = {};
   int removeCalls = 0;
   String? lastDirectory;
   String? lastWorktreeDir;
@@ -59,6 +61,9 @@ class _RemoveWorktreeMockClient extends OpencodeClient {
   Future<void> deleteSession(String sessionId, {String? directory}) async {
     callOrder.add('delete:$sessionId');
     deletedSessionIds.add(sessionId);
+    if (failDeleteIds.contains(sessionId)) {
+      throw KnownError(FriendlyErrorKind.notFound);
+    }
   }
 
   @override
@@ -186,6 +191,63 @@ void main() {
         () => store.removeWorktree(_mainDir, worktreeDir: _sandboxDir),
         throwsA(isA<KnownError>()),
       );
+    });
+
+    test('non-blocking: deleting state set synchronously, cleared on success',
+        () async {
+      final client = _RemoveWorktreeMockClient();
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project(sandboxes: [_sandboxDir])]);
+
+      final pending = store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
+      // In-flight: isWorktreeDeleting is true before any await settles.
+      expect(store.isWorktreeDeleting(_sandboxDir), isTrue);
+      // Re-entry for the same directory is a no-op.
+      await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
+      expect(client.removeCalls, 0);
+
+      await pending;
+      expect(store.isWorktreeDeleting(_sandboxDir), isFalse);
+    });
+
+    test('deleting state cleared on failure (retryable)', () async {
+      final client = _RemoveWorktreeMockClient()..failRemove = true;
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project(sandboxes: [_sandboxDir])]);
+
+      expect(
+        () => store.removeWorktree(_mainDir, worktreeDir: _sandboxDir),
+        throwsA(isA<OperationException>()),
+      );
+      await Future.delayed(Duration.zero);
+
+      expect(store.isWorktreeDeleting(_sandboxDir), isFalse);
+    });
+
+    test('best-effort: a 404 on one session delete does not block the rest '
+        'nor the worktree removal', () async {
+      final client = _RemoveWorktreeMockClient()
+        ..directorySessions = [
+          _session('sb1', _sandboxDir),
+          _session('sb2', _sandboxDir),
+          _session('sb3', _sandboxDir),
+        ]
+        ..failDeleteIds.add('sb2');
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project(sandboxes: [_sandboxDir])]);
+      store.upsertSessionForTesting(_session('sb1', _sandboxDir));
+      store.upsertSessionForTesting(_session('sb2', _sandboxDir));
+      store.upsertSessionForTesting(_session('sb3', _sandboxDir));
+
+      await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
+
+      // All three DELETEs were attempted; the failed one was swallowed.
+      expect(client.deletedSessionIds, containsAll(['sb1', 'sb2', 'sb3']));
+      // The worktree removal still ran and local state is fully cleaned.
+      expect(client.removeCalls, 1);
+      expect(store.projectOf(_projectId)!.sandboxes, isEmpty);
+      expect(store.sessions.where((s) => s.directory == _sandboxDir), isEmpty);
+      expect(store.isWorktreeDeleting(_sandboxDir), isFalse);
     });
   });
 }
