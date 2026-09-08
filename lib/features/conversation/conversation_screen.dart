@@ -2743,44 +2743,54 @@ class _SubagentBody extends StatelessWidget {
       );
     }
     final conv = serverStore.conversationForRead(sid);
+    // 窗口背景由 Material 承担（Container 只留 border/clip）：InkWell 水墨
+    // 画在 Material 子树之下（_RenderInkFeatures 先 ink 后 child），若不
+    // 自带 Material，内嵌 chip 的水墨会落到 Scaffold 级 Material——页面
+    // 内容透明处（窗口外/面板下方）可见，即「阴影逃出窗口」；若 Material
+    // 带透明底放在 Container 的 color 之下，水墨又会被窗口背景完全盖住。
+    // Material.color = 窗口背景 → 水墨落在背景之上、内容之下，且整体仍在
+    // Container 的圆角 clip 内：可见且不越界。
     return Container(
       margin: const EdgeInsets.fromLTRB(0, 8, 0, 2),
       constraints: const BoxConstraints(maxHeight: 400),
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
-        color: appColors.codeBackground,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: appColors.border),
       ),
-      child: conv == null
-          ? Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                loc.subagentLoading,
-                style: TextStyle(
-                    fontSize: 12, color: theme.colorScheme.outline),
-              ),
-            )
-          : ListenableBuilder(
-              listenable: conv,
-              builder: (context, _) {
-                final msgs = conv.renderableMessages;
-                if (msgs.isEmpty) {
-                  return Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text(
-                      loc.subagentLoading,
-                      style: TextStyle(
-                          fontSize: 12, color: theme.colorScheme.outline),
-                    ),
+      child: Material(
+        type: MaterialType.canvas,
+        color: appColors.codeBackground,
+        child: conv == null
+            ? Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  loc.subagentLoading,
+                  style: TextStyle(
+                      fontSize: 12, color: theme.colorScheme.outline),
+                ),
+              )
+            : ListenableBuilder(
+                listenable: conv,
+                builder: (context, _) {
+                  final msgs = conv.renderableMessages;
+                  if (msgs.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        loc.subagentLoading,
+                        style: TextStyle(
+                            fontSize: 12, color: theme.colorScheme.outline),
+                      ),
+                    );
+                  }
+                  return _SubagentMessageList(
+                    messages: msgs,
+                    parentSessionId: parentSessionId,
                   );
-                }
-                return _SubagentMessageList(
-                  messages: msgs,
-                  parentSessionId: parentSessionId,
-                );
-              },
-            ),
+                },
+              ),
+      ),
     );
   }
 }
