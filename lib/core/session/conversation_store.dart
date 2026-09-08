@@ -1392,6 +1392,19 @@ class ConversationStore extends ChangeNotifier {
     if (idx == -1) {
       _permissions.add(p);
     } else {
+      // Idempotent re-inject (SSE echo + REST backfill both feed this):
+      // replacing with an identical instance still rebuilds the detail page;
+      // skip only when id/type/patterns/metadata are all unchanged
+      // (metadata drives externalDirectoryPath for the card title).
+      final old = _permissions[idx];
+      if (old.type == p.type &&
+          old.sessionID == p.sessionID &&
+          _eqMetadata(old.metadata, p.metadata) &&
+          old.patterns.length == p.patterns.length &&
+          old.patterns.asMap().entries
+              .every((e) => p.patterns[e.key] == e.value)) {
+        return;
+      }
       _permissions[idx] = p;
     }
     AppLogger.I.i(_tag, 'onPermission pid=${p.id} sid=${p.sessionID} op=${idx == -1 ? "add" : "replace"} → count=${_permissions.length}');
@@ -1402,6 +1415,15 @@ class ConversationStore extends ChangeNotifier {
     AppLogger.I.i(_tag, 'onPermissionReplied pid=$permissionId → removed, count was=${_permissions.length}');
     _permissions.removeWhere((p) => p.id == permissionId);
     notifyListeners();
+  }
+
+  /// 浅层比较 permission metadata（mapEquals，与 _renderEquivalent 同模式）。
+  /// 值为嵌套 map/list 时按引用比较——两处来源反序列化同一服务端对象，
+  /// 深比较无必要。
+  bool _eqMetadata(Map<String, dynamic>? a, Map<String, dynamic>? b) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null) return false;
+    return mapEquals(a, b);
   }
 
   Future<void> respondPermission(Permission p, String response) async {
@@ -1424,6 +1446,13 @@ class ConversationStore extends ChangeNotifier {
     if (idx == -1) {
       _questions.add(q);
     } else {
+      // Idempotent re-inject (same rationale as onPermission): an identical
+      // replace must not rebuild the detail page. Element-wise comparison —
+      // a same-id re-ask with changed options must still surface.
+      final old = _questions[idx];
+      if (old.sessionID == q.sessionID && old.questions == q.questions) {
+        return;
+      }
       _questions[idx] = q;
     }
     AppLogger.I.i(_tag, 'onQuestion qid=${q.id} sid=${q.sessionID} op=${idx == -1 ? "add" : "replace"} → count=${_questions.length}');

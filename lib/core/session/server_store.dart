@@ -1858,6 +1858,11 @@ class ServerStore extends ChangeNotifier {
           final status = SessionStatusValue.fromJson(st.cast());
           AppLogger.I.d(_tag, 'session.status $sid=${status.type}'
               '${status.message != null ? ' msg=${status.message}' : ''}');
+          // No-op guard: busy sessions re-emit the same status frequently
+          // (and duplicate live subscriptions delivered it 2-3x). A trailing
+          // notifyListeners() per event rebuilds every
+          // ListenableBuilder(serverStore); an identical value must not.
+          if (_statusMap[sid] == status) return;
           _statusMap[sid] = status;
           _conversations[sid]?.setStatus(status.type, retryMessage: status.message);
           _scheduleCacheSave();

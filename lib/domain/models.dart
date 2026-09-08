@@ -241,6 +241,15 @@ class SessionStatusValue {
     'type': type,
     if (message != null) 'message': message,
   };
+
+  @override
+  bool operator ==(Object other) =>
+      other is SessionStatusValue &&
+      other.type == type &&
+      other.message == message;
+
+  @override
+  int get hashCode => Object.hash(type, message);
 }
 
 enum AgentRunState { working, retrying, idle, paused }
@@ -799,6 +808,15 @@ class QuestionOption {
     label: (j['label'] ?? '').toString(),
     description: (j['description'] ?? '').toString(),
   );
+
+  @override
+  bool operator ==(Object other) =>
+      other is QuestionOption &&
+      other.label == label &&
+      other.description == description;
+
+  @override
+  int get hashCode => Object.hash(label, description);
 }
 
 class QuestionInfo {
@@ -829,6 +847,20 @@ class QuestionInfo {
     multiple: j['multiple'] == true,
     custom: j['custom'] == true,
   );
+
+  @override
+  bool operator ==(Object other) =>
+      other is QuestionInfo &&
+      other.question == question &&
+      other.header == header &&
+      other.multiple == multiple &&
+      other.custom == custom &&
+      other.options.length == options.length &&
+      other.options.asMap().entries.every((e) => options[e.key] == e.value);
+
+  @override
+  int get hashCode =>
+      Object.hash(question, header, multiple, custom, Object.hashAll(options));
 }
 
 /// A pending question request: `{id, sessionID, questions[], tool?}`.

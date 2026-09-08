@@ -147,6 +147,15 @@ class SseClient {
     _startHeartbeatTimer();
     _connectTimer?.cancel();
     _connectTimer = Timer(overallTimeout, _onConnectTimeout);
+    // Cancel any previous subscription BEFORE overwriting _sub. Without this,
+    // each reconnect abandoned the old stream alive: error(onError) and
+    // onDone both fired for the dead connection while the new one was already
+    // listening, so every reconnect multiplied the live subscription count
+    // (duplicate `server.connected` / `session.status` deliveries in the
+    // logs) and each dead copy triggered ANOTHER _onDrop → another
+    // reconnect — the reconnect storm.
+    _sub?.cancel();
+    _sub = null;
     AppLogger.I.d(_tag, 'connect start $label');
     _sub = transport
         .eventDataStream(uri, h, overallTimeout: overallTimeout)
@@ -180,29 +189,40 @@ class SseClient {
   /// Transport dropped (error/done). Schedule one reconnect, guarding against
   /// duplicate scheduling while a backoff is already pending.
   void _onDrop([String? reason]) {
-    if (_stopped || _reconnectPending) return;
+    if (_stopped) return;
+    if (_reconnectPending) return;
     _connected = false;
     _connectTimer?.cancel();
     _connectTimer = null;
     final r = reason != null ? ' ($reason)' : '';
     AppLogger.I.w(_tag, 'dropped $label$r');
+    _reconnectPending = true; // set synchronously: a same-tick second drop
+    // from the old subscription's cancel-echo must not double-schedule.
     unawaited(_scheduleReconnect());
   }
 
   Future<void> _scheduleReconnect() async {
-    _reconnectPending = true;
     _reconnectAttempt++;
     AppLogger.I.i(_tag, 'reconnect attempt $_reconnectAttempt $label');
     _emit(SseState(reconnecting: true, attempt: _reconnectAttempt));
     final waitSeconds = _backoff;
     _backoff = (_backoff * 2).clamp(1, 30);
-    // Interruptible backoff: reconnectNow() (e.g., app resume) breaks the
-    // sleep early. 200ms poll granularity keeps kick latency negligible.
-    final deadline = DateTime.now().add(Duration(seconds: waitSeconds));
-    while (DateTime.now().isBefore(deadline) && !_stopped && !_kickReconnect) {
-      await Future.delayed(const Duration(milliseconds: 200));
-    }
+    // A kick that arrived while no backoff was pending (lost kick) leaves
+    // the flag set on purpose. But once a reconnect cycle starts, that stale
+    // flag must be consumed HERE, not inside the sleep loop: the loop exits
+    // at its first 200ms poll either way, and a flag left set would make the
+    // NEXT cycle's sleep exit immediately too, reconnecting twice per drop
+    // (attempt 1 + attempt 2 in the same millisecond in the logs).
+    final kicked = _kickReconnect;
     _kickReconnect = false;
+    final deadline = DateTime.now().add(Duration(seconds: waitSeconds));
+    while (!kicked && DateTime.now().isBefore(deadline) && !_stopped) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      if (_kickReconnect) {
+        _kickReconnect = false;
+        break;
+      }
+    }
     _reconnectPending = false;
     if (_stopped) return;
     _connect();
@@ -212,11 +232,11 @@ class SseClient {
   /// that was earned under suspended-network conditions (e.g., Android Doze
   /// while backgrounded). Called by ServerStore on app resume / SSE start.
   ///
-  /// Both effects are UNCONDITIONAL: if the kick lands while a connect
-  /// attempt is in flight (_reconnectPending == false), the flag survives
-  /// into the NEXT _scheduleReconnect (whose sleep loop exits at its first
-  /// 200ms poll), so a lost kick still reconnects with zero added delay and
-  /// the reset caps that cycle at 1s — closing the lost-kick window.
+  /// The flag is set unconditionally: a kick landing while a connect is in
+  /// flight (_reconnectPending == false) persists into the next
+  /// _scheduleReconnect, which consumes it up front (zero added delay), and
+  /// the backoff reset caps that cycle at 1s — the lost-kick window stays
+  /// closed while the flag never survives past one cycle.
   void reconnectNow() {
     if (_stopped) return;
     _backoff = 1;

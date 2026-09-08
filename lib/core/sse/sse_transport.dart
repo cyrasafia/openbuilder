@@ -55,11 +55,18 @@ Stream<String> eventDataStream(Uri uri, Map<String, String> headers,
     throw StateError('Expected a streamed response');
   }
   final body = resp.data as ResponseBody;
+  // Stream transformer: a multi-byte UTF-8 code point can straddle a TCP
+  // chunk boundary, and utf8.decode(chunk) on a truncated prefix throws
+  // FormatException, which killed the whole stream mid-stream (the
+  // "dropped (error: FormatException)" storm during Chinese-text sessions).
+  // utf8.decoder buffers partial sequences across chunks instead. The cast
+  // widens Uint8List → List<int>: Stream.transform is invariant in S.
+  final lines = body.stream.cast<List<int>>().transform(utf8.decoder);
   final buffer = StringBuffer();
   final dataLines = <String>[];
 
-  await for (final chunk in body.stream) {
-    buffer.write(utf8.decode(chunk));
+  await for (final chunk in lines) {
+    buffer.write(chunk);
     String text = buffer.toString();
     int lastNewline = text.lastIndexOf('\n');
     String process = text;
