@@ -20,6 +20,18 @@ class SessionsTab extends StatefulWidget {
 class _SessionsTabState extends State<SessionsTab> {
   Timer? _periodicRefreshTimer;
 
+  final _searchCtl = TextEditingController();
+  bool _searchExpanded = false;
+  String _query = '';
+
+  void _collapseSearch() {
+    _searchCtl.clear();
+    setState(() {
+      _searchExpanded = false;
+      _query = '';
+    });
+  }
+
   // JANK-5：tile 实例缓存。serverStore 任意 notify（SSE 事件尾部/refresh/SSE
   // 状态）都会重跑 itemBuilder；_SessionTile 是值对象，内容未变时复用同一
   // widget 实例 → element 等值剪枝，整条子树跳过 rebuild。流式期间预览走
@@ -40,6 +52,7 @@ class _SessionsTabState extends State<SessionsTab> {
 
   @override
   void dispose() {
+    _searchCtl.dispose();
     _periodicRefreshTimer?.cancel();
     super.dispose();
   }
@@ -77,11 +90,46 @@ class _SessionsTabState extends State<SessionsTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // See MainShell: tab is background behind pushed routes; must not rebuild
-      // every frame of a foreground keyboard animation (no text input here).
+      // See MainShell: tab is background behind pushed routes; the search
+      // field keeps its TextInputConnection during keyboard animations, so
+      // the freeze in MainShell handles those frames instead of
+      // resizeToAvoidBottomInset.
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
-        title: Text(l(context).tabSessions),
+        title: _searchExpanded
+            ? TextField(
+                controller: _searchCtl,
+                autofocus: true,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  hintText: l(context).sessionSearchHint,
+                  isDense: true,
+                  border: InputBorder.none,
+                  // Always present while expanded: clears typed text first,
+                  // collapses the search bar when the field is empty.
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () {
+                      if (_searchCtl.text.isNotEmpty) {
+                        _searchCtl.clear();
+                        setState(() => _query = '');
+                      } else {
+                        _collapseSearch();
+                      }
+                    },
+                  ),
+                ),
+                onChanged: (v) => setState(() => _query = v.trim()),
+              )
+            : Text(l(context).tabSessions),
+        actions: [
+          if (!_searchExpanded)
+            IconButton(
+              icon: const Icon(Icons.search),
+              tooltip: l(context).sessionSearchHint,
+              onPressed: () => setState(() => _searchExpanded = true),
+            ),
+        ],
       ),
       body: ListenableBuilder(
         // JANK-5：预览走独立 previewVersion（120ms 节流），不随 serverStore
@@ -109,7 +157,9 @@ class _SessionsTabState extends State<SessionsTab> {
             }
             return const Center(child: CircularProgressIndicator());
           }
-          final sessions = serverStore.sortedSessions().toList();
+          final all = serverStore.sortedSessions().toList();
+          final sessions =
+              all.where((s) => _matchesQuery(s, _query)).toList();
           _pruneTileCache(sessions);
           return RefreshIndicator(
             onRefresh: () async {
@@ -128,7 +178,13 @@ class _SessionsTabState extends State<SessionsTab> {
                         Icon(Icons.chat_bubble_outline,
                             size: 56, color: Theme.of(context).colorScheme.outline),
                         const SizedBox(height: 12),
-                        Text(l(context).noSessions, style: Theme.of(context).textTheme.titleMedium),
+                        // A query that filtered real rows out says "no match";
+                        // a server that never had rows says "no sessions".
+                        Text(
+                            _query.isNotEmpty && all.isNotEmpty
+                                ? l(context).sessionNoMatch
+                                : l(context).noSessions,
+                            style: Theme.of(context).textTheme.titleMedium),
                       ],
                     ),
                   )
@@ -150,6 +206,21 @@ class _SessionsTabState extends State<SessionsTab> {
   void _pruneTileCache(List<SessionModel> sessions) {
     final ids = {for (final s in sessions) s.id};
     _tileCache.removeWhere((id, _) => !ids.contains(id));
+  }
+
+  /// Case-insensitive substring hit on the session title, project label or
+  /// worktree/directory path. Matches what the tile displays.
+  bool _matchesQuery(SessionModel s, String query) {
+    if (query.isEmpty) return true;
+    final q = query.toLowerCase();
+    final project = serverStore.projectDisplayOf(s);
+    final projectPath = s.projectID == 'global'
+        ? s.directory
+        : (serverStore.projectOf(s.projectID)?.worktree ?? s.directory);
+    return s.title.toLowerCase().contains(q) ||
+        project.toLowerCase().contains(q) ||
+        projectPath.toLowerCase().contains(q) ||
+        s.dirName.toLowerCase().contains(q);
   }
 }
 

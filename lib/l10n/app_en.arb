@@ -179,6 +179,8 @@
   "@saveFailed": {"placeholders": {"detail": {"type": "String"}}},
   "projectSearchHint": "Search projects…",
   "projectNoMatch": "No matching projects",
+  "sessionSearchHint": "Search sessions…",
+  "sessionNoMatch": "No matching sessions",
   "projectNotFound": "Project not found",
   "projectNoActiveSessions": "No active sessions",
   "projectNewSession": "New session",
