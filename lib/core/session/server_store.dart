@@ -1744,6 +1744,11 @@ class ServerStore extends ChangeNotifier {
   void setProjectsForTesting(List<ProjectModel> projects) =>
       _projects = projects;
 
+  /// Test seam: clear `_sessions` between widget tests (paired with
+  /// [upsertSessionForTesting] / [setProjectsForTesting]).
+  @visibleForTesting
+  void clearSessionsForTesting() => _sessions = [];
+
   /// Test seam: drive the post-fetch ghost filtering of `sandboxes`
   /// (see `_reconcileSandboxes`) without a full connect()/bootstrap.
   @visibleForTesting

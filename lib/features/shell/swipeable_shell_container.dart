@@ -48,13 +48,21 @@ class _SwipeableShellContainerState extends State<SwipeableShellContainer> {
     super.dispose();
   }
 
+  // See MainShell._goBranch: tab branches are keep-alive pages, so unfocus on
+  // a swipe-initiated branch change too — otherwise the IME stays open over a
+  // tab with no visible text field.
+  void _onPageChanged(int i) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    widget.navigationShell.goBranch(i);
+  }
+
   @override
   Widget build(BuildContext context) {
     final current = widget.navigationShell.currentIndex;
     return PageView(
       controller: _controller,
       physics: const ClampingScrollPhysics(),
-      onPageChanged: widget.navigationShell.goBranch,
+      onPageChanged: _onPageChanged,
       children: [
         for (var i = 0; i < widget.children.length; i++)
           TickerMode(

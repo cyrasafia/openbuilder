@@ -21,6 +21,18 @@ class ProjectsTab extends StatefulWidget {
 class _ProjectsTabState extends State<ProjectsTab> {
   Timer? _periodicRefreshTimer;
 
+  final _searchCtl = TextEditingController();
+  bool _searchExpanded = false;
+  String _query = '';
+
+  void _collapseSearch() {
+    _searchCtl.clear();
+    setState(() {
+      _searchExpanded = false;
+      _query = '';
+    });
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -33,6 +45,7 @@ class _ProjectsTabState extends State<ProjectsTab> {
 
   @override
   void dispose() {
+    _searchCtl.dispose();
     _periodicRefreshTimer?.cancel();
     super.dispose();
   }
@@ -40,9 +53,46 @@ class _ProjectsTabState extends State<ProjectsTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // See MainShell: background behind pushed routes; no text input here.
+      // See MainShell: background behind pushed routes. The search field is a
+      // rare text input here, so the freeze in MainShell handles keyboard
+      // frames instead of resizeToAvoidBottomInset.
       resizeToAvoidBottomInset: false,
-      appBar: AppBar(title: Text(l(context).tabProjects)),
+      appBar: AppBar(
+        title: _searchExpanded
+            ? TextField(
+                controller: _searchCtl,
+                autofocus: true,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  hintText: l(context).projectSearchHint,
+                  isDense: true,
+                  border: InputBorder.none,
+                  // Always present while expanded: clears typed text first,
+                  // collapses the search bar when the field is empty.
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () {
+                      if (_searchCtl.text.isNotEmpty) {
+                        _searchCtl.clear();
+                        setState(() => _query = '');
+                      } else {
+                        _collapseSearch();
+                      }
+                    },
+                  ),
+                ),
+                onChanged: (v) => setState(() => _query = v.trim()),
+              )
+            : Text(l(context).tabProjects),
+        actions: [
+          if (!_searchExpanded)
+            IconButton(
+              icon: const Icon(Icons.search),
+              tooltip: l(context).projectSearchHint,
+              onPressed: () => setState(() => _searchExpanded = true),
+            ),
+        ],
+      ),
       body: ListenableBuilder(
         listenable: serverStore,
         builder: (context, _) {
@@ -68,7 +118,12 @@ class _ProjectsTabState extends State<ProjectsTab> {
             }
             return const Center(child: CircularProgressIndicator());
           }
-          final items = _buildItems(context);
+          final items = _buildItems(context, _query);
+          // Unfiltered row count — decides the empty-state wording: a query
+          // that filtered real rows out says "no match"; a server that never
+          // had rows (e.g. a session-less global-only project) says "no
+          // projects" regardless of the query.
+          final unfiltered = _query.isEmpty ? items : _buildItems(context, '');
           return RefreshIndicator(
             onRefresh: () async {
               final ok = await refreshOrReconnect();
@@ -80,7 +135,10 @@ class _ProjectsTabState extends State<ProjectsTab> {
             },
             child: items.isEmpty
                 ? emptyScrollable(
-                    Text(l(context).noProjects,
+                    Text(
+                        unfiltered.isNotEmpty
+                            ? l(context).projectNoMatch
+                            : l(context).noProjects,
                         style: const TextStyle(fontSize: 14)),
                   )
                 : ListView.separated(
@@ -149,7 +207,15 @@ class _ProjItem {
       required this.onTap});
 }
 
-List<_ProjItem> _buildItems(BuildContext context) {
+/// Matches a project-list entry against [query]: case-insensitive substring
+/// hit on the display name or the path (worktree / directory).
+bool _matchesQuery(String name, String path, String query) {
+  if (query.isEmpty) return true;
+  final q = query.toLowerCase();
+  return name.toLowerCase().contains(q) || path.toLowerCase().contains(q);
+}
+
+List<_ProjItem> _buildItems(BuildContext context, String query) {
   final items = <_ProjItem>[];
   for (final p in serverStore.projects) {
     if (p.id == 'global') {
@@ -161,6 +227,7 @@ List<_ProjItem> _buildItems(BuildContext context) {
       for (final entry in byDir.entries) {
         final dir = entry.key;
         final name = dir.isEmpty ? 'global' : dir.split('/').last;
+        if (!_matchesQuery(name, dir, query)) continue;
         // Sort key comes from the monotonic activity map (includes archived
         // sessions) so archiving the last session in this directory doesn't
         // sink the row.
@@ -180,6 +247,7 @@ List<_ProjItem> _buildItems(BuildContext context) {
       }
       continue;
     }
+    if (!_matchesQuery(p.displayName, p.worktree, query)) continue;
     final sess = serverStore.sessions.where((s) => s.projectID == p.id);
     // See note above: monotonic activity (includes archived) for sort.
     final last = serverStore.lastActivityForProject(p.id);

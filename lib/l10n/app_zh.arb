@@ -177,6 +177,8 @@
   "@deleteFailed": {"placeholders": {"detail": {"type": "String"}}},
   "saveFailed": "保存失败：{detail}",
   "@saveFailed": {"placeholders": {"detail": {"type": "String"}}},
+  "projectSearchHint": "搜索项目…",
+  "projectNoMatch": "无匹配项目",
   "projectNotFound": "项目不存在",
   "projectNoActiveSessions": "无活跃会话",
   "projectNewSession": "新建会话",

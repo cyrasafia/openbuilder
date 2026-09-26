@@ -79,8 +79,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: widget.shell.currentIndex,
-        onDestinationSelected: (i) =>
-            widget.shell.goBranch(i, initialLocation: i == widget.shell.currentIndex),
+        onDestinationSelected: _goBranch,
         destinations: [
           NavigationDestination(
             icon: const Icon(Icons.chat_bubble_outline),
@@ -101,6 +100,16 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       ),
       ),
     );
+  }
+
+  // Tab branches are keep-alive pages, so a focused text field (e.g. the
+  // projects-tab search) keeps its open TextInputConnection when the user
+  // taps away to another tab or swipes — leaving the IME up over a tab with
+  // no visible field. Unfocus on every branch change.
+  void _goBranch(int i) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    widget.shell.goBranch(i,
+        initialLocation: i == widget.shell.currentIndex);
   }
 }
 
