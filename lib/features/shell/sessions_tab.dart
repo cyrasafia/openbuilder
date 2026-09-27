@@ -9,6 +9,7 @@ import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import '../../ui/l10n_ext.dart';
+import '../../ui/search_app_bar.dart';
 
 class SessionsTab extends StatefulWidget {
   const SessionsTab({super.key});
@@ -95,41 +96,14 @@ class _SessionsTabState extends State<SessionsTab> {
       // the freeze in MainShell handles those frames instead of
       // resizeToAvoidBottomInset.
       resizeToAvoidBottomInset: false,
-      appBar: AppBar(
-        title: _searchExpanded
-            ? TextField(
-                controller: _searchCtl,
-                autofocus: true,
-                textInputAction: TextInputAction.search,
-                decoration: InputDecoration(
-                  hintText: l(context).sessionSearchHint,
-                  isDense: true,
-                  border: InputBorder.none,
-                  // Always present while expanded: clears typed text first,
-                  // collapses the search bar when the field is empty.
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () {
-                      if (_searchCtl.text.isNotEmpty) {
-                        _searchCtl.clear();
-                        setState(() => _query = '');
-                      } else {
-                        _collapseSearch();
-                      }
-                    },
-                  ),
-                ),
-                onChanged: (v) => setState(() => _query = v.trim()),
-              )
-            : Text(l(context).tabSessions),
-        actions: [
-          if (!_searchExpanded)
-            IconButton(
-              icon: const Icon(Icons.search),
-              tooltip: l(context).sessionSearchHint,
-              onPressed: () => setState(() => _searchExpanded = true),
-            ),
-        ],
+      appBar: SearchAppBar(
+        searchHint: l(context).sessionSearchHint,
+        expanded: _searchExpanded,
+        controller: _searchCtl,
+        onChanged: (v) => setState(() => _query = v.trim()),
+        onExpand: () => setState(() => _searchExpanded = true),
+        onExitSearch: _collapseSearch,
+        collapsedTitle: l(context).tabSessions,
       ),
       body: ListenableBuilder(
         // JANK-5：预览走独立 previewVersion（120ms 节流），不随 serverStore

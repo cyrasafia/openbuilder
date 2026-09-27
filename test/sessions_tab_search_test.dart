@@ -164,7 +164,7 @@ void main() {
     expect(find.text('Refactor parser'), findsOneWidget);
   });
 
-  testWidgets('X collapses the search bar once the field is empty (SS-6)',
+  testWidgets('back button collapses the search bar (SS-6)',
       (tester) async {
     _seed();
     await tester.pumpWidget(_wrap());
@@ -180,9 +180,28 @@ void main() {
     expect(find.text('Refactor parser'), findsOneWidget);
     expect(find.byType(TextField), findsOneWidget);
 
-    // With an empty field, X collapses back to the title + search icon.
-    await tester.tap(find.byIcon(Icons.close));
+    // The clear button is on-demand: gone once the field is empty; the
+    // leading back button collapses back to the title + search icon.
+    expect(find.byIcon(Icons.close), findsNothing);
+    await tester.tap(find.byIcon(Icons.arrow_back));
     await tester.pump();
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byIcon(Icons.search), findsOneWidget);
+    expect(find.text(_en.tabSessions), findsOneWidget);
+  });
+
+  testWidgets('system back exits the expanded search (SS-8)', (tester) async {
+    _seed();
+    await tester.pumpWidget(_wrap());
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.search));
+    await tester.pump();
+    expect(find.byType(TextField), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+
+    // The search bar collapses instead of leaving the tab.
     expect(find.byType(TextField), findsNothing);
     expect(find.byIcon(Icons.search), findsOneWidget);
     expect(find.text(_en.tabSessions), findsOneWidget);

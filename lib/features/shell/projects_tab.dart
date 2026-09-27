@@ -9,6 +9,7 @@ import '../../domain/models.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import '../../ui/l10n_ext.dart';
+import '../../ui/search_app_bar.dart';
 import '../projects/worktree_order.dart';
 
 class ProjectsTab extends StatefulWidget {
@@ -57,41 +58,14 @@ class _ProjectsTabState extends State<ProjectsTab> {
       // rare text input here, so the freeze in MainShell handles keyboard
       // frames instead of resizeToAvoidBottomInset.
       resizeToAvoidBottomInset: false,
-      appBar: AppBar(
-        title: _searchExpanded
-            ? TextField(
-                controller: _searchCtl,
-                autofocus: true,
-                textInputAction: TextInputAction.search,
-                decoration: InputDecoration(
-                  hintText: l(context).projectSearchHint,
-                  isDense: true,
-                  border: InputBorder.none,
-                  // Always present while expanded: clears typed text first,
-                  // collapses the search bar when the field is empty.
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () {
-                      if (_searchCtl.text.isNotEmpty) {
-                        _searchCtl.clear();
-                        setState(() => _query = '');
-                      } else {
-                        _collapseSearch();
-                      }
-                    },
-                  ),
-                ),
-                onChanged: (v) => setState(() => _query = v.trim()),
-              )
-            : Text(l(context).tabProjects),
-        actions: [
-          if (!_searchExpanded)
-            IconButton(
-              icon: const Icon(Icons.search),
-              tooltip: l(context).projectSearchHint,
-              onPressed: () => setState(() => _searchExpanded = true),
-            ),
-        ],
+      appBar: SearchAppBar(
+        searchHint: l(context).projectSearchHint,
+        expanded: _searchExpanded,
+        controller: _searchCtl,
+        onChanged: (v) => setState(() => _query = v.trim()),
+        onExpand: () => setState(() => _searchExpanded = true),
+        onExitSearch: _collapseSearch,
+        collapsedTitle: l(context).tabProjects,
       ),
       body: ListenableBuilder(
         listenable: serverStore,

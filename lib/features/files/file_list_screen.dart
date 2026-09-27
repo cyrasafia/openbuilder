@@ -10,6 +10,7 @@ import '../../core/net/net_error.dart';
 import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
+import '../../ui/search_app_bar.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'file_actions.dart';
@@ -321,57 +322,29 @@ class _FileListScreenState extends State<FileListScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        leading: _searchExpanded
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back),
-                tooltip: l(context).fileSearchHint,
-                onPressed: _collapseSearch,
-              )
-            : IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () => _container?.handleBack(),
-              ),
-        title: _searchExpanded
-            ? TextField(
-                controller: _searchCtl,
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText: l(context).fileSearchHint,
-                  isDense: true,
-                  border: InputBorder.none,
-                  suffixIcon: _searchCtl.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: () {
-                            _searchCtl.clear();
-                            setState(() => _query = '');
-                            _load();
-                          },
-                        )
-                      : null,
-                ),
-                onChanged: (v) {
-                  if (_restoring) return;
-                  if (v.isEmpty && _query.isNotEmpty) {
-                    setState(() => _query = '');
-                    _load();
-                  } else if (v.isNotEmpty) {
-                    _search(v);
-                  }
-                },
-              )
-            : Text(l(context).fileTitle, style: const TextStyle(fontSize: 16)),
-        actions: [
-          if (!_searchExpanded)
-            IconButton(
-              icon: const Icon(Icons.search),
-              tooltip: l(context).fileSearchHint,
-              onPressed: () => setState(() => _searchExpanded = true),
-            ),
-          if (!_searchExpanded) const FileCollapseAction(),
-          appBarActionsTrailing,
-        ],
+      appBar: SearchAppBar(
+        searchHint: l(context).fileSearchHint,
+        expanded: _searchExpanded,
+        controller: _searchCtl,
+        interceptSystemBack: false,
+        onChanged: (v) {
+          if (_restoring) return;
+          if (v.isEmpty && _query.isNotEmpty) {
+            setState(() => _query = '');
+            _load();
+          } else if (v.isNotEmpty) {
+            _search(v);
+          }
+        },
+        onExpand: () => setState(() => _searchExpanded = true),
+        onExitSearch: _collapseSearch,
+        collapsedTitle: l(context).fileTitle,
+        collapsedTitleStyle: const TextStyle(fontSize: 16),
+        collapsedLeading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => _container?.handleBack(),
+        ),
+        collapsedActions: const [FileCollapseAction()],
       ),
       body: Column(
         children: [
