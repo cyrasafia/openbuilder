@@ -1,8 +1,10 @@
 # OpenCode V2 迁移设计 — 设计文档
 
-> 目标：梳理 opencode v2（OpenCode 2.0 beta）相对当前实现（对齐 v1 spec）的差异，给出未来迁移的路线与影响面。
+> 目标：梳理 opencode v2 相对当前实现（对齐 v1.18.x）的差异，给出未来迁移的路线与影响面。
 >
-> **⚠️ 本文档仅为前瞻性设计记录，不代表立即执行。当前实现仍以 v1 spec 为准，v2 仍是 beta，契约未定稿，数据可能被清、API 可能再变。在 v2 GA 且契约稳定前，代码层不做任何迁移改动。**
+> **修订记录**：初稿为 v2 beta 期前瞻记录；2026-09-28 依据 v2 **GA**（`v2.0.0` 2026-09-11 发布，本文核对版本 **2.0.18**，源码锚点 `anomalyco/opencode` `v2` 分支 `0caae608a2`）全面修订。beta 期记录的多项契约在 GA 前又发生了变化（事件命名空间、Project 字段、worktree 端点回归等），本文以 GA 实测为准。
+>
+> **⚠️ 本文档为迁移基线记录，不代表立即执行。v2 GA 判定已满足（见 §决策），但迁移启动时点、v1/v2 双兼容策略仍是待决策项。落地时按子系统拆出配套 `plan-v2-*.md`，并参照本文档的差异表逐项核对。**
 
 ## 文档导航
 
@@ -12,23 +14,33 @@
 
 ## 问题
 
-### 背景：当前实现对齐 v1
+### 背景：当前实现对齐 v1.18.x，且移动端已在「过渡 /api 面」上
 
-当前 OpenBuilder pin 的是 v1 spec（`opencode_openapi.json`，`info.version = 1.0.0`），对齐 `@opencode-ai/sdk@1.17.18`。`OpencodeClient`（`lib/data/api/opencode_client.dart`）的所有 URL、`SessionModel.fromJson`（`lib/domain/models.dart`）、`SseClient` 事件表（`lib/core/sse/`）均按 v1 契约手写。
+初稿时的判断「当前实现对齐 v1 spec（`opencode_openapi.json`，`info.version = 1.0.0`）」需要一项**关键修正**：v1.18.x server 实际上同时挂载两套路由——
 
-### v2 是有意 breaking change
+- **legacy 根路径面**（128 个端点）：`/session`、`/project`、`/event`、`/global/event`、`/experimental/worktree` 等，即原始 v1 契约；
+- **过渡 `/api/*` 面**（60 个端点）：`/api/session`、`/api/event`、`/api/location`、`/api/fs/*` 等——1.18.x 内嵌的 InstanceHttpApi（v2 谱系的前身）。
 
-opencode v2 文档（https://v2.opencode.ai/）明确 server API 是三项有意 breaking change之一（另两项是 plugin API 与 TUI 配置格式）。迁移指南原文：
+移动端 `OpencodeClient`（`lib/data/api/opencode_client.dart`）**实际调用的是过渡 `/api/*` 面**；桌面端 openbuilder-desktop 走 legacy 根路径面。因此移动端的真实迁移距离是「1.18.x 过渡 /api 面 → v2.0.18 /api 面」的**增量演化**，而非初稿设想的「legacy → /api 前缀整体搬迁」。桌面端则是完整搬迁。
 
-> OpenCode 2 has a revised, more ergonomic server API and a new set of clients. Integrations that call the V1 server API must migrate to the V2 API.
+### v2 已 GA，v1 转入维护模式
 
-v2 spec title 从 `opencode` 改为 `opencode HttpApi`（version `0.0.1`），所有 HTTP 路径迁到 `/api/*` 前缀。当前 `OpencodeClient` 几乎所有方法在 v2 下都会 404。
+- `v2.0.0` 2026-09-11 由 thdxr 打 tag 正式发布，两周内迭代至 2.0.18，处于快速稳定期；
+- 主站下载/console 安装链接、文档（`/v2/docs`）已全面切换到 v2，legacy 文档挂 v2 banner；新装用户默认拿到 v2；
+- v1.18.x（最新 1.18.32，2026-09-21）转入纯维护：只收 provider 兼容性小修与过渡垫片（如「v1 读取 v2 config 字段」），不再有功能演进；
+- v2 官方定位（迁移指南原文）：server API、plugin API、TUI 配置格式是三项有意 breaking change。
 
-### 为什么现在不动
+### 同机共存与数据迁移（GA 后已工程化）
 
-1. **beta 期间契约未定稿**：v2 文档顶部 Warning 明确「APIs, configuration, and plugin APIs may change」「beta data may be wiped」。
-2. **二进制名分离**：beta 期间 V1 仍是 `opencode`，V2 是 `opencode2`，可并存。
-3. **当前 v1 仍可用**：用户运行的远程服务器大概率仍是 v1，过早迁移会切断对现有服务器的兼容。
+- v2 CLI 发布包为 `@opencode/cli`，bin 提供 `opencode` 与 **`opencode2`** 两个命令，后者专为与 v1 并存设计；
+- v1/v2 **共享** `~/.local/share/opencode` 数据目录与**同一个 `opencode.db`**（channel 机制默认同名；`OPENCODE_DB` 可指向独立文件换取完全隔离）；v2 首次启动原地做 schema 迁移；v1.18.19+ 有跨版本 DB 兼容补丁（`fix: preserve v1 database compatibility #42444`），v2 另提供 `GET /api/experimental/migration/v1` 迁移状态端点；
+- **注意**：v1 需 ≥1.18.19 才能安全读 v2 迁移过的库。
+
+### 为什么仍不立即动
+
+1. **契约仍在快速迭代**：GA 两周 18 个版本，差异表以 2.0.18 为锚，后续小版本仍可能漂移，落地前需再核对一次；
+2. **存量 v1 服务器**：用户自建的远程服务器升级速度未知，过早只支持 v2 会切断兼容；
+3. **跨端协同**：桌面端 openbuilder-desktop 同源依赖 v1 契约（`../openbuilder/opencode_openapi.json`），移动端单独迁移会造成两端口径分裂，需统一决策。
 
 ---
 
@@ -36,201 +48,210 @@ v2 spec title 从 `opencode` 改为 `opencode HttpApi`（version `0.0.1`），�
 
 ### 核心思路
 
-1. **冻结现状**：当前实现对齐 v1，保持不变。
-2. **前瞻记录**：本文档记录 v2 的全部关键差异，作为未来迁移的依据。
-3. **GA 后再动**：等 v2 GA、契约稳定后，按本文档的差异表逐子系统迁移，配套 `plan-v2-*.md` 与 `review-v2-*.md`。
+1. **基线换锚**：本文档差异表全部以 **2.0.18 源码实测**（`packages/protocol/src/groups/*`、`packages/schema/src/*`）为准，替换 beta 期文档口径；
+2. **增量迁移**：移动端从过渡 /api 面增量升级到 v2 /api 面；桌面端从 legacy 面整体搬迁；
+3. **GA 后再动**：迁移启动时点与双兼容策略为待决策项，落地时按子系统拆 `plan-v2-*.md` 与 `review-v2-*.md`。
 
 ### 角色职责（未来迁移时）
 
 | 组件 | 迁移职责 |
 |------|----------|
-| `OpencodeClient` | URL 全部改 `/api/*` 前缀；location 参数改 deepObject；按资源分组重构（参考官方 `@opencode-ai/client` 的 `client.session.*` 结构） |
-| `SessionModel` / `ProjectModel` / `models.dart` | 对齐 v2 schema：Session 加 `location/fork/revert`，去掉 `directory/workspaceID/summary`；Project vcs enum 兼容 `hg` |
-| `SseClient` | 事件表全部改 v2 `session.next.*` 命名空间；移除 `todo.updated`；解码 `V2Event` typed union |
-| `ServerStore` / `ConversationStore` | 作用域从 `directory` 改为 `Location.Ref`；diff 改调 `/api/vcs/diff`；移除 worktree 编排 |
-| `spec-overview.md` / `design-frontend.md` | §4.1 领域模型公式、§7 worktree UI 设计按 v2 重写 |
+| `OpencodeClient` | 逐端点核对 §端点映射表（多数路径不变，契约细节变）；prompt/分页/事件按新契约重写；认证接入（§认证） |
+| `SessionModel` / `ProjectModel` / `models.dart` | 对齐 §状态模型：Session 增删字段、消息 typed union 重构、Project `canonical` 改名 |
+| `SseClient` | 事件表按 §SSE 事件全集对齐 `session.*` 命名空间（**GA 已无 `session.next.*`**）；处理 volatile 契约下的断流对账 |
+| `ServerStore` / `ConversationStore` | 作用域 query 形态核对（location deepObject 与 flat `directory` 并存，见 §端点映射）；worktree 编排改用 `/api/worktree` |
+| `spec-overview.md` / `design-frontend.md` | §领域模型公式、worktree UI 设计按 v2 重写 |
 
-### 状态模型（未来对齐目标）
+### 状态模型（GA 实测）
 
-#### Location（v2 新增概念）
+#### Location（v2 核心概念）
 
 ```json
-Location.Ref  = { directory: string, workspaceID?: "^wrk..." }
-Location.Info = { directory: string, workspaceID?: "^wrk...", project: { id, directory } }
+Location.Ref     = { directory: string, workspaceID?: "^wrk..." }   // wire 上 PublicRef 只有序列化 directory
+Location.Info    = { directory, workspaceID?, project: { id, directory, canonical } }
 ```
 
-`directory` 必填，`workspaceID` 可选。绝大多数 location-scoped 端点接收 `location` deepObject query：
-`?location[directory]=<path>&location[workspace]=<id>`。
+- `directory` 必填；`workspaceID` 可选且**不会出现在响应里**（PublicRef/PublicInfo 均剔除，服务端内部使用）；
+- 携带 location 的端点有两种 query 风格**并存**：`GET /api/location`、`GET /api/vcs/diff`、`GET /api/fs/*` 用 **deepObject** `?location[directory]=<path>`；`GET /api/session` 用 **flat** `?directory=<path>`（或 `?project=<id>&subpath=`）。客户端不能统一一种风格，需按端点区分。
 
-#### Session.Info（v2）
+#### Project（v2，较 beta 已大改）
 
 ```json
 {
-  id: "^ses...",                    // 必填
-  parentID?: "^ses...",
-  fork?: { sessionID, messageID? }, // 新增：fork 来源
-  projectID: string,                // 必填
-  agent?: string,
-  model?: Model.Ref,
-  cost: Money.USD,                   // 升级：对象带币种（v1 是 number）
-  tokens: TokenUsage.Info,          // 升级：独立 schema
-  time: { created, updated, archived? },  // 移除 compacting
-  title: string,                    // 必填
-  location: Location.Ref,           // 新增必填：取代 v1 的 directory 字段
-  subpath?: string,                 // 新增
-  revert?: Session.Revert           // 新增：undo 暂存状态
-}
-```
-
-相对 v1 `Session` 的变化：
-- **移除**：`directory`、`path`、`workspaceID`、`slug`、`summary{additions,deletions,files,diffs[]}`、`share{url}`、`version`、`metadata`、`time.compacting`
-- **新增**：`location`（必填）、`subpath`、`fork`、`revert`
-- **升级**：`cost` → `Money.USD`，`tokens` → `TokenUsage.Info`，`model` → `Model.Ref`
-- required 收紧：`[id, projectID, cost, tokens, time, title, location]`，`additionalProperties: false` 严格执行
-
-#### Project（v2，基本不变）
-
-```json
-{
-  id: string,                       // 必填
-  worktree: string,                 // 必填
-  vcs?: "git" | "hg",               // 枚举扩展：新增 hg
+  id: string,                        // 必填
+  canonical: string,                 // 必填（beta 期叫 worktree，GA 改名）
+  vcs?: string,                      // 开放 pattern ^[a-z][a-z0-9._-]*$（不再是 ["git","hg"] 枚举；源码支持 git/hg）
   name?: string,
   icon?: { url?, override?, color? },
-  commands?: { start?: string },
-  time: { created, updated, initialized? },
-  sandboxes: string[]               // 必填
+  commands?: { start?: string },     // 新建 worktree 时执行的 setup 脚本
+  time: { created, updated, active },// 三字段全必填（beta 期的 initialized 已移除）
+  sandboxes: string[]                // 必填
 }
 ```
 
-相对 v1：仅 schema 名加命名空间（`ProjectVcs` → `Project.Vcs` 等），`vcs` 枚举从 `["git"]` 扩到 `["git","hg"]`。`ProjectModel.fromJson` 几乎可直接复用，需为 `hg` 加 fallback。
+- `Project.Current = { id, directory, canonical }`（beta 期是 `{id, directory}`）；
+- `Project.UpdateInput = { projectID, canonical?, name?, icon?, commands? }`——**改路径 API 存在**（`PATCH /api/project/:id` 传 `canonical` 即迁移项目登记路径）；
+- **canonical 自愈**（`packages/core/src/project.ts` persist）：upsert 后若旧 canonical 磁盘上已不存在且新解析不同，自动改写并发 `project.updated`。设计注释原话 "Clones share a project ID; only replace a canonical directory that is gone"——v1 时代「移动项目后登记路径永久 stale」的问题在 v2 已解决；
+- 项目端点组收缩为 2 个（见映射表），`current`/`directories` 职能并入 `/api/location` 与 worktree 组。
 
-### 端点映射变化
+#### Session（v2）
 
-#### 路由前缀（最大 breaking）
+```json
+{
+  id: "^ses...",                       // 必填
+  parentID?: "^ses...",
+  fork?: { sessionID, boundary },      // boundary 取代 beta 期的 messageID
+  projectID: string,                   // 必填
+  agent?: string,
+  model?: Model.Ref,
+  cost: Money.USD,                     // 对象带币种（v1 是 number）
+  tokens: TokenUsage.Info,
+  outcome?: "succeeded" | "failed" | "interrupted",   // GA 新增：上次执行终态
+  time: { created, updated, idle?, viewed?, archived? },
+  title?: string,                      // GA 回退为 optional（beta 期文档记 required）
+  location: Location.Ref,              // 必填，取代 v1 的 directory
+  subpath?: string,
+  metadata?: Metadata,                 // GA 回归（beta 期文档记移除）
+  permissions?: Permission.Ruleset,    // GA 新增
+  revert?: Revert
+}
+```
 
-所有路径迁到 `/api/*` 前缀。对照表：
+#### Message（v2，重设计为 typed union）
 
-| 用途 | v1 | v2 |
+消息不再是 v1 的「role 扁平消息 + parts 列表」两层结构，而是**单层 tagged union**（`packages/schema/src/session-message.ts`），`GET /api/session/:id/message` 的 `type` 过滤参数直接枚举了全集：
+
+```
+agent-switched | model-switched | location-switched | user | synthetic |
+system | skill | shell | assistant | compaction | idle
+```
+
+每类自带专属字段（如 `location-switched` 携带 `location/projectID/subpath/previous`；`shell` 携带 `shell/output`）。客户端消息渲染层需按类型分发，而非按 role + parts 遍历。
+
+### 端点映射变化（1.18.x 过渡 /api 面 → v2.0.18 /api 面）
+
+#### 基本保留（路径不变，契约细节需核对）
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/agent`、`GET /api/command`、`GET /api/skill`、`GET /api/reference`、`GET /api/provider[/:id]` | 大体不变 |
+| `GET /api/model` | 保留；另新增 `GET /api/model/default` |
+| `GET /api/session`、`POST /api/session`、`GET /api/session/:id`、`GET /api/session/:id/message[/:messageID]` | 路径不变；query/响应契约变化（见下） |
+| `POST /api/session/:id/prompt` | 路径不变；200 + `{data: SessionInbox.User}`（**不再是 v1 legacy 的 204 + SSE**）；payload `{id?, text, files?, agents?, skills?, metadata?, delivery?, resume?}` |
+| `GET /api/session/:id/context`、`POST .../compact`、`POST .../interrupt`、permission 组、`GET /api/event`、`GET /api/location`、`GET /api/fs/list|read/*|find`、pty 组 | 保留 |
+| `GET /api/credential` 系（PATCH/DELETE） | 保留；新增 `POST /api/credential/:id/activate` |
+
+#### 移除 / 改道（1.18.x 过渡面有、v2 没有）
+
+| 1.18.x | v2 去向 |
+|--------|---------|
+| `GET /api/health` | `GET /api/info`（返回 version/pid/urls/paths） |
+| `GET /api/question/request`、`POST /api/session/:id/question*` | **form 体系**：`GET/POST /api/session/:id/form`、`GET .../form/:formID`、`POST .../form/:formID/reply`、`DELETE .../form/:formID` |
+| `GET /api/session/:id/history` | 消息分页 `GET /api/session/:id/message`（`{data, cursor}` 响应体） |
+| `GET /api/session/:id/event` | 全局流 `GET /api/event`（无 query，跨 location） |
+| `PUT/DELETE /auth/:providerID` | integration/credential 体系 |
+| `POST /api/session/:id/revert/*`（v1 transition） | `POST .../revert/stage`、`POST .../revert/commit`、`DELETE .../revert` |
+| `GET /api/integration/attempt/*` | `GET .../connect/oauth/:attemptID` 等细化路径 |
+
+#### v2 新增（当前实现无，可选支持）
+
+- **worktree 组（GA 回归并强化）**：`GET /api/worktree?projectID=` → `{directory, strategy}[]`；`POST /api/worktree` `{projectID, from?, branch?, directory?(父目录，默认 server data dir), name?}`；`DELETE /api/worktree` `{projectID, directory, force}`；`POST /api/worktree/refresh`（跨已知 checkout 根发现 + reconcile）。create 会执行 `Project.commands.start` setup 脚本。**beta 期「worktree 端点移除」的记录作废**；
+- **配对认证**：`POST /api/pair` + `GET /auth/connect/:code`（见 §认证）；
+- session：`fork`、`move`、`synthetic`、`shell`、`stats`、`import/export`、`inbox` 体系（user/synthetic/compaction/move 四类）、`form` 体系、`environment`、`view`、`background`、`wait`、`log`（事件回放）、`generate`、`skill` 激活、`instructions/entries`；
+- `POST /api/location/reload`、`GET/DELETE /api/debug/location`；
+- persistent-pty 组（`/api/experimental/persistent-pty/*`、session 终端挂接）、shell 组、websearch 组、plugin 组、rpc 组（`POST /api/rpc/:rpcID/:method`）、`POST /api/experimental/fs/write`、`POST /api/experimental/generate`、mcp 组、`GET /api/experimental/migration/v1`。
+
+#### 消息与会话分页契约
+
+| 项 | 1.18.x（legacy 面） | v2.0.18 |
 |------|-----|-----|
-| 健康检查 | `GET /global/health` | `GET /api/health` |
-| SSE（单一统一流） | `GET /event`、`GET /global/event` | `GET /api/event` |
-| 项目列表 | `GET /project` | `GET /api/project` |
-| 当前项目 | `GET /project/current` | `GET /api/project/current`（返回 `Project.Current{id,directory}`） |
-| 项目已知目录 | `GET /project/{id}`（v1 旧） | `GET /api/project/{projectID}/directories` |
-| location 解析 | —（v1 无） | `GET /api/location`（新） |
-| 会话列表 | `GET /session?directory=` | `GET /api/session`（location 作用域） |
-| 会话详情 | `GET /api/session/{id}` | `GET /api/session/{sessionID}` |
-| 发消息（流式） | `POST /session/:id/prompt_async`（204 + SSE） | `POST /api/session/{id}/prompt`（200 + `SessionInput.Admitted`） |
-| 同步发消息 | `POST /session/:id/message` | `POST /api/session/{id}/message` |
-| 命令 | `POST /session/:id/command` | `POST /api/session/{id}/command` |
-| Shell | `POST /session/:id/shell` | `POST /api/session/{id}/shell` |
-| 权限响应 | `POST /session/:id/permissions/:pid` | `POST /api/session/{id}/permission/{requestID}/reply` |
-| Todo | `GET /session/:id/todo` | **移除**（todo 概念下沉，无对应端点） |
-| Diff | `GET /session/:id/diff?messageID=` | `GET /api/vcs/diff`（location 作用域，非 session 子路径） |
-| 文件树/内容 | `GET /file`、`/file/content` | `GET /api/fs/list`、`/api/fs/read/*` |
-| 文件搜索 | `GET /find`、`/find/file`、`/find/symbol` | `GET /api/fs/find` |
-| Worktree | `GET/POST /experimental/worktree` | **移除** |
-| Workspace | `GET/POST /experimental/workspace*`（6 个端点） | **全部移除** |
-
-#### 消息分页契约改了
-
-| 项 | v1 | v2 |
-|------|-----|-----|
-| 游标位置 | `X-Next-Cursor` 响应头 | 响应体 `cursor.next` / `cursor.previous` |
-| 方向 | 单向（`before` 取更老） | 双向（`order=asc\|desc`，`cursor` 前后翻） |
-
-当前 `MessagesPage`（`opencode_client.dart:7-16`）的 header 游标解析逻辑在 v2 下不再适用。
-
-#### v2 新增端点（当前实现无，未来可选支持）
-
-PTY 会话、form 交互、question 请求、integration/OAuth 凭证管理、credential、generate 无状态生成、skill 列表/激活、plugin 列表、project copy、session log（事件回放）、instruction entries 持久指令、permission saved 管理、compaction 显式触发、session revert/stage|commit|clear（undo 体系）、fork、move、rename、background、interrupt、wait、synthetic、context。
+| 游标位置 | `X-Next-Cursor` 响应头 | 响应体 `{data, cursor: {previous?, next?}}` |
+| 方向 | 单向（`before` 取更老） | 双向（`order=asc\|desc`，cursor 前后翻；**cursor 不可与 order 并用**） |
+| 会话列表过滤 | `?directory=`（legacy） | `?directory=` 或 `?project=&subpath=`（均 optional，可全局列表）+ `limit/order/search/parentID`（`null` 只取根会话） |
+| 消息过滤 | — | `type` 过滤（typed union 枚举），翻页需带同一 type |
 
 ### SSE 事件契约变化
 
-v2 事件全部带 `session.` / `session.next.` 前缀的 typed union，数据体是 `V2Event`。对照表：
+**命名空间修正**：beta 期文档记录的 `session.next.*` 在 GA 已改为 **`session.*`**（无 `next` 段）。事件全集（2.0.18 实测）：
 
-| v1 事件 | v2 事件 | 说明 |
-|---------|---------|------|
-| `message.part.updated` (+`delta`) | `session.next.text.delta` / `.started` / `.ended` | 流式 token 拆成三个事件 |
-| —（v1 无） | `session.next.reasoning.delta` / `.started` / `.ended` | 推理流式，v2 新增 |
-| —（v1 无） | `session.next.tool.called` / `.input.delta` / `.progress` / `.success` / `.failed` | tool 调用细分 |
-| —（v1 无） | `session.next.step.started` / `.ended` / `.failed` | step 边界 |
-| `session.status` / `session.idle` | `session.status` / `session.idle` | 保留 |
-| `session.created/updated/deleted` | `session.created` / `.updated` / `.deleted` | 保留 |
-| `todo.updated` | **移除** | todo 概念在 v2 server API 层面消失 |
-| `session.diff` | `session.usage.updated` + 显式 `/api/vcs/diff` | diff 不再走 session 事件 |
-| `permission.updated` | permission 相关事件 | 保留但重命名 |
-| `vcs.branch.updated` | vcs 相关事件 | 保留但重命名 |
-| `session.error` | `session.error` / `session.execution.failed` / `.interrupted` | 细分 |
-| —（v1 无） | `session.compaction.*`、`session.revert.*`、`session.moved`、`session.agent.selected`、`session.model.selected`、`session.prompt.admitted/promoted`、`session.synthetic`、`session.instructions.updated`、`session.retry.scheduled` | v2 新增 |
+- **流式**：`session.text.started|delta|ended`、`session.reasoning.started|delta|ended`、`session.tool.input.started|delta|ended`、`session.tool.called|progress|success|failed`、`session.step.started|streamed|ended|failed`、`session.compaction.started|delta|ended|failed`
+- **生命周期**：`session.created|deleted|renamed|moved|forked`、`session.metadata.updated`、`session.permissions`、`session.viewed`、`session.status`、`session.idle`
+- **执行**：`session.execution.started|succeeded|failed|interrupted`、`session.retry.scheduled`
+- **消息/用量**：`session.message.content.updated`（取代 v1 `message.part.updated`）、`session.usage.recorded|updated`
+- **其他**：`session.agent.selected`、`session.model.selected`、`session.synthetic`、`session.skill.activated`、`session.shell.started|ended`、`session.inbox.enqueued|delivered|cancelled|delivery.changed`、`session.instructions.updated`、`session.revert.staged|cleared|committed`、`session.compacted`（durable）
+- **非 session**：`vcs.branch.updated`、`worktree.updated|resolved|ready|failed`、`workspace.ready|failed|status`、`location.shutdown`、`server.connected`、`global.disposed`、`rpc.*`（插件 RPC）
+- **确认移除**：`todo.updated`（todo 概念在 server API 层面消失）
 
-`SseClient` 的事件名表（spec-overview §5.1）需全部对齐到 v2 命名，否则事件解析失败。
+事件 envelope：`{id: "evt_...", created: ms, metadata?, location?: PublicRef, type, data}`。
 
-### Workspace / Worktree 整体移除
+**volatile 契约（对重连恢复设计影响重大）**：`GET /api/event` 的官方语义是 *Volatile by contract: a slow consumer overflows and fails the stream, and events during disconnection are missed*——**无回放、无断点续传，慢消费者直接被断流**。客户端 SSE 重连恢复不能依赖任何 server 侧补偿，必须重连后全量对账（快照 + 事件闸门窗口），移动端已有的 design-incremental-reconcile 思路在 v2 下是唯一正确路线且要求更严格。
 
-v1 有完整的 `Workspace` schema（`{id, type, name, branch, directory, extra, projectID, timeUsed}`）+ 6 个 `/experimental/workspace*` 端点 + `workspace.ready/failed/status` 事件 + `/experimental/worktree*` 端点。
+### 认证（v2 新增设计项，初稿完全缺失）
 
-v2 **全部移除**：无 workspace schema、无 workspace 端点、无 worktree 端点、无对应事件。`workspaceID` 仅作为 `Location.Ref` / `Location.Info` 的**可选字段**保留。
+- v2 server 默认**强制密码**（CLI service 模式随机生成，`service.json` 管理；`OPENCODE_PASSWORD`/`OPENCODE_SERVER_PASSWORD` 注入）；
+- 请求认证：**HTTP Basic**，用户名固定 `opencode`，密码即 server 密码或 30 天会话 token；
+- **配对流**（免输入密码接入）：`POST /api/pair` → `{code, expires_in}`（5 分钟一次性）→ 用户打开 `GET /auth/connect/:code` → `{token}`（HMAC 签名、30 天、密码轮换即全部失效）；
+- 移动端影响：`OpencodeClient` 需新增认证握手层（Basic 头注入 + token 存储与过期重配对），ServerStore 需扩展服务端凭据模型。
 
-影响：
-- spec-overview §7「Worktree（git 并行任务）UI 设计」里依赖的 `POST /experimental/worktree`、`worktree.ready/failed` SSE 在 v2 下失效。
-- design-workspace-toggle.md 依赖的 `/experimental/workspace` 端点在 v2 下失效。
-- 并行任务在 v2 里只能靠「不同 directory 的 session」表达，无服务端 worktree/workspace 编排能力。
+### Workspace / Worktree（beta 结论作废，GA 全面回归）
 
-### 官方 client 推荐与适用性
+beta 期「worktree/workspace 端点与事件全部移除」的记录已失效：
 
-v2 文档推荐用官方生成的 `@opencode-ai/client`（TypeScript），含 Effect 版本与 Node 后台 service 版本。理由：类型与方法跟 API reference 同源生成，SSE 端点直接返回 async iterable。
+- worktree 编排端点回归且强于 v1 `/experimental/worktree`（策略化创建、父目录可选、setup 脚本、refresh 发现与 reconcile）；
+- 事件 `worktree.ready|failed`、`workspace.ready|failed|status` 均在；另有 durable 的 `worktree.resolved`（跨项目 adoption）；
+- `Project.sandboxes` 保留；`WorktreeTable` 成为独立持久层（带 strategy）；
+- spec-overview §7 的 worktree UI 设计可以保留服务端编排路线，按新契约重写调用层。
 
-对 OpenBuilder（Flutter/Dart）**不直接适用**：无 Dart 客户端，引入 JS runtime 违背瘦客户端定位。spec-overview §3.1「手写 client」决策在 v2 下仍成立，只需把 pin 的 spec 从 v1 换成 v2。
+### 官方 client 与适用性
 
-**可借鉴的点**：
-1. client 按资源分组（`client.session.*`、`client.event.subscribe()`、`client.health.get()`），比当前平铺方法清晰。
-2. location 用对象传参（`location: { directory }`），对应 spec deepObject query。
-3. SSE 返回 async iterable，Dart 对应 `Stream<V2Event>`。
-4. Service API（本地后台服务管理）是 Node-only，OpenBuilder 明确不做本地启服，**不需要**。
+v2 的 TS 生态为 `packages/protocol`（Effect HttpApi 定义）+ `packages/sdk`（生成客户端），与 API reference 同源生成。对 OpenBuilder（Flutter/Dart）**仍不直接适用**：无 Dart 客户端，引入 JS runtime 违背瘦客户端定位。「手写 client」决策维持，但 pin 的参考源应换成 v2 的 protocol group 源码（`packages/protocol/src/groups/*.ts` 即权威契约，OpenAPI 文档由其生成）。
+
+可借鉴：client 按资源分组、SSE 返回 async iterable（Dart 对应 `Stream<V2Event>`）、Service API（Node-only 本地服务管理）明确不需要。
 
 ---
 
 ## 场景验证
 
-### 场景 1：用户运行 v1 服务器
+### 场景 1：用户运行 v1.18.x 服务器
 
-当前实现继续工作。v2 迁移后，需客户端能同时兼容 v1/v2，或明确只支持 v2（取决于 v2 GA 后用户升级速度）。**未来决策点**。
+当前实现继续工作（过渡 /api 面同源）。v2 迁移后需双兼容或明确切 v2——**GA 已到，此决策点需在迁移启动前定案**（v1 维护模式意味着兼容窗口以年计，但存量服务器存续期未知）。
 
 ### 场景 2：用户升级到 v2 服务器
 
-当前实现会全部 404（路径前缀错）、事件名全部解析失败（SSE 命名空间变）、Session 模型丢字段（`directory`/`summary` 消失）。必须完成本文档列出的全部迁移项才能连接 v2 服务器。
+- 移动端：未迁移前**部分可用**（同路径端点返回结构变化、事件命名空间不匹配、消息模型不兼容——实际表现为列表/消息解析失败，需完成 §端点映射全部差异项才能连接）；
+- 桌面端（legacy 面）：全部 404；
+- 同机原地升级（非平行部署）：v2 迁移共享 `opencode.db`；v1 侧需 ≥1.18.19 才能继续读库。
 
-### 场景 3：v2 仍在 beta 期间提前迁移
+### 场景 3：v2 快速迭代期提前迁移
 
-风险：契约再变导致返工；beta 数据被清导致测试环境失效。**不推荐**。
+仍不推荐：GA 两周 18 版，差异表以 2.0.18 为锚，落地前应再核对当期版本（建议以 protocol group 源码 diff 为准）。
 
 ---
 
 ## 关键设计决策
 
-1. **现在不动**：v2 beta 契约未定稿，当前 v1 实现保持不变。本文档仅作前瞻记录。
-2. **GA 后整体迁移**：v2 GA 且契约稳定后，按本文档差异表逐子系统迁移，配套 `plan-v2-*.md`。
-3. **手写 client 路线不变**：Dart 生态无官方 client，继续手写 `OpencodeClient` 对齐 v2 spec，生成器仅产 `.gen_ref/` 参考。
-4. **location 取代 directory**：作用域模型从 `directory` query 升级为 `Location.Ref` 对象，但核心仍是 directory，workspaceID 可选。
-5. **worktree/workspace 功能在 v2 需重新设计**：服务端编排能力移除，并行任务只能靠「不同 directory 的 session」表达。
+1. **GA 判定已满足，迁移启动留作决策点**（修订原决策「GA 前不动」）：beta Warning 已移除、稳定版本号已发布、主站全面切换。是否启动、何时启动、v1/v2 双兼容策略，作为迁移启动前的显式决策（涉及桌面端同步切换）。
+2. **基线换锚 2.0.18**：本文档差异表全部以 GA 源码实测替换 beta 文档口径；落地前按当期版本复核。
+3. **手写 client 路线不变**：Dart 生态无官方 client，继续手写 `OpencodeClient`，契约参考源改为 v2 protocol 源码。
+4. **location 双风格并存**：deepObject（location/vcs/fs 组）与 flat `directory`（session 组）按端点区分，不可统一。
+5. **worktree 服务端编排可用**：beta 期「重新设计为纯客户端方案」的预案作废，保留服务端编排路线。
+6. **SSE volatile 契约下的对账是硬要求**：断线丢事件是官方语义而非缺陷，重连恢复 = 全量快照对账。
 
 ---
 
 ## 不做的事
 
-1. **不改当前代码**：`OpencodeClient`、`SessionModel`、`SseClient` 等维持 v1 契约。
+1. **不在本文档落地代码**：`OpencodeClient`、`SessionModel`、`SseClient` 等维持现状，直至迁移启动决策定案。
 2. **不更新 spec-overview.md**：领域模型公式仍以 v1 为准；v2 迁移落地时再改。
-3. **不引入官方 client**：`@opencode-ai/client` 是 TS 包，不适用 Dart。
-4. **不支持 beta**：不在 v2 beta 期间做兼容层或双轨实现。
-5. **不补 v2 新端点**：PTY/form/question/integration 等新能力属于功能扩展，与 v2 迁移解耦，未来按需单独设计。
+3. **不引入官方 client**：`packages/sdk` 是 TS 包，不适用 Dart。
+4. **不做 v1/v2 兼容层**：双兼容策略是迁移启动时的整体决策（场景 1），不在文档阶段预埋双轨实现。
+5. **不补 v2 新端点**：form/persistent-pty/inbox/skill/websearch 等新能力属于功能扩展，与迁移解耦，按需单独设计。
 
 ---
 
 ## 评审意见
 
-### 一次评审意见（前瞻设计自审）
+### 一次评审意见（前瞻设计自审，beta 期）
 
 | 编号 | 优先级 | 问题 | 建议 |
 |------|--------|------|------|
@@ -238,6 +259,20 @@ v2 文档推荐用官方生成的 `@opencode-ai/client`（TypeScript），含 Ef
 | V2-2 | 🟢 低 | 未列出 v1/v2 双兼容策略 | 暂不列，留作 GA 后决策点 |
 | V2-3 | 🟢 低 | workspace/workspace-toggle 设计在 v2 失效，未说明如何处理 | 本文档只记录失效事实，处理方式留待迁移落地时决策 |
 
+### 增补修订（2026-09-28，依据 v2.0.18 GA 源码）
+
+| 编号 | 修订内容 |
+|------|----------|
+| V2-4 | V2-1 判定标准已满足（v2.0.0 2026-09-11 发布，2.0.18 在版；主站切换）。「GA 前不动」前提失效，改为「迁移启动决策点」 |
+| V2-5 | 事件命名空间修正：`session.next.*` → `session.*`；全集按 2.0.18 重列；`todo.updated` 移除维持 |
+| V2-6 | Project schema 修正：`worktree`→`canonical`、vcs 开放 pattern、`time.active` 必填、`Project.Current` 三字段、`UpdateInput.canonical`（改路径 API）与 canonical 自愈——v1 时代「项目移动后登记路径永久 stale」的问题在 v2 已由服务端解决 |
+| V2-7 | Session schema 修正：`title` 回退 optional、`metadata` 回归、新增 `outcome`/`permissions`、`time.idle/viewed` |
+| V2-8 | 消息模型重设计为 typed union（初稿未记录此变化量级） |
+| V2-9 | worktree/workspace 端点与事件 GA 回归（beta 期「移除」记录作废）；V2-3 的失效预警随之作废 |
+| V2-10 | 新增认证章节（Basic + 配对 token）；新增同机共存/共享 DB/原地迁移事实；`/api/health`→`/api/info` |
+| V2-11 | 关键背景修正：移动端 client 实际已在 1.18.x 过渡 /api 面（60 端点）上，迁移距离为增量演化；桌面端为整体搬迁 |
+| V2-12 | question→form 体系改道；消息/会话分页 `{data, cursor}` 契约；SSE volatile 官方语义（断线丢事件，全量对账为硬要求） |
+
 ### 修复复审
 
-（文档为前瞻记录，无代码改动，无需逐条修复复审。未来迁移落地时，配套 `review-v2-*.md` 核对。）
+（文档为基线记录，无代码改动。未来迁移落地时，配套 `review-v2-*.md` 核对。）
