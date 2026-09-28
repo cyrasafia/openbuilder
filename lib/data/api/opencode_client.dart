@@ -120,7 +120,7 @@ class OpencodeClient {
 
   Future<SessionModel> sessionMeta(String sessionId) async {
     final r = await dio.get<dynamic>('/api/session/$sessionId');
-    return SessionModel.fromJson(_asMap(r.data));
+    return SessionModel.fromJson(_dataMap(r.data));
   }
 
   Future<SessionModel> createSession(String directory, {String? title}) async {
@@ -129,7 +129,7 @@ class OpencodeClient {
     };
     if (title != null && title.isNotEmpty) body['title'] = title;
     final r = await dio.post<dynamic>('/api/session', data: body);
-    return SessionModel.fromJson(_asMap(r.data));
+    return SessionModel.fromJson(_dataMap(r.data));
   }
 
   Future<void> deleteSession(String sessionId) async {
@@ -320,7 +320,7 @@ class OpencodeClient {
 
   Future<SessionMessage> message(String sessionId, String messageId) async {
     final r = await dio.get<dynamic>('/api/session/$sessionId/message/$messageId');
-    return SessionMessage.fromJson(_asMap(r.data));
+    return SessionMessage.fromJson(_dataMap(r.data));
   }
 
   Future<List<Permission>> pendingPermissions(String directory) async {
@@ -398,7 +398,7 @@ class OpencodeClient {
       data: body,
       options: sendTimeout == null ? null : Options(sendTimeout: sendTimeout),
     );
-    return _asMap(r.data);
+    return _dataMap(r.data);
   }
 
   Future<void> shell(
@@ -573,6 +573,13 @@ class OpencodeClient {
         .whereType<Map>()
         .map((e) => SessionMessage.fromJson(e.cast<String, dynamic>()))
         .toList(growable: false);
+  }
+
+  Map<String, dynamic> _dataMap(dynamic data) {
+    final outer = _asMap(data);
+    final inner = outer['data'];
+    if (inner is Map) return inner.cast<String, dynamic>();
+    return outer;
   }
 
   List<dynamic> _dataList(dynamic data) {
