@@ -422,16 +422,21 @@ class ServerStore extends ChangeNotifier {
 
   void _bumpPreview() => previewVersion.value++;
 
-  bool hasPendingPermission(String sessionId) =>
-      _pendingPermissions.containsKey(sessionId);
+  bool hasPendingPermission(String sessionId) => _pendingPermissions.values
+      .any((p) => _cardHostSessionId(p.sessionID) == sessionId);
 
-  bool hasPendingQuestion(String sessionId) =>
-      _pendingQuestions.values.any((q) => q.sessionID == sessionId);
+  bool hasPendingQuestion(String sessionId) => _pendingQuestions.values
+      .any((q) => _cardHostSessionId(q.sessionID) == sessionId);
 
   AgentIndicatorState agentIndicatorStateOf(String sessionId) {
-    final permissionCount = _pendingPermissions.containsKey(sessionId) ? 1 : 0;
+    // 子会话 pending（subagent 权限/问题卡）计入父会话：父会话才是
+    // 用户可答复的界面，列表盾牌/暂停态必须亮在父会话上。宿主路由会把
+    // 多个并行子会话的卡聚合到同一父会话，权限计数不能封顶 1。
+    final permissionCount = _pendingPermissions.values
+        .where((p) => _cardHostSessionId(p.sessionID) == sessionId)
+        .length;
     final questionCount = _pendingQuestions.values
-        .where((q) => q.sessionID == sessionId)
+        .where((q) => _cardHostSessionId(q.sessionID) == sessionId)
         .length;
     final pendingCount = permissionCount + questionCount;
     if (pendingCount > 0) {
@@ -784,10 +789,12 @@ class ServerStore extends ChangeNotifier {
     // ConversationStore instance, which was dropped; the set survives.
     if (_ghostSessionIds.contains(sid)) conv.markWorkspaceMissing();
     // Inject any pending permission/question known from SSE/REST backfill.
-    final pending = _pendingPermissions[sid];
-    if (pending != null) conv.onPermission(pending);
+    // Host-based match: subagent child cards surface in the parent conv.
+    for (final p in _pendingPermissions.values) {
+      if (_cardHostSessionId(p.sessionID) == sid) conv.onPermission(p);
+    }
     for (final q in _pendingQuestions.values) {
-      if (q.sessionID == sid) conv.onQuestion(q);
+      if (_cardHostSessionId(q.sessionID) == sid) conv.onQuestion(q);
     }
     unawaited(conv.loadDraftOnly()); // CD-1/13：构造后异步读草稿（唯一草稿读路径）
     _evictConversations();
@@ -1328,7 +1335,13 @@ class ServerStore extends ChangeNotifier {
       // project in the projects tab.
       _bumpLastActivity(s);
       if (s.archived != null) continue; // archived
-      if (s.parentID != null) continue; // subtask / child session
+      if (s.parentID != null) {
+        // 子会话不进可见列表，但注册进 `_childSessions`——重启/重连后
+        // SSE session.updated 不会重放，权限/问题卡的子→父宿主解析
+        // （`_cardHostSessionId`）依赖该注册表。
+        _upsertChildSession(s);
+        continue;
+      }
       out[s.id] = s;
       // REST 批量加载路径也回填 conv directory（SSE 可能先到达创建了空
       // directory 的 conv，此处补上）。
@@ -1487,7 +1500,8 @@ class ServerStore extends ChangeNotifier {
               continue;
             }
             next[perm.sessionID] = perm;
-            _conversations[perm.sessionID]?.onPermission(perm);
+            _conversations[_cardHostSessionId(perm.sessionID)]
+                ?.onPermission(perm);
             AppLogger.I.i(_tag, 'backfill permission re-inject sid=${perm.sessionID} pid=${perm.id} dir=$dir');
           }
         } catch (_) {
@@ -1495,9 +1509,13 @@ class ServerStore extends ChangeNotifier {
         }
       }
       // Only restore SSE-delivered permissions whose session's directory had a
-      // failed REST fetch — successful fetches are authoritative.
+      // failed REST fetch — successful fetches are authoritative. 子会话不在
+      // `_sessions`（`sessionById` 为 null），须回退 `_childSessions` 取
+      // directory——否则 dir 恒空走 `dir.isEmpty` 分支，已在他端答复的
+      // 子卡每次 backfill 都被复活，父会话暂停徽标永挂。
       for (final entry in prev.entries) {
-        final session = sessionById(entry.key);
+        final session =
+            sessionById(entry.key) ?? _childSessions[entry.key];
         final dir = session?.directory ?? '';
         if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
           if (_recentlyResolvedPermissions.containsKey(entry.value.id)) continue;
@@ -1550,7 +1568,7 @@ class ServerStore extends ChangeNotifier {
             continue;
           }
           next[q.id] = q;
-          _conversations[q.sessionID]?.onQuestion(q);
+          _conversations[_cardHostSessionId(q.sessionID)]?.onQuestion(q);
           AppLogger.I.i(_tag, 'backfill question re-inject sid=${q.sessionID} qid=${q.id} dir=$dir');
         }
       } catch (_) {
@@ -1558,9 +1576,11 @@ class ServerStore extends ChangeNotifier {
       }
     }
     // Restore SSE-delivered questions whose session's directory had a failed
-    // REST fetch — successful fetches are authoritative.
+    // REST fetch — successful fetches are authoritative. 同权限回填：子会话
+    // directory 回退 `_childSessions`，防他端已答复的子卡被复活。
     for (final entry in prev.entries) {
-      final session = sessionById(entry.value.sessionID);
+      final session = sessionById(entry.value.sessionID) ??
+          _childSessions[entry.value.sessionID];
       final dir = session?.directory ?? '';
       if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
         if (_recentlyResolvedQuestions.containsKey(entry.key)) continue;
@@ -2028,10 +2048,14 @@ class ServerStore extends ChangeNotifier {
       case 'permission.updated': // compat fallback for older opencode versions
         final p = Permission.fromJson(ev.properties);
         _pendingPermissions[p.sessionID] = p;
-        _conversations[p.sessionID]?.onPermission(p);
-        AppLogger.I.i(_tag, 'SSE permission.asked sid=${p.sessionID} pid=${p.id}');
+        // 子会话（subagent）权限卡上浮到父会话，否则卡片无处渲染、
+        // 运行卡死在待授权（卡片只渲染在主会话 FooterPanel）。
+        final host = _cardHostSessionId(p.sessionID);
+        _conversations[host]?.onPermission(p);
+        AppLogger.I.i(_tag,
+            'SSE permission.asked sid=${p.sessionID} pid=${p.id} host=$host');
         unawaited(NotificationService.notifyPermission(
-                sessionById(p.sessionID)?.title, p)
+                sessionById(host)?.title, p)
             .catchError((_) {}));
         break;
       case 'permission.replied':
@@ -2047,17 +2071,19 @@ class ServerStore extends ChangeNotifier {
           // reply made by another client must not be resurrected by the next
           // backfill's REST snapshot (same mechanism as the local reply path).
           _markPermissionResolved(pid);
-          _conversations[sid]?.onPermissionReplied(pid);
+          _conversations[_cardHostSessionId(sid)]?.onPermissionReplied(pid);
         }
         break;
       case 'question.asked':
       case 'question.v2.asked':
         final qr = QuestionRequest.fromJson(ev.properties);
         _pendingQuestions[qr.id] = qr;
-        _conversations[qr.sessionID]?.onQuestion(qr);
-        AppLogger.I.i(_tag, 'SSE question.asked sid=${qr.sessionID} qid=${qr.id}');
+        final qHost = _cardHostSessionId(qr.sessionID);
+        _conversations[qHost]?.onQuestion(qr);
+        AppLogger.I.i(_tag,
+            'SSE question.asked sid=${qr.sessionID} qid=${qr.id} host=$qHost');
         unawaited(NotificationService.notifyQuestion(
-                sessionById(qr.sessionID)?.title,
+                sessionById(qHost)?.title,
                 qr.questions.firstOrNull?.header)
             .catchError((_) {}));
         break;
@@ -2078,7 +2104,7 @@ class ServerStore extends ChangeNotifier {
           _markQuestionResolved(qid);
         }
         if (sid != null && qid != null) {
-          _conversations[sid]?.onQuestionReplied(qid);
+          _conversations[_cardHostSessionId(sid)]?.onQuestionReplied(qid);
         }
         break;
       case 'catalog.updated':
@@ -2167,7 +2193,11 @@ class ServerStore extends ChangeNotifier {
     if (s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
       if (s.archived != null) {
+        // 宿主须在注册表移除**前**解析（传递上浮依赖完整链），且取
+        // 顶层祖先而非直接父（孙辈卡挂在顶层 conv）。
+        final host = _cardHostSessionId(s.id);
         _childSessions.remove(s.id);
+        _dropChildCards(s.id, host);
       } else {
         _upsertChildSession(s);
       }
@@ -2194,12 +2224,77 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _upsertChildSession(SessionModel s) {
+    final newlyRegistered = !_childSessions.containsKey(s.id);
     _childSessions.remove(s.id); // re-insert to refresh + keep arrival order
     _childSessions[s.id] = s;
     while (_childSessions.length > _kMaxChildSessions) {
       _childSessions.remove(_childSessions.keys.first);
     }
     _backfillConversationDirectory(s.id, s.directory);
+    if (newlyRegistered) _adoptChildCards(s);
+  }
+
+  /// 子会话离开注册表（archived / session.deleted）时清掉它名下的 pending
+  /// 权限/问题卡：宿主映射一旦消失，卡片要么滞留父 conv 无处摘除（replied
+  /// 事件路由回子会话自身）、要么把他端已答复的死卡留在父会话暂停徽标上。
+  /// 子会话归档/删除意味着 task 已终止（完成或中止），其卡不可再被父会话
+  /// 等待，直接丢弃；服务端若仍持有 pending，后续 backfill 快照会按子会话
+  /// 自身（无宿主映射）重新注入，不再影响父会话。
+  void _dropChildCards(String childId, String parentId) {
+    final parent = _conversations[parentId];
+    final pids = _pendingPermissions.values
+        .where((p) => p.sessionID == childId)
+        .map((p) => p.id)
+        .toList();
+    for (final pid in pids) {
+      _pendingPermissions.removeWhere((_, p) => p.id == pid);
+      parent?.onPermissionReplied(pid);
+    }
+    final qids = _pendingQuestions.values
+        .where((q) => q.sessionID == childId)
+        .map((q) => q.id)
+        .toList();
+    for (final qid in qids) {
+      _pendingQuestions.remove(qid);
+      parent?.onQuestionReplied(qid);
+    }
+  }
+
+  /// 子会话注册晚于卡片到达（SSE 竞态：permission.asked 早于
+  /// session.updated，或 app 重启后 REST 回填先命中）时，把该子会话的
+  /// pending 权限/问题卡上浮到宿主 conv——竞态窗口内卡片按原 sid 落在
+  /// 子会话 conv（无渲染入口）。宿主取传递顶层祖先（`subagent_depth > 1`
+  /// 时孙辈卡不能停在中层）。onPermission/onQuestion 按 id 幂等，
+  /// 重复注入安全；仅新注册时执行，避免 session.updated 频次下反复 notify。
+  void _adoptChildCards(SessionModel child) {
+    final hostSid = _cardHostSessionId(child.id);
+    final host = _conversations[hostSid];
+    Permission? perm;
+    for (final p in _pendingPermissions.values) {
+      if (p.sessionID != child.id) continue;
+      host?.onPermission(p);
+      _conversations[child.id]?.onPermissionReplied(p.id);
+      perm = p;
+    }
+    QuestionRequest? q;
+    for (final entry in _pendingQuestions.values) {
+      if (entry.sessionID != child.id) continue;
+      host?.onQuestion(entry);
+      _conversations[child.id]?.onQuestionReplied(entry.id);
+      q = entry;
+    }
+    // 竞态窗口内 ask 通知以默认标题发出（宿主未注册解析不到父标题），
+    // 注册后用宿主标题补发——通知 id 固定（1/2），原地替换不叠加。
+    if (perm != null) {
+      unawaited(NotificationService.notifyPermission(
+              sessionById(hostSid)?.title, perm)
+          .catchError((_) {}));
+    }
+    if (q != null) {
+      unawaited(NotificationService.notifyQuestion(
+              sessionById(hostSid)?.title, q.questions.firstOrNull?.header)
+          .catchError((_) {}));
+    }
   }
 
   /// 查找子会话（design-subagent-status §D3 降级路径）：metadata.sessionId
@@ -2228,9 +2323,33 @@ class ServerStore extends ChangeNotifier {
   bool isChildSession(String sessionId) =>
       _childSessions.containsKey(sessionId);
 
+  /// 权限/问题卡的显示宿主会话：subagent 子会话的卡片上浮到父会话——
+  /// 服务端 `permission.asked`/`question.asked` 携带子会话 id（task 工具
+  /// 在子会话内执行），而子会话无独立 UI，父会话才是用户可答复的界面
+  /// （桌面端同款语义：`session(perm.sessionID).parentID == 当前会话`）。
+  /// **传递上浮**：`subagent_depth > 1` 时孙辈卡沿途只到中层子会话 conv
+  /// （同样无渲染入口、同样卡死），须一路走到顶层祖先。深度上限防
+  /// parentID 环（脏数据）死循环。回复端点仍用卡自身的 sessionID
+  /// （`respondPermission`），路由到同一 instance。未注册的会话原样返回
+  /// （自身即宿主）。
+  String _cardHostSessionId(String sessionId) {
+    var sid = sessionId;
+    for (var depth = 0; depth < _kMaxChildSessions; depth++) {
+      final child = _childSessions[sid];
+      if (child == null) break;
+      sid = child.parentID!;
+    }
+    return sid;
+  }
+
   void _removeSession(String id) {
+    // session.deleted 打到的可能是子会话：宿主须在注册表移除**前**按完整
+    // 链解析（传递上浮），同步摘掉它挂在宿主 conv 的 pending 卡。
+    final childHost =
+        _childSessions.containsKey(id) ? _cardHostSessionId(id) : null;
     _sessions.removeWhere((s) => s.id == id);
     _childSessions.remove(id);
+    if (childHost != null) _dropChildCards(id, childHost);
     _conversations.remove(id);
     _lastMessage.remove(id);
     _statusMap.remove(id);

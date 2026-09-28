@@ -1427,9 +1427,15 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> respondPermission(Permission p, String response) async {
-    AppLogger.I.i(_tag, 'respondPermission sid=$sessionId pid=${p.id} resp=$response dir=$directory');
+    // 回复端点用卡自身的 sessionID 而非本 conv 的：subagent 权限卡由
+    // 父会话 conv 承载，但服务端 pending 挂在子会话名下——session 作用域
+    // 路由按 sessionID 解析 instance 后按 requestID 命中，子会话与父会话
+    // 同 directory，二者等价；用卡自身 id 语义精确。
+    final cardSid = p.sessionID.isNotEmpty ? p.sessionID : sessionId;
+    AppLogger.I.i(_tag,
+        'respondPermission sid=$sessionId cardSid=$cardSid pid=${p.id} resp=$response dir=$directory');
     try {
-      await client.respondPermission(sessionId, p.id, response);
+      await client.respondPermission(cardSid, p.id, response);
       AppLogger.I.i(_tag, 'respondPermission POST ok pid=${p.id}');
     } on DioException catch (e) {
       final code = e.response?.statusCode;

@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
@@ -267,4 +270,346 @@ void main() {
       expect(dp.toolStatus, 'completed');
     });
   });
+
+  // subagent 权限/问题卡上浮父会话（permission.asked/question.asked 携带
+  // 子会话 id，卡片只在父会话 FooterPanel 渲染；不上浮则卡片无处显示、
+  // 整个运行卡死在待授权）。
+  group('subagent permission/question cards host in parent session', () {
+    OpencodeEvent permAsk(String sid, String pid) => OpencodeEvent(
+          type: 'permission.asked',
+          properties: {
+            'id': pid,
+            'sessionID': sid,
+            'permission': 'bash',
+            'patterns': ['rm -rf'],
+          },
+        );
+
+    OpencodeEvent questionAsk(String sid, String qid) => OpencodeEvent(
+          type: 'question.asked',
+          properties: {
+            'id': qid,
+            'sessionID': sid,
+            'questions': [
+              {
+                'question': 'proceed?',
+                'header': 'Confirm',
+                'options': [
+                  {'label': 'yes', 'value': 'yes'},
+                  {'label': 'no', 'value': 'no'},
+                ],
+              }
+            ],
+          },
+        );
+
+    test('SSE permission.asked for child surfaces card in parent conv',
+        () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      final parent = store.ensureConversation('par')!;
+
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+
+      expect(parent.permissions.single.id, 'perm-1',
+          reason: 'child card must render in the parent conversation');
+      expect(store.conversationForRead('kid'), isNull,
+          reason: 'no child conv is created merely by a card');
+      expect(store.agentIndicatorStateOf('par').state, AgentRunState.paused);
+      expect(store.agentIndicatorStateOf('par').pauseReason,
+          AgentPauseReason.permission);
+    });
+
+    test('SSE permission.replied for child removes the card from parent',
+        () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      final parent = store.ensureConversation('par')!;
+
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'permission.replied',
+        properties: {'sessionID': 'kid', 'requestID': 'perm-1'},
+      ));
+
+      expect(parent.permissions, isEmpty);
+      expect(store.agentIndicatorStateOf('par').pendingCount, 0);
+    });
+
+    test('SSE question.asked/replied for child route to parent conv', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      final parent = store.ensureConversation('par')!;
+
+      store.onEventForTesting(questionAsk('kid', 'q-1'));
+      expect(parent.questions.single.id, 'q-1');
+      expect(store.agentIndicatorStateOf('par').pauseReason,
+          AgentPauseReason.choice);
+
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'question.replied',
+        properties: {'sessionID': 'kid', 'requestID': 'q-1'},
+      ));
+      expect(parent.questions, isEmpty);
+    });
+
+    test('late child registration adopts pending cards (SSE race)', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      final parent = store.ensureConversation('par')!;
+
+      // Card arrives before the child session.updated event — no host
+      // mapping exists yet, so the card is only in the pending map.
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+      expect(parent.permissions, isEmpty,
+          reason: 'unregistered child has no parent mapping yet');
+
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      expect(parent.permissions.single.id, 'perm-1',
+          reason: 'registration must float the stranded card to the parent');
+      expect(store.agentIndicatorStateOf('par').pauseReason,
+          AgentPauseReason.permission);
+    });
+
+    test('ensureConversation on parent injects pending child cards', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+
+      final parent = store.ensureConversation('par')!;
+      expect(parent.permissions.single.id, 'perm-1',
+          reason: 'conv (re)creation must re-inject hosted child cards');
+    });
+
+    test('respondPermission POSTs to the card session id, not the conv id',
+        () async {
+      final cap = _Capture();
+      final store = ServerStore()..client = _captureClient(cap);
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      final parent = store.ensureConversation('par')!;
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+
+      await parent.respondPermission(parent.permissions.single, 'once');
+
+      expect(cap.method, 'POST');
+      expect(cap.path, '/session/kid/permissions/perm-1',
+          reason: 'server-side pending lives under the child session');
+      expect(parent.permissions, isEmpty,
+          reason: 'successful reply removes the hosted card');
+    });
+
+    test('successful backfill snapshot drops child card resolved elsewhere',
+        () async {
+      // 他端答复 + 本端错过 replied SSE（重连窗口）→ REST 快照（权威）不再
+      // 含该卡。子会话不在 `_sessions`，restore 循环必须回退
+      // `_childSessions` 取 directory，否则 dir 恒空走复活分支。
+      final store = ServerStore()..client = _EmptyBackfillClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      store.ensureConversation('par');
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+      expect(store.hasPendingPermission('par'), isTrue);
+
+      await store.backfillPermissionsForTesting();
+
+      expect(store.hasPendingPermission('par'), isFalse,
+          reason: 'authoritative snapshot must not be overridden by restore');
+      expect(store.agentIndicatorStateOf('par').pauseReason,
+          isNot(AgentPauseReason.permission));
+    });
+
+    test('successful backfill snapshot drops child question resolved elsewhere',
+        () async {
+      // 同上，覆盖 question 的 restore 循环（server_store 与权限对称但
+      // 独立的一段代码路径）。
+      final store = ServerStore()..client = _EmptyBackfillClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      store.ensureConversation('par');
+      store.onEventForTesting(questionAsk('kid', 'q-1'));
+      expect(store.hasPendingQuestion('par'), isTrue);
+
+      await store.backfillPermissionsForTesting();
+
+      expect(store.hasPendingQuestion('par'), isFalse);
+      expect(store.agentIndicatorStateOf('par').pauseReason,
+          isNot(AgentPauseReason.choice));
+    });
+
+    test('grandchild card (subagent_depth > 1) hosts at top-level ancestor',
+        () {
+      // 传递上浮：孙辈卡沿途只到中层子会话 conv 仍是不可见宿主（面板不
+      // 渲染卡片），必须一路走到顶层祖先。
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('mid', 'par', created: 5, title: 'mid task'));
+      store.upsertSessionForTesting(
+          _child('gkid', 'mid', created: 6, title: 'leaf task'));
+      final top = store.ensureConversation('par')!;
+
+      store.onEventForTesting(permAsk('gkid', 'perm-1'));
+
+      expect(top.permissions.single.id, 'perm-1',
+          reason: 'grandchild card must reach the top-level conversation');
+      expect(store.agentIndicatorStateOf('par').pauseReason,
+          AgentPauseReason.permission);
+
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'permission.replied',
+        properties: {'sessionID': 'gkid', 'requestID': 'perm-1'},
+      ));
+      expect(top.permissions, isEmpty,
+          reason: 'replied for grandchild must remove the card at the host');
+    });
+
+    test('archived mid-level child drops its own card from top-level host',
+        () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('mid', 'par', created: 5, title: 'mid task'));
+      final top = store.ensureConversation('par')!;
+
+      store.onEventForTesting(permAsk('mid', 'perm-m'));
+      expect(top.permissions.single.id, 'perm-m');
+
+      store.upsertSessionForTesting(SessionModel(
+        id: 'mid',
+        projectID: 'p',
+        directory: '/repo',
+        title: 'mid task',
+        created: 5,
+        updated: 5,
+        parentID: 'par',
+        archived: 9,
+      ));
+
+      expect(top.permissions, isEmpty,
+          reason: 'host resolution happens before registry removal');
+    });
+
+    test('pendingCount aggregates parallel subagent permission cards', () {
+      // 宿主路由把多个并行子会话的卡聚合到同一父会话，计数不能封顶 1。
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid1', 'par', created: 5, title: 'a'));
+      store.upsertSessionForTesting(
+          _child('kid2', 'par', created: 6, title: 'b'));
+
+      store.onEventForTesting(permAsk('kid1', 'perm-1'));
+      store.onEventForTesting(permAsk('kid2', 'perm-2'));
+
+      final state = store.agentIndicatorStateOf('par');
+      expect(state.state, AgentRunState.paused);
+      expect(state.pauseReason, AgentPauseReason.permission);
+      expect(state.pendingCount, 2);
+    });
+
+    test('archived child drops hosted cards from parent', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      final parent = store.ensureConversation('par')!;
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+      expect(parent.permissions.single.id, 'perm-1');
+
+      store.upsertSessionForTesting(SessionModel(
+        id: 'kid',
+        projectID: 'p',
+        directory: '/repo',
+        title: 'task',
+        created: 5,
+        updated: 5,
+        parentID: 'par',
+        archived: 9,
+      ));
+
+      expect(parent.permissions, isEmpty,
+          reason: 'host mapping is gone — the card must not strand in parent');
+      expect(store.agentIndicatorStateOf('par').pauseReason,
+          isNot(AgentPauseReason.permission));
+    });
+
+    test('session.deleted child drops hosted cards from parent', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.upsertSessionForTesting(_parent('par'));
+      store.upsertSessionForTesting(
+          _child('kid', 'par', created: 5, title: 'task'));
+      final parent = store.ensureConversation('par')!;
+      store.onEventForTesting(permAsk('kid', 'perm-1'));
+
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'session.deleted',
+        properties: {
+          'info': {'id': 'kid'}
+        },
+      ));
+
+      expect(parent.permissions, isEmpty);
+      expect(store.hasPendingPermission('par'), isFalse);
+    });
+  });
 }
+
+class _Capture {
+  String? method;
+  String? path;
+}
+
+class _CaptureAdapter implements HttpClientAdapter {
+  final _Capture cap;
+  _CaptureAdapter(this.cap);
+  @override
+  void close({bool force = false}) {}
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    cap.method = options.method;
+    cap.path = options.path;
+    return ResponseBody.fromString('{}', 200, headers: {
+      Headers.contentTypeHeader: ['application/json'],
+    });
+  }
+}
+
+OpencodeClient _captureClient(_Capture cap) {
+  final dio = Dio(BaseOptions(baseUrl: 'http://test'))
+    ..httpClientAdapter = _CaptureAdapter(cap);
+  return OpencodeClient(dio);
+}
+
+class _EmptyBackfillClient extends OpencodeClient {
+  _EmptyBackfillClient() : super(_deadDio());
+
+  @override
+  Future<List<Permission>> pendingPermissions(String directory) async =>
+      const [];
+
+  @override
+  Future<List<QuestionRequest>> listQuestions({String? directory}) async =>
+      const [];
+}
+
+Dio _deadDio() => Dio(BaseOptions(
+      connectTimeout: const Duration(milliseconds: 1),
+      receiveTimeout: const Duration(milliseconds: 1),
+    ));
