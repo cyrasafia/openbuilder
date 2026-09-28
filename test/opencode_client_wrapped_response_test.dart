@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
+import 'package:open_builder/domain/models.dart';
 
 // v2 single-object GET/POST endpoints wrap their payloads as {"data": {...}}
 // (verified against a live 2.0.18 server). These tests lock the unwrap: a
@@ -79,10 +80,19 @@ void main() {
         .createSession('/repo', title: 't');
     expect(cap.method, 'POST');
     expect(cap.path, '/api/session');
+    expect(cap.body!['location'], {'directory': '/repo'});
+    expect(cap.body!['title'], 't');
     expect(s.id, 'ses_f17fade33ffekngOsLb8DlwtSi',
         reason: 'empty id here produced GoException no routes for /session');
     expect(s.directory, '/repo');
     expect(s.projectID, 'p1');
+  });
+
+  test('createSession omits the title key when absent', () async {
+    final cap = _Capture();
+    await _client(cap, body: jsonEncode(_wrappedSession))
+        .createSession('/repo');
+    expect(cap.body!.containsKey('title'), isFalse);
   });
 
   test('sessionMeta unwraps the envelope', () async {
@@ -100,8 +110,9 @@ void main() {
     final m = await _client(cap, body: jsonEncode(_wrappedMessage))
         .message('ses_x', 'msg_probe1');
     expect(cap.path, '/api/session/ses_x/message/msg_probe1');
-    expect(m.kind, 'user');
-    expect((m as dynamic).text, 'hello');
+    expect(m, isA<UserMessage>());
+    final user = m as UserMessage;
+    expect(user.text, 'hello');
   });
 
   test('bare (unwrapped) single-object responses still parse', () async {
