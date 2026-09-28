@@ -661,11 +661,19 @@ class ConversationStore extends ChangeNotifier {
         final d = _toDisplay(e);
         if (d == null) continue;
         if (_isEmptyUser(d)) continue;
+        if (e is UserMessage) _replaceOldestOptimisticUser(d);
         _messages.add(d);
         changed.add(e.id);
       }
     }
     _touchMessages(changed);
+  }
+
+  void _replaceOldestOptimisticUser(DisplayMessage authoritative) {
+    final opt = _firstOptimisticUser();
+    if (opt == null) return;
+    _bridgeOptimisticParts(authoritative, List<DisplayPart>.of(opt.parts));
+    _messages.remove(opt);
   }
 
   void _applyWindowDeletion(List<SessionMessage> entries) {

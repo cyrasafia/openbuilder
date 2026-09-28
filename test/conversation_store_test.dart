@@ -466,6 +466,52 @@ void main() {
   });
 
   group('optimistic→authoritative bridging', () {
+    test('reconcile supersedes a pending optimistic user message (no double echo)',
+        () async {
+      final entries = [userMsg(id: 'msg_real_1', text: 'hello', created: 1000)];
+      final conv = _conv('s1', PageMockClient(entries));
+      conv.addOptimisticUserMessage('hello');
+      await conv.reconcile();
+      final r = conv.renderableMessages;
+      expect(r.length, 1,
+          reason: 'REST snapshot must replace the optimistic copy — both '
+              'in flight rendered the message twice');
+      expect(r.single.id, 'msg_real_1');
+    });
+
+    test('reconcile replaces optimistic copies one-for-one (FIFO, multiple sends)',
+        () async {
+      final entries = [
+        userMsg(id: 'msg_real_1', text: 'first', created: 1000),
+        userMsg(id: 'msg_real_2', text: 'second', created: 2000),
+      ];
+      final conv = _conv('s1', PageMockClient(entries));
+      conv.addOptimisticUserMessage('first');
+      conv.addOptimisticUserMessage('second');
+      await conv.reconcile();
+      expect(conv.renderableMessages.length, 2);
+      expect(conv.renderableMessages.map((m) => m.id),
+          containsAll(['msg_real_1', 'msg_real_2']));
+      expect(conv.messages.any((m) => m.optimistic), isFalse);
+    });
+
+    test('reconcile keeps an optimistic message when the snapshot lags',
+        () async {
+      // The authoritative user message is not on the server yet (steer
+      // delivery in flight): the optimistic copy must survive, not be
+      // dropped by an unrelated older-entry upsert.
+      final entries = [
+        assistantMsg(
+            id: 'msg_old_a', created: 500, content: [textPart('old')], finish: 'stop'),
+      ];
+      final conv = _conv('s1', PageMockClient(entries));
+      conv.addOptimisticUserMessage('not yet delivered');
+      await conv.reconcile();
+      expect(conv.renderableMessages.length, 2,
+          reason: 'snapshot lacks the sent message — optimistic copy stays');
+      expect(conv.messages.any((m) => m.optimistic), isTrue);
+    });
+
     test('inbox.enqueued(user) replaces optimistic and bridges file parts',
         () {
       final conv = _conv('s1', _fakeClient());
