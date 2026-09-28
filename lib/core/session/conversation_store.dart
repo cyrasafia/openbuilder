@@ -16,10 +16,9 @@ import '../net/net_error.dart';
 
 const _tag = 'Conv';
 
-/// Mutable, render-friendly part for the conversation view.
 class DisplayPart {
   final String id;
-  final String type; // text | reasoning | tool | agent | subtask | file | ...
+  final String type; // text | reasoning | tool | file
   String? tool;
   String text;
   String? toolStatus;
@@ -54,7 +53,6 @@ class DisplayPart {
     this.source,
   });
 
-  /// One-line summary of what the tool is doing (e.g. "bash: ls -la").
   String get toolSummary {
     if (tool == null) return '';
     final input = toolInput;
@@ -62,6 +60,7 @@ class DisplayPart {
     switch (tool) {
       case 'bash':
       case 'shell':
+      case 'execute':
         final cmd = input['command']?.toString();
         if (cmd != null && cmd.isNotEmpty) {
           final firstLine = cmd.split('\n').first.trim();
@@ -102,7 +101,6 @@ class DisplayPart {
         if (desc != null && desc.isNotEmpty) return '$tool: $desc';
         return tool!;
       default:
-        // Generic: show first key-value pair.
         if (input.isNotEmpty) {
           final firstKey = input.keys.first;
           final val = input[firstKey]?.toString() ?? '';
@@ -113,116 +111,90 @@ class DisplayPart {
         return tool!;
     }
   }
-
-  factory DisplayPart.from(MessagePart p) {
-    if (p.type == 'tool') {
-      return DisplayPart(
-        id: p.id,
-        type: p.type,
-        tool: p.tool,
-        toolStatus: p.stateStatus,
-        toolTitle: p.stateTitle,
-        toolOutput: p.stateOutput,
-        toolError: _extractToolError(p.state?['error']),
-        toolInput: p.state?['input'] is Map
-            ? (p.state!['input'] as Map).cast<String, dynamic>()
-            : null,
-        toolMetadata: p.state?['metadata'] is Map
-            ? (p.state!['metadata'] as Map).cast<String, dynamic>()
-            : null,
-      );
-    }
-    if (p.type == 'file') {
-      return DisplayPart(
-        id: p.id,
-        type: 'file',
-        fileMime: p.raw['mime']?.toString(),
-        fileUrl: p.raw['url']?.toString() ?? '',
-        filename: p.raw['filename']?.toString(),
-        source: p.raw['source'] is Map
-            ? (p.raw['source'] as Map).cast<String, dynamic>()
-            : null,
-      );
-    }
-    if (p.type == 'subtask') {
-      // The server carries the expanded prompt in `prompt`, not `text`
-      // (which is always empty for subtask parts). Fall back to `text` /
-      // `description` for older payloads or synthetic test inputs.
-      return DisplayPart(
-        id: p.id,
-        type: 'subtask',
-        command: p.raw['command']?.toString(),
-        text: p.raw['prompt']?.toString() ??
-            p.text ??
-            p.raw['description']?.toString() ??
-            '',
-      );
-    }
-    return DisplayPart(id: p.id, type: p.type, text: p.text ?? '');
-  }
 }
 
-String? _extractToolError(dynamic raw) {
-  if (raw == null) return null;
-  if (raw is String) return raw.isNotEmpty ? raw : null;
-  if (raw is Map) {
-    final msg = raw['message']?.toString();
-    if (msg != null && msg.isNotEmpty) return msg;
-    final err = raw['error']?.toString();
-    if (err != null && err.isNotEmpty) return err;
-    final detail = raw.toString();
-    return detail.isNotEmpty && detail != '{}' ? detail : null;
+String? _toolContentText(List<ToolContentItem> content) {
+  final buf = StringBuffer();
+  for (final c in content) {
+    if (c.text.isNotEmpty) buf.write(c.text);
   }
-  final s = raw.toString();
-  return s.isNotEmpty && s != 'null' ? s : null;
+  final s = buf.toString();
+  return s.isEmpty ? null : s;
 }
 
 class DisplayMessage {
-  final MessageInfo info;
+  final String id;
+  final String type; // v2 kind: user | assistant | system | synthetic | skill | shell | compaction | idle | agent-switched | model-switched | location-switched
+  bool optimistic;
   final List<DisplayPart> parts = [];
-  bool optimistic; // true for locally-inserted user messages pending server confirm
-  DisplayMessage(this.info, {this.optimistic = false});
+  int created;
+  int? completed;
+  String? agent;
+  String? modelID;
+  String? modelProvider;
+  String? finish;
+  double cost;
+  Map<String, dynamic>? error;
+  String? text;
+  String? description;
+  String? shellCommand;
+  String? shellStatus;
+  String? shellOutput;
+  int? shellExit;
+  String? outcome;
+  String? compactionStatus;
+  String? previousLabel;
+  String? currentLabel;
+
+  DisplayMessage({
+    required this.id,
+    required this.type,
+    this.optimistic = false,
+    required this.created,
+    this.completed,
+    this.agent,
+    this.modelID,
+    this.modelProvider,
+    this.finish,
+    this.cost = 0,
+    this.error,
+    this.text,
+    this.description,
+    this.shellCommand,
+    this.shellStatus,
+    this.shellOutput,
+    this.shellExit,
+    this.outcome,
+    this.compactionStatus,
+    this.previousLabel,
+    this.currentLabel,
+  });
+
+  bool get isUser => type == 'user';
+  bool get isAssistant => type == 'assistant';
 }
 
-/// Metadata for a contiguous message range in `_messages`.
-///
-/// `_segments` is ordered newest→oldest; `segments[0]` is the bottom (reachable)
-/// segment. Adjacent segments have a gap (unloaded messages) between them.
-/// Only `segments[0]` is rendered ([renderableMessages]); `segments[1+]` are
-/// in memory but unreachable until the gap is bridged by upward scrolling.
 class _Segment {
   String oldestId;
   int oldestCreated;
-  String? cursor; // anchors oldestId for paging further back; null = history start
+  String? cursor;
   _Segment({required this.oldestId, required this.oldestCreated, this.cursor});
 }
 
-/// Per-session live state: messages (streaming), todos, permissions.
 class ConversationStore extends ChangeNotifier {
   final String sessionId;
   final OpencodeClient client;
 
-  /// 会话所属 directory，用于 question reply/reject 的路由参数（opencode
-  /// question pending 按 directory 隔离到 instance，不带 directory 会 404）。
-  /// 由 ServerStore.ensureConversation 从 sessionById(sid).directory 注入；
-  /// 若 question.asked 早于 session 加载（SSE 竞态），初始为空，待 session
-  /// 到达后由 ServerStore._upsertSession/_addSessions 经 [setDirectory] 回填。
-  /// 公开但仅应由 [setDirectory] 修改。
   String directory;
 
-  /// Reply/reject 命中 200 或 404 后触发，让 ServerStore 把该 id 登记进
-  /// _recentlyResolved 集合，防止 backfill 在服务端列表清理前重注入。
-  void Function(String questionId)? onQuestionResolved;
+  void Function(String formId)? onQuestionResolved;
   void Function(String permissionId)? onPermissionResolved;
 
-  // Profile-scoped cache backend (injected by ServerStore.ensureConversation).
-  // Null in tests that don't exercise persistence; all cache ops no-op then.
   final CacheStore? cacheStore;
 
   ConversationStore(this.sessionId, this.client,
       {this.directory = '', this.cacheStore});
 
-  /// 回填 directory（仅当当前为空时填充，避免覆盖已注入的有效值）。
   void setDirectory(String dir) {
     if (dir.isNotEmpty && directory.isEmpty) {
       directory = dir;
@@ -233,21 +205,12 @@ class ConversationStore extends ChangeNotifier {
   final List<_Segment> _segments = [];
   List<Todo> _todos = [];
   final List<Permission> _permissions = [];
-  final List<QuestionRequest> _questions = [];
+  final List<FormInfo> _forms = [];
   bool loading = false;
   bool loaded = false;
   Object? error;
   String status = 'idle';
-  /// Retry error message surfaced from `session.status` (retry variant).
-  /// Cleared on any non-retry status transition. Distinct from
-  /// per-message errors carried via [MessageInfo.error].
   String? retryMessage;
-  /// Set when a refresh proves the session's worktree directory no longer
-  /// exists (ghost sandbox): the session vanished from the authoritative
-  /// list and its directory is not among the project's real worktrees.
-  /// The detail page shows a banner and blocks sending — the server still
-  /// accepts prompts there, but replies would never stream back (no SSE
-  /// coverage for a directory outside `_eventDirectories`).
   bool workspaceMissing = false;
   int? sessionUpdated;
   bool _loadingEarlier = false;
@@ -257,8 +220,6 @@ class ConversationStore extends ChangeNotifier {
   bool _reconciling = false;
   DateTime? _lastReloadAt;
   static const _reloadBackoff = Duration(seconds: 10);
-  // Window size for reconcile + backward paging. ~7-12 mobile screens of
-  // messages; balances first-open payload vs scroll-up fill latency.
   static const _kWindow = 100;
 
   Timer? _loadRetryTimer;
@@ -266,17 +227,13 @@ class ConversationStore extends ChangeNotifier {
   bool _disposed = false;
   Future<void> Function()? _backfillCallback;
 
-  // ── Draft（未发送的输入框文字，见 docs/design-compose-draft.md）──
   String _draftText = '';
   bool _draftShell = false;
-  bool _draftLoaded = false; // loadDraftOnly() 完成后置真（CD-1）
+  bool _draftLoaded = false;
   String get draftText => _draftText;
   bool get draftShell => _draftShell;
   bool get draftLoaded => _draftLoaded;
 
-  /// Set a callback to be invoked after a successful reconcile (including
-  /// retries). Used by ServerStore to bridge _lastMessage on retry success
-  /// (LPS-20). Cleared after first successful invocation.
   void setBackfillCallback(Future<void> Function()? cb) => _backfillCallback = cb;
   static const _loadInitialBackoff = Duration(seconds: 2);
   static const _loadMaxBackoff = Duration(seconds: 30);
@@ -284,26 +241,17 @@ class ConversationStore extends ChangeNotifier {
   List<DisplayMessage> get messages => List.unmodifiable(_messages);
   List<Todo> get todos => List.unmodifiable(_todos);
   List<Permission> get permissions => List.unmodifiable(_permissions);
-  List<QuestionRequest> get questions => List.unmodifiable(_questions);
+  List<FormInfo> get forms => List.unmodifiable(_forms);
   bool get busy => status == 'busy' || status == 'retry';
   bool get isRetry => status == 'retry';
 
-  /// Messages for the detail view: only the bottom (reachable) segment,
-  /// newest-first (for the reversed ListView). Messages above an unbridged
-  /// gap ([_segments] 1+) are in memory but not rendered — they become
-  /// reachable only after the gap is bridged by upward scrolling.
   int _messagesVersion = 0;
   int _renderableVersion = -1;
   List<DisplayMessage> _renderableCache = const [];
 
-  /// 细粒度缓存失效（perfprobe-3：reconcile/settle 后全量清 _messageChildCache
-  /// 导致所有可见消息单帧重建 MarkdownBody，45-164ms）。null=自上次消费以来
-  /// 有过全量失效（保守），否则为内容变化的消息 id 集合。
   bool _fullInvalidationPending = false;
   final Set<String> _contentInvalidations = {};
 
-  /// [changedIds] 为 null 表示全量失效；空集表示仅结构性变化（增删/重排，
-  /// 缓存按 id 键控无需清）；非空集表示这些 id 的渲染内容变了。
   void _touchMessages([Set<String>? changedIds]) {
     _messagesVersion++;
     if (changedIds == null) {
@@ -314,7 +262,6 @@ class ConversationStore extends ChangeNotifier {
     }
   }
 
-  /// 屏幕在 messagesVersion 变化时消费：null→全清；否则只失效集合内的 id。
   Set<String>? consumeContentInvalidations() {
     if (_fullInvalidationPending) {
       _fullInvalidationPending = false;
@@ -327,28 +274,28 @@ class ConversationStore extends ChangeNotifier {
     return s;
   }
 
-  /// Bumps only on structural changes (add/remove/reorder/id-swap via
-  /// [_sort] etc.), NOT on in-place content updates (streaming part deltas in
-  /// [onPartUpdated] mutate the DisplayMessage without bumping). Used by the
-  /// detail screen to gate `_messageChildCache` clears.
   int get messagesVersion => _messagesVersion;
+
+  static const _hiddenKinds = {
+    'idle',
+    'compaction',
+    'location-switched',
+  };
 
   List<DisplayMessage> get renderableMessages {
     if (_renderableVersion == _messagesVersion) return _renderableCache;
     final List<DisplayMessage> result;
     if (_segments.isEmpty) {
       result = _messages.reversed
-          .where((m) => !_isEmptyUser(m))
+          .where((m) => !_isEmptyUser(m) && !_hiddenKinds.contains(m.type))
           .toList(growable: false);
     } else {
       final seg = _segments.first;
       final list = <DisplayMessage>[];
       for (var i = _messages.length - 1; i >= 0; i--) {
         final m = _messages[i];
-        // Exclude empty real user messages (e.g. the server's synthetic
-        // shell-command message) so they don't render as empty bubbles.
-        if (!_isEmptyUser(m)) list.add(m);
-        if (m.info.id == seg.oldestId) break;
+        if (!_isEmptyUser(m) && !_hiddenKinds.contains(m.type)) list.add(m);
+        if (m.id == seg.oldestId) break;
       }
       result = list;
     }
@@ -357,59 +304,53 @@ class ConversationStore extends ChangeNotifier {
     return result;
   }
 
-  /// Whether older history can still be loaded (by scrolling up).
   bool get hasMore => _segments.firstOrNull?.cursor != null;
 
-  /// Whether a backward page load is in progress.
   bool get loadingEarlier => _loadingEarlier;
 
-  /// Whether the last backward page load failed (IR-R4). Cleared on next
-  /// successful load or when a new attempt starts.
   bool get loadEarlierError => _loadEarlierError;
 
-  /// One-line preview of the last message, aligned with what the detail view
-  /// renders. Walks parts last→first, skipping hidden types, and returns the
-  /// first non-empty summary (null when there is nothing to show).
-  ///
-  /// Single source of truth for the session-list preview so it tracks the
-  /// detail view's last message during streaming — not only on completion
-  /// (frontend §2.2 D1).
-  ///
-  /// When [hideReasoning] is true, reasoning parts are skipped so the list
-  /// preview mirrors the detail view when "展示思考过程" is off.
   String? lastMessagePreview({bool hideReasoning = false, AppLocalizations? loc}) {
     if (_messages.isEmpty) return null;
-    final last = _messages.last;
+    DisplayMessage? last;
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      final m = _messages[i];
+      if (_hiddenKinds.contains(m.type)) continue;
+      if (m.type == 'idle') continue;
+      last = m;
+      break;
+    }
+    if (last == null) return null;
     var preview = '';
-    for (var i = last.parts.length - 1; i >= 0; i--) {
-      final dp = last.parts[i];
-      if (_hidden.contains(dp.type)) continue;
-      if (hideReasoning && dp.type == 'reasoning') continue;
-      String pv;
-      if (dp.type == 'tool') {
-        pv = dp.toolSummary;
-      } else if (dp.type == 'subtask') {
-        // The expanded prompt is too verbose for a one-line preview; the
-        // command name identifies the subtask concisely.
-        final cmd = dp.command ?? '';
-        pv = cmd.isEmpty ? 'subtask' : 'subtask: $cmd';
-      } else if (dp.type == 'file') {
-        final name = dp.filename ?? '';
-        pv = name.isNotEmpty ? name : (loc?.attachmentFallback ?? '');
-      } else {
-        pv = dp.text.replaceAll('\n', ' ').trim();
+    if (last.type == 'user' || last.type == 'assistant') {
+      for (var i = last.parts.length - 1; i >= 0; i--) {
+        final dp = last.parts[i];
+        if (hideReasoning && dp.type == 'reasoning') continue;
+        String pv;
+        if (dp.type == 'tool') {
+          pv = dp.toolSummary;
+        } else if (dp.type == 'file') {
+          final name = dp.filename ?? '';
+          pv = name.isNotEmpty ? name : (loc?.attachmentFallback ?? '');
+        } else if (dp.type == 'text' || dp.type == 'reasoning') {
+          pv = dp.text.replaceAll('\n', ' ').trim();
+        } else {
+          continue;
+        }
+        if (pv.isNotEmpty) {
+          preview = pv;
+          break;
+        }
       }
-      if (pv.isNotEmpty) {
-        preview = pv;
-        break;
-      }
+    } else {
+      preview = (last.text ?? last.shellCommand ?? last.description ?? '')
+          .replaceAll('\n', ' ')
+          .trim();
     }
     if (preview.isEmpty) return null;
-    final prefix = last.info.role == 'user' ? (loc?.previewYouPrefix ?? '') : '';
+    final prefix = last.type == 'user' ? (loc?.previewYouPrefix ?? '') : '';
     return prefix + preview;
   }
-
-  // ── Self-healing public API ──
 
   bool get isStale => _stale;
   void markStale() => _stale = true;
@@ -427,16 +368,14 @@ class ConversationStore extends ChangeNotifier {
     loading = false;
   }
 
-  /// Insert an optimistic user message immediately after sending, so the UI
-  /// shows it without waiting for SSE/rest confirmation. Removed when the
-  /// authoritative message list arrives (reload) or when a matching user
-  /// message.updated event arrives.
   void addOptimisticUserMessage(String text,
       {List<AttachmentPreview>? attachments, List<FileRef>? fileRefs}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final msg = DisplayMessage(
-      MessageInfo(id: 'optimistic_$now', role: 'user', created: now),
+      id: 'optimistic_$now',
+      type: 'user',
       optimistic: true,
+      created: now,
     );
     if (text.isNotEmpty) {
       msg.parts.add(DisplayPart(
@@ -481,48 +420,30 @@ class ConversationStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Remove optimistic messages — called when authoritative data replaces
-  /// the local guess (reload, onMessageUpdated with a real user message).
   void _pruneOptimistic() {
     _touchMessages(const <String>{});
     _messages.removeWhere((m) => m.optimistic);
   }
 
-  /// Public entry point for removing optimistic messages (e.g. send failure).
   void removeOptimisticMessages() {
     final had = _messages.any((m) => m.optimistic);
     _pruneOptimistic();
     if (had) notifyListeners();
   }
 
-  /// Prefix used for both optimistic message ids and the placeholder parts
-  /// bridged onto the authoritative message by [_bridgeOptimisticParts].
-  /// [onPartUpdated] / [_mergeParts] recognise it to evict a placeholder 1:1
-  /// once the authoritative part arrives, avoiding duplicate chips.
   static const optimisticPartPrefix = 'optimistic_';
 
   static bool _isPlaceholderPart(DisplayPart p) =>
       p.id.startsWith(optimisticPartPrefix);
 
-  /// The oldest pending optimistic user message, or null. The server creates
-  /// messages in send order, so the authoritative `message.updated(user)`
-  /// arriving now corresponds to the FIRST (oldest) optimistic still pending —
-  /// FIFO. Picking the newest would lend a later send's content to an earlier
-  /// message in the send-while-busy edge case.
   DisplayMessage? _firstOptimisticUser() {
     for (var i = 0; i < _messages.length; i++) {
       final m = _messages[i];
-      if (m.optimistic && m.info.role == 'user') return m;
+      if (m.optimistic && m.type == 'user') return m;
     }
     return null;
   }
 
-  /// Seed [m] with optimistic placeholder parts ([optParts]) for content not
-  /// yet mirrored by an authoritative part. Each placeholder is later evicted
-  /// 1:1 by type in [onPartUpdated] (or dropped in [_mergeParts] on reconcile).
-  /// Keeps attachments visible across the optimistic→authoritative transition
-  /// even when the server's `message.part.updated` lags — e.g. queued behind
-  /// the large synthetic inline-content parts generated for an @-file mention.
   void _bridgeOptimisticParts(DisplayMessage m, List<DisplayPart> optParts) {
     if (optParts.isEmpty) return;
     final realByType = <String, int>{};
@@ -552,34 +473,10 @@ class ConversationStore extends ChangeNotifier {
     await reload();
   }
 
-  static const _hidden = {
-    'step-start',
-    'step-finish',
-    'snapshot',
-    'retry',
-    'compaction',
-  };
-
-  static bool _shouldHidePart(Map<String, dynamic> raw) {
-    final type = raw['type']?.toString() ?? '';
-    if (_hidden.contains(type)) return true;
-    if (type == 'text' && raw['synthetic'] == true) return true;
-    return false;
-  }
-
-  /// A real (non-optimistic) user message with no renderable content. The
-  /// renderer (`_parts`, user mode) draws `text`, `file`, and `subtask` parts,
-  /// so a user message whose parts are all hidden (shell's synthetic "tool
-  /// executed by the user"), blank-text, or non-renderable (e.g. a `tool` part
-  /// the server attaches to a command echo) renders as an empty bubble. Such
-  /// messages are excluded from [renderableMessages] and skipped by
-  /// [_upsertEntries]. Optimistic messages are excluded (managed via prune);
-  /// assistant messages are transiently empty during streaming and are kept.
   static bool _isEmptyUser(DisplayMessage m) {
-    if (m.optimistic || m.info.role != 'user') return false;
+    if (m.optimistic || m.type != 'user') return false;
     for (final p in m.parts) {
       if (p.type == 'file') return false;
-      if (p.type == 'subtask') return false;
       if (p.type == 'text' && p.text.trim().isNotEmpty) return false;
     }
     return true;
@@ -589,11 +486,6 @@ class ConversationStore extends ChangeNotifier {
     if (loaded || loading) return;
     loading = true;
     notifyListeners();
-    // Await _attemptLoad so the returned Future resolves after the reconcile
-    // attempt (not immediately). All callers unawait this, so the UI still
-    // gets the conv synchronously with loading=true; but chaining
-    // `.then(_backfillPreview)` (E path, §6.6) now runs after reconcile merged
-    // REST, reading the up-to-date _messages instead of the pre-reconcile state.
     await _attemptLoad();
   }
 
@@ -607,7 +499,6 @@ class ConversationStore extends ChangeNotifier {
       _scheduleLoadRetry(incrementAttempt: false);
       return;
     }
-    // Cache preheat: instant display if session.updated matches cache.
     await _maybePreheatCache();
     if (_disposed) return;
     await reconcile();
@@ -636,12 +527,8 @@ class ConversationStore extends ChangeNotifier {
     });
   }
 
-  /// 增量对账：拉最新 K 条尾部窗口（不全量），与本地按 id 合并（upsert）。
-  /// 窗口与底部分段无重叠时形成断档（新 segments[0]，旧的移到 [1+]），
-  /// 由用户上滚时 [loadOnePage] 分段衔接。失败回退：`_messages` 空才
-  /// `_loadCache`，否则保 SSE 累积并标 stale。
   Future<void> reconcile() async {
-    if (_reconciling) return; // 互斥
+    if (_reconciling) return;
     _reconciling = true;
     _lastReloadAt = DateTime.now();
     PerfProbe.I.markEvent('reconcile-start $sessionId');
@@ -650,46 +537,31 @@ class ConversationStore extends ChangeNotifier {
       final page = await client.messagesPageCompute(sessionId, limit: _kWindow);
       final entries = page.entries;
       AppLogger.I.d(_tag,
-          'reconcile fetched ${entries.length} messages $sessionId hasCursor=${page.nextCursor != null}');
-      // Infer session status from the last message — terminal finish values
-      // ('stop'/'error') mean the session is idle. Preserved from reload so
-      // self-healing paths (watchdog reconnect, manual refresh) still correct
-      // a missed idle transition.
+          'reconcile fetched ${entries.length} messages $sessionId hasCursor=${page.olderCursor != null}');
       if (entries.isNotEmpty) {
-        final last = entries.last.info;
-        if (last.role == 'assistant' &&
+        final last = entries.last;
+        if (last is IdleMessage) {
+          setStatus('idle');
+        } else if (last is AssistantMessage &&
             (last.finish == 'stop' || last.finish == 'error')) {
           setStatus('idle');
         }
       }
-      // Check overlap with segments[0] BEFORE upsert (upsert would insert
-      // entries into _messages and make the check trivially true).
       final overlapped = _entriesOverlapSegment(entries, 0);
-      // Window-range deletion (strict interior): handle revert.
       _applyWindowDeletion(entries);
-      // Upsert: info=REST authoritative, parts field-level merge.
       _upsertEntries(entries);
-      // Segment logic
       if (entries.isEmpty) {
-        // No messages on server — segments unchanged (or stay empty).
       } else if (_segments.isEmpty || !overlapped) {
-        // First reconcile OR no overlap with existing bottom segment →
-        // entries become new segments[0], old segments shift down (gap forms).
-        final oldest = entries.first.info;
+        final oldest = entries.first;
         _segments.insert(
             0,
             _Segment(
                 oldestId: oldest.id,
-                oldestCreated: oldest.created ?? 0,
-                cursor: page.nextCursor));
+                oldestCreated: oldest.created,
+                cursor: page.olderCursor));
       }
-      // else: overlapped → merge into existing segments[0], oldest/cursor
-      // unchanged (window extended the newest side only).
-      // 内容失效范围已由 _upsertEntries 记录；sort 本身只重排。
       _sort(const <String>{});
-      try {
-        _todos = await client.todos(sessionId);
-      } catch (_) {}
+      _recomputeTodos();
       loaded = true;
       error = null;
       _stale = false;
@@ -709,12 +581,6 @@ class ConversationStore extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  /// 上滚触顶懒加载一页（K 条更早消息）。每次只拉一页；断档多次则
-  /// 多次触发。本页与 segments[1] 重叠时衔接（合并分段），否则更新
-  /// segments[0] 的 oldest + cursor。失败静默（用户可再次上滚重试）。
-  /// Returns true if progress was made (entries loaded or cursor exhausted),
-  /// false on failure or no-op. The caller uses this to stop the lazy-load
-  /// chain on failure (IR-1: prevents request storms when offline).
   Future<bool> loadOnePage() async {
     if (_loadingEarlier) return false;
     if (_segments.isEmpty) return false;
@@ -724,19 +590,17 @@ class ConversationStore extends ChangeNotifier {
     _loadEarlierError = false;
     notifyListeners();
     try {
-      final page =
-          await client.messagesPageCompute(sessionId, limit: _kWindow, before: seg.cursor);
+      final page = await client.messagesPageCompute(
+          sessionId, limit: _kWindow, cursor: seg.cursor);
       final entries = page.entries;
       AppLogger.I.d(_tag,
-          'loadOnePage fetched ${entries.length} older messages $sessionId hasCursor=${page.nextCursor != null}');
+          'loadOnePage fetched ${entries.length} older messages $sessionId hasCursor=${page.olderCursor != null}');
       if (entries.isEmpty) {
-        seg.cursor = null; // history exhausted
+        seg.cursor = null;
       } else {
         _applyWindowDeletion(entries);
         _upsertEntries(entries);
-        final pageOldestCreated = entries.first.info.created ?? 0;
-        // Bridge loop (IR-R2): a page might span multiple segments if gaps
-        // are small. Merge all overlapped segments into segments[0].
+        final pageOldestCreated = entries.first.created;
         var bridged = false;
         while (_segments.length >= 2 &&
             _entriesOverlapSegment(entries, 1)) {
@@ -744,9 +608,9 @@ class ConversationStore extends ChangeNotifier {
           final seg1 = _segments[1];
           if (pageOldestCreated < seg1.oldestCreated) {
             seg
-              ..oldestId = entries.first.info.id
+              ..oldestId = entries.first.id
               ..oldestCreated = pageOldestCreated
-              ..cursor = page.nextCursor;
+              ..cursor = page.olderCursor;
           } else {
             seg
               ..oldestId = seg1.oldestId
@@ -756,16 +620,13 @@ class ConversationStore extends ChangeNotifier {
           _segments.removeAt(1);
         }
         if (bridged) {
-          // Clean up orphan segments fully subsumed by the expanded
-          // segments[0] (IR-R2): their oldestCreated >= seg.oldestCreated
-          // means their entire range is within segments[0].
           _segments.removeWhere(
               (s) => s != seg && s.oldestCreated >= seg.oldestCreated);
         } else {
           seg
-            ..oldestId = entries.first.info.id
+            ..oldestId = entries.first.id
             ..oldestCreated = pageOldestCreated
-            ..cursor = page.nextCursor;
+            ..cursor = page.olderCursor;
         }
       }
       _sort(const <String>{});
@@ -781,65 +642,57 @@ class ConversationStore extends ChangeNotifier {
     }
   }
 
-  /// Upsert REST entries into `_messages` by id. Existing → replace info
-  /// (REST authoritative) + field-level part merge. New → convert + insert.
-  /// 触摸时只标记内容实际变化的 id（合并结果与既有渲染等价则不标记），
-  /// 供屏幕做细粒度缓存失效（perfprobe-3：全量清致 45-164ms 单帧）。
-  void _upsertEntries(List<MessageEntry> entries) {
+  void _upsertEntries(List<SessionMessage> entries) {
     if (entries.isEmpty) return;
     final changed = <String>{};
     for (final e in entries) {
-      final existing = _findMessage(e.info.id);
+      final existing = _findMessage(e.id);
       if (existing != null) {
         _messages.remove(existing);
-        final recreated = DisplayMessage(e.info);
-        recreated.parts.addAll(_mergeParts(e.parts, existing.parts));
+        final recreated = _toDisplay(e);
+        if (recreated == null) continue;
+        recreated.parts.addAll(_mergeParts(recreated.parts, existing.parts));
         if (_isEmptyUser(recreated)) continue;
         _messages.add(recreated);
-        if (!_sameInfo(existing.info, recreated.info) ||
-            !_sameParts(existing.parts, recreated.parts)) {
-          changed.add(e.info.id);
+        if (!_sameMessage(existing, recreated)) {
+          changed.add(e.id);
         }
       } else {
         final d = _toDisplay(e);
+        if (d == null) continue;
         if (_isEmptyUser(d)) continue;
         _messages.add(d);
-        changed.add(e.info.id);
+        changed.add(e.id);
       }
     }
     _touchMessages(changed);
   }
 
-  /// Window-range deletion (strict interior): remove local non-optimistic
-  /// messages whose created falls strictly inside the fetched window's
-  /// (oldest, newest) but whose id is not in the window — they were deleted
-  /// server-side (revert). Boundaries excluded to avoid equal-created edges.
-  void _applyWindowDeletion(List<MessageEntry> entries) {
+  void _applyWindowDeletion(List<SessionMessage> entries) {
     if (entries.length < 2) return;
-    final lo = entries.first.info.created;
-    final hi = entries.last.info.created;
-    if (lo == null || hi == null || lo >= hi) return;
-    final ids = {for (final e in entries) e.info.id};
-    // 删除只产生陈旧缓存条目（屏幕按 id 修剪），无需内容失效。
+    final lo = entries.first.created;
+    final hi = entries.last.created;
+    if (lo >= hi) return;
+    final ids = {for (final e in entries) e.id};
     _touchMessages(const <String>{});
     _messages.removeWhere((m) =>
         !m.optimistic &&
-        m.info.created != null &&
-        m.info.created! > lo &&
-        m.info.created! < hi &&
-        !ids.contains(m.info.id));
+        m.created > lo &&
+        m.created < hi &&
+        !ids.contains(m.id));
   }
 
-  /// 逐字段比较（细粒度失效用）：info/parts 是否渲染等价。map 字段用 mapEquals。
-  static bool _sameInfo(MessageInfo a, MessageInfo b) =>
+  static bool _sameMessage(DisplayMessage a, DisplayMessage b) =>
       a.id == b.id &&
-      a.role == b.role &&
+      a.type == b.type &&
       a.created == b.created &&
       a.completed == b.completed &&
       a.cost == b.cost &&
       a.modelID == b.modelID &&
       a.finish == b.finish &&
-      mapEquals(a.error, b.error);
+      mapEquals(a.error, b.error) &&
+      a.text == b.text &&
+      _sameParts(a.parts, b.parts);
 
   static bool _samePart(DisplayPart a, DisplayPart b) =>
       a.id == b.id &&
@@ -864,12 +717,6 @@ class ConversationStore extends ChangeNotifier {
     return true;
   }
 
-  /// Whether any fetched entry id already exists in `_messages` (non-optimistic).
-  /// Used to detect overlap / bridge before upsert inserts the entries.
-  /// Build the set of non-optimistic message ids belonging to the segment
-  /// at [segIndex]. Segments partition `_messages` (sorted ascending): the
-  /// walk from newest→oldest crosses segment boundaries at each segment's
-  /// `oldestId`. Optimistic messages are always in segments[0].
   Set<String> _segmentIds(int segIndex) {
     if (segIndex < 0 || segIndex >= _segments.length) return {};
     final ids = <String>{};
@@ -877,9 +724,9 @@ class ConversationStore extends ChangeNotifier {
     for (var i = _messages.length - 1; i >= 0; i--) {
       final m = _messages[i];
       if (!m.optimistic) {
-        if (currentSeg == segIndex) ids.add(m.info.id);
+        if (currentSeg == segIndex) ids.add(m.id);
         if (currentSeg < _segments.length &&
-            m.info.id == _segments[currentSeg].oldestId) {
+            m.id == _segments[currentSeg].oldestId) {
           currentSeg++;
         }
       }
@@ -887,35 +734,24 @@ class ConversationStore extends ChangeNotifier {
     return ids;
   }
 
-  /// Whether any fetched entry id exists in the segment at [segIndex].
-  /// Segment-scoped: reconcile checks segments[0], loadOnePage bridge
-  /// checks segments[1] (IR-2).
-  bool _entriesOverlapSegment(List<MessageEntry> entries, int segIndex) {
+  bool _entriesOverlapSegment(List<SessionMessage> entries, int segIndex) {
     final ids = _segmentIds(segIndex);
     for (final e in entries) {
-      if (ids.contains(e.info.id)) return true;
+      if (ids.contains(e.id)) return true;
     }
     return false;
   }
 
-  /// 字段级 part 并集。REST 定义顺序 + 字段合并，SSE-only 追加尾。
-  /// text 取更长；tool 的 status/output/input 取 SSE 非空者、否则留 REST。
-  /// hidden 类型跳过（与 `_toDisplay` 一致）。
   List<DisplayPart> _mergeParts(
-      List<MessagePart> rest, List<DisplayPart> sse) {
+      List<DisplayPart> rest, List<DisplayPart> sse) {
     final result = <DisplayPart>[];
     final sseById = {for (final p in sse) p.id: p};
     final seen = <String>{};
-    final hiddenIds = <String>{};
     for (final rp in rest) {
-      if (_shouldHidePart(rp.raw)) {
-        hiddenIds.add(rp.id);
-        continue;
-      }
       final sp = sseById[rp.id];
       if (sp != null) {
         seen.add(rp.id);
-        final merged = DisplayPart.from(rp);
+        final merged = _clonePart(rp);
         if (sp.text.length > merged.text.length) merged.text = sp.text;
         if (sp.toolStatus != null) merged.toolStatus = sp.toolStatus;
         if (sp.toolTitle != null) merged.toolTitle = sp.toolTitle;
@@ -925,15 +761,11 @@ class ConversationStore extends ChangeNotifier {
         if (sp.toolMetadata != null) merged.toolMetadata = sp.toolMetadata;
         result.add(merged);
       } else {
-        result.add(DisplayPart.from(rp));
+        result.add(rp);
       }
     }
     for (final sp in sse) {
-      if (_hidden.contains(sp.type)) continue;
-      if (hiddenIds.contains(sp.id)) continue;
       if (seen.contains(sp.id)) continue;
-      // Drop optimistic placeholders now superseded by an authoritative part
-      // of the same type from REST (carry-over from onMessageUpdated).
       if (_isPlaceholderPart(sp) &&
           result.any((r) => r.type == sp.type && !_isPlaceholderPart(r))) {
         continue;
@@ -943,11 +775,26 @@ class ConversationStore extends ChangeNotifier {
     return result;
   }
 
-  /// Force refresh (re-entrant safe). Delegates to [reconcile] (merge, no
-  /// clear). Used by manual refresh + watchdog reconnect.
-  Future<void> reload() async => reconcile();
+  static DisplayPart _clonePart(DisplayPart p) => DisplayPart(
+        id: p.id,
+        type: p.type,
+        tool: p.tool,
+        text: p.text,
+        toolStatus: p.toolStatus,
+        toolTitle: p.toolTitle,
+        toolOutput: p.toolOutput,
+        toolError: p.toolError,
+        toolInput: p.toolInput,
+        toolMetadata: p.toolMetadata,
+        fileMime: p.fileMime,
+        fileUrl: p.fileUrl,
+        filename: p.filename,
+        command: p.command,
+        previewThumb: p.previewThumb,
+        source: p.source,
+      );
 
-  // ── Local cache for offline read-back ──
+  Future<void> reload() async => reconcile();
 
   String get _cacheKey => 'conv/$sessionId';
 
@@ -955,36 +802,11 @@ class ConversationStore extends ChangeNotifier {
     final cs = cacheStore;
     if (cs == null) return;
     try {
-      // Build the Map on the UI thread (cheap field access), then move the
-      // jsonEncode to a background isolate — it's the expensive part for
-      // large conversations (163ms+ on UI thread in profile runs).
       final j = {
-        'v': 1,
+        'v': 2,
         'messages': _messages
-            .map((m) => {
-                  'info': m.info.toJson(),
-                  'parts': m.parts
-                      .map((p) => {
-                            'id': p.id,
-                            'type': p.type,
-                            'tool': p.tool,
-                            'text': p.text,
-                            'toolStatus': p.toolStatus,
-                            'toolTitle': p.toolTitle,
-                            'toolOutput': p.toolOutput,
-                            'toolError': p.toolError,
-                            'toolInput': p.toolInput, // MA-5: 补存
-                            'toolMetadata': p.toolMetadata,
-                            'command': p.command,
-                            'fileMime': p.fileMime,
-                            'fileUrl': p.fileUrl,
-                            'filename': p.filename,
-                            'source': p.source,
-                          })
-                      .toList(),
-                })
+            .map((m) => _messageToJson(m))
             .toList(),
-        'todos': _todos.map((t) => t.toJson()).toList(),
         'segments': _segments
             .map((s) => {
                   'oldestId': s.oldestId,
@@ -1003,91 +825,144 @@ class ConversationStore extends ChangeNotifier {
     }
   }
 
+  Map<String, dynamic> _messageToJson(DisplayMessage m) {
+    if (m.optimistic) {
+      return {
+        'id': m.id,
+        'type': 'user',
+        'time': {'created': m.created},
+        'text': '',
+        'optimistic': true,
+      };
+    }
+    final raw = <String, dynamic>{
+      'id': m.id,
+      'type': m.type,
+      'time': {
+        'created': m.created,
+        if (m.completed != null) 'completed': m.completed,
+      },
+    };
+    switch (m.type) {
+      case 'user':
+        raw['text'] = _partText(m, 'text');
+        final files = <Map<String, dynamic>>[];
+        for (final p in m.parts) {
+          if (p.type != 'file') continue;
+          files.add({
+            'uri': p.fileUrl ?? '',
+            if (p.filename != null) 'name': p.filename,
+          });
+        }
+        if (files.isNotEmpty) raw['files'] = files;
+        break;
+      case 'assistant':
+        raw['agent'] = m.agent ?? '';
+        if (m.modelID != null) {
+          raw['model'] = {
+            'id': m.modelID,
+            'providerID': m.modelProvider ?? '',
+          };
+        }
+        raw['content'] = m.parts.map((p) => _partToJson(p)).toList();
+        if (m.finish != null) raw['finish'] = m.finish;
+        if (m.cost != 0) raw['cost'] = m.cost;
+        if (m.error != null) raw['error'] = m.error;
+        break;
+      case 'shell':
+        raw['shellID'] = '';
+        raw['command'] = m.shellCommand ?? '';
+        raw['status'] = m.shellStatus ?? 'running';
+        if (m.shellExit != null) raw['exit'] = m.shellExit;
+        if (m.shellOutput != null && m.shellOutput!.isNotEmpty) {
+          raw['output'] = {
+            'output': m.shellOutput,
+            'cursor': 0,
+            'size': m.shellOutput!.length,
+            'truncated': false,
+          };
+        }
+        break;
+      default:
+        if (m.text != null) raw['text'] = m.text;
+        if (m.description != null) raw['description'] = m.description;
+        if (m.type == 'idle' && m.outcome != null) {
+          raw['outcome'] = m.outcome;
+        }
+    }
+    return raw;
+  }
+
+  static String _partText(DisplayMessage m, String type) {
+    for (final p in m.parts) {
+      if (p.type == type && p.text.isNotEmpty) return p.text;
+    }
+    return '';
+  }
+
+  Map<String, dynamic> _partToJson(DisplayPart p) {
+    if (p.type == 'tool') {
+      final state = <String, dynamic>{
+        'status': p.toolStatus ?? 'running',
+        if (p.toolInput != null) 'input': p.toolInput,
+        if (p.toolMetadata != null) 'metadata': p.toolMetadata,
+      };
+      if (p.toolStatus == 'completed' || p.toolStatus == 'error') {
+        state['content'] = [
+          {'type': 'text', 'text': p.toolOutput ?? ''}
+        ];
+      }
+      if (p.toolStatus == 'error' && p.toolError != null) {
+        state['error'] = {'type': 'error', 'message': p.toolError};
+      }
+      return {
+        'type': 'tool',
+        'id': p.id,
+        'name': p.tool ?? '',
+        'state': state,
+      };
+    }
+    return {
+      'type': p.type,
+      'text': p.text,
+    };
+  }
+
   Future<void> _loadCache() async {
     final cs = cacheStore;
     if (cs == null) return;
     try {
       final raw = await cs.read(_cacheKey);
       if (raw == null || raw.isEmpty) return;
-      // MA-2: 若 async gap 期间已有 SSE 累积，不再用陈旧缓存覆盖。
       if (_messages.isNotEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      // Schema guard: a future incompatible bump (v != 1) drops the cache.
-      // Migrated legacy blobs carry no `v` and load as-is (compatible).
       final v = j['v'];
-      if (v != null && v != 1) return;
+      if (v != null && v != 2) return;
       _loadCacheFromJson(j, terminal: true);
     } catch (e) {
       AppLogger.I.e(_tag, 'loadCache failed: $e');
     }
   }
 
-  /// Restore `_messages` + `_segments` + `_todos` from a cache JSON map.
-  /// Does NOT check the MA-2 guard (caller is responsible). Used by both
-  /// offline fallback ([_loadCache]) and online preheat ([_maybePreheatCache]).
-  ///
-  /// [terminal]（仅离线路径）：流式中途被杀进程 → 离线重启时，无 SSE 也无
-  /// reconcile 会来 settle 这条 finish==null 的半截消息，整段回复将永远停留
-  /// 在流式降级渲染（裸 markdown 文本）。补 'stop' 使其走稳定 Markdown 路径。
-  /// 预热路径必须传 false：session 可能仍在流式，合成 'stop' 会让
-  /// _cachedMessage 把在流消息当 stable 缓存成半截 widget，且 part delta 不
-  /// bump messagesVersion → 屏幕冻在半截文本直到 reconcile 成功。
-  /// 在线恢复后 reconcile/message.updated 的权威 info 会覆盖合成值（若服务端
-  /// 仍在跑，finish 仍为 null → 回到流式降级，行为正确）。
   void _loadCacheFromJson(Map<String, dynamic> j, {bool terminal = false}) {
     _touchMessages();
     final msgs = j['messages'] as List? ?? [];
     _messages.clear();
     for (final m in msgs) {
       final m2 = m as Map<String, dynamic>;
-      final rawInfo = MessageInfo.fromJson(
-          (m2['info'] as Map).cast<String, dynamic>());
-      final info = terminal && rawInfo.role != 'user' && rawInfo.finish == null
-          ? MessageInfo(
-              id: rawInfo.id,
-              role: rawInfo.role,
-              sessionID: rawInfo.sessionID,
-              created: rawInfo.created,
-              completed: rawInfo.completed,
-              cost: rawInfo.cost,
-              modelID: rawInfo.modelID,
-              finish: 'stop',
-              error: rawInfo.error,
-            )
-          : rawInfo;
-      final dm = DisplayMessage(info);
-      for (final p in (m2['parts'] as List? ?? [])) {
-        final p2 = p as Map<String, dynamic>;
-        dm.parts.add(DisplayPart(
-          id: p2['id']?.toString() ?? '',
-          type: p2['type']?.toString() ?? 'text',
-          tool: p2['tool']?.toString(),
-          text: p2['text']?.toString() ?? '',
-          toolStatus: p2['toolStatus']?.toString(),
-          toolTitle: p2['toolTitle']?.toString(),
-          toolOutput: p2['toolOutput']?.toString(),
-          toolError: p2['toolError']?.toString(),
-          toolInput: p2['toolInput'] is Map
-              ? (p2['toolInput'] as Map).cast<String, dynamic>()
-              : null, // MA-5: 补读 toolInput
-          toolMetadata: p2['toolMetadata'] is Map
-              ? (p2['toolMetadata'] as Map).cast<String, dynamic>()
-              : null,
-          command: p2['command']?.toString(),
-          fileMime: p2['fileMime']?.toString(),
-          fileUrl: p2['fileUrl']?.toString(),
-          filename: p2['filename']?.toString(),
-          source: p2['source'] is Map
-              ? (p2['source'] as Map).cast<String, dynamic>()
-              : null,
-        ));
+      if (m2['optimistic'] == true) continue;
+      var raw = m2;
+      if (terminal &&
+          m2['type'] == 'assistant' &&
+          (m2['finish'] == null || (m2['finish'] as String).isEmpty)) {
+        raw = Map<String, dynamic>.of(m2);
+        raw['finish'] = 'stop';
       }
-      _messages.add(dm);
+      final sm = SessionMessage.fromJson(raw);
+      final d = _toDisplay(sm);
+      if (d == null) continue;
+      _messages.add(d);
     }
-    final todos = j['todos'] as List? ?? [];
-    _todos = todos
-        .map((t) => Todo.fromJson((t as Map).cast<String, dynamic>()))
-        .toList();
     final segs = j['segments'] as List? ?? [];
     _segments.clear();
     for (final s in segs) {
@@ -1098,13 +973,10 @@ class ConversationStore extends ChangeNotifier {
         cursor: s2['cursor']?.toString(),
       ));
     }
+    _recomputeTodos();
     if (_messages.isNotEmpty) loaded = true;
   }
 
-  /// Cache preheat: if `sessionUpdated` matches the cached value (no new
-  /// messages since cache), restore cache instantly before reconcile. Avoids
-  /// the loading spinner on restart when the session is unchanged. The
-  /// subsequent reconcile will overlap-merge (no gap, no flash).
   Future<void> _maybePreheatCache() async {
     if (sessionUpdated == null || _messages.isNotEmpty || loaded) return;
     final cs = cacheStore;
@@ -1113,10 +985,8 @@ class ConversationStore extends ChangeNotifier {
       final raw = await cs.read(_cacheKey);
       if (raw == null || raw.isEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      // Schema guard parity with _loadCache: a future incompatible bump
-      // (v != 1) must not be fed into _loadCacheFromJson here.
       final v = j['v'];
-      if (v != null && v != 1) return;
+      if (v != null && v != 2) return;
       final cached = j['cachedSessionUpdated'];
       if (cached != null && cached == sessionUpdated) {
         _loadCacheFromJson(j);
@@ -1127,24 +997,13 @@ class ConversationStore extends ChangeNotifier {
     }
   }
 
-  // ── Draft persistence ──
-
-  /// 仅更新内存草稿（onChanged 高频调用，零 I/O）。不 notifyListeners——
-  /// 草稿变化不应触发整页消息列表重建。
   void setDraft(String text, {bool shell = false}) {
     _draftText = text;
     _draftShell = shell;
   }
 
-  /// 把内存草稿（随整个 `conv_<sessionId>` blob）写盘。
-  /// 离开页 / 发送清除 / 失败回填 / 后台 pause 时调用。
-  /// 复用 _saveCache() 的「整 blob 写」（含 messages/todos，非仅草稿，CD-6），
-  /// 其为直接 unawaited 写（无节流），故仅在低频时机调用（§6 D3）。
   Future<void> persistDraft() => _saveCache();
 
-  /// 仅读 draft/draftShell，忽略 messages/todos。独立于消息缓存早读（CD-1），
-  /// 不受 _loadCache 的 `_messages.isNotEmpty` 守卫约束。公开：由
-  /// ServerStore.ensureConversation 跨库调用（CD-13）。是唯一的草稿读路径。
   Future<void> loadDraftOnly() async {
     if (_draftLoaded) return;
     final cs = cacheStore;
@@ -1160,17 +1019,191 @@ class ConversationStore extends ChangeNotifier {
     } catch (e) {
       AppLogger.I.w(_tag, 'loadDraft failed: $e');
     }
-    _draftLoaded = true; // 即使无缓存也置真（表示「已尝试读」）
-    if (!_disposed) notifyListeners(); // 触发页面 reactive 恢复（§5.3）
+    _draftLoaded = true;
+    if (!_disposed) notifyListeners();
   }
 
-  DisplayMessage _toDisplay(MessageEntry e) {
-    final m = DisplayMessage(e.info);
-    for (final p in e.parts) {
-      if (_shouldHidePart(p.raw)) continue;
-      m.parts.add(DisplayPart.from(p));
+  DisplayMessage? _toDisplay(SessionMessage e) {
+    switch (e) {
+      case UserMessage():
+        final m = DisplayMessage(
+          id: e.id,
+          type: 'user',
+          created: e.created,
+          text: e.text,
+        );
+        m.parts.add(DisplayPart(
+          id: '${e.id}_text',
+          type: 'text',
+          text: e.text,
+        ));
+        var i = 0;
+        for (final f in e.files) {
+          final uri = f.uri;
+          String? mime;
+          if (uri.startsWith('data:')) {
+            final seg = uri.substring(5).split(',').first.split(';').first;
+            mime = seg.isEmpty ? null : seg;
+          }
+          m.parts.add(DisplayPart(
+            id: '${e.id}_file_$i',
+            type: 'file',
+            fileMime: mime,
+            fileUrl: uri,
+            filename: f.name,
+          ));
+          i++;
+        }
+        return m;
+      case AssistantMessage():
+        final m = DisplayMessage(
+          id: e.id,
+          type: 'assistant',
+          created: e.created,
+          completed: e.completed,
+          agent: e.agent,
+          modelID: e.model?.id,
+          modelProvider: e.model?.providerID,
+          finish: e.finish,
+          cost: e.cost,
+          error: e.error?.toJson(),
+        );
+        var ti = 0;
+        var ri = 0;
+        for (final c in e.content) {
+          switch (c) {
+            case TextContent():
+              m.parts.add(DisplayPart(
+                id: '${e.id}_t${ti++}',
+                type: 'text',
+                text: c.text,
+              ));
+            case ReasoningContent():
+              m.parts.add(DisplayPart(
+                id: '${e.id}_r${ri++}',
+                type: 'reasoning',
+                text: c.text,
+              ));
+            case ToolContent():
+              m.parts.add(_toolPart('${e.id}_tool_${c.id}', c));
+          }
+        }
+        return m;
+      case ShellMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'shell',
+          created: e.created,
+          completed: e.completed,
+          shellCommand: e.command,
+          shellStatus: e.status,
+          shellExit: e.exit,
+          shellOutput: e.output,
+        );
+      case SyntheticMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'synthetic',
+          created: e.created,
+          text: e.text,
+          description: e.description,
+        );
+      case SystemMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'system',
+          created: e.created,
+          text: e.text,
+          description: e.description,
+        );
+      case SkillMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'skill',
+          created: e.created,
+          text: e.text,
+          description: e.name,
+        );
+      case CompactionMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'compaction',
+          created: e.created,
+          compactionStatus: e.status,
+          text: e.text,
+        );
+      case IdleMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'idle',
+          created: e.created,
+          outcome: e.outcome,
+        );
+      case AgentSwitchedMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'agent-switched',
+          created: e.created,
+          previousLabel: e.previous,
+          currentLabel: e.agent,
+        );
+      case ModelSwitchedMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'model-switched',
+          created: e.created,
+          previousLabel: e.previous?.id,
+          currentLabel: e.model?.id,
+        );
+      case LocationSwitchedMessage():
+        return DisplayMessage(
+          id: e.id,
+          type: 'location-switched',
+          created: e.created,
+          previousLabel: e.previous,
+          currentLabel: e.directory,
+        );
+      case UnknownMessage():
+        return null;
     }
-    return m;
+  }
+
+  static DisplayPart _toolPart(String partId, ToolContent c) {
+    final state = c.state;
+    String? status;
+    String? output;
+    String? toolError;
+    Map<String, dynamic>? input;
+    Map<String, dynamic>? metadata;
+    switch (state) {
+      case StreamingToolState():
+        status = 'streaming';
+      case RunningToolState():
+        status = 'running';
+        input = state.input;
+        metadata = state.metadata;
+      case CompletedToolState():
+        status = 'completed';
+        input = state.input;
+        metadata = state.metadata;
+        output = _toolContentText(state.content);
+      case ErrorToolState():
+        status = 'error';
+        input = state.input;
+        metadata = state.metadata;
+        output = _toolContentText(state.content);
+        toolError = state.error.message;
+    }
+    return DisplayPart(
+      id: partId,
+      type: 'tool',
+      tool: c.name,
+      toolStatus: status,
+      toolOutput: output,
+      toolError: toolError,
+      toolInput: input,
+      toolMetadata: metadata,
+    );
   }
 
   void setStatus(String s, {String? retryMessage}) {
@@ -1178,9 +1211,6 @@ class ConversationStore extends ChangeNotifier {
     final prevRetry = this.retryMessage;
     status = s;
     if (s == 'retry') {
-      // Preserve the last non-empty message across consecutive retry events:
-      // the server may omit `message` on later attempts, but the session is
-      // still retrying so the banner must not flicker off.
       final next = (retryMessage != null && retryMessage.isNotEmpty)
           ? retryMessage
           : prevRetry;
@@ -1195,196 +1225,358 @@ class ConversationStore extends ChangeNotifier {
 
   void markWorkspaceMissing() {
     if (workspaceMissing) return;
-    // A session whose worktree is gone cannot be busy; settle the status so
-    // the compose bar drops the stop button and busy checks don't keep
-    // reaching for the dead directory.
     setStatus('idle');
     workspaceMissing = true;
     if (!_disposed) notifyListeners();
   }
 
-  /// Recovery path: the session proved reachable again (present in a fresh
-  /// authoritative list — only fetched from reachable directories), e.g.
-  /// the worktree was re-created at the same path, or a transiently
-  /// incomplete worktree list caused a false positive.
   void clearWorkspaceMissing() {
     if (!workspaceMissing) return;
     workspaceMissing = false;
     if (!_disposed) notifyListeners();
   }
 
-  void onMessageUpdated(MessageInfo info) {
-    // When a real user message arrives from SSE, prune optimistic user
-    // messages (the authoritative one replaces the local guess). Before
-    // pruning, bridge the optimistic message's parts onto the authoritative
-    // message so attachments stay visible until the server re-delivers them
-    // via part.updated. onPartUpdated evicts each placeholder 1:1 as the real
-    // part arrives, so no duplicates persist.
-    List<DisplayPart>? bridge;
-    if (info.role == 'user') {
-      final opt = _firstOptimisticUser();
-      if (opt != null) bridge = List<DisplayPart>.of(opt.parts);
-      _pruneOptimistic();
+  void onStepStarted(String mid,
+      {String? agent, ModelRef? model, int? started}) {
+    final msg = _findMessage(mid) ?? _ensureMessage(mid);
+    if (agent != null && agent.isNotEmpty) msg.agent = agent;
+    if (model != null) {
+      msg.modelID = model.id;
+      msg.modelProvider = model.providerID;
     }
-    final existing = _findMessage(info.id);
-    Set<String>? scope;
-    if (existing != null) {
-      _messages.remove(existing);
-      // Preserve retry error from existing message if the new info lacks one.
-      // A retry part may arrive before message.updated, setting the error;
-      // the subsequent message.updated would otherwise overwrite it to null.
-      final resolvedInfo = (info.error == null && existing.info.error != null)
-          ? MessageInfo(
-              id: info.id,
-              role: info.role,
-              sessionID: info.sessionID,
-              created: info.created,
-              completed: info.completed,
-              cost: info.cost,
-              modelID: info.modelID,
-              finish: info.finish,
-              error: existing.info.error,
-            )
-          : info;
-      final recreated = DisplayMessage(resolvedInfo);
-      recreated.parts.addAll(existing.parts);
-      if (bridge != null) _bridgeOptimisticParts(recreated, bridge);
-      _messages.add(recreated);
-      scope = (!_sameInfo(existing.info, resolvedInfo) ||
-              !_sameParts(existing.parts, recreated.parts))
-          ? <String>{info.id}
-          : const <String>{};
-    } else {
-      final m = DisplayMessage(info);
-      if (bridge != null) _bridgeOptimisticParts(m, bridge);
-      _messages.add(m);
-      scope = <String>{info.id};
-    }
-    _sort(scope);
-    // 消息完成即异步落盘（off-screen conv 也覆盖，因 ensureConversation 会
-    // 创建 conv）。非 per-token，频率低。
-    if (info.role == 'user' || (info.finish != null && info.finish!.isNotEmpty)) {
-      unawaited(_saveCache());
-    }
+    if (msg.finish != null) msg.finish = null;
     notifyListeners();
   }
 
-  void onPartUpdated(Map<String, dynamic> partRaw, String? delta) {
-    final p = MessagePart(partRaw);
-    final mid = p.raw['messageID']?.toString();
-    if (mid == null) return;
+  void _onContentDelta(
+      String mid, String kind, int ordinal, String? delta, String? text) {
+    final partId = kind == 'text' ? '${mid}_t$ordinal' : '${mid}_r$ordinal';
     final msg = _findMessage(mid) ?? _ensureMessage(mid);
-    // Retry parts carry the API error but are hidden from the parts list.
-    // Propagate the error to the parent message so the UI can display it.
-    if (p.type == 'retry') {
-      final retryError = p.raw['error'];
-      if (retryError is Map && retryError.isNotEmpty && msg.info.error == null) {
-        final old = msg.info;
-        final newInfo = MessageInfo(
-          id: old.id,
-          role: old.role,
-          sessionID: old.sessionID,
-          created: old.created,
-          completed: old.completed,
-          cost: old.cost,
-          modelID: old.modelID,
-          finish: old.finish,
-          error: retryError.cast<String, dynamic>(),
-        );
-        _messages.remove(msg);
-        final newMsg = DisplayMessage(newInfo, optimistic: msg.optimistic);
-        newMsg.parts.addAll(msg.parts);
-        _messages.add(newMsg);
-        _sort(<String>{mid});
-        notifyListeners();
-      }
-      return;
-    }
+    var idx = msg.parts.indexWhere((x) => x.id == partId);
     DisplayPart dp;
-    final idx = msg.parts.indexWhere((x) => x.id == p.id);
     if (idx == -1) {
-      // Insert only renderable part types; skip hidden ones and synthetic text.
-      if (_shouldHidePart(p.raw)) return;
-      dp = DisplayPart.from(p);
-      if (!p.id.startsWith(optimisticPartPrefix)) {
-        // Replace one optimistic placeholder of the same type IN PLACE (FIFO):
-        // the authoritative part takes the placeholder's slot, preserving the
-        // order established by the optimistic message (text→file) regardless of
-        // the order the server emits message.part.updated events.
-        final ph = msg.parts
-            .indexWhere((x) => _isPlaceholderPart(x) && x.type == p.type);
-        if (ph != -1) {
-          msg.parts[ph] = dp;
-        } else {
-          msg.parts.add(dp);
-        }
-      } else {
+      dp = DisplayPart(id: partId, type: kind);
+      final lastSame = msg.parts.lastIndexWhere((x) => x.type == kind);
+      if (lastSame == -1) {
         msg.parts.add(dp);
+      } else {
+        msg.parts.insert(lastSame + 1, dp);
       }
     } else {
       dp = msg.parts[idx];
     }
-    switch (p.type) {
-      case 'tool':
-        if (p.tool != null) dp.tool = p.tool;
-        if (p.stateStatus != null) dp.toolStatus = p.stateStatus;
-        if (p.stateTitle != null && p.stateTitle!.isNotEmpty) {
-          dp.toolTitle = p.stateTitle;
-        }
-        if (p.stateOutput != null) dp.toolOutput = p.stateOutput;
-        final toolError = _extractToolError(p.state?['error']);
-        if (toolError != null) dp.toolError = toolError;
-        if (p.state?['input'] is Map) {
-          dp.toolInput = (p.state!['input'] as Map).cast<String, dynamic>();
-        }
-        if (p.state?['metadata'] is Map) {
-          dp.toolMetadata =
-              (p.state!['metadata'] as Map).cast<String, dynamic>();
-        }
-        break;
-      case 'text':
-      case 'reasoning':
-        if (delta != null && delta.isNotEmpty) {
-          dp.text += delta;
-        } else if ((p.text ?? '').isNotEmpty) {
-          dp.text = p.text!;
-        }
-        break;
-      case 'subtask':
-        final prompt = p.raw['prompt']?.toString() ?? '';
-        if (prompt.isNotEmpty) {
-          dp.text = prompt;
-        } else if (delta != null && delta.isNotEmpty) {
-          dp.text += delta;
-        } else if ((p.text ?? '').isNotEmpty) {
-          dp.text = p.text!;
-        }
-        break;
+    if (delta != null && delta.isNotEmpty) {
+      dp.text += delta;
+    } else if (text != null && text.isNotEmpty) {
+      dp.text = text;
     }
-    // No _touchMessages() here for STREAMING messages (finish==null): in-place
-    // part mutations (text/tool/reasoning deltas) are visible through the
-    // cached renderableMessages refs without a version bump. Bumping per token
-    // would clear the detail screen's widget cache every token, defeating its
-    // identity short-circuit. Structural changes (new message via
-    // _ensureMessage→_sort; retry-error replacement→_sort) still bump.
-    //
-    // CACHEABLE messages (user / finished assistant) DO get an id-scoped bump:
-    // their widget IS cached, and part mutations (placeholder eviction, late
-    // tool output) would otherwise leave the cached widget stale forever under
-    // granular invalidation (previously any version bump's full clear fixed it).
-    // Low frequency (never per-token streams), so the cost is one message
-    // rebuild per event.
-    final cacheable = msg.info.role == 'user' ||
-        (msg.info.finish != null && msg.info.finish!.isNotEmpty);
-    if (cacheable) {
-      _touchMessages(<String>{mid});
+    _previewableTouch(msg);
+    notifyListeners();
+  }
+
+  void onTextStarted(String mid, int ordinal) =>
+      _onContentDelta(mid, 'text', ordinal, null, null);
+
+  void onTextDelta(String mid, int ordinal, String delta) =>
+      _onContentDelta(mid, 'text', ordinal, delta, null);
+
+  void onTextEnded(String mid, int ordinal, String text) =>
+      _onContentDelta(mid, 'text', ordinal, null, text);
+
+  void onReasoningStarted(String mid, int ordinal) =>
+      _onContentDelta(mid, 'reasoning', ordinal, null, null);
+
+  void onReasoningDelta(String mid, int ordinal, String delta) =>
+      _onContentDelta(mid, 'reasoning', ordinal, delta, null);
+
+  void onReasoningEnded(String mid, int ordinal, String text) =>
+      _onContentDelta(mid, 'reasoning', ordinal, null, text);
+
+  void onToolInputStarted(String mid, String callId, String name) {
+    final partId = '${mid}_tool_$callId';
+    final msg = _findMessage(mid) ?? _ensureMessage(mid);
+    var idx = msg.parts.indexWhere((x) => x.id == partId);
+    if (idx == -1) {
+      msg.parts.add(DisplayPart(
+        id: partId,
+        type: 'tool',
+        tool: name,
+        toolStatus: 'streaming',
+      ));
+    } else {
+      msg.parts[idx].tool = name;
+      msg.parts[idx].toolStatus = 'streaming';
     }
     notifyListeners();
   }
 
-  void onTodosUpdated(List<Todo> todos) {
-    _todos = todos;
+  void onToolInputDelta(String mid, String callId, String delta) {
+    final partId = '${mid}_tool_$callId';
+    final msg = _findMessage(mid);
+    if (msg == null) return;
+    final idx = msg.parts.indexWhere((x) => x.id == partId);
+    if (idx == -1) return;
+    final dp = msg.parts[idx];
+    dp.toolStatus = 'streaming';
+    final cur = dp.command ?? '';
+    dp.command = cur + delta;
     notifyListeners();
+  }
+
+  void onToolInputEnded(String mid, String callId, String text) {
+    final partId = '${mid}_tool_$callId';
+    final msg = _findMessage(mid);
+    if (msg == null) return;
+    final idx = msg.parts.indexWhere((x) => x.id == partId);
+    if (idx == -1) return;
+    final dp = msg.parts[idx];
+    dp.command = text;
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        dp.toolInput = decoded.cast<String, dynamic>();
+        dp.command = null;
+      }
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  void onToolCalled(String mid, String callId, Map<String, dynamic>? input,
+      bool? executed) {
+    final partId = '${mid}_tool_$callId';
+    final msg = _findMessage(mid) ?? _ensureMessage(mid);
+    var idx = msg.parts.indexWhere((x) => x.id == partId);
+    DisplayPart dp;
+    if (idx == -1) {
+      dp = DisplayPart(id: partId, type: 'tool', toolStatus: 'running');
+      msg.parts.add(dp);
+    } else {
+      dp = msg.parts[idx];
+    }
+    if (input != null && input.isNotEmpty) dp.toolInput = input;
+    dp.toolStatus = 'running';
+    if (dp.tool == 'todowrite') _recomputeTodos();
+    notifyListeners();
+  }
+
+  void onToolProgress(String mid, String callId, Map<String, dynamic>? metadata) {
+    final partId = '${mid}_tool_$callId';
+    final msg = _findMessage(mid);
+    if (msg == null) return;
+    final idx = msg.parts.indexWhere((x) => x.id == partId);
+    if (idx == -1) return;
+    if (metadata != null && metadata.isNotEmpty) {
+      msg.parts[idx].toolMetadata = metadata;
+    }
+    notifyListeners();
+  }
+
+  void onToolSuccess(String mid, String callId, List<ToolContentItem> content) {
+    _setToolCompleted(mid, callId, 'completed', output: _toolContentText(content));
+  }
+
+  void onToolFailed(String mid, String callId, Map<String, dynamic> error,
+      {List<ToolContentItem>? content}) {
+    final msg = error['message']?.toString() ?? error.toString();
+    _setToolCompleted(mid, callId, 'error',
+        output: content == null ? null : _toolContentText(content),
+        error: msg);
+  }
+
+  void _setToolCompleted(String mid, String callId, String status,
+      {String? output, String? error}) {
+    final partId = '${mid}_tool_$callId';
+    final msg = _findMessage(mid);
+    if (msg == null) return;
+    final idx = msg.parts.indexWhere((x) => x.id == partId);
+    if (idx == -1) return;
+    final dp = msg.parts[idx];
+    dp.toolStatus = status;
+    if (output != null && output.isNotEmpty) dp.toolOutput = output;
+    if (error != null && error.isNotEmpty) dp.toolError = error;
+    if (dp.tool == 'todowrite') _recomputeTodos();
+    _previewableTouch(msg);
+    notifyListeners();
+  }
+
+  void onStepEnded(String mid,
+      {String? finish,
+      String? rawFinish,
+      double? cost,
+      Tokens? tokens}) {
+    final msg = _findMessage(mid);
+    if (msg == null) return;
+    if (finish != null) msg.finish = finish;
+    if (cost != null) msg.cost = cost;
+    _recomputeTodos();
+    _touchMessages(<String>{mid});
+    unawaited(_saveCache());
+    notifyListeners();
+  }
+
+  void onStepFailed(String mid, Map<String, dynamic> error, {String? finish}) {
+    final msg = _findMessage(mid);
+    if (msg == null) return;
+    msg.finish = finish ?? 'error';
+    msg.error = error;
+    _touchMessages(<String>{mid});
+    notifyListeners();
+  }
+
+  void onMessageContentUpdated(String mid, List<AssistantContent> content) {
+    final existing = _findMessage(mid);
+    if (existing == null) {
+      final sm = AssistantMessage(
+        id: mid,
+        raw: {
+          'id': mid,
+          'type': 'assistant',
+          'time': {'created': DateTime.now().millisecondsSinceEpoch},
+          'agent': '',
+          'model': null,
+          'content': [for (final c in content) c],
+        },
+        created: DateTime.now().millisecondsSinceEpoch,
+        agent: '',
+        model: null,
+        content: content,
+      );
+      final d = _toDisplay(sm);
+      if (d != null) {
+        _messages.add(d);
+        _sort(<String>{mid});
+      }
+    } else {
+      final authoritative = <DisplayPart>[];
+      var ti = 0;
+      var ri = 0;
+      for (final c in content) {
+        switch (c) {
+          case TextContent():
+            authoritative.add(DisplayPart(
+              id: '${mid}_t${ti++}',
+              type: 'text',
+              text: c.text,
+            ));
+          case ReasoningContent():
+            authoritative.add(DisplayPart(
+              id: '${mid}_r${ri++}',
+              type: 'reasoning',
+              text: c.text,
+            ));
+          case ToolContent():
+            authoritative.add(_toolPart('${mid}_tool_${c.id}', c));
+        }
+      }
+      existing.parts
+        ..clear()
+        ..addAll(_mergeParts(authoritative, existing.parts));
+      _touchMessages(<String>{mid});
+    }
+    _recomputeTodos();
+    notifyListeners();
+  }
+
+  void onInboxEnqueued(String inboxId, Map<String, dynamic> item) {
+    if (item['type'] != 'user') return;
+    final payload =
+        (item['payload'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final text = payload['text']?.toString() ?? '';
+    final files = (payload['files'] as List? ?? [])
+        .whereType<Map>()
+        .map((e) => FileAttachment.fromJson(e.cast<String, dynamic>()))
+        .toList();
+    final sm = UserMessage(
+      id: inboxId,
+      raw: {
+        'id': inboxId,
+        'type': 'user',
+        'time': {'created': DateTime.now().millisecondsSinceEpoch},
+        'text': text,
+        'files': [for (final f in files) f.toJson()],
+      },
+      created: DateTime.now().millisecondsSinceEpoch,
+      text: text,
+      files: files,
+    );
+    onUserMessageArrived(sm);
+  }
+
+  void onUserMessageArrived(UserMessage user) {
+    List<DisplayPart>? bridge;
+    final opt = _firstOptimisticUser();
+    if (opt != null) bridge = List<DisplayPart>.of(opt.parts);
+    _pruneOptimistic();
+    final existing = _findMessage(user.id);
+    if (existing != null) {
+      _messages.remove(existing);
+    }
+    final d = _toDisplay(user);
+    if (d == null) return;
+    if (bridge != null) _bridgeOptimisticParts(d, bridge);
+    _messages.add(d);
+    _sort(<String>{user.id});
+    unawaited(_saveCache());
+    notifyListeners();
+  }
+
+  void onRetryScheduled(String? mid, int attempt, Map<String, dynamic> error) {
+    final message = error['message']?.toString();
+    setStatus('retry', retryMessage: message);
+    if (mid != null) {
+      final msg = _findMessage(mid);
+      if (msg != null &&
+          msg.error == null &&
+          message != null &&
+          message.isNotEmpty) {
+        msg.error = error;
+        _touchMessages(<String>{mid});
+        notifyListeners();
+      }
+    }
+  }
+
+  void onExecutionSettled(String outcome) {
+    setStatus('idle');
+  }
+
+  void _previewableTouch(DisplayMessage msg) {
+    final cacheable =
+        msg.type != 'assistant' || (msg.finish != null && msg.finish!.isNotEmpty);
+    if (cacheable) {
+      _touchMessages(<String>{msg.id});
+    }
+  }
+
+  void _recomputeTodos() {
+    List<Todo>? latest;
+    for (final m in _messages) {
+      if (m.type != 'assistant') continue;
+      for (final p in m.parts) {
+        if (p.type != 'tool' || p.tool != 'todowrite') continue;
+        final input = p.toolInput;
+        if (input == null) continue;
+        if (input['todos'] is List) {
+          latest = (input['todos'] as List)
+              .whereType<Map>()
+              .map((e) => Todo.fromJson(e.cast<String, dynamic>()))
+              .toList();
+        }
+      }
+    }
+    final old = _todos;
+    final next = latest ?? const <Todo>[];
+    if (old.length != next.length) {
+      _todos = next;
+      return;
+    }
+    for (var i = 0; i < old.length; i++) {
+      if (old[i].content != next[i].content ||
+          old[i].status != next[i].status) {
+        _todos = next;
+        return;
+      }
+    }
   }
 
   void onPermission(Permission p) {
@@ -1392,17 +1584,13 @@ class ConversationStore extends ChangeNotifier {
     if (idx == -1) {
       _permissions.add(p);
     } else {
-      // Idempotent re-inject (SSE echo + REST backfill both feed this):
-      // replacing with an identical instance still rebuilds the detail page;
-      // skip only when id/type/patterns/metadata are all unchanged
-      // (metadata drives externalDirectoryPath for the card title).
       final old = _permissions[idx];
-      if (old.type == p.type &&
+      if (old.action == p.action &&
           old.sessionID == p.sessionID &&
           _eqMetadata(old.metadata, p.metadata) &&
-          old.patterns.length == p.patterns.length &&
-          old.patterns.asMap().entries
-              .every((e) => p.patterns[e.key] == e.value)) {
+          old.resources.length == p.resources.length &&
+          old.resources.asMap().entries
+              .every((e) => p.resources[e.key] == e.value)) {
         return;
       }
       _permissions[idx] = p;
@@ -1417,9 +1605,6 @@ class ConversationStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 浅层比较 permission metadata（mapEquals，与 _renderEquivalent 同模式）。
-  /// 值为嵌套 map/list 时按引用比较——两处来源反序列化同一服务端对象，
-  /// 深比较无必要。
   bool _eqMetadata(Map<String, dynamic>? a, Map<String, dynamic>? b) {
     if (identical(a, b)) return true;
     if (a == null || b == null) return false;
@@ -1427,10 +1612,6 @@ class ConversationStore extends ChangeNotifier {
   }
 
   Future<void> respondPermission(Permission p, String response) async {
-    // 回复端点用卡自身的 sessionID 而非本 conv 的：subagent 权限卡由
-    // 父会话 conv 承载，但服务端 pending 挂在子会话名下——session 作用域
-    // 路由按 sessionID 解析 instance 后按 requestID 命中，子会话与父会话
-    // 同 directory，二者等价；用卡自身 id 语义精确。
     final cardSid = p.sessionID.isNotEmpty ? p.sessionID : sessionId;
     AppLogger.I.i(_tag,
         'respondPermission sid=$sessionId cardSid=$cardSid pid=${p.id} resp=$response dir=$directory');
@@ -1440,77 +1621,67 @@ class ConversationStore extends ChangeNotifier {
     } on DioException catch (e) {
       final code = e.response?.statusCode;
       AppLogger.I.e(_tag, 'respondPermission POST err pid=${p.id} status=$code body=${e.response?.data}');
-      // 404 = already resolved (e.g. accepted on another device) — remove locally.
       if (code != 404) throw OperationException('回复权限', cause: e);
     }
     onPermissionResolved?.call(p.id);
     onPermissionReplied(p.id);
   }
 
-  void onQuestion(QuestionRequest q) {
-    final idx = _questions.indexWhere((x) => x.id == q.id);
+  void onForm(FormInfo f) {
+    final idx = _forms.indexWhere((x) => x.id == f.id);
     if (idx == -1) {
-      _questions.add(q);
+      if (!f.pending) return;
+      _forms.add(f);
     } else {
-      // Idempotent re-inject (same rationale as onPermission): an identical
-      // replace must not rebuild the detail page. Element-wise comparison —
-      // a same-id re-ask with changed options must still surface.
-      final old = _questions[idx];
-      if (old.sessionID == q.sessionID && old.questions == q.questions) {
+      if (!f.pending) {
+        _forms.removeAt(idx);
+        notifyListeners();
         return;
       }
-      _questions[idx] = q;
+      final old = _forms[idx];
+      if (old == f) return;
+      _forms[idx] = f;
     }
-    AppLogger.I.i(_tag, 'onQuestion qid=${q.id} sid=${q.sessionID} op=${idx == -1 ? "add" : "replace"} → count=${_questions.length}');
+    AppLogger.I.i(_tag, 'onForm fid=${f.id} sid=${f.sessionID} op=${idx == -1 ? "add" : "replace"} → count=${_forms.length}');
     notifyListeners();
   }
 
-  void onQuestionReplied(String questionId) {
-    AppLogger.I.i(_tag, 'onQuestionReplied qid=$questionId → removed, count was=${_questions.length}');
-    _questions.removeWhere((q) => q.id == questionId);
+  void onFormReplied(String formId) {
+    AppLogger.I.i(_tag, 'onFormReplied fid=$formId → removed, count was=${_forms.length}');
+    _forms.removeWhere((f) => f.id == formId);
     notifyListeners();
   }
 
-  Future<void> replyQuestion(QuestionRequest q, List<List<String>> answers) async {
-    if (directory.isEmpty) {
-      AppLogger.I.w(_tag, 'replyQuestion aborted: directory not ready qid=${q.id} sid=$sessionId');
-      // 不发请求、不移除卡片；UI catch 弹 SnackBar，待 session 加载后重试。
-      throw const KnownError(FriendlyErrorKind.sessionNotReady);
-    }
-    AppLogger.I.i(_tag, 'replyQuestion sid=$sessionId qid=${q.id} dir=$directory answers=$answers');
+  Future<void> replyForm(FormInfo form, Map<String, dynamic> answers) async {
+    AppLogger.I.i(_tag, 'replyForm sid=$sessionId fid=${form.id} answers=$answers');
     try {
-      await client.replyQuestion(q.id, directory, answers);
-      AppLogger.I.i(_tag, 'replyQuestion POST ok qid=${q.id}');
+      await client.replyForm(sessionId, form.id, answers);
+      AppLogger.I.i(_tag, 'replyForm POST ok fid=${form.id}');
     } on DioException catch (e) {
       final code = e.response?.statusCode;
-      AppLogger.I.e(_tag, 'replyQuestion POST err qid=${q.id} status=$code body=${e.response?.data}');
+      AppLogger.I.e(_tag, 'replyForm POST err fid=${form.id} status=$code body=${e.response?.data}');
       if (code != 404) throw OperationException('回复问题', cause: e);
     }
-    onQuestionResolved?.call(q.id);
-    onQuestionReplied(q.id);
+    onQuestionResolved?.call(form.id);
+    onFormReplied(form.id);
   }
 
-  Future<void> rejectQuestion(QuestionRequest q) async {
-    if (directory.isEmpty) {
-      AppLogger.I.w(_tag, 'rejectQuestion aborted: directory not ready qid=${q.id} sid=$sessionId');
-      throw const KnownError(FriendlyErrorKind.sessionNotReady);
-    }
-    AppLogger.I.i(_tag, 'rejectQuestion sid=$sessionId qid=${q.id} dir=$directory');
+  Future<void> cancelForm(FormInfo form) async {
+    AppLogger.I.i(_tag, 'cancelForm sid=$sessionId fid=${form.id}');
     try {
-      await client.rejectQuestion(q.id, directory);
-      AppLogger.I.i(_tag, 'rejectQuestion POST ok qid=${q.id}');
+      await client.cancelForm(sessionId, form.id);
+      AppLogger.I.i(_tag, 'cancelForm DELETE ok fid=${form.id}');
     } on DioException catch (e) {
       final code = e.response?.statusCode;
-      AppLogger.I.e(_tag, 'rejectQuestion POST err qid=${q.id} status=$code body=${e.response?.data}');
-      if (code != 404) throw OperationException('拒绝问题', cause: e);
+      if (code != 404) throw OperationException('取消问题', cause: e);
     }
-    onQuestionResolved?.call(q.id);
-    onQuestionReplied(q.id);
+    onQuestionResolved?.call(form.id);
+    onFormReplied(form.id);
   }
 
   DisplayMessage? _findMessage(String id) {
     for (final m in _messages) {
-      if (m.info.id == id) return m;
+      if (m.id == id) return m;
     }
     return null;
   }
@@ -1518,21 +1689,12 @@ class ConversationStore extends ChangeNotifier {
   DisplayMessage _ensureMessage(String id) {
     final found = _findMessage(id);
     if (found != null) return found;
-    // Placeholder must sort after all existing messages: lastMessagePreview()
-    // reads _messages.last, so the streaming assistant must be last. Don't use
-    // DateTime.now() (client clock) — it can sort before a server-stamped user
-    // message when the client lags the server, jumping the preview back to the
-    // user message (design §1.6). message.updated later replaces this with the
-    // server created, which always sorts after the user (server clock).
-    final maxCreated = _messages.fold<int>(0, (a, m) {
-      final c = m.info.created ?? 0;
-      return c > a ? c : a;
-    });
-    final m = DisplayMessage(MessageInfo(
+    final maxCreated = _messages.fold<int>(0, (a, m) => a > m.created ? a : m.created);
+    final m = DisplayMessage(
       id: id,
-      role: 'assistant',
+      type: 'assistant',
       created: maxCreated + 1,
-    ));
+    );
     _messages.add(m);
     _sort(const <String>{});
     return m;
@@ -1540,7 +1702,7 @@ class ConversationStore extends ChangeNotifier {
 
   void _sort([Set<String>? changedIds]) {
     _touchMessages(changedIds);
-    _messages.sort((a, b) => (a.info.created ?? 0).compareTo(b.info.created ?? 0));
+    _messages.sort((a, b) => a.created.compareTo(b.created));
   }
 
   @visibleForTesting
@@ -1549,17 +1711,11 @@ class ConversationStore extends ChangeNotifier {
   @visibleForTesting
   Future<void> loadCacheForTest() async => _loadCache();
 
-  /// Test seam：走在线预热路径恢复缓存（finish==null 保持，JANK-4 R2-1）。
-  /// 需先置好 sessionUpdated 与缓存的 cachedSessionUpdated 一致。
   @visibleForTesting
   Future<void> preheatCacheForTest() async => _maybePreheatCache();
 
   @visibleForTesting
-  static bool shouldHidePartForTest(Map<String, dynamic> raw) =>
-      _shouldHidePart(raw);
-
-  @visibleForTesting
-  DisplayMessage toDisplayForTest(MessageEntry e) => _toDisplay(e);
+  DisplayMessage? toDisplayForTest(SessionMessage e) => _toDisplay(e);
 
   @visibleForTesting
   static bool isEmptyUserForTest(DisplayMessage m) => _isEmptyUser(m);

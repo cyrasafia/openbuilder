@@ -10,6 +10,8 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'v2_test_fixtures.dart';
+
 /// Regression lock for the back-to-turn-top button never appearing.
 ///
 /// Root cause (pre-fix): `_heightCache` was populated ONLY via
@@ -26,19 +28,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// must be visible. Without the fix the height cache stays empty and the
 /// button stays hidden (opacity 0 / IgnorePointer ignoring).
 class _MockClient extends OpencodeClient {
-  final List<MessageEntry> entries;
+  final List<SessionMessage> entries;
   _MockClient(this.entries) : super(_noopDio());
 
   @override
   Future<MessagesPage> messagesPage(
     String sessionId, {
     required int limit,
-    String? before,
+    String? cursor,
   }) async =>
-      MessagesPage(entries, null);
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
+      MessagesPage(entries, null, null);
 }
 
 Dio _noopDio() => Dio(
@@ -51,7 +50,7 @@ Dio _noopDio() => Dio(
 Future<void> _pumpConversation(
   WidgetTester tester, {
   required String sessionId,
-  required List<MessageEntry> entries,
+  required List<SessionMessage> entries,
 }) async {
   SharedPreferences.setMockInitialValues({});
   serverStore.client = _MockClient(entries);
@@ -120,28 +119,12 @@ void main() {
         (i) => 'line $i of the long assistant reply',
       ).join('\n\n');
       final entries = [
-        MessageEntry(
-          info: MessageInfo(
-            id: 'u1',
-            role: 'user',
-            sessionID: sid,
-            created: 1000,
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pu1', 'text': 'question'}),
-          ],
-        ),
-        MessageEntry(
-          info: MessageInfo(
-            id: 'a1',
-            role: 'assistant',
-            sessionID: sid,
-            created: 2000,
-            finish: 'stop',
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pa1', 'text': longText}),
-          ],
+        userMsg(id: 'u1', text: 'question', created: 1000),
+        assistantMsg(
+          id: 'a1',
+          created: 2000,
+          content: [textPart(longText)],
+          finish: 'stop',
         ),
       ];
       await _pumpConversation(tester, sessionId: sid, entries: entries);
@@ -188,28 +171,12 @@ void main() {
       // so the button must stay hidden. Guards against an over-eager fix that
       // shows the button regardless of the >=2-screen / top-out conditions.
       final entries = [
-        MessageEntry(
-          info: MessageInfo(
-            id: 'u1',
-            role: 'user',
-            sessionID: sid,
-            created: 1000,
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pu1', 'text': 'question'}),
-          ],
-        ),
-        MessageEntry(
-          info: MessageInfo(
-            id: 'a1',
-            role: 'assistant',
-            sessionID: sid,
-            created: 2000,
-            finish: 'stop',
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pa1', 'text': 'short reply'}),
-          ],
+        userMsg(id: 'u1', text: 'question', created: 1000),
+        assistantMsg(
+          id: 'a1',
+          created: 2000,
+          content: [textPart('short reply')],
+          finish: 'stop',
         ),
       ];
       await _pumpConversation(tester, sessionId: sid, entries: entries);

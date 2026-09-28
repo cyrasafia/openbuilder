@@ -28,22 +28,24 @@ void main() {
       properties: {
         'id': 'perm-1',
         'sessionID': 'session-1',
-        'permission': 'bash',
+        'action': 'bash',
       },
     ));
     store.onEventForTesting(const OpencodeEvent(
-      type: 'question.asked',
+      type: 'form.created',
       properties: {
-        'id': 'question-1',
-        'sessionID': 'session-1',
-        'questions': [],
+        'form': {
+          'id': 'question-1',
+          'sessionID': 'session-1',
+          'title': 'proceed?',
+          'fields': [],
+        },
       },
     ));
     store.onEventForTesting(const OpencodeEvent(
-      type: 'session.status',
+      type: 'session.execution.started',
       properties: {
         'sessionID': 'session-1',
-        'status': {'type': 'busy'},
       },
     ));
 
@@ -62,8 +64,8 @@ void main() {
     expect(state.pendingCount, 1);
 
     store.onEventForTesting(const OpencodeEvent(
-      type: 'question.replied',
-      properties: {'sessionID': 'session-1', 'requestID': 'question-1'},
+      type: 'form.replied',
+      properties: {'sessionID': 'session-1', 'id': 'question-1'},
     ));
     state = store.agentIndicatorStateOf('session-1');
     expect(state.state, AgentRunState.working);

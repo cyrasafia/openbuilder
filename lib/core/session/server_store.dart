@@ -23,17 +23,13 @@ const _tag = 'Server';
 
 /// Live, per-active-server state: projects / sessions / status / latest-message
 /// preview, plus lazy per-session [ConversationStore] caches. Fed by the single
-/// global SSE stream `GET /global/event` (specs §5, frontend §2.2).
+/// global SSE stream `GET /api/event` (v2 contract; envelope `location.directory`
+/// routes events client-side, session-scoped events route by `data.sessionID`).
 class ServerStore extends ChangeNotifier {
   @visibleForTesting
   static Duration sseStopTimeout = const Duration(seconds: 2);
 
   OpencodeClient? client;
-  /// Single global SSE stream: `GET /global/event` (GlobalBus, server ≥
-  /// v1.0.66) carries every directory's events in one connection; the envelope
-  /// `directory` routes/filters them client-side (`_onGlobalEvent` gate).
-  /// Connection lifecycle is decoupled from the open-session set — see
-  /// design-sse-global-event.md.
   SseClient? _sse;
   StreamSubscription<GlobalOpencodeEvent>? _sseSub;
   StreamSubscription<SseState>? _sseStateSub;
@@ -45,137 +41,61 @@ class ServerStore extends ChangeNotifier {
   Future<void>? _pauseOperation;
   bool _foreground = true;
   int _healthProbeGeneration = 0;
-  // Health probe interval while the global SSE is reconnecting. Each tick
-  // is one cheap GET /global/health; on success the client is kicked out
-  // of backoff. 5s bounds recovery detection (vs the 30s backoff ceiling)
-  // while staying negligible for battery/traffic during long outages.
   @visibleForTesting
   static Duration healthProbeInterval = const Duration(seconds: 5);
   DateTime? _lastPreviewNotifyAt;
   static const _previewNotifyInterval = Duration(milliseconds: 120);
   ConnectionProfile? _profile;
-  // Profile-scoped cache backend. Rebuilt on connect() per profile.id; null
-  // after disconnect(). Shared with ConversationStore (conv cache lives under
-  // the same per-profile directory).
   CacheStore? _cacheStore;
 
   static const kMaxRefreshInterval = Duration(seconds: 30);
   DateTime? _lastFullRefreshAt;
 
-  // ── Self-healing state ──
   String? _activeSessionId;
   bool _needsStaleMarking = false;
   String? _resumeReloadedSessionId;
 
-  /// Pending permissions keyed by sessionId (fed by SSE + REST backfill).
   final Map<String, Permission> _pendingPermissions = {};
 
-  /// Pending questions keyed by questionId (fed by SSE + REST backfill).
-  final Map<String, QuestionRequest> _pendingQuestions = {};
+  final Map<String, FormInfo> _pendingForms = {};
 
-  /// Dedup guard: overlapping backfill runs (connect + reconcile, both tabs'
-  /// periodic refresh) would race their snapshots — a slower older run must
-  /// not overwrite a newer one's swap.
   bool _backfillInFlight = false;
 
-  /// A trigger that arrived while [_backfillInFlight] — the run coalesces into
-  /// exactly one re-run afterwards, so a late trigger isn't dropped until the
-  /// next reconnect/resume/refresh.
   bool _backfillDirty = false;
 
-  /// 近期已解决的 question id → 登记时刻。reply/reject 命中 200 或 404 后
-  /// 由 ConversationStore.onQuestionResolved 登记于此；backfill 重建 pending
-  /// 时跳过未过期项，避免服务端列表清理延迟导致的「提交后又弹回」。
-  /// TTL 过期后若服务端仍返回该卡（说明真没解决）再放出来（关键设计决策 4）。
-  final Map<String, DateTime> _recentlyResolvedQuestions = {};
+  final Map<String, DateTime> _recentlyResolvedForms = {};
 
-  /// 近期已解决的 permission id → 登记时刻（同上，覆盖权限卡）。
   final Map<String, DateTime> _recentlyResolvedPermissions = {};
   static const _resolvedTtl = Duration(seconds: 60);
 
   List<ProjectModel> _projects = [];
   List<SessionModel> _sessions = [];
-  /// Subagent 子会话（`parentID` 非空）by id。SSE `session.created` 到达时
-  /// 登记（design-subagent-status §D3 降级路径的数据源）。REST
-  /// `_fetchAllSessions` 不返回它们，列表 UI 也不展示——仅用于
-  /// [findChildSession] 启发式匹配与 [ensureConversation] 的容器上限豁免
-  /// 判定。上限 [_kMaxChildSessions]：server `subagent_depth` 默认 1，
-  /// 正常一次主会话只挂十几个子会话，超出时按到达顺序淘汰（权威路径
-  /// metadata.sessionId 不受影响）。
   final Map<String, SessionModel> _childSessions = {};
   static const _kMaxChildSessions = 64;
   final Map<String, SessionStatusValue> _statusMap = {};
-  /// Sessions currently known to be ghosts (worktree directory gone). Tracked
-  /// separately from `_statusMap` (where they settle to a plain `idle`) so a
-  /// `ConversationStore` recreated after LRU eviction still gets the
-  /// workspace-missing flag re-applied via [ensureConversation]. Pruned when
-  /// a session reappears in an authoritative fetch, cleared on disconnect.
   final Set<String> _ghostSessionIds = {};
   final Map<String, String> _lastMessage = {};
-  /// Monotonic max(`SessionModel.updated`) per project activity key — includes
-  /// sessions that have since been archived. `/session` does not expose
-  /// archived sessions over HTTP, so we capture `updated` while a session is
-  /// still visible and keep it after archive. Without this, archiving the last
-  /// active session in a project would evict it from `_sessions` and sink the
-  /// project to the bottom of the projects tab. Keyed by `projectID`, or
-  /// `'global\u0000$directory'` for the global project's per-directory entries
-  /// (the global project is expanded into one list row per working directory).
-  ///
-  /// Unbounded in theory (one entry per projectID / per global directory ever
-  /// seen), but acceptable on mobile: typical servers have tens of projects
-  /// and a handful of global directories, so the map stays in the low hundreds
-  /// of entries at most. Hard-deleting a session does NOT remove its project's
-  /// entry (see `_removeSession`) — monotonicity holds across deletes too.
   final Map<String, int> _lastActivityByKey = {};
   final Map<String, bool> _workspaceEnabled = {};
-  /// Worktree directories with an in-flight [removeWorktree] (non-blocking
-  /// delete). Drives [isWorktreeDeleting] for the grayed-out section UI.
   final Set<String> _deletingWorktrees = {};
   bool _projectsFetched = false;
-  /// Per-session conversation caches, capped at [_kMaxConversations] with
-  /// LRU eviction (oldest accessed evicted on insert). Uses a LinkedHashMap
-  /// so iteration order reflects access recency.
   final LinkedHashMap<String, ConversationStore> _conversations =
       LinkedHashMap<String, ConversationStore>();
   static const _kMaxConversations = 20;
 
-  /// File browsing snapshots + content cache (design-file-browser-collapse).
   final FileBrowsingStore fileBrowsing = FileBrowsingStore();
 
   final ValueNotifier<List<CommandInfo>> commandsNotifier =
       ValueNotifier(const []);
 
-  /// JANK-5：预览变更独立通道。流式期间 `_notifyPreviewChanged` 只 bump 此
-  /// notifier（120ms 节流），不再走全局 notifyListeners——只有会话列表的
-  /// tile 需要跟预览刷新，项目 tab / 详情页 / AppBar 不该跟着每 120ms 重建。
-  /// SessionsTab 的列表体改听此 notifier（连同 serverStore 本体）。
   final ValueNotifier<int> previewVersion = ValueNotifier(0);
   bool _commandsRefreshing = false;
   String? _commandsRefreshDir;
   bool get commandsRefreshing => _commandsRefreshing;
-  /// The directory the current [commandsNotifier] value was resolved for.
-  /// Degraded refreshes only retain the cache when it belongs to the *same*
-  /// directory, so a failed fetch in project B never surfaces project A's
-  /// commands (the notifier is a single global cache).
   String? _commandsCacheDir;
-  /// Whether the current [commandsNotifier] value came from a fully-successful
-  /// (non-degraded) fetch. Only a known-complete list is worth protecting from
-  /// a transient blip; a degraded partial is never retained over a fresh fetch.
   bool _commandsCacheComplete = false;
-  /// True when the most recent [refreshCommands] produced a degraded or
-  /// incomplete result (the fetch errored, or the whole refresh threw).
-  /// The conversation screen uses this to re-fetch on the next `/` input
-  /// instead of giving up after one failed attempt.
   bool _commandsDegraded = false;
   bool get commandsDegraded => _commandsDegraded;
-  /// Consecutive "suspicious empty" refreshes (`GET /command` returned 200-OK
-  /// with zero entries — impossible for a healthy registry, which always
-  /// carries the hardcoded init/review built-ins). Right after a network
-  /// recovery the connection pool can serve a stale/empty response that does
-  /// NOT throw, so without protection it would be trusted as genuine and wipe
-  /// a known-good cache. We retain the cache while this streak is under
-  /// [kMaxSuspiciousRetries]; once exhausted a persistent empty is treated as
-  /// authoritative so the list can never be stuck stale forever.
   int _suspiciousEmptyStreak = 0;
   @visibleForTesting
   static const int kMaxSuspiciousRetries = 3;
@@ -187,27 +107,10 @@ class ServerStore extends ChangeNotifier {
     _commandsRefreshing = true;
     _commandsRefreshDir = directory;
     try {
-      // Single source: the v1 instance route `GET /command?directory=` — the
-      // same per-directory registry that executes `POST /session/:id/command`,
-      // covering built-in commands (init/review), config/plugin/MCP commands,
-      // and the full skill set incl. external ~/.claude / ~/.agents dirs. Every
-      // entry expands server-side ($ARGUMENTS/$N), so the client never needs
-      // templates. The v2 `/api/command` + `/api/skill` endpoints are
-      // deliberately not called: not GA yet, source-registry based (no external
-      // skill scan, no skill merge), and they ignore the flat `?directory=`
-      // query — always answering for the server's default location. `/config`
-      // was only read for client-side template expansion, now redundant.
-      final v1 =
+      final fetched =
           await _tryFetchCommands(c.getMergedCommands(directory: directory));
-
-      // A healthy registry always contains the built-ins, so a 200-OK empty is
-      // never genuine on its own — treat it as suspicious (transient), same as
-      // a thrown request (degraded). Both retain a known-complete cache for the
-      // same directory while the streak is under [kMaxSuspiciousRetries]; once
-      // exhausted the empty is applied. Never retain a degraded partial over a
-      // fresh result — fall through and apply that instead.
-      final degraded = v1.failed;
-      final suspiciousEmpty = !v1.failed && v1.value.isEmpty;
+      final degraded = fetched.failed;
+      final suspiciousEmpty = !fetched.failed && fetched.value.isEmpty;
       final haveGoodCache = commandsNotifier.value.isNotEmpty &&
           _commandsCacheDir == directory &&
           _commandsCacheComplete;
@@ -217,15 +120,12 @@ class ServerStore extends ChangeNotifier {
         _commandsDegraded = true;
         AppLogger.I.w(_tag,
             'commands refresh ${suspiciousEmpty ? 'suspicious-empty' : 'degraded'} '
-            '(v1=${v1.value.length}/${v1.failed ? 'err' : 'ok'}); '
+            '(fetched=${fetched.value.length}/${fetched.failed ? 'err' : 'ok'}); '
             'keeping cache of ${commandsNotifier.value.length} '
             '(streak $_suspiciousEmptyStreak)');
         return;
       }
 
-      // A suspicious empty with no cache to protect still isn't authoritative —
-      // mark degraded so the next `/` retries. Once the streak is exhausted the
-      // empty is treated as genuine (not degraded).
       final trustEmpty = suspiciousEmpty && !withinStreak;
       if (suspiciousEmpty) {
         _suspiciousEmptyStreak++;
@@ -236,10 +136,10 @@ class ServerStore extends ChangeNotifier {
       _commandsCacheDir = directory;
       _commandsCacheComplete = !degraded;
       AppLogger.I.i(_tag,
-          'commands refreshed: v1=${v1.value.length}'
+          'commands refreshed: fetched=${fetched.value.length}'
           '${degraded ? ' (degraded, no usable cache)' : ''}'
           '${suspiciousEmpty && !trustEmpty ? ' (suspicious-empty, no cache)' : ''}');
-      commandsNotifier.value = v1.value;
+      commandsNotifier.value = fetched.value;
     } catch (e) {
       _commandsDegraded = true;
       AppLogger.I.e(_tag, 'commands refresh failed: $e');
@@ -248,8 +148,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Runs [future], capturing its result or the failure so a per-source fetch
-  /// error is observable instead of silently turning into an empty list.
   Future<({List<CommandInfo> value, bool failed})> _tryFetchCommands(
       Future<List<CommandInfo>> future) async {
     try {
@@ -261,44 +159,24 @@ class ServerStore extends ChangeNotifier {
 
   bool connected = false;
 
-  /// Whether the global SSE stream is actively connected (for status indicator).
   bool get sseConnected => _sse != null && _sseLive;
 
-  /// Whether the global SSE stream is in reconnecting state.
   bool get sseReconnecting => _sse != null && !_sseLive;
 
-  /// Whether the session's events are being streamed. The single global stream
-  /// covers every directory, so any known session is covered while connected.
   bool isSessionSseConnected(String sessionId) {
     if (!_sseLive) return false;
     return sessionById(sessionId) != null;
   }
   bool _sseLive = false;
-  // Set true when the SSE enters reconnecting state (first-connect failure or
-  // post-connect drop). Stays true after recovery — banner is controlled by
-  // !_sseLive, not _sseFailed.
   bool _sseFailed = false;
 
-  /// Whether the initial bootstrap failed (for showing error view + retry).
   bool bootstrapFailed = false;
 
-  /// Whether a [connect] is in flight (bootstrap running). While true and no
-  /// cache is loaded the list tabs show a loading indicator instead of the
-  /// stale error/empty views: adding a server activates the profile before
-  /// credentials exist, so a first connect fails (stale [bootstrapFailed])
-  /// and the credentials save fires connect() again right before the list
-  /// page mounts — without this flag that window flashes 连接失败/无会话.
   bool _connecting = false;
   bool get connecting => _connecting;
 
-  /// Overlapping [connect]s are possible (connectionStore notifies once per
-  /// update() and setActive() right after saving credentials); only the most
-  /// recent one may clear [_connecting] when it settles.
   int _connectGeneration = 0;
 
-  /// Test seam: force the connecting flag (drives the tab loading state
-  /// without a real network bootstrap). Bumps the generation so a later
-  /// in-flight connect cannot clear a test-set true.
   @visibleForTesting
   void setConnectingForTesting(bool v) {
     _connectGeneration++;
@@ -306,7 +184,6 @@ class ServerStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Whether to show the "network disconnected" banner.
   bool get showDisconnectBanner => _sseFailed && !_sseLive;
 
   List<ProjectModel> get projects => List.unmodifiable(_projects);
@@ -322,24 +199,14 @@ class ServerStore extends ChangeNotifier {
 
   String? lastMessageOf(String id) => _lastMessage[id];
 
-  /// Active [AppLocalizations] pushed down from app_state (the store layer
-  /// cannot import app_state, mirroring [reasoningVisibleInPreview]). Used to
-  /// localize the session-list preview ("You: " prefix, attachment fallback)
-  /// and the worktree label, which are produced here without a BuildContext.
   AppLocalizations? _loc;
 
-  /// Set the active localization and recompute cached previews so the list
-  /// follows a locale switch instead of showing stale-language text.
   set activeLoc(AppLocalizations v) {
     if (_loc?.localeName == v.localeName) return;
     _loc = v;
     _recomputePreviews();
   }
 
-  /// Whether reasoning ("thinking") parts may surface as the session-list
-  /// preview. Pushed down from the `showThinking` app setting (the store layer
-  /// cannot import app_state) so the one-line preview tracks the detail view:
-  /// when thinking is hidden in the detail page it must also be hidden here.
   bool _reasoningVisibleInPreview = false;
 
   set reasoningVisibleInPreview(bool v) {
@@ -348,10 +215,6 @@ class ServerStore extends ChangeNotifier {
     _recomputePreviews();
   }
 
-  /// Recompute every loaded conversation's preview under the current setting.
-  /// Sessions not yet loaded are corrected on demand by `_backfillPreview`
-  /// (which also respects this flag), consistent with the incremental-reconcile
-  /// design where the cache is a self-correcting fallback.
   void _recomputePreviews() {
     if (_conversations.isEmpty) return;
     for (final entry in _conversations.entries) {
@@ -368,23 +231,12 @@ class ServerStore extends ChangeNotifier {
     _scheduleCacheSave();
   }
 
-  /// Max `updated` ever observed for [projectID] across all of its sessions
-  /// (including ones later archived). Returns 0 if never observed. Drives
-  /// project-list sort order so a project doesn't sink when its last active
-  /// session is archived.
   int lastActivityForProject(String projectID) =>
       _lastActivityByKey[projectID] ?? 0;
 
-  /// Same as [lastActivityForProject] but keyed by [directory] within the
-  /// global project. Each working directory under `global` is shown as its own
-  /// row in the projects tab, so activity is tracked per-directory.
   int lastActivityForGlobalDir(String directory) =>
       _lastActivityByKey['global\u0000$directory'] ?? 0;
 
-  /// Monotonically bump the per-project activity timestamp for [s]. Only ever
-  /// increases — archiving a session doesn't reset the project's recency.
-  /// Called from `_addSessions` (REST bulk fetch) and `_upsertSession` (SSE
-  /// insert/update, including the transition into archived).
   void _bumpLastActivity(SessionModel s) {
     if (s.updated <= 0) return;
     final key = s.projectID == 'global'
@@ -397,11 +249,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Throttled notify for streaming preview updates. The session list rebuilds
-  /// on every [notifyListeners], so coalescing the burst of
-  /// `message.part.updated` events (one per token) keeps the UI smooth while
-  /// still tracking the latest content. Always emits a trailing notify so the
-  /// final state is reflected.
   void _notifyPreviewChanged() {
     final now = DateTime.now();
     if (_lastPreviewNotifyAt == null ||
@@ -411,7 +258,6 @@ class ServerStore extends ChangeNotifier {
       _previewNotifyTimer = null;
       _bumpPreview();
     } else {
-      // Ensure a trailing notify so the final streaming state is reflected.
       _previewNotifyTimer ??= Timer(_previewNotifyInterval, () {
         _lastPreviewNotifyAt = DateTime.now();
         _previewNotifyTimer = null;
@@ -425,20 +271,17 @@ class ServerStore extends ChangeNotifier {
   bool hasPendingPermission(String sessionId) => _pendingPermissions.values
       .any((p) => _cardHostSessionId(p.sessionID) == sessionId);
 
-  bool hasPendingQuestion(String sessionId) => _pendingQuestions.values
+  bool hasPendingQuestion(String sessionId) => _pendingForms.values
       .any((q) => _cardHostSessionId(q.sessionID) == sessionId);
 
   AgentIndicatorState agentIndicatorStateOf(String sessionId) {
-    // 子会话 pending（subagent 权限/问题卡）计入父会话：父会话才是
-    // 用户可答复的界面，列表盾牌/暂停态必须亮在父会话上。宿主路由会把
-    // 多个并行子会话的卡聚合到同一父会话，权限计数不能封顶 1。
     final permissionCount = _pendingPermissions.values
         .where((p) => _cardHostSessionId(p.sessionID) == sessionId)
         .length;
-    final questionCount = _pendingQuestions.values
+    final formCount = _pendingForms.values
         .where((q) => _cardHostSessionId(q.sessionID) == sessionId)
         .length;
-    final pendingCount = permissionCount + questionCount;
+    final pendingCount = permissionCount + formCount;
     if (pendingCount > 0) {
       return AgentIndicatorState(AgentRunState.paused,
           pauseReason: permissionCount > 0
@@ -480,14 +323,6 @@ class ServerStore extends ChangeNotifier {
     _scheduleCacheSave();
   }
 
-  /// `PATCH /project/{projectId}` — update name / icon. Replaces the cached
-  /// project with the server-returned value and notifies listeners.
-  ///
-  /// Icon field semantics (see `OpencodeClient.updateProject`): a `null`
-  /// argument omits the key (leave the stored value unchanged); an empty
-  /// string `""` clears the stored value; any other string sets/replaces it.
-  /// Pass `updateIcon: true` only when at least one icon field is being
-  /// changed, to avoid a redundant no-op write.
   Future<ProjectModel> updateProject(
     String projectId, {
     String? name,
@@ -523,31 +358,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// `DELETE /experimental/worktree` — delete a worktree and do targeted local
-  /// cleanup in one step. Before deletion, every session in the worktree
-  /// directory is deleted server-side: the server keys sessions by directory
-  /// path only, so recreating a same-named worktree reuses the path and would
-  /// otherwise resurrect the old sessions (including archived ones). After
-  /// the server confirms deletion, the worktree is removed from the project's
-  /// `sandboxes`, all sessions in that directory are dropped from `_sessions`
-  /// (plus their conversation / preview / status caches), and the directory
-  /// falls out of the global stream's event gate — all without a full
-  /// `refresh()`.
-  ///
-  /// Session deletion is best-effort: the directory snapshot comes from a
-  /// one-shot REST fetch while the global SSE stream concurrently pushes
-  /// `session.deleted` for the same ids (self-echo of our own DELETEs, plus
-  /// other clients), so an individual DELETE can 404 on an already-deleted
-  /// session — that outcome is treated as "already gone" and swallowed.
-  /// Only a failed `DELETE /experimental/worktree` itself fails the whole
-  /// operation. (Mirror of the desktop client's cascade: single session
-  /// delete failures never block the worktree deletion.)
-  ///
-  /// Non-blocking: the deleting state ([isWorktreeDeleting]) is set
-  /// synchronously so callers can close the confirmation dialog immediately
-  /// and gray the section out while cleanup runs in the background. Re-entry
-  /// for the same directory is rejected; the state is cleared in `finally`
-  /// (success and failure alike) so a failed delete can be retried.
   Future<void> removeWorktree(
     String projectWorktree, {
     required String worktreeDir,
@@ -555,24 +365,26 @@ class ServerStore extends ChangeNotifier {
     if (_deletingWorktrees.contains(worktreeDir)) return;
     final c = client;
     if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
+    final project = _projectByCanonical(projectWorktree);
+    if (project == null) throw const KnownError(FriendlyErrorKind.notConnected);
     _deletingWorktrees.add(worktreeDir);
     notifyListeners();
     try {
       final sessions = await c.sessionsForDirectory(worktreeDir);
       await Future.wait(
         sessions.map(
-          (s) => c.deleteSession(s.id, directory: worktreeDir).catchError((_) {
+          (s) => c.deleteSession(s.id).catchError((_) {
             AppLogger.I.w(_tag, 'deleteSession ${s.id} best-effort skipped');
           }),
         ),
       );
-      await c.removeWorktree(projectWorktree, worktreeDir: worktreeDir);
-      final idx = _projects.indexWhere((p) => p.worktree == projectWorktree);
+      await c.removeWorktree(project.id, worktreeDir);
+      final idx = _projects.indexWhere((p) => p.canonical == projectWorktree);
       if (idx >= 0) {
         final p = _projects[idx];
         _projects[idx] = ProjectModel(
           id: p.id,
-          worktree: p.worktree,
+          canonical: p.canonical,
           vcs: p.vcs,
           name: p.name,
           icon: p.icon,
@@ -581,6 +393,8 @@ class ServerStore extends ChangeNotifier {
               .where((d) => d != worktreeDir)
               .toList(growable: false),
           created: p.created,
+          updated: p.updated,
+          active: p.active,
         );
       }
       final removedIds = _sessions
@@ -602,16 +416,22 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Whether a worktree directory has an in-flight [removeWorktree]
-  /// (data source for the grayed-out section header UI).
   bool isWorktreeDeleting(String worktreeDir) =>
       _deletingWorktrees.contains(worktreeDir);
+
+  ProjectModel? _projectByCanonical(String canonical) {
+    for (final p in _projects) {
+      if (p.canonical == canonical) return p;
+    }
+    return null;
+  }
 
   void _inferWorkspaceForNewProjects() {
     final hasWorkspaceSession = <String>{};
     for (final s in _sessions) {
-      final ws = s.workspaceID;
-      if (ws != null && ws.isNotEmpty) {
+      final p = projectOf(s.projectID);
+      if (p == null || p.id == 'global') continue;
+      if (s.directory.isNotEmpty && s.directory != p.canonical) {
         hasWorkspaceSession.add(s.projectID);
       }
     }
@@ -641,35 +461,41 @@ class ServerStore extends ChangeNotifier {
   }) async {
     final c = client;
     if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
-    WorktreeResult? wt;
+    final project = _projectByCanonical(projectDir);
+    if (project == null) {
+      throw const KnownError(FriendlyErrorKind.notConnected);
+    }
+    WorktreeInfo? wt;
     if (reconcileFirst) {
-      wt = await _recoverAmbiguousWorktree(c, projectDir);
+      wt = await _recoverAmbiguousWorktree(c, project);
     }
     if (wt == null) {
       try {
-        wt = await c.createWorktree(projectDir);
+        wt = await c.createWorktree(project.id);
       } catch (e) {
         final kind = friendlyErrorRaw(e);
         if (kind == FriendlyErrorKind.timeout ||
             kind == FriendlyErrorKind.connect) {
-          wt = await _recoverAmbiguousWorktree(c, projectDir);
+          wt = await _recoverAmbiguousWorktree(c, project);
         }
         if (wt == null) throw OperationException('创建工作区', cause: e);
       }
     }
     final worktree = wt;
-    final idx = _projects.indexWhere((p) => p.worktree == projectDir);
+    final idx = _projects.indexWhere((p) => p.canonical == projectDir);
     if (idx >= 0 && !_projects[idx].sandboxes.contains(worktree.directory)) {
       final p = _projects[idx];
       _projects[idx] = ProjectModel(
         id: p.id,
-        worktree: p.worktree,
+        canonical: p.canonical,
         vcs: p.vcs,
         name: p.name,
         icon: p.icon,
         commands: p.commands,
         sandboxes: [...p.sandboxes, worktree.directory],
         created: p.created,
+        updated: p.updated,
+        active: p.active,
       );
       _scheduleCacheSave();
       notifyListeners();
@@ -690,21 +516,23 @@ class ServerStore extends ChangeNotifier {
     return session;
   }
 
-  Future<WorktreeResult?> _recoverAmbiguousWorktree(
+  Future<WorktreeInfo?> _recoverAmbiguousWorktree(
     OpencodeClient c,
-    String projectDir,
+    ProjectModel project,
   ) async {
     try {
-      final remote = await c.worktrees(projectDir);
-      final idx = _projects.indexWhere((p) => p.worktree == projectDir);
+      final remote = await c.worktrees(project.id);
       final known = <String>{
-        projectDir,
-        if (idx >= 0) ..._projects[idx].sandboxes,
+        project.canonical,
+        ...project.sandboxes,
       };
-      final candidates = remote.where((d) => !known.contains(d)).toList();
+      final candidates = remote
+          .map((w) => w.directory)
+          .where((d) => !known.contains(d))
+          .toList();
       if (candidates.length != 1) return null;
       final dir = candidates.single;
-      return WorktreeResult(name: dir.split('/').last, directory: dir);
+      return WorktreeInfo(directory: dir);
     } catch (_) {
       return null;
     }
@@ -720,14 +548,11 @@ class ServerStore extends ChangeNotifier {
             : 'project-${s.projectID.substring(0, 8)}');
   }
 
-  /// Worktree/directory name to show for a session, or '' when it should be
-  /// hidden: single-worktree projects (no ambiguity) and the `global` project
-  /// where the folder name is already shown as the project name.
   String worktreeDisplayOf(SessionModel s) {
     if (s.projectID == 'global') return '';
     if (!_hasMultipleWorktrees(s.projectID)) return '';
     final project = projectOf(s.projectID);
-    if (project != null && s.directory == project.worktree) {
+    if (project != null && s.directory == project.canonical) {
       return _loc?.projectMainWorkspace ?? 'main';
     }
     return s.dirName;
@@ -747,29 +572,14 @@ class ServerStore extends ChangeNotifier {
   void setActiveConversation(String? sid) {
     _activeSessionId = sid;
     if (sid != null) {
-      // Opening a conversation wakes the stream out of reconnect backoff —
-      // parity with the old per-directory `_startSse(required: true)` kick,
-      // so live updates don't wait out the exponential sleep (or the next
-      // health probe) while the user is looking at this session.
       _sse?.reconnectNow();
     }
   }
 
-  /// Wake the global SSE stream out of reconnect backoff on user interaction
-  /// (send message / permission / question cards) — same kick the old
-  /// per-directory `ensureSseForSession` provided, now connection-wide.
   void ensureSseForSession(String sessionId) {
     _sse?.reconnectNow();
   }
 
-  /// Ensure the session has an accumulation container in `_conversations`
-  /// (no load). Used by SSE event routing so messages from sessions that were
-  /// never opened in the detail view still accumulate. REST reconcile is
-  /// deferred to [conversationFor] (detail-page open).
-  ///
-  /// Intentionally does NOT touch [_lastMessage]: the existing preview (set by
-  /// a prior REST [_backfillPreview] or SSE settle) stays valid, and new SSE
-  /// events update it via the per-unit preview path.
   ConversationStore? ensureConversation(String sid) {
     final existing = _conversations[sid];
     if (existing != null) return existing;
@@ -779,32 +589,24 @@ class ServerStore extends ChangeNotifier {
         sessionById(sid)?.directory ?? _childSessions[sid]?.directory ?? '';
     final conv = ConversationStore(sid, c,
         directory: directory, cacheStore: _cacheStore);
-    conv.onQuestionResolved = _markQuestionResolved;
+    conv.onQuestionResolved = _markFormResolved;
     conv.onPermissionResolved = _markPermissionResolved;
     _conversations[sid] = conv;
     final initStatus = statusOf(sid);
     conv.setStatus(initStatus.type, retryMessage: initStatus.message);
     conv.sessionUpdated = sessionById(sid)?.updated;
-    // Re-apply ghost state after an LRU eviction: the flag lives on the
-    // ConversationStore instance, which was dropped; the set survives.
     if (_ghostSessionIds.contains(sid)) conv.markWorkspaceMissing();
-    // Inject any pending permission/question known from SSE/REST backfill.
-    // Host-based match: subagent child cards surface in the parent conv.
     for (final p in _pendingPermissions.values) {
       if (_cardHostSessionId(p.sessionID) == sid) conv.onPermission(p);
     }
-    for (final q in _pendingQuestions.values) {
-      if (_cardHostSessionId(q.sessionID) == sid) conv.onQuestion(q);
+    for (final q in _pendingForms.values) {
+      if (_cardHostSessionId(q.sessionID) == sid) conv.onForm(q);
     }
-    unawaited(conv.loadDraftOnly()); // CD-1/13：构造后异步读草稿（唯一草稿读路径）
+    unawaited(conv.loadDraftOnly());
     _evictConversations();
     return conv;
   }
 
-  /// SubagentPanel 首次展开时的 REST 快照入口（design-subagent-status §D3）：
-  /// SSE 增量已累积（messages 非空）时跳过拉取——避免冗余请求及 reconcile
-  /// 的 idle 副作用对运行中子会话的误判。与 conversationFor 的差别：不走
-  /// LRU promote、不挂 preview backfill（子会话不进会话列表，无预览可回填）。
   void loadChildSessionMessages(String sid) {
     final conv = ensureConversation(sid);
     if (conv == null) return;
@@ -812,17 +614,15 @@ class ServerStore extends ChangeNotifier {
     unawaited(conv.load());
   }
 
-  /// 回填已有 conv 的 directory（session 到达后补上，解决 question.asked
-  /// 早于 session 加载的 SSE 竞态——否则 reply 会因 directory 空抛错）。
   void _backfillConversationDirectory(String sid, String directory) {
     if (directory.isEmpty) return;
     _conversations[sid]?.setDirectory(directory);
   }
 
-  void _markQuestionResolved(String qid) {
-    _recentlyResolvedQuestions[qid] = DateTime.now();
-    _pendingQuestions.remove(qid);
-    AppLogger.I.i(_tag, 'markQuestionResolved qid=$qid → guard for ${_resolvedTtl.inSeconds}s');
+  void _markFormResolved(String fid) {
+    _recentlyResolvedForms[fid] = DateTime.now();
+    _pendingForms.remove(fid);
+    AppLogger.I.i(_tag, 'markFormResolved fid=$fid → guard for ${_resolvedTtl.inSeconds}s');
   }
 
   void _markPermissionResolved(String pid) {
@@ -831,20 +631,14 @@ class ServerStore extends ChangeNotifier {
     AppLogger.I.i(_tag, 'markPermissionResolved pid=$pid → guard for ${_resolvedTtl.inSeconds}s');
   }
 
-  /// 懒清理过期的 _recentlyResolved 项。TTL 过期后若服务端仍返回该卡，
-  /// 说明真没解决（如登记后又被重新 ask），此时应放回 UI。
   void _purgeExpiredResolved() {
     final now = DateTime.now();
-    _recentlyResolvedQuestions.removeWhere(
+    _recentlyResolvedForms.removeWhere(
         (_, t) => now.difference(t) > _resolvedTtl);
     _recentlyResolvedPermissions.removeWhere(
         (_, t) => now.difference(t) > _resolvedTtl);
   }
 
-  /// LRU eviction: when over [_kMaxConversations], drop the oldest
-  /// non-streaming entry. Sessions that are busy/retry or the active detail
-  /// session are protected — evicting them mid-stream would lose accumulated
-  /// content.
   void _evictConversations() {
     while (_conversations.length > _kMaxConversations) {
       String? victim;
@@ -852,20 +646,15 @@ class ServerStore extends ChangeNotifier {
         final st = _statusMap[sid]?.type;
         final streaming =
             st == 'busy' || st == 'retry' || sid == _activeSessionId;
-        // Subagent 子会话不驱逐（design-subagent-status §D3）：驱逐后
-        // ensureConversation 只会重建空容器并跳过 REST（面板无错误态
-        // 渲染），SSE 增量丢失即永久缺失。
         if (streaming || isChildSession(sid)) continue;
-        victim = sid; // LinkedHashMap order = access order; first non-streaming
+        victim = sid;
         break;
       }
-      if (victim == null) break; // all streaming this round — don't evict
+      if (victim == null) break;
       _conversations.remove(victim)?.dispose();
     }
   }
 
-  /// Read-only access without LRU promote. Used by high-frequency callers
-  /// (scroll listeners) to avoid map remove/insert on every event (IR-6).
   ConversationStore? conversationForRead(String sessionId) =>
       _conversations[sessionId];
 
@@ -873,30 +662,23 @@ class ServerStore extends ChangeNotifier {
     final existing = _conversations[sessionId];
     if (existing != null) {
       _conversations.remove(sessionId);
-      _conversations[sessionId] = existing; // LRU promote
+      _conversations[sessionId] = existing;
       existing.sessionUpdated = sessionById(sessionId)?.updated;
-      // Trigger reconcile: three paths (MA-8). reloadIfStale() is guarded by
-      // _stale, so it cannot reconcile a never-loaded conv (whose _stale is
-      // initially false) — route !loaded through load() instead.
       if (force) {
-        unawaited(existing.reconcile() // active refresh, ignore backoff
+        unawaited(existing.reconcile()
             .then((_) => _backfillPreview(sessionId, existing)));
       } else if (!existing.loaded) {
         existing.setBackfillCallback(() => _backfillPreview(sessionId, existing));
-        unawaited(existing.load() // first reconcile, load→reconcile, no backoff
+        unawaited(existing.load()
             .then((_) => _backfillPreview(sessionId, existing)));
       } else if (existing.isStale) {
-        unawaited(existing.reloadIfStale() // loaded + stale, backoff-guarded
+        unawaited(existing.reloadIfStale()
             .then((_) => _backfillPreview(sessionId, existing)));
       }
       return existing;
     }
-    // New: ensureConversation injects pending, then load (→ reconcile).
     final conv = ensureConversation(sessionId);
     if (conv == null) return null;
-    // Chain _backfillPreview after load (→ reconcile) so _lastMessage seeds
-    // from the REST-merged last message; previously concurrent unawaited raced
-    // ahead of reconcile and no-op'd on empty _messages (LPS-19).
     conv.setBackfillCallback(() => _backfillPreview(sessionId, conv));
     unawaited(conv.load()
         .then((_) => _backfillPreview(sessionId, conv)));
@@ -904,7 +686,6 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> connect(ConnectionProfile profile) async {
-    // Idempotent: no-op if already connected with same server + credentials.
     if (_profile != null &&
         _profile!.id == profile.id &&
         _signature(_profile!) == _signature(profile) &&
@@ -914,15 +695,10 @@ class ServerStore extends ChangeNotifier {
     }
     final generation = ++_connectGeneration;
     _connecting = true;
-    // A retry is in flight — drop the stale failure so the UI shows the
-    // loading state instead of the previous attempt's error view.
     bootstrapFailed = false;
     notifyListeners();
     AppLogger.I.i(_tag, 'connect ${profile.hostDisplay}');
     try {
-      // Flush pending cache save for the OUTGOING profile before switching
-      // _profile — _stopSse's flush runs AFTER reassignment and would write
-      // old profile data to the new profile's key (cross-profile leak).
       if (_cacheSaveTimer != null) {
         _cacheSaveTimer!.cancel();
         _cacheSaveTimer = null;
@@ -945,7 +721,6 @@ class ServerStore extends ChangeNotifier {
       _commandsCacheDir = null;
       _commandsCacheComplete = false;
       _suspiciousEmptyStreak = 0;
-      // Load cached data first for instant offline UI, then _bootstrap refreshes.
       await _loadCache();
       final dio = dioFor(profile, store: _connectionStore);
       _agentsModelsCache.clear();
@@ -957,15 +732,11 @@ class ServerStore extends ChangeNotifier {
       bootstrapFailed = !ok;
       if (!ok) {
         AppLogger.I.e(_tag, 'bootstrap failed ${profile.hostDisplay}');
-        // Keep cached data visible (offline-first); don't clear on failure.
         connected = false;
         notifyListeners();
         return;
       }
-      // Save fresh REST data to cache for next offline open.
       unawaited(_saveCache());
-      // _bootstrap already fetched projects + sessions + status.
-      // One global stream covers every directory.
       _startSse();
       _lastFullRefreshAt = DateTime.now();
       connected = true;
@@ -985,13 +756,10 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Directory universe: every project's worktree ∪ its sandboxes ∪ every
-  /// known session directory. Shared source for the SSE event gate
-  /// (`_isGatedDirectory`) and REST fan-out (permission/question backfill).
   Set<String> _eventDirectories() {
     final dirs = <String>{};
     for (final p in _projects) {
-      if (p.worktree.isNotEmpty) dirs.add(p.worktree);
+      if (p.canonical.isNotEmpty) dirs.add(p.canonical);
       for (final d in p.sandboxes) {
         if (d.isNotEmpty) dirs.add(d);
       }
@@ -1002,16 +770,10 @@ class ServerStore extends ChangeNotifier {
     return dirs;
   }
 
-  /// Gate for the single global stream: accept events whose envelope directory
-  /// belongs to this client's universe. The stream carries EVERY project's
-  /// events on the server; without this filter unknown directories would
-  /// pollute `_sessions` / `_statusMap` / `_conversations`.
   bool _isGatedDirectory(String directory) {
-    // Keep in lockstep with `_eventDirectories()` (same universe, same
-    // empty-string exclusion).
     if (directory.isEmpty) return false;
     for (final p in _projects) {
-      if (p.worktree == directory) return true;
+      if (p.canonical == directory) return true;
       if (p.sandboxes.contains(directory)) return true;
     }
     for (final s in _sessions) {
@@ -1020,18 +782,21 @@ class ServerStore extends ChangeNotifier {
     return false;
   }
 
+  bool _isKnownSession(String sid) =>
+      sessionById(sid) != null ||
+      _childSessions.containsKey(sid) ||
+      _conversations.containsKey(sid);
+
   void _startSse() {
     final existing = _sse;
     if (existing != null) {
-      // Wake the client if it's sleeping in reconnect backoff (e.g., resume
-      // after background Doze) — no reason to wait out the exponential sleep.
       existing.reconnectNow();
       return;
     }
     final c = SseClient(baseUrl: _profile!.baseUrl, headers: _sseHeaders);
     _sse = c;
     _sseSub = c.events
-        .listen(_onGlobalEvent); // SSE errors handled by _onSseState reconnect
+        .listen(_onGlobalEvent);
     _sseStateSub = c.state.listen(_onSseState);
     c.start();
   }
@@ -1039,62 +804,43 @@ class ServerStore extends ChangeNotifier {
   String _signature(ConnectionProfile p) =>
       '${p.baseUrl}|${p.authMethod.name}|${p.username}|${p.password}';
 
-  /// ConnectionStore reference for auth-token lifecycle (interceptor
-  /// persistence + authBroken). Assigned by app wiring (cannot import
-  /// app_state); null in unit tests.
   ConnectionStore? _connectionStore;
 
   set connectionStore(ConnectionStore? value) => _connectionStore = value;
 
-  /// Rebuild `_sseHeaders` IN PLACE: SseClient instances hold this map by
-  /// reference and spread it on every (re)connect, so a rotated token is
-  /// picked up by the existing reconnect path without new machinery.
   void refreshSseAuth(ConnectionProfile profile) {
     _sseHeaders
       ..clear()
       ..addAll(authHeadersFor(profile));
   }
 
-  /// Pure sandboxes filter: intersect each project's `sandboxes` with its
-  /// already-fetched worktree list (server-side sandboxes ∩ real git
-  /// worktrees). Fail-open per project: a missing or empty list keeps the
-  /// unfiltered sandboxes — the endpoint returns 200 `[]` for degraded
-  /// states (deleted main dir, unregistered repo) where wiping every
-  /// sandbox would be wrong. The main worktree itself is always kept.
   List<ProjectModel> _filterSandboxes(
     List<ProjectModel> projects,
     Map<String, List<String>> worktreesByDir,
   ) {
     return projects.map((p) {
-      if (p.sandboxes.isEmpty || p.worktree.isEmpty) return p;
-      final real = worktreesByDir[p.worktree];
+      if (p.sandboxes.isEmpty || p.canonical.isEmpty) return p;
+      final real = worktreesByDir[p.canonical];
       if (real == null || real.isEmpty) return p;
-      final valid = real.toSet()..add(p.worktree);
+      final valid = real.toSet()..add(p.canonical);
       final filtered =
           p.sandboxes.where(valid.contains).toList(growable: false);
       if (filtered.length == p.sandboxes.length) return p;
       return ProjectModel(
         id: p.id,
-        worktree: p.worktree,
+        canonical: p.canonical,
         vcs: p.vcs,
         name: p.name,
         icon: p.icon,
         commands: p.commands,
         sandboxes: filtered,
         created: p.created,
+        updated: p.updated,
+        active: p.active,
       );
     }).toList();
   }
 
-  /// `GET /project` returns the persisted `sandboxes` list verbatim; entries
-  /// whose directory vanished outside `DELETE /experimental/worktree`
-  /// (manual `git worktree remove` / `rm`, failed creations) linger as
-  /// ghosts. Fetch `GET /experimental/worktree` per project and apply
-  /// `_filterSandboxes` right after fetch so ghost workspaces never reach
-  /// the picker. Fail-open per project: a fetch error keeps the unfiltered
-  /// list. Successful fetches are recorded in [worktreesByDir] (keyed by
-  /// main worktree) so `_sessionsForProject` can reuse them instead of
-  /// fetching the same endpoint twice on the bootstrap critical path.
   Future<List<ProjectModel>> _reconcileSandboxes(
     List<ProjectModel> projects, {
     Map<String, List<String>>? worktreesByDir,
@@ -1103,18 +849,16 @@ class ServerStore extends ChangeNotifier {
     if (c == null) return projects;
     final map = worktreesByDir ?? <String, List<String>>{};
     await Future.wait(projects.map((p) async {
-      if (p.sandboxes.isEmpty || p.worktree.isEmpty) return;
+      if (p.sandboxes.isEmpty || p.canonical.isEmpty) return;
       try {
-        map[p.worktree] = await c.worktrees(p.worktree);
+        final wts = await c.worktrees(p.id);
+        map[p.canonical] =
+            wts.map((w) => w.directory).toList(growable: false);
       } catch (_) {}
     }));
     return _filterSandboxes(projects, map);
   }
 
-  /// Mark ghost sessions' open conversations as unusable and settle their
-  /// cached status to idle — the directory is never status-fetched again, so
-  /// a stale `busy` would otherwise persist forever (stop button rendered
-  /// next to the workspace-missing banner, abort always failing).
   void _markGhostSessions(Set<String> ids) {
     for (final id in ids) {
       _statusMap[id] = const SessionStatusValue('idle');
@@ -1123,10 +867,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Drop ghost tracking for sessions that reappeared in an authoritative
-  /// list (worktree re-created at the same path, or a transiently incomplete
-  /// worktree list had caused a false positive). Live conversations are
-  /// un-flagged by the per-conv loop in `refreshListAndWorkingSse`.
   void _unghostRecovered(List<SessionModel> sessions) {
     if (_ghostSessionIds.isEmpty) return;
     for (final s in sessions) {
@@ -1134,13 +874,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Sessions that existed before a refresh but vanished from the fresh
-  /// authoritative list AND whose directory is no longer reachable — not in
-  /// the project's main worktree nor its fetched worktree list. Such a
-  /// directory is a ghost sandbox (deleted outside the DELETE endpoint);
-  /// the session is unusable (no SSE coverage, git/snapshot broken).
-  /// Fail-open: projects with a missing/empty worktree list are skipped, as
-  /// are `global` sessions (fetched without directory coverage).
   Set<String> _detectGhostSessionIds(
     List<SessionModel> oldSessions,
     List<SessionModel> newSessions,
@@ -1155,9 +888,9 @@ class ServerStore extends ChangeNotifier {
       if (old.directory.isEmpty) continue;
       final p = byId[old.projectID];
       if (p == null || p.id == 'global') continue;
-      final wt = worktreesByDir[p.worktree];
+      final wt = worktreesByDir[p.canonical];
       if (wt == null || wt.isEmpty) continue;
-      if (old.directory == p.worktree || wt.contains(old.directory)) continue;
+      if (old.directory == p.canonical || wt.contains(old.directory)) continue;
       out.add(old.id);
     }
     return out;
@@ -1170,15 +903,7 @@ class ServerStore extends ChangeNotifier {
         await client!.projects(),
         worktreesByDir: worktreesByDir,
       );
-      final sessions = await _fetchAllSessions(
-          projects: projects, worktreesByDir: worktreesByDir);
-      final fetchedDirs = <String>{};
-      final status = await _fetchAllStatuses(
-          projects: projects, sessions: sessions, fetchedDirs: fetchedDirs);
-      // Ghost detection also runs here (not just in refreshListAndWorkingSse):
-      // `_sessions` still holds the cache loaded by `_loadCache`, which may
-      // contain sessions whose worktree vanished while the app was away.
-      // Without this they stay sendable until the first reconcile arrives.
+      final sessions = await _fetchAllSessions();
       _unghostRecovered(sessions);
       final ghostIds =
           _detectGhostSessionIds(_sessions, sessions, projects, worktreesByDir);
@@ -1186,7 +911,8 @@ class ServerStore extends ChangeNotifier {
       _projectsFetched = true;
       _sessions = sessions;
       _markGhostSessions(ghostIds);
-      _mergeStatus(fresh: status, sessions: sessions, fetchedDirs: fetchedDirs);
+      final active = await _fetchActiveStatuses();
+      _mergeStatus(fresh: active, fetched: true, sessions: sessions);
       _inferWorkspaceForNewProjects();
       return true;
     } catch (_) {
@@ -1194,62 +920,25 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Aggregate session status across all project + session directories.
-  /// Without a directory, GET /session/status returns `{}`, so we must query
-  /// per-dir. Includes sandbox worktree directories (SS-1: must match the
-  /// directory coverage of _eventDirectories / _fetchAllSessions).
-  ///
-  /// [fetchedDirs], when non-null, records every directory fetched without
-  /// throwing. The caller uses it to tell which sessions received a fresh,
-  /// authoritative status (so the merge can keep the cached value for sessions
-  /// whose directory fetch failed — see [_mergeStatus]).
-  Future<Map<String, SessionStatusValue>> _fetchAllStatuses({
-    required List<ProjectModel> projects,
-    List<SessionModel> sessions = const [],
-    Set<String>? fetchedDirs,
-  }) async {
-    final dirs = <String>{};
-    for (final p in projects) {
-      if (p.worktree.isNotEmpty) dirs.add(p.worktree);
+  Future<Map<String, SessionStatusValue>> _fetchActiveStatuses() async {
+    try {
+      return await client!.activeSessions();
+    } catch (_) {
+      return const {};
     }
-    for (final s in sessions) {
-      if (s.directory.isNotEmpty) dirs.add(s.directory);
-    }
-    final out = <String, SessionStatusValue>{};
-    await Future.wait(dirs.map((dir) async {
-      try {
-        final r = await client!.sessionStatus(directory: dir);
-        out.addAll(r);
-        fetchedDirs?.add(dir);
-      } catch (_) {}
-    }));
-    return out;
   }
 
-  /// Merge freshly-fetched status into the in-memory status cache.
-  ///
-  /// `_statusMap` is a pure in-memory cache (never persisted): it survives a
-  /// background pause so the UI shows the pre-leave status the instant the app
-  /// resumes, then is updated once the REST fetch returns ("优先展示离开前的
-  /// 缓存状态，获取到最新状态后再更新").
-  ///
-  /// Sessions whose directory was fetched successfully are authoritative —
-  /// their fresh value wins, and absence from [fresh] ⇒ idle. Sessions in a
-  /// directory whose fetch FAILED keep their cached status, so a flaky resume
-  /// never wipes a known busy/retry indicator to idle (the regression behind
-  /// cdb0872 / SS-1).
   void _mergeStatus({
     required Map<String, SessionStatusValue> fresh,
+    required bool fetched,
     required List<SessionModel> sessions,
-    required Set<String> fetchedDirs,
   }) {
-    final covered = <String>{};
-    for (final s in sessions) {
-      if (fetchedDirs.contains(s.directory)) covered.add(s.id);
-    }
+    if (!fetched) return;
     final merged = <String, SessionStatusValue>{};
     _statusMap.forEach((id, v) {
-      if (!covered.contains(id)) merged[id] = v;
+      if (!fresh.containsKey(id) && v.type == 'retry') {
+        merged[id] = v;
+      }
     });
     merged.addAll(fresh);
     _statusMap
@@ -1257,104 +946,28 @@ class ServerStore extends ChangeNotifier {
       ..addAll(merged);
   }
 
-  /// Aggregate sessions across all projects. For each project, fetches
-  /// unarchived sessions for its main worktree AND every sandbox worktree
-  /// (via `/experimental/worktree`), so multi-worktree projects like plan-travel
-  /// show all their conversations. Subtask/child sessions (`parentID` set) and
-  /// archived sessions are skipped, matching the opencode web UI.
-  ///
-  /// All per-project and per-worktree requests run concurrently via
-  /// [Future.wait] (instead of N×M serial round-trips), so a large server with
-  /// many projects/worktrees doesn't stall the first screen.
-  Future<List<SessionModel>> _fetchAllSessions({
-    List<ProjectModel>? projects,
-    Map<String, List<String>>? worktreesByDir,
-  }) async {
-    final ps = projects ?? _projects;
-    final futures = <Future<List<SessionModel>>>[];
-    for (final p in ps) {
-      if (p.id == 'global') {
-        futures.add(client!.sessions());
-      } else {
-        futures.add(_sessionsForProject(p, worktreesByDir));
-      }
-    }
-    final results = await Future.wait(futures);
+  Future<List<SessionModel>> _fetchAllSessions() async {
+    final list = await client!.sessions();
     final all = <String, SessionModel>{};
-    for (final list in results) {
-      _addSessions(all, list);
-    }
+    _addSessions(all, list);
     return all.values.toList();
-  }
-
-  /// Sessions for one project: resolve its worktrees, then fetch sessions for
-  /// the main worktree and every worktree in parallel. [worktreesByDir], when
-  /// it already covers the project's main worktree (populated by
-  /// `_reconcileSandboxes` on the same refresh), skips the duplicate
-  /// `GET /experimental/worktree` round-trip; cache-miss fetches are recorded
-  /// back into it so the ghost filter/detection can reuse the result.
-  Future<List<SessionModel>> _sessionsForProject(
-    ProjectModel p, [
-    Map<String, List<String>>? worktreesByDir,
-  ]) async {
-    var worktrees = worktreesByDir?[p.worktree];
-    if (worktrees == null) {
-      worktrees = await _safeWorktrees(p.worktree);
-      worktreesByDir?[p.worktree] = worktrees;
-    }
-    final dirs = [p.worktree, ...worktrees]
-        .where((d) => d.isNotEmpty)
-        .toList();
-    final lists = await Future.wait(dirs.map((dir) async {
-      try {
-        return await client!.sessionsForDirectory(dir);
-      } catch (_) {
-        return const <SessionModel>[]; // non-git / inaccessible worktree
-      }
-    }));
-    final out = <SessionModel>[];
-    for (final list in lists) {
-      out.addAll(list);
-    }
-    return out;
-  }
-
-  Future<List<String>> _safeWorktrees(String directory) async {
-    try {
-      return await client!.worktrees(directory);
-    } catch (_) {
-      return const [];
-    }
   }
 
   void _addSessions(Map<String, SessionModel> out, List<SessionModel> list) {
     for (final s in list) {
-      // Bump before the archived/parent filter: archived and child sessions
-      // (if ever returned by the API) still contribute to the project's
-      // recency, so archiving the last active session doesn't sink the
-      // project in the projects tab.
       _bumpLastActivity(s);
-      if (s.archived != null) continue; // archived
+      if (s.archived != null) continue;
       if (s.parentID != null) {
-        // 子会话不进可见列表，但注册进 `_childSessions`——重启/重连后
-        // SSE session.updated 不会重放，权限/问题卡的子→父宿主解析
-        // （`_cardHostSessionId`）依赖该注册表。
         _upsertChildSession(s);
         continue;
       }
       out[s.id] = s;
-      // REST 批量加载路径也回填 conv directory（SSE 可能先到达创建了空
-      // directory 的 conv，此处补上）。
       _backfillConversationDirectory(s.id, s.directory);
     }
   }
 
-  /// Coalesce the many `server.connected` events (one per directory
-  /// connection) into a single reconcile shortly after connect.
   int _reconcileScheduleCount = 0;
 
-  /// Number of times [_scheduleReconcile] was entered (for asserting the
-  /// transition-only scheduling guard, not debounced firings).
   @visibleForTesting
   int get reconcileScheduleCountForTesting => _reconcileScheduleCount;
 
@@ -1366,11 +979,6 @@ class ServerStore extends ChangeNotifier {
     });
   }
 
-  /// Unified refresh entry point: REST fetch (+ ensure the global SSE runs).
-  ///
-  /// `force: true` — also (re)start the global SSE. Used when the stream is
-  ///   missing (resume after pause, refresh recovering a failed connection).
-  /// `force: false` — REST refresh only; running SSE untouched.
   Future<bool> refreshListAndWorkingSse({bool force = false}) async {
     if (client == null) return false;
     PerfProbe.I.markEvent('refresh-start force=$force');
@@ -1389,27 +997,16 @@ class ServerStore extends ChangeNotifier {
         newProjects = _projects;
       }
       _projectsFetched = true;
-      final sessions = await _fetchAllSessions(
-          projects: newProjects, worktreesByDir: worktreesByDir);
-      // Ghost cleanup using data the session fetch already paid for: drop
-      // sandbox entries whose directory no longer exists, and mark open
-      // conversations whose session just proved unreachable (no SSE
-      // coverage → replies would never render).
+      final sessions = await _fetchAllSessions();
       _unghostRecovered(sessions);
       final ghostIds =
           _detectGhostSessionIds(_sessions, sessions, newProjects, worktreesByDir);
-      // On the force path `_reconcileSandboxes` already filtered with the same
-      // map (idempotent no-op here); on the reconcile path this is the pass
-      // that actually cleans in-memory sandboxes using data the session fetch
-      // already paid for.
       newProjects = _filterSandboxes(newProjects, worktreesByDir);
-      final fetchedDirs = <String>{};
-      final status = await _fetchAllStatuses(
-          projects: newProjects, sessions: sessions, fetchedDirs: fetchedDirs);
+      final active = await _fetchActiveStatuses();
       _projects = newProjects;
       _sessions = sessions;
       _markGhostSessions(ghostIds);
-      _mergeStatus(fresh: status, sessions: sessions, fetchedDirs: fetchedDirs);
+      _mergeStatus(fresh: active, fetched: true, sessions: sessions);
       _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
         final s = statusOf(conv.sessionId);
@@ -1421,21 +1018,14 @@ class ServerStore extends ChangeNotifier {
       _lastFullRefreshAt = DateTime.now();
       connected = true;
       _scheduleCacheSave();
-      // server.connected → reconcile → here: re-pull commands so a transient
-      // empty (network-recovery blip) gets overwritten, mirroring desktop's
-      // bootstrap re-run on server.connected.
       final activeId = _activeSessionId;
       if (activeId != null) {
         unawaited(refreshCommands(directory: sessionById(activeId)?.directory));
       }
     } catch (_) {
-      // REST failed — return false so manual refresh shows toast.
       notifyListeners();
       return false;
     }
-    // Conversation-layer healing (outside try/catch): only reload the active
-    // conversation if it's stale. If SSE is live, reload would clobber
-    // incremental updates. markStale() is safe — it defers to reloadIfStale().
     final activeId = _activeSessionId;
     final activeConv =
         activeId != null ? _conversations[activeId] : null;
@@ -1471,9 +1061,6 @@ class ServerStore extends ChangeNotifier {
     await refreshListAndWorkingSse(force: false);
   }
 
-  /// Fetch pending permissions via REST and route to cached conversations.
-  /// SSE only pushes permission.asked at creation time — if the app wasn't
-  /// listening, the event is missed. This backfills on connect/reconcile/resume.
   Future<void> _backfillPermissions() async {
     final c = client;
     if (c == null) return;
@@ -1485,9 +1072,6 @@ class ServerStore extends ChangeNotifier {
     try {
       _purgeExpiredResolved();
       final prev = Map.of(_pendingPermissions);
-      // R-Perm-3: fetch per all event directories (includes sandbox worktrees),
-      // not just main project worktrees, so sandbox session permissions are
-      // covered.
       final dirs = _eventDirectories();
       final failedDirs = <String>{};
       final next = <String, Permission>{};
@@ -1508,11 +1092,6 @@ class ServerStore extends ChangeNotifier {
           failedDirs.add(dir);
         }
       }
-      // Only restore SSE-delivered permissions whose session's directory had a
-      // failed REST fetch — successful fetches are authoritative. 子会话不在
-      // `_sessions`（`sessionById` 为 null），须回退 `_childSessions` 取
-      // directory——否则 dir 恒空走 `dir.isEmpty` 分支，已在他端答复的
-      // 子卡每次 backfill 都被复活，父会话暂停徽标永挂。
       for (final entry in prev.entries) {
         final session =
             sessionById(entry.key) ?? _childSessions[entry.key];
@@ -1528,19 +1107,15 @@ class ServerStore extends ChangeNotifier {
           live: _pendingPermissions,
           idOf: (p) => p.id,
           isResolved: _recentlyResolvedPermissions.containsKey);
-      // R-Perm-1: notify if the permission map changed so list shield updates.
       final changed = _pendingPermissions.length != next.length ||
           !_pendingPermissions.keys.toSet().containsAll(next.keys);
-      // The live map is only replaced synchronously here — clearing up front and
-      // refilling per REST response would expose a half-empty snapshot to any
-      // notify during the window (indicator flicker paused ↔ working).
       _pendingPermissions
         ..clear()
         ..addAll(next);
       if (changed) {
         notifyListeners();
       }
-      await _backfillQuestions();
+      await _backfillForms();
     } finally {
       _backfillInFlight = false;
       if (_backfillDirty) {
@@ -1550,52 +1125,48 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Fetch pending questions via REST, same pattern as permissions.
-  Future<void> _backfillQuestions() async {
+  Future<void> _backfillForms() async {
     final c = client;
     if (c == null) return;
     _purgeExpiredResolved();
-    final prev = Map.of(_pendingQuestions);
+    final prev = Map.of(_pendingForms);
     final dirs = _eventDirectories();
     final failedDirs = <String>{};
-    final next = <String, QuestionRequest>{};
+    final next = <String, FormInfo>{};
     for (final dir in dirs) {
       try {
-        final pending = await c.listQuestions(directory: dir);
-        for (final q in pending) {
-          if (_recentlyResolvedQuestions.containsKey(q.id)) {
-            AppLogger.I.i(_tag, 'backfill question skipped (recently resolved) sid=${q.sessionID} qid=${q.id} dir=$dir');
+        final pending = await c.listForms(directory: dir);
+        for (final f in pending) {
+          if (_recentlyResolvedForms.containsKey(f.id)) {
+            AppLogger.I.i(_tag, 'backfill form skipped (recently resolved) sid=${f.sessionID} fid=${f.id} dir=$dir');
             continue;
           }
-          next[q.id] = q;
-          _conversations[_cardHostSessionId(q.sessionID)]?.onQuestion(q);
-          AppLogger.I.i(_tag, 'backfill question re-inject sid=${q.sessionID} qid=${q.id} dir=$dir');
+          next[f.id] = f;
+          _conversations[_cardHostSessionId(f.sessionID)]?.onForm(f);
+          AppLogger.I.i(_tag, 'backfill form re-inject sid=${f.sessionID} fid=${f.id} dir=$dir');
         }
       } catch (_) {
         failedDirs.add(dir);
       }
     }
-    // Restore SSE-delivered questions whose session's directory had a failed
-    // REST fetch — successful fetches are authoritative. 同权限回填：子会话
-    // directory 回退 `_childSessions`，防他端已答复的子卡被复活。
     for (final entry in prev.entries) {
-      final session = sessionById(entry.value.sessionID) ??
-          _childSessions[entry.value.sessionID];
+      final session =
+          sessionById(entry.value.sessionID) ?? _childSessions[entry.value.sessionID];
       final dir = session?.directory ?? '';
       if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
-        if (_recentlyResolvedQuestions.containsKey(entry.key)) continue;
+        if (_recentlyResolvedForms.containsKey(entry.key)) continue;
         next.putIfAbsent(entry.key, () => entry.value);
       }
     }
     _mergeWindowMutations(
         next: next,
         prev: prev,
-        live: _pendingQuestions,
-        idOf: (q) => q.id,
-        isResolved: _recentlyResolvedQuestions.containsKey);
-    final changed = _pendingQuestions.length != next.length ||
-        !_pendingQuestions.keys.toSet().containsAll(next.keys);
-    _pendingQuestions
+        live: _pendingForms,
+        idOf: (f) => f.id,
+        isResolved: _recentlyResolvedForms.containsKey);
+    final changed = _pendingForms.length != next.length ||
+        !_pendingForms.keys.toSet().containsAll(next.keys);
+    _pendingForms
       ..clear()
       ..addAll(next);
     if (changed) {
@@ -1603,12 +1174,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Fold mutations that hit [live] while an async rebuild was in flight into
-  /// [next]: entries added or replaced by SSE are newer than the REST snapshot
-  /// and win; entries removed from [live] (replied / locally resolved) must not
-  /// be resurrected by a stale snapshot. [isResolved] is re-applied after the
-  /// merge so a card asked and resolved entirely inside the window — its echo
-  /// already recorded into [next] by the REST loop — is dropped too.
   void _mergeWindowMutations<V>(
       {required Map<String, V> next,
       required Map<String, V> prev,
@@ -1629,19 +1194,9 @@ class ServerStore extends ChangeNotifier {
   void _onSseState(SseState s) {
     final wasLive = _sseLive;
     _sseLive = s.connected;
-    // Mark "failed" whenever the stream enters reconnecting state.
-    // On a normal start the first state event is connected:true (no
-    // reconnecting), so the banner stays suppressed. On a no-network
-    // start the first event is reconnecting:true — the banner shows.
-    // On a post-connect drop, the reconnecting event also fires — same.
     if (!s.connected && s.reconnecting) {
       _sseFailed = true;
     }
-    // While the stream is reconnecting (server might be unreachable), probe
-    // /global/health every 5s. A successful probe proves reachability long
-    // before the exponential backoff (up to 30s) would fire, so we kick the
-    // client out of its sleep immediately. The connected state stops the
-    // probe (authoritative reachability signal).
     if (s.reconnecting) {
       _startHealthProbe();
     } else if (s.connected) {
@@ -1650,22 +1205,12 @@ class ServerStore extends ChangeNotifier {
     if (s.reconnecting) {
       _needsStaleMarking = true;
     }
-    // Schedule reconcile ONLY on the not-live → live transition. The client
-    // emits connected state on EVERY data frame; scheduling per frame would
-    // reset the 800ms debounce on every token of any active stream, deferring
-    // the post-disconnect reconcile indefinitely while the server is busy.
-    // Reconcile is the sole recovery path for the disconnect window
-    // (design-sse-global-event.md §1.3), so it must fire on reconnect
-    // regardless of stream traffic.
     if (!s.reconnecting && s.connected && !wasLive) {
       _scheduleReconcile();
     }
     notifyListeners();
   }
 
-  /// Periodically probe `GET /global/health` while any SSE reconnect is
-  /// pending. On the first healthy response, kick every client out of its
-  /// backoff sleep and stop probing (the reconnect then proceeds at once).
   void _startHealthProbe() {
     if (_healthProbeTimer != null) return;
     final generation = ++_healthProbeGeneration;
@@ -1709,43 +1254,24 @@ class ServerStore extends ChangeNotifier {
     AppLogger.I.i(_tag, 'health probe stopped');
   }
 
-  /// Test seam to drive SSE events directly into [_onEvent] (which is library-
-  /// private), BYPASSING the directory gate. Lets tests assert the
-  /// `message.part.updated` case's `break`->`return` (LPS-1) throttle behavior
-  /// through the real event route (including the switch's trailing notify)
-  /// without seeding projects/sessions for the gate.
+  @visibleForTesting
+  void onSseStateForTesting(SseState s) => _onSseState(s);
+
   @visibleForTesting
   void onEventForTesting(OpencodeEvent ev) => _onEvent(ev);
 
-  /// Test seam driving an event through the real global-stream route
-  /// [_onGlobalEvent] INCLUDING the directory gate.
   @visibleForTesting
   void onGlobalEventForTesting(String directory, OpencodeEvent ev) =>
       _onGlobalEvent(GlobalOpencodeEvent(directory: directory, event: ev));
 
-  /// Test seam exposing the gate for direct assertions.
   @visibleForTesting
   bool isGatedDirectoryForTesting(String directory) =>
       _isGatedDirectory(directory);
 
-  /// Test seam to drive SSE lifecycle states into [_onSseState]. Used by
-  /// health-probe tests to simulate reconnecting/connected.
-  @visibleForTesting
-  void onSseStateForTesting(SseState s) => _onSseState(s);
-
-  /// Test seam for the REST bulk-fetch path [addSessionsForTesting] merges a
-  /// list of sessions into a per-id map exactly as `_fetchAllSessions` does,
-  /// bumping `_lastActivityByKey` before the archived/parent filter. Used by
-  /// PA-4 to lock that ordering invariant on the REST path (not just SSE).
   @visibleForTesting
   void addSessionsForTesting(Map<String, SessionModel> out, List<SessionModel> list) =>
       _addSessions(out, list);
 
-  /// Test seam for the cache round-trip path. Sets `_profile` + `_cacheStore`
-  /// (required by `_loadCache`) and loads cache. Used by PA-R2 to assert that
-  /// an `activity` blob is restored, and that a stale cached value does NOT
-  /// overwrite a fresher in-memory value (the monotonic-max merge in
-  /// `_loadCache`).
   @visibleForTesting
   Future<void> loadCacheForTesting(ConnectionProfile profile) async {
     _profile = profile;
@@ -1753,39 +1279,21 @@ class ServerStore extends ChangeNotifier {
     await _loadCache();
   }
 
-  /// Test seam: drive `_upsertSession` to populate `_sessions` (needed by
-  /// `_eventDirectories` / `sessionById`) without going through SSE.
   @visibleForTesting
   void upsertSessionForTesting(SessionModel s) => _upsertSession(s);
 
-  /// Test seam: set `_projects` directly (needed by `removeWorktree` which
-  /// looks up the project by worktree path).
   @visibleForTesting
   void setProjectsForTesting(List<ProjectModel> projects) =>
       _projects = projects;
 
-  /// Test seam: clear `_sessions` between widget tests (paired with
-  /// [upsertSessionForTesting] / [setProjectsForTesting]).
   @visibleForTesting
   void clearSessionsForTesting() => _sessions = [];
 
-  /// Test seam: drive the post-fetch ghost filtering of `sandboxes`
-  /// (see `_reconcileSandboxes`) without a full connect()/bootstrap.
   @visibleForTesting
   Future<List<ProjectModel>> reconcileSandboxesForTesting(
           List<ProjectModel> projects) =>
       _reconcileSandboxes(projects);
 
-  /// Test seam: drive `_sessionsForProject` to verify `worktreesByDir`
-  /// reuse (skipping the duplicate `GET /experimental/worktree`).
-  @visibleForTesting
-  Future<List<SessionModel>> sessionsForProjectForTesting(
-    ProjectModel p, [
-    Map<String, List<String>>? worktreesByDir,
-  ]) =>
-      _sessionsForProject(p, worktreesByDir);
-
-  /// Test seam: pure sandboxes filter over pre-fetched worktree lists.
   @visibleForTesting
   List<ProjectModel> filterSandboxesForTesting(
     List<ProjectModel> projects,
@@ -1793,8 +1301,6 @@ class ServerStore extends ChangeNotifier {
   ) =>
       _filterSandboxes(projects, worktreesByDir);
 
-  /// Test seam: pure detection of sessions whose directory became
-  /// unreachable (ghost sandbox) across a refresh.
   @visibleForTesting
   Set<String> detectGhostSessionIdsForTesting(
     List<SessionModel> oldSessions,
@@ -1804,8 +1310,6 @@ class ServerStore extends ChangeNotifier {
   ) =>
       _detectGhostSessionIds(oldSessions, newSessions, projects, worktreesByDir);
 
-  /// Test seam: drive ghost tracking (mark / un-ghost) to verify the flag
-  /// survives conversation eviction via `_ghostSessionIds`.
   @visibleForTesting
   void markGhostSessionsForTesting(Set<String> ids) => _markGhostSessions(ids);
 
@@ -1813,34 +1317,23 @@ class ServerStore extends ChangeNotifier {
   void unghostRecoveredForTesting(List<SessionModel> sessions) =>
       _unghostRecovered(sessions);
 
-  /// Test seam for the in-memory status-cache merge. Seeds `_statusMap` first
-  /// via `session.status` events, then call this to assert the resume-time
-  /// merge: fresh values win for fetched dirs, cached values survive for dirs
-  /// whose fetch failed.
   @visibleForTesting
   void mergeStatusForTesting({
     required Map<String, SessionStatusValue> fresh,
     required List<SessionModel> sessions,
     required Set<String> fetchedDirs,
   }) =>
-      _mergeStatus(fresh: fresh, sessions: sessions, fetchedDirs: fetchedDirs);
+      _mergeStatus(fresh: fresh, fetched: fetchedDirs.isNotEmpty, sessions: sessions);
 
-  /// Test seam: drive `_backfillQuestions` directly to verify the
-  /// `_recentlyResolvedQuestions` guard skips recently-resolved ids.
   @visibleForTesting
-  Future<void> backfillQuestionsForTesting() => _backfillQuestions();
+  Future<void> backfillQuestionsForTesting() => _backfillForms();
 
-  /// Test seam: drive `_backfillPermissions` directly (atomic-swap regression:
-  /// the live map must stay populated while the REST fetches are in flight).
   @visibleForTesting
   Future<void> backfillPermissionsForTesting() => _backfillPermissions();
 
-  /// Test seam: simulate TTL expiry by clearing the resolved-guard sets.
-  /// Used to verify the "re-surface if still pending server-side" path
-  /// (关键设计决策 4).
   @visibleForTesting
   void expireRecentlyResolvedForTesting() {
-    _recentlyResolvedQuestions.clear();
+    _recentlyResolvedForms.clear();
     _recentlyResolvedPermissions.clear();
   }
 
@@ -1855,201 +1348,329 @@ class ServerStore extends ChangeNotifier {
   @visibleForTesting
   Future<void> stopSseForTesting() => _stopSse(flushCache: false);
 
-  /// Global-stream entry point: gate by envelope directory, then route into
-  /// [_onEvent]. `'global'` frames (`server.connected` / `server.heartbeat`)
-  /// bypass the gate — they carry no directory and drive connection state.
   void _onGlobalEvent(GlobalOpencodeEvent gev) {
+    final ev = gev.event;
     final directory = gev.directory;
-    if (directory != 'global' && !_isGatedDirectory(directory)) return;
-    _onEvent(gev.event);
+    final sid = ev.properties['sessionID']?.toString();
+    if (directory != 'global' && !_isGatedDirectory(directory)) {
+      return;
+    }
+    if (directory == 'global' &&
+        sid != null &&
+        ev.type != 'server.connected' &&
+        !_isKnownSession(sid)) {
+      return;
+    }
+    _onEvent(ev);
   }
 
   void _onEvent(OpencodeEvent ev) {
     switch (ev.type) {
-      case 'server.heartbeat':
-        // No-op: heartbeat carries no data and should not trigger a global
-        // notifyListeners() — every ListenableBuilder(serverStore) would
-        // rebuild (AppBar ×3, body, tabs) for no reason. Just keep the SSE
-        // connection alive (already handled by the transport layer).
-        return;
       case 'server.connected':
         AppLogger.I.i(_tag, 'server.connected');
         _scheduleReconcile();
-        return; // _reconcile notifies
-      case 'session.status':
+        return;
+      case 'session.created':
+        final d = ev.properties;
+        final sid = d['sessionID']?.toString();
+        if (sid == null) break;
+        _upsertSession(SessionModel(
+          id: sid,
+          projectID: d['projectID']?.toString() ?? '',
+          directory: (d['location'] is Map)
+              ? (d['location'] as Map)['directory']?.toString() ?? ''
+              : '',
+          title: d['title']?.toString() ?? 'Untitled',
+          created: _i(ev.id == null ? 0 : DateTime.now().millisecondsSinceEpoch),
+          updated: DateTime.now().millisecondsSinceEpoch,
+          parentID: d['parentID']?.toString(),
+          agent: d['agent']?.toString(),
+          model: d['model'] is Map
+              ? ModelRef.fromJson((d['model'] as Map).cast<String, dynamic>())
+              : null,
+        ));
+        break;
+      case 'session.renamed':
         final sid = ev.properties['sessionID']?.toString();
-        final st = ev.properties['status'];
-        if (sid != null && st is Map) {
-          final status = SessionStatusValue.fromJson(st.cast());
-          AppLogger.I.d(_tag, 'session.status $sid=${status.type}'
-              '${status.message != null ? ' msg=${status.message}' : ''}');
-          // No-op guard: busy sessions re-emit the same status frequently
-          // (and duplicate live subscriptions delivered it 2-3x). A trailing
-          // notifyListeners() per event rebuilds every
-          // ListenableBuilder(serverStore); an identical value must not.
-          if (_statusMap[sid] == status) return;
-          _statusMap[sid] = status;
-          _conversations[sid]?.setStatus(status.type, retryMessage: status.message);
+        final title = ev.properties['title']?.toString();
+        if (sid != null && title != null && title.isNotEmpty) {
+          final s = sessionById(sid);
+          if (s != null) {
+            _upsertSession(s.copyWith(title: title));
+          }
+        }
+        break;
+      case 'session.deleted':
+        final sid = ev.properties['sessionID']?.toString();
+        if (sid != null) {
+          _removeSession(sid);
+          fileBrowsing.removeSessionData(sid);
+        }
+        break;
+      case 'session.moved':
+        _scheduleReconcile();
+        break;
+      case 'session.agent.selected':
+      case 'session.model.selected':
+        final sid = ev.properties['sessionID']?.toString();
+        if (sid != null) unawaited(_refreshSessionMeta(sid));
+        break;
+      case 'session.metadata.updated':
+      case 'session.permissions':
+      case 'session.viewed':
+      case 'session.forked':
+      case 'session.instructions.updated':
+        break;
+      case 'session.execution.started':
+        final sid1 = ev.properties['sessionID']?.toString();
+        if (sid1 != null) {
+          if (_statusMap[sid1]?.type == 'busy') return;
+          _statusMap[sid1] = const SessionStatusValue('busy');
+          _conversations[sid1]?.setStatus('busy');
           _scheduleCacheSave();
         }
         break;
-      case 'session.idle':
-        final sid = ev.properties['sessionID']?.toString();
-        if (sid != null) {
-          // Only notify if the session was previously busy (not a spurious
-          // idle on an already-idle session).
-          final wasBusy = _statusMap[sid]?.type == 'busy';
-          final wasRetry = _statusMap[sid]?.type == 'retry';
-          _statusMap[sid] = const SessionStatusValue('idle');
+      case 'session.execution.succeeded':
+      case 'session.execution.failed':
+      case 'session.execution.interrupted':
+        final sid2 = ev.properties['sessionID']?.toString();
+        if (sid2 != null) {
+          final wasBusy = _statusMap[sid2]?.type == 'busy' ||
+              _statusMap[sid2]?.type == 'retry';
+          final wasRetry = _statusMap[sid2]?.type == 'retry';
+          _statusMap[sid2] = const SessionStatusValue('idle');
           _scheduleCacheSave();
-          // Clear the retry banner when the session settles out of retry.
-          // busy → idle doesn't need this (no retry message was set), so we
-          // avoid a redundant conv notify for that path.
           if (wasRetry) {
-            _conversations[sid]?.setStatus('idle');
+            _conversations[sid2]?.setStatus('idle');
           }
           if (wasBusy) {
-            AppLogger.I.i(_tag, 'session.idle $sid');
-            // Subagent 子会话完成不单独通知（design-subagent-status）：
-            // 父会话仍在跑，逐个 subagent 弹「运行完成」是噪音；此前
-            // sessionById 对子会话返回 null，通知会以默认标题误弹。
-            if (!isChildSession(sid)) {
+            AppLogger.I.i(_tag, 'execution settled ${ev.type} $sid2');
+            if (!isChildSession(sid2)) {
               unawaited(NotificationService.notifyRunComplete(
-                      sessionById(sid)?.title)
+                      sessionById(sid2)?.title)
                   .catchError((_) {}));
             }
-            final conv = _conversations[sid];
+            final conv = _conversations[sid2];
             if (conv != null && conv.isStale) {
               unawaited(conv.reload());
             }
           }
         }
         break;
-      case 'session.created':
-      case 'session.updated':
-        final info = ev.properties['info'];
-        if (info is Map) _upsertSession(SessionModel.fromJson(info.cast()));
-        break;
-      case 'session.deleted':
-        final info = ev.properties['info'];
-        if (info is Map) {
-          final sid = (info['id'] ?? '').toString();
-          _removeSession(sid);
-          fileBrowsing.removeSessionData(sid);
-        }
-        break;
-      case 'session.error':
-        final sid = ev.properties['sessionID']?.toString();
-        final err = ev.properties['error'];
-        if (sid != null) {
-          final Map<String, dynamic> errorMap;
-          if (err is Map) {
-            errorMap = err.cast<String, dynamic>();
-          } else if (err is String && err.isNotEmpty) {
-            errorMap = {'message': err};
-          } else {
-            break;
+      case 'session.retry.scheduled':
+        final sid3 = ev.properties['sessionID']?.toString();
+        if (sid3 != null) {
+          final error = ev.properties['error'];
+          final message = error is Map ? error['message']?.toString() : null;
+          if (_statusMap[sid3]?.type != 'retry') {
+            _statusMap[sid3] = SessionStatusValue('retry', message: message);
+            _scheduleCacheSave();
           }
-          AppLogger.I.e(_tag, 'session.error $sid $errorMap');
+          _conversations[sid3]?.onRetryScheduled(
+              ev.properties['assistantMessageID']?.toString(),
+              _i(ev.properties['attempt']),
+              error is Map
+                  ? error.cast<String, dynamic>()
+                  : {'message': error?.toString() ?? ''});
         }
         break;
-      case 'message.updated':
-        final msgInfo = ev.properties['info'];
-        final msgSid = msgInfo is Map ? msgInfo['sessionID']?.toString() : null;
-        if (msgSid != null) fileBrowsing.invalidateContentForSession(msgSid);
-        unawaited(_onMessageUpdated(ev.properties));
+      case 'session.usage.updated':
+      case 'session.usage.recorded':
+        final sid4 = ev.properties['sessionID']?.toString();
+        if (sid4 != null) {
+          final s = sessionById(sid4);
+          if (s != null) {
+            _upsertSession(s.copyWith(
+              cost: _d(ev.properties['cost']),
+              updated: DateTime.now().millisecondsSinceEpoch,
+            ));
+          }
+        }
+        break;
+      case 'session.step.started':
+        final sid5 = ev.properties['sessionID']?.toString();
+        final mid5 = ev.properties['assistantMessageID']?.toString();
+        if (sid5 != null && mid5 != null) {
+          final conv = ensureConversation(sid5);
+          conv?.onStepStarted(
+            mid5,
+            agent: ev.properties['agent']?.toString(),
+            model: ev.properties['model'] is Map
+                ? ModelRef.fromJson(
+                    (ev.properties['model'] as Map).cast<String, dynamic>())
+                : null,
+          );
+          if (conv != null) _scheduleCacheSave();
+        }
         return;
-      case 'message.part.delta':
-        // Streaming token delta. Route to the conversation's onPartUpdated
-        // (same as message.part.updated) but early-return: the detail page is
-        // driven by conv.notifyListeners() and the list preview by
-        // _notifyPreviewChanged() (120ms throttle). A global notifyListeners()
-        // here would rebuild every ListenableBuilder(serverStore) per token.
-        final dPart = ev.properties['part'];
-        final dSid = dPart is Map ? dPart['sessionID']?.toString() : null;
-        final dDelta = ev.properties['delta']?.toString();
-        final dPtype = dPart is Map ? dPart['type']?.toString() : null;
-        if (dSid != null) fileBrowsing.invalidateContentForSession(dSid);
-        if (dSid != null && dPart is Map) {
-          final conv = ensureConversation(dSid);
+      case 'session.text.delta':
+      case 'session.reasoning.delta':
+        final sid6 = ev.properties['sessionID']?.toString();
+        final mid6 = ev.properties['assistantMessageID']?.toString();
+        final ordinal6 = _i(ev.properties['ordinal']);
+        final delta6 = ev.properties['delta']?.toString();
+        if (sid6 != null && mid6 != null) {
+          final conv = ensureConversation(sid6);
           if (conv != null) {
-            conv.onPartUpdated(dPart.cast(), dDelta);
-            if (dPtype == 'tool' || dPtype == 'text' || dPtype == 'reasoning') {
-              final pv = conv.lastMessagePreview(
-                  hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
-              if (pv != null) {
-                _lastMessage[dSid] = pv;
-                _notifyPreviewChanged();
-                _scheduleCacheSave();
-              }
+            if (ev.type == 'session.text.delta') {
+              conv.onTextDelta(mid6, ordinal6, delta6 ?? '');
+            } else {
+              conv.onReasoningDelta(mid6, ordinal6, delta6 ?? '');
             }
+            _updateStreamingPreview(sid6, conv);
           }
         }
         return;
-      case 'file.watcher.updated':
-        // File system change notification — no app state to update. Would
-        // trigger a global notifyListeners() for no reason (every tab + AppBar
-        // rebuilds). fileBrowsing invalidates lazily on next content fetch.
-        return;
-      case 'pty.updated':
-        // Terminal PTY state change — not consumed by the app. Same rationale
-        // as file.watcher.updated: no global rebuild needed.
-        return;
-      case 'message.part.updated':
-        final part = ev.properties['part'];
-        final sid = part is Map ? part['sessionID']?.toString() : null;
-        final delta = ev.properties['delta']?.toString();
-        final ptype = part is Map ? part['type']?.toString() : null;
-        if (sid != null) fileBrowsing.invalidateContentForSession(sid);
-        if (sid != null && part is Map) {
-          final conv = ensureConversation(sid);
+      case 'session.text.started':
+      case 'session.text.ended':
+      case 'session.reasoning.started':
+      case 'session.reasoning.ended':
+        final sid7 = ev.properties['sessionID']?.toString();
+        final mid7 = ev.properties['assistantMessageID']?.toString();
+        final ordinal7 = _i(ev.properties['ordinal']);
+        final text7 = ev.properties['text']?.toString();
+        if (sid7 != null && mid7 != null) {
+          final conv = ensureConversation(sid7);
           if (conv != null) {
-            conv.onPartUpdated(part.cast(), delta);
-            // List preview: refresh on every renderable part event (text/
-            // reasoning deltas included), coalesced by _notifyPreviewChanged()
-            // (120ms). Tool parts already triggered before; now streaming text
-            // also updates the preview instead of stalling on the previous
-            // user message.
-            // LPS-7: because this case returns early (LPS-1), the guard below
-            // also implicitly decides whether to notify — non-matching part
-            // types neither write the preview nor fire :811. Safe today (other
-            // types are _hidden or carry no preview text), but a future
-            // preview-bearing part type MUST be added here.
-            if (ptype == 'tool' || ptype == 'text' || ptype == 'reasoning') {
-              final pv = conv.lastMessagePreview(
-                  hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
-              if (pv != null) {
-                _lastMessage[sid] = pv;
-                _notifyPreviewChanged();
-                _scheduleCacheSave();
-              }
+            switch (ev.type) {
+              case 'session.text.started':
+                conv.onTextStarted(mid7, ordinal7);
+              case 'session.text.ended':
+                conv.onTextEnded(mid7, ordinal7, text7 ?? '');
+              case 'session.reasoning.started':
+                conv.onReasoningStarted(mid7, ordinal7);
+              case 'session.reasoning.ended':
+                conv.onReasoningEnded(mid7, ordinal7, text7 ?? '');
             }
+            _updateStreamingPreview(sid7, conv);
           }
         }
-        // LPS-1: early-return (not break) so this case does NOT fall through
-        // to the switch's trailing notifyListeners() at :811 — that notify is
-        // unthrottled and per-token, which would bypass _notifyPreviewChanged()'s
-        // 120ms coalescing and make the preview jitter per-token. Detail-page
-        // typing is driven by conv.notifyListeners() in onPartUpdated, so it is
-        // unaffected. Other cases still break -> :811 as before.
         return;
-      case 'todo.updated':
-        final sid = ev.properties['sessionID']?.toString();
-        final todos = ev.properties['todos'];
-        if (sid != null && todos is List) {
-          final list = todos
-              .map((e) => Todo.fromJson((e as Map).cast<String, dynamic>()))
-              .toList();
-          _conversations[sid]?.onTodosUpdated(list);
+      case 'session.tool.input.started':
+      case 'session.tool.input.delta':
+      case 'session.tool.input.ended':
+      case 'session.tool.called':
+      case 'session.tool.progress':
+      case 'session.tool.success':
+      case 'session.tool.failed':
+        _onToolEvent(ev);
+        return;
+      case 'session.step.streamed':
+        return;
+      case 'session.step.ended':
+        final sid8 = ev.properties['sessionID']?.toString();
+        final mid8 = ev.properties['assistantMessageID']?.toString();
+        if (sid8 != null && mid8 != null) {
+          final conv = ensureConversation(sid8);
+          conv?.onStepEnded(
+            mid8,
+            finish: ev.properties['finish']?.toString(),
+            rawFinish: ev.properties['rawFinish']?.toString(),
+            cost: _d(ev.properties['cost']),
+            tokens: ev.properties['tokens'] is Map
+                ? Tokens.fromJson(
+                    (ev.properties['tokens'] as Map).cast<String, dynamic>())
+                : null,
+          );
+        }
+        return;
+      case 'session.step.failed':
+        final sid9 = ev.properties['sessionID']?.toString();
+        final mid9 = ev.properties['assistantMessageID']?.toString();
+        final err9 = ev.properties['error'];
+        if (sid9 != null && mid9 != null) {
+          final conv = ensureConversation(sid9);
+          conv?.onStepFailed(
+            mid9,
+            err9 is Map
+                ? err9.cast<String, dynamic>()
+                : {'message': err9?.toString() ?? ''},
+            finish: ev.properties['finish']?.toString(),
+          );
+        }
+        return;
+      case 'session.message.content.updated':
+        final sidA = ev.properties['sessionID']?.toString();
+        final midA = ev.properties['messageID']?.toString();
+        if (sidA != null && midA != null) {
+          final conv = ensureConversation(sidA);
+          if (conv != null) {
+            conv.onMessageContentUpdated(midA, _parseContent(ev.properties['content']));
+            _updateStreamingPreview(sidA, conv);
+          }
+        }
+        return;
+      case 'session.inbox.enqueued':
+        final sidB = ev.properties['sessionID']?.toString();
+        final inboxB = ev.properties['inboxID']?.toString();
+        final itemB = ev.properties['item'];
+        if (sidB != null && inboxB != null && itemB is Map) {
+          final conv = ensureConversation(sidB);
+          conv?.onInboxEnqueued(inboxB, itemB.cast<String, dynamic>());
+          if (conv != null) {
+            _lastMessage[sidB] = conv.lastMessagePreview(
+                    hideReasoning: !_reasoningVisibleInPreview, loc: _loc) ??
+                _lastMessage[sidB] ??
+                '';
+            _notifyPreviewChanged();
+            _scheduleCacheSave();
+          }
+        }
+        return;
+      case 'session.inbox.delivered':
+      case 'session.inbox.cancelled':
+      case 'session.inbox.delivery.changed':
+        return;
+      case 'session.compaction.started':
+      case 'session.compaction.delta':
+      case 'session.compaction.ended':
+      case 'session.compaction.failed':
+      case 'session.compacted':
+      case 'session.shell.started':
+      case 'session.shell.ended':
+      case 'session.synthetic':
+      case 'session.skill.activated':
+        return;
+      case 'session.revert.staged':
+      case 'session.revert.cleared':
+      case 'session.revert.committed':
+        final sidC = ev.properties['sessionID']?.toString();
+        if (sidC != null) {
+          final conv = _conversations[sidC];
+          if (conv != null) {
+            unawaited(conv.reload());
+          }
+        }
+        break;
+      case 'form.created':
+        final formRaw = ev.properties['form'];
+        if (formRaw is Map) {
+          final f = FormInfo.fromJson(formRaw.cast<String, dynamic>());
+          _pendingForms[f.id] = f;
+          final host = _cardHostSessionId(f.sessionID);
+          _conversations[host]?.onForm(f);
+          AppLogger.I.i(_tag,
+              'SSE form.created sid=${f.sessionID} fid=${f.id} host=$host');
+          unawaited(NotificationService.notifyQuestion(
+                  sessionById(host)?.title, f.title)
+              .catchError((_) {}));
+        }
+        break;
+      case 'form.replied':
+      case 'form.cancelled':
+        final fid = ev.properties['id']?.toString();
+        final sidD = ev.properties['sessionID']?.toString();
+        AppLogger.I.i(_tag, 'SSE ${ev.type} sid=$sidD fid=$fid');
+        if (fid != null) {
+          _markFormResolved(fid);
+        }
+        if (sidD != null && fid != null) {
+          _conversations[_cardHostSessionId(sidD)]?.onFormReplied(fid);
         }
         break;
       case 'permission.asked':
-      case 'permission.v2.asked':
-      case 'permission.updated': // compat fallback for older opencode versions
         final p = Permission.fromJson(ev.properties);
         _pendingPermissions[p.sessionID] = p;
-        // 子会话（subagent）权限卡上浮到父会话，否则卡片无处渲染、
-        // 运行卡死在待授权（卡片只渲染在主会话 FooterPanel）。
         final host = _cardHostSessionId(p.sessionID);
         _conversations[host]?.onPermission(p);
         AppLogger.I.i(_tag,
@@ -2059,104 +1680,134 @@ class ServerStore extends ChangeNotifier {
             .catchError((_) {}));
         break;
       case 'permission.replied':
-      case 'permission.v2.replied':
-        final sid = ev.properties['sessionID']?.toString();
-        // Spec: permission.replied carries the permission id under "requestID"
-        // (additionalProperties:false — there is no "permissionID" key).
-        final pid = ev.properties['requestID']?.toString() ??
-            ev.properties['permissionID']?.toString();
-        AppLogger.I.i(_tag, 'SSE permission.replied sid=$sid pid=$pid');
-        if (sid != null && pid != null) {
-          // Register the resolved guard too (not just live-map removal): a
-          // reply made by another client must not be resurrected by the next
-          // backfill's REST snapshot (same mechanism as the local reply path).
+        final sidE = ev.properties['sessionID']?.toString();
+        final pid = ev.properties['requestID']?.toString();
+        AppLogger.I.i(_tag, 'SSE permission.replied sid=$sidE pid=$pid');
+        if (pid != null) {
           _markPermissionResolved(pid);
-          _conversations[_cardHostSessionId(sid)]?.onPermissionReplied(pid);
+        }
+        if (sidE != null && pid != null) {
+          _conversations[_cardHostSessionId(sidE)]?.onPermissionReplied(pid);
         }
         break;
-      case 'question.asked':
-      case 'question.v2.asked':
-        final qr = QuestionRequest.fromJson(ev.properties);
-        _pendingQuestions[qr.id] = qr;
-        final qHost = _cardHostSessionId(qr.sessionID);
-        _conversations[qHost]?.onQuestion(qr);
-        AppLogger.I.i(_tag,
-            'SSE question.asked sid=${qr.sessionID} qid=${qr.id} host=$qHost');
-        unawaited(NotificationService.notifyQuestion(
-                sessionById(qHost)?.title,
-                qr.questions.firstOrNull?.header)
-            .catchError((_) {}));
-        break;
-      case 'question.replied':
-      case 'question.v2.replied':
-      case 'question.rejected':
-      case 'question.v2.rejected':
-        // Spec: question.replied/rejected carry the question id under
-        // "requestID" (additionalProperties:false — there is no "id" key).
-        final qid = ev.properties['requestID']?.toString() ??
-            ev.properties['id']?.toString();
-        final existing = qid != null ? _pendingQuestions[qid] : null;
-        final sid = ev.properties['sessionID']?.toString() ?? existing?.sessionID;
-        AppLogger.I.i(_tag, 'SSE ${ev.type} sid=$sid qid=$qid');
-        if (qid != null) {
-          // Same as permission.replied: register the resolved guard so a
-          // cross-client reply isn't resurrected by the next backfill.
-          _markQuestionResolved(qid);
-        }
-        if (sid != null && qid != null) {
-          _conversations[_cardHostSessionId(sid)]?.onQuestionReplied(qid);
+      case 'project.updated':
+        final pj = ev.properties;
+        if (pj['id'] != null) {
+          final updated = ProjectModel.fromJson(pj.cast<String, dynamic>());
+          final idx = _projects.indexWhere((x) => x.id == updated.id);
+          if (idx >= 0) {
+            _projects[idx] = updated;
+          } else {
+            _projects.add(updated);
+          }
+          _scheduleCacheSave();
         }
         break;
+      case 'worktree.resolved':
+      case 'worktree.updated':
+      case 'worktree.ready':
+      case 'worktree.failed':
+        _scheduleReconcile();
+        break;
+      case 'command.updated':
+      case 'agent.updated':
+      case 'model.updated':
+      case 'provider.updated':
+      case 'skill.updated':
+      case 'plugin.updated':
+      case 'reference.updated':
+      case 'integration.updated':
+      case 'mcp.status.changed':
+      case 'mcp.resources.changed':
+      case 'websearch.updated':
       case 'catalog.updated':
-      case 'mcp.tools.changed':
-        // Command/skill catalog or MCP tools changed on the server — re-pull
-        // so new/deleted slash commands reflect without waiting for the next
-        // `/` input (mirrors desktop's command.updated / mcp.status.changed →
-        // bootstrap re-run). Uses the active session's directory; refreshCommands
-        // guards against duplicate in-flight refreshes for the same directory.
         final activeId = _activeSessionId;
         if (activeId != null) {
           unawaited(refreshCommands(directory: sessionById(activeId)?.directory));
         }
         break;
+      default:
+        return;
     }
     PerfProbe.I.markEvent('sse-notify ${ev.type}');
     notifyListeners();
   }
 
-  Future<void> _onMessageUpdated(Map<String, dynamic> props) async {
-    final infoRaw = props['info'];
-    if (infoRaw is! Map) return;
-    final m = MessageInfo.fromJson(infoRaw.cast<String, dynamic>());
-    final sid = m.sessionID;
-    if (sid == null || sid.isEmpty) return;
+  void _onToolEvent(OpencodeEvent ev) {
+    final sid = ev.properties['sessionID']?.toString();
+    final mid = ev.properties['assistantMessageID']?.toString();
+    final callId = ev.properties['id']?.toString();
+    if (sid == null || mid == null || callId == null) return;
     final conv = ensureConversation(sid);
-    conv?.onMessageUpdated(m); // internally _saveCache()s on settle
-    // MU-1: notify immediately so the list layer knows a message changed,
-    // before the preview fetch (which may be slow on weak networks).
-    PerfProbe.I.markEvent('msg-updated-notify $sid');
-    notifyListeners();
-    // List preview: refresh on every message event — user msg, in-flight
-    // assistant (finish empty), and completed assistant (finish non-empty).
-    // Covers the "no part event, only message.updated" edge (e.g. empty or
-    // reasoning-only assistant messages). Part events keep the preview live
-    // during streaming; this keeps it correct at message boundaries.
-    final local = conv?.lastMessagePreview(
-        hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
-    if (local != null) {
-      _lastMessage[sid] = local;
-      _notifyPreviewChanged();
-      _scheduleCacheSave();
-      return;
+    if (conv == null) return;
+    switch (ev.type) {
+      case 'session.tool.input.started':
+        conv.onToolInputStarted(mid, callId, ev.properties['name']?.toString() ?? '');
+      case 'session.tool.input.delta':
+        conv.onToolInputDelta(mid, callId, ev.properties['delta']?.toString() ?? '');
+      case 'session.tool.input.ended':
+        conv.onToolInputEnded(mid, callId, ev.properties['text']?.toString() ?? '');
+      case 'session.tool.called':
+        final input = ev.properties['input'];
+        conv.onToolCalled(
+          mid,
+          callId,
+          input is Map ? input.cast<String, dynamic>() : null,
+          ev.properties['executed'] == true,
+        );
+      case 'session.tool.progress':
+        final meta = ev.properties['metadata'];
+        conv.onToolProgress(
+            mid, callId, meta is Map ? meta.cast<String, dynamic>() : null);
+      case 'session.tool.success':
+        conv.onToolSuccess(mid, callId, _parseToolContent(ev.properties['content']));
+      case 'session.tool.failed':
+        final err = ev.properties['error'];
+        conv.onToolFailed(
+          mid,
+          callId,
+          err is Map ? err.cast<String, dynamic>() : const {},
+          content: _parseToolContent(ev.properties['content']),
+        );
     }
-    // local == null: streaming assistant has no renderable parts yet, or
-    // last message is empty. Keep current _lastMessage — don't overwrite
-    // (prevents tool-call boundary preview revert).
+    _updateStreamingPreview(sid, conv);
+  }
+
+  void _updateStreamingPreview(String sid, ConversationStore conv) {
+    final pv = conv.lastMessagePreview(
+        hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
+    if (pv != null) {
+      _lastMessage[sid] = pv;
+      _notifyPreviewChanged();
+    }
+  }
+
+  List<AssistantContent> _parseContent(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => AssistantContent.fromJson(e.cast<String, dynamic>()))
+        .toList(growable: false);
+  }
+
+  List<ToolContentItem> _parseToolContent(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => ToolContentItem.fromJson(e.cast<String, dynamic>()))
+        .toList(growable: false);
+  }
+
+  Future<void> _refreshSessionMeta(String sid) async {
+    final c = client;
+    if (c == null) return;
+    try {
+      final s = await c.sessionMeta(sid);
+      _upsertSession(s);
+    } catch (_) {}
   }
 
   Future<void> _backfillPreview(String sid, ConversationStore conv) async {
-    // After the conversation loads, surface its last message as the list preview
-    // (avoids bulk-proactive fetch but keeps viewed sessions informative).
     final preview = conv.lastMessagePreview(
         hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     if (preview != null) {
@@ -2165,9 +1816,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Reflect the latest preview from the given conversation into the list cache.
-  /// Used after optimistic user-message insertion so the list shows it without
-  /// waiting for the message.updated(user) SSE event.
   void reflectPreviewFrom(String sid) {
     final conv = _conversations[sid];
     if (conv == null) return;
@@ -2181,20 +1829,10 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _upsertSession(SessionModel s) {
-    // Bump activity even when the session is being archived — `setArchived`
-    // leaves `time.updated` unchanged, so this preserves the project's sort
-    // position after the session disappears from `_sessions`.
     _bumpLastActivity(s);
-    // Subagent child sessions never enter the visible list, but are kept in
-    // `_childSessions` for SubagentPanel's heuristic fallback + directory
-    // lookup (design-subagent-status §D3). Archived children drop out —
-    // completed tasks always carry metadata.sessionId (authoritative path),
-    // the registry only serves the pre-metadata running window.
     if (s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
       if (s.archived != null) {
-        // 宿主须在注册表移除**前**解析（传递上浮依赖完整链），且取
-        // 顶层祖先而非直接父（孙辈卡挂在顶层 conv）。
         final host = _cardHostSessionId(s.id);
         _childSessions.remove(s.id);
         _dropChildCards(s.id, host);
@@ -2204,7 +1842,6 @@ class ServerStore extends ChangeNotifier {
       _scheduleCacheSave();
       return;
     }
-    // Archived sessions drop out of the active list.
     if (s.archived != null) {
       _sessions.removeWhere((x) => x.id == s.id);
       _childSessions.remove(s.id);
@@ -2218,14 +1855,12 @@ class ServerStore extends ChangeNotifier {
       _sessions[idx] = s;
     }
     _scheduleCacheSave();
-    // 回填 directory：question.asked 早于 session 加载时，conv 可能已用空
-    // directory 创建；session 到达后补上，让后续 reply/reject 能带上 directory。
     _backfillConversationDirectory(s.id, s.directory);
   }
 
   void _upsertChildSession(SessionModel s) {
     final newlyRegistered = !_childSessions.containsKey(s.id);
-    _childSessions.remove(s.id); // re-insert to refresh + keep arrival order
+    _childSessions.remove(s.id);
     _childSessions[s.id] = s;
     while (_childSessions.length > _kMaxChildSessions) {
       _childSessions.remove(_childSessions.keys.first);
@@ -2234,12 +1869,6 @@ class ServerStore extends ChangeNotifier {
     if (newlyRegistered) _adoptChildCards(s);
   }
 
-  /// 子会话离开注册表（archived / session.deleted）时清掉它名下的 pending
-  /// 权限/问题卡：宿主映射一旦消失，卡片要么滞留父 conv 无处摘除（replied
-  /// 事件路由回子会话自身）、要么把他端已答复的死卡留在父会话暂停徽标上。
-  /// 子会话归档/删除意味着 task 已终止（完成或中止），其卡不可再被父会话
-  /// 等待，直接丢弃；服务端若仍持有 pending，后续 backfill 快照会按子会话
-  /// 自身（无宿主映射）重新注入，不再影响父会话。
   void _dropChildCards(String childId, String parentId) {
     final parent = _conversations[parentId];
     final pids = _pendingPermissions.values
@@ -2250,22 +1879,16 @@ class ServerStore extends ChangeNotifier {
       _pendingPermissions.removeWhere((_, p) => p.id == pid);
       parent?.onPermissionReplied(pid);
     }
-    final qids = _pendingQuestions.values
-        .where((q) => q.sessionID == childId)
-        .map((q) => q.id)
+    final fids = _pendingForms.values
+        .where((f) => f.sessionID == childId)
+        .map((f) => f.id)
         .toList();
-    for (final qid in qids) {
-      _pendingQuestions.remove(qid);
-      parent?.onQuestionReplied(qid);
+    for (final fid in fids) {
+      _pendingForms.remove(fid);
+      parent?.onFormReplied(fid);
     }
   }
 
-  /// 子会话注册晚于卡片到达（SSE 竞态：permission.asked 早于
-  /// session.updated，或 app 重启后 REST 回填先命中）时，把该子会话的
-  /// pending 权限/问题卡上浮到宿主 conv——竞态窗口内卡片按原 sid 落在
-  /// 子会话 conv（无渲染入口）。宿主取传递顶层祖先（`subagent_depth > 1`
-  /// 时孙辈卡不能停在中层）。onPermission/onQuestion 按 id 幂等，
-  /// 重复注入安全；仅新注册时执行，避免 session.updated 频次下反复 notify。
   void _adoptChildCards(SessionModel child) {
     final hostSid = _cardHostSessionId(child.id);
     final host = _conversations[hostSid];
@@ -2276,30 +1899,25 @@ class ServerStore extends ChangeNotifier {
       _conversations[child.id]?.onPermissionReplied(p.id);
       perm = p;
     }
-    QuestionRequest? q;
-    for (final entry in _pendingQuestions.values) {
+    FormInfo? form;
+    for (final entry in _pendingForms.values) {
       if (entry.sessionID != child.id) continue;
-      host?.onQuestion(entry);
-      _conversations[child.id]?.onQuestionReplied(entry.id);
-      q = entry;
+      host?.onForm(entry);
+      _conversations[child.id]?.onFormReplied(entry.id);
+      form = entry;
     }
-    // 竞态窗口内 ask 通知以默认标题发出（宿主未注册解析不到父标题），
-    // 注册后用宿主标题补发——通知 id 固定（1/2），原地替换不叠加。
     if (perm != null) {
       unawaited(NotificationService.notifyPermission(
               sessionById(hostSid)?.title, perm)
           .catchError((_) {}));
     }
-    if (q != null) {
+    if (form != null) {
       unawaited(NotificationService.notifyQuestion(
-              sessionById(hostSid)?.title, q.questions.firstOrNull?.header)
+              sessionById(hostSid)?.title, form.title)
           .catchError((_) {}));
     }
   }
 
-  /// 查找子会话（design-subagent-status §D3 降级路径）：metadata.sessionId
-  /// 缺失时按 parentID 在 `_childSessions` 中匹配，title 前缀消歧
-  /// （server title 派生自 task description），取 created 最新。
   SessionModel? findChildSession(String parentSessionID,
       {String? description}) {
     final candidates = _childSessions.values
@@ -2319,19 +1937,9 @@ class ServerStore extends ChangeNotifier {
     return candidates.first;
   }
 
-  /// Whether the session is a subagent child session (by `_childSessions`).
   bool isChildSession(String sessionId) =>
       _childSessions.containsKey(sessionId);
 
-  /// 权限/问题卡的显示宿主会话：subagent 子会话的卡片上浮到父会话——
-  /// 服务端 `permission.asked`/`question.asked` 携带子会话 id（task 工具
-  /// 在子会话内执行），而子会话无独立 UI，父会话才是用户可答复的界面
-  /// （桌面端同款语义：`session(perm.sessionID).parentID == 当前会话`）。
-  /// **传递上浮**：`subagent_depth > 1` 时孙辈卡沿途只到中层子会话 conv
-  /// （同样无渲染入口、同样卡死），须一路走到顶层祖先。深度上限防
-  /// parentID 环（脏数据）死循环。回复端点仍用卡自身的 sessionID
-  /// （`respondPermission`），路由到同一 instance。未注册的会话原样返回
-  /// （自身即宿主）。
   String _cardHostSessionId(String sessionId) {
     var sid = sessionId;
     for (var depth = 0; depth < _kMaxChildSessions; depth++) {
@@ -2343,8 +1951,6 @@ class ServerStore extends ChangeNotifier {
   }
 
   void _removeSession(String id) {
-    // session.deleted 打到的可能是子会话：宿主须在注册表移除**前**按完整
-    // 链解析（传递上浮），同步摘掉它挂在宿主 conv 的 pending 卡。
     final childHost =
         _childSessions.containsKey(id) ? _cardHostSessionId(id) : null;
     _sessions.removeWhere((s) => s.id == id);
@@ -2356,20 +1962,12 @@ class ServerStore extends ChangeNotifier {
     _ghostSessionIds.remove(id);
     final cs = _cacheStore;
     if (cs != null) unawaited(cs.remove('conv/$id'));
-    // Intentionally keeps `_lastActivityByKey` — activity is monotonic across
-    // deletes too. Removing the entry here would sink the project if its last
-    // observed session is hard-deleted (PA-5 locks this invariant). The entry
-    // is stale only in the sense of "session no longer exists server-side",
-    // which doesn't affect sort correctness for the remaining sessions.
     _scheduleCacheSave();
   }
 
   Future<void> _teardown({bool flushCache = true}) async {
     await _stopSse(flushCache: flushCache);
     if (flushCache) {
-      // CD-24：与 _stopSse 的 flushCache 门控对齐（切 profile 走 flushCache:false，
-      // 不 flush 旧 profile 的 conv_<sid> 键，避免跨 profile 草稿污染）。
-      // CD-25：Future.wait 并行，缩短销毁窗口。先 persist 再 dispose（CD-3 卫生）。
       await Future.wait(
         _conversations.values.map((c) => c.persistDraft()),
       );
@@ -2395,8 +1993,8 @@ class ServerStore extends ChangeNotifier {
     _lastActivityByKey.clear();
     _workspaceEnabled.clear();
     _pendingPermissions.clear();
-    _pendingQuestions.clear();
-    _recentlyResolvedQuestions.clear();
+    _pendingForms.clear();
+    _recentlyResolvedForms.clear();
     _recentlyResolvedPermissions.clear();
     commandsNotifier.value = const [];
     _commandsDegraded = false;
@@ -2465,7 +2063,7 @@ class ServerStore extends ChangeNotifier {
     final epoch = _agentsModelsEpoch;
     fut = Future.wait([
       c.listAgents(directory: directory),
-      c.listConfigProviders(directory: directory),
+      c.listModels(directory: directory),
     ]).then((results) {
       final entry = (
         results[0] as List<AgentInfo>,
@@ -2484,9 +2082,6 @@ class ServerStore extends ChangeNotifier {
     return fut;
   }
 
-  /// Manual refresh (from pull-to-refresh). Returns true on success.
-  /// Never throws — all network errors are swallowed and surfaced via
-  /// the return value so RefreshIndicator / onRefresh callers stay safe.
   Future<bool> refresh() async {
     if (client == null) return false;
     try {
@@ -2503,11 +2098,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  // ── App lifecycle (specs §5: background → pause, foreground → resume) ──
-
-  /// Called when the app goes to background: stop SSE to save battery.
-  /// Cached data (sessions, conversations) is retained for instant resume.
-  /// All conversations are marked stale since we lose live SSE updates.
   Future<void> pause() {
     if (!connected || _profile == null) return Future.value();
     _foreground = false;
@@ -2518,8 +2108,6 @@ class ServerStore extends ChangeNotifier {
     }
     final activePause = _pauseOperation;
     if (activePause != null) return activePause;
-    // CD-25/29：persistDraft 织入返回的 operation Future 链（去重 guard 之后），
-    // 使 `await pause()` 拿到落盘保证。仅 flush 活动会话（唯一可能有未落盘输入者）。
     final operation = _pauseWork();
     _pauseOperation = operation;
     return operation.whenComplete(() {
@@ -2531,15 +2119,11 @@ class ServerStore extends ChangeNotifier {
     final active =
         (_activeSessionId != null) ? _conversations[_activeSessionId] : null;
     if (active != null) {
-      await active.persistDraft(); // CD-25：仅活动会话，1 次磁盘写
+      await active.persistDraft();
     }
     await _stopSse();
   }
 
-  /// Called when the app returns to foreground. Decision logic:
-  /// - No stream → SSE was torn down by pause → full refresh.
-  /// - Has stream but last refresh >30s ago → refresh.
-  /// - Has stream and recent refresh → just backfill permissions.
   Future<void> resume() async {
     if (!connected || client == null || _profile == null) return;
     _foreground = true;
@@ -2551,19 +2135,13 @@ class ServerStore extends ChangeNotifier {
       return;
     }
 
-    // Wake the SSE client sleeping in reconnect backoff (earned under
-    // background/Doze suspended-network conditions). The app is now in the
-    // foreground with the network available — reconnect immediately instead
-    // of waiting out the exponential sleep (up to 30s).
     _sse?.reconnectNow();
 
-    // No stream: SSE was torn down (pause timer fired). Full refresh.
     if (_sse == null) {
       await refreshListAndWorkingSse(force: true);
       return;
     }
 
-    // Stream present but data is stale.
     final stale = _lastFullRefreshAt == null ||
         DateTime.now().difference(_lastFullRefreshAt!) > kMaxRefreshInterval;
     if (stale) {
@@ -2571,12 +2149,10 @@ class ServerStore extends ChangeNotifier {
       return;
     }
 
-    // SSE still live and data fresh — just backfill permissions.
     unawaited(_backfillPermissions());
     notifyListeners();
   }
 
-  /// Stop the global SSE connection without clearing cached data (used by pause).
   Future<void> _stopSse({bool flushCache = true}) async {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
@@ -2594,12 +2170,6 @@ class ServerStore extends ChangeNotifier {
       if (stateSub != null) stateSub.cancel(),
       if (client != null) client.stop(),
     ];
-    // Flush pending cache save before canceling — prevents data loss on
-    // pause/disconnect (up to 2s of SSE updates would be dropped).
-    // connect() passes flushCache: false because it already flushed the
-    // outgoing profile's pending save before reassigning _profile; flushing
-    // again here would use the NEW _profile and write old data to the new
-    // key (cross-profile leak, see LC3-1).
     if (_cacheSaveTimer != null) {
       _cacheSaveTimer!.cancel();
       _cacheSaveTimer = null;
@@ -2611,8 +2181,6 @@ class ServerStore extends ChangeNotifier {
       AppLogger.I.w(_tag, 'SSE stop timed out; detached clients left stopping');
     }
   }
-
-  // ── Local cache (offline-first: instant UI on app open) ──
 
   void _scheduleCacheSave() {
     if (_profile == null) return;
@@ -2628,11 +2196,6 @@ class ServerStore extends ChangeNotifier {
         'v': 1,
         'projects': _projects.map((p) => p.toJson()).toList(),
         'sessions': _sessions.map((s) => s.toJson()).toList(),
-        // Status is intentionally NOT persisted: it is time-sensitive and a
-        // stale on-disk value (e.g. a session that finished hours ago) would
-        // paint a false busy/retry indicator on cold start. It lives only in
-        // the in-memory `_statusMap` cache, which survives a background pause
-        // and is refreshed on connect/resume.
         'lastMessage': _lastMessage,
         'activity': _lastActivityByKey,
         'workspaceEnabled': _workspaceEnabled,
@@ -2666,10 +2229,6 @@ class ServerStore extends ChangeNotifier {
       for (final entry in lmRaw.entries) {
         lastMsg[entry.key] = entry.value.toString();
       }
-      // Activity is monotonic-max merged: a stale cache value must not
-      // overwrite a larger value already set by SSE between `_loadCache` calls
-      // or by an in-flight bootstrap. (Defensive — `connect` clears the map
-      // before `_loadCache`, so in practice the merge is a straight fill.)
       final actRaw = j['activity'] as Map? ?? {};
       for (final entry in actRaw.entries) {
         final v = entry.value;
@@ -2679,9 +2238,6 @@ class ServerStore extends ChangeNotifier {
         final cur = _lastActivityByKey[key] ?? 0;
         if (n > cur) _lastActivityByKey[key] = n;
       }
-      // MA-2 guards: only fill when empty; use putIfAbsent for maps so SSE
-      // real-time values are never overwritten by stale cache (defensive
-      // for future call paths that might load cache after SSE starts).
       if (_projects.isEmpty) _projects = projects;
       if (_sessions.isEmpty) _sessions = sessions;
       for (final e in lastMsg.entries) {
@@ -2703,4 +2259,17 @@ class ServerStore extends ChangeNotifier {
       } catch (_) {}
     }
   }
+}
+
+int _i(dynamic v) {
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v) ?? 0;
+  return 0;
+}
+
+double _d(dynamic v) {
+  if (v is num) return v.toDouble();
+  if (v is String) return double.tryParse(v) ?? 0;
+  return 0;
 }

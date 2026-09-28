@@ -454,13 +454,7 @@ class _FileListScreenState extends State<FileListScreen> {
               n.name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: n.ignored
-                  ? TextStyle(
-                      color: Theme.of(context).colorScheme.outline,
-                      fontSize: 14,
-                      fontStyle: FontStyle.italic,
-                    )
-                  : const TextStyle(fontSize: 14),
+              style: const TextStyle(fontSize: 14),
             ),
             subtitle: (_query.isNotEmpty && _parentPath(n.path).isNotEmpty)
                 ? Text(

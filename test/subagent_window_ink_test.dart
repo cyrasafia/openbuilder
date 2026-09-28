@@ -15,6 +15,9 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'v2_test_fixtures.dart';
+
+
 /// Subagent 窗口（_SubagentBody）的水墨契约：
 /// 窗口内 ToolChip 的 InkWell 水墨（splash/highlight）不得绘制到窗口
 /// clip 之外。窗口内必须自带 Material——否则 ink 解析到 Scaffold 级
@@ -23,19 +26,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 染成洋红，逐帧扫描窗口下方区域的栅格像素。
 
 class _MockClient extends OpencodeClient {
-  final Map<String, List<MessageEntry>> entriesBySession;
+  final Map<String, List<SessionMessage>> entriesBySession;
   _MockClient(this.entriesBySession) : super(_noopDio());
 
   @override
   Future<MessagesPage> messagesPage(
     String sessionId, {
     required int limit,
-    String? before,
+    String? cursor,
   }) async =>
-      MessagesPage(entriesBySession[sessionId] ?? const [], null);
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
+      MessagesPage(entriesBySession[sessionId] ?? const [], null, null);
 }
 
 Dio _noopDio() => Dio(
@@ -47,38 +47,23 @@ Dio _noopDio() => Dio(
 
 const targetSummary = 'bash: sed -n 1,80p build.gradle';
 
-MessageEntry _msg(String sid, String id, int created, String role,
-    List<MessagePart> parts) {
-  return MessageEntry(
-    info: MessageInfo(
-      id: id,
-      role: role,
-      sessionID: sid,
-      created: created,
-      finish: 'stop',
-    ),
-    parts: parts,
-  );
+SessionMessage _msg(String sid, String id, int created, String role,
+    List<AssistantContent> parts) {
+  if (role == 'user') {
+    return userMsg(
+        id: id,
+        created: created,
+        text: parts.whereType<TextContent>().map((p) => p.text).join());
+  }
+  return assistantMsg(
+      id: id, created: created, content: parts, finish: 'stop');
 }
 
-MessagePart _toolPart(
+AssistantContent _toolPart(
         String id, String tool, Map<String, dynamic> input, String output) =>
-    MessagePart({
-      'type': 'tool',
-      'id': id,
-      'tool': tool,
-      'state': {
-        'status': 'completed',
-        'input': input,
-        'output': output,
-      },
-    });
+    toolPart(id: id, name: tool, status: 'completed', input: input, output: output);
 
-MessagePart _textPart(String id, String text) => MessagePart({
-      'type': 'text',
-      'id': id,
-      'text': text,
-    });
+AssistantContent _textPart(String id, String text) => textPart(text);
 
 void main() {
   testWidgets('inner chip ink stays inside subagent window', (tester) async {
@@ -87,7 +72,7 @@ void main() {
     addTearDown(tester.view.reset);
 
     const kid = 'kid';
-    final childMessages = <MessageEntry>[
+    final childMessages = <SessionMessage>[
       _msg(kid, 'c0', 10, 'user', [_textPart('cp0', 'child task prompt')]),
       for (var i = 1; i <= 7; i++)
         _msg(kid, 'c$i', 10 + i, 'assistant', [
@@ -103,21 +88,18 @@ void main() {
         ),
       ]),
     ];
-    final parentMessages = <MessageEntry>[
+    final parentMessages = <SessionMessage>[
       _msg('px', 'm1', 1, 'assistant', [
-        MessagePart({
-          'type': 'tool',
-          'id': 'pm1',
-          'tool': 'task',
-          'state': {
-            'status': 'completed',
-            'input': {
-              'subagent_type': 'explore',
-              'description': '调研仓库结构',
-            },
-            'metadata': {'sessionId': kid},
+        toolPart(
+          id: 'pm1',
+          name: 'task',
+          status: 'completed',
+          input: {
+            'subagent_type': 'explore',
+            'description': '调研仓库结构',
           },
-        }),
+          metadata: {'sessionId': kid},
+        ),
       ]),
       _msg('px', 'm2', 2, 'assistant',
           [_textPart('pm2', 'below panel sentinel text')]),

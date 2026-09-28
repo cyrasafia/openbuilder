@@ -10,29 +10,19 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Locks 方案 B 的头条收益：流式逐 token 时，已完成消息被剪枝（identity
-/// 短路——同一 widget 实例），仅流式消息重建。
-///
-/// 机制：`_cachedMessage` 缓存已完成消息的 `_message(...)` widget 实例；版本
-/// 门控 clear 不会逐 token 触发（`onPartUpdated` 原地变异、不 bump
-/// `messagesVersion`）。故流式 rebuild 时，已完成消息缓存的 `Padding`
-/// （key = `ValueKey(id)`）是同一实例 → `Element.updateChild` 短路 → 整棵消息
-/// 子树不 rebuild。流式消息（`finish==null`）每帧重建（新实例）。
+import 'v2_test_fixtures.dart';
 
 class _MockClient extends OpencodeClient {
-  final List<MessageEntry> entries;
+  final List<SessionMessage> entries;
   _MockClient(this.entries) : super(_noopDio());
 
   @override
   Future<MessagesPage> messagesPage(
     String sessionId, {
     required int limit,
-    String? before,
+    String? cursor,
   }) async =>
-      MessagesPage(entries, null);
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
+      MessagesPage(entries, null, null);
 }
 
 Dio _noopDio() => Dio(
@@ -45,7 +35,7 @@ Dio _noopDio() => Dio(
 Future<void> _pumpConversation(
   WidgetTester tester, {
   required String sessionId,
-  required List<MessageEntry> entries,
+  required List<SessionMessage> entries,
 }) async {
   SharedPreferences.setMockInitialValues({});
   serverStore.client = _MockClient(entries);
@@ -70,9 +60,6 @@ Future<void> _pumpConversation(
   );
 }
 
-/// The `_message(...)` subtree's top widget is a `Padding` keyed
-/// `ValueKey(id)`. After a prune (cache hit) it is the identical instance; after
-/// a rebuild it is a fresh instance.
 Padding _messagePadding(WidgetTester tester, String id) =>
     find
         .byKey(ValueKey(id))
@@ -86,45 +73,21 @@ void main() {
     'streaming token prunes finished messages, rebuilds only the streaming one',
     (tester) async {
       const sid = 'stream-prune';
-      final entries = <MessageEntry>[
-        MessageEntry(
-          info: MessageInfo(
-            id: 'u1',
-            role: 'user',
-            sessionID: sid,
-            created: 1000,
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pu1', 'text': 'question'}),
-          ],
+      final entries = <SessionMessage>[
+        userMsg(id: 'u1', text: 'question', created: 1000),
+        assistantMsg(
+          id: 'a1',
+          created: 2000,
+          content: [textPart('finished reply')],
+          finish: 'stop',
         ),
-        MessageEntry(
-          info: MessageInfo(
-            id: 'a1',
-            role: 'assistant',
-            sessionID: sid,
-            created: 2000,
-            finish: 'stop',
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pa1', 'text': 'finished reply'}),
-          ],
-        ),
-        MessageEntry(
-          // finish omitted → streaming (finish == null)
-          info: MessageInfo(
-            id: 'a2',
-            role: 'assistant',
-            sessionID: sid,
-            created: 3000,
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pa2', 'text': 'streaming'}),
-          ],
+        assistantMsg(
+          id: 'a2',
+          created: 3000,
+          content: [textPart('streaming')],
         ),
       ];
       await _pumpConversation(tester, sessionId: sid, entries: entries);
-      // Wait for the conversation to load + lay out.
       for (var i = 0;
           i < 40 && find.byKey(const ValueKey('a2')).evaluate().isEmpty;
           i++) {
@@ -136,14 +99,10 @@ void main() {
       final a1Before = _messagePadding(tester, 'a1');
       final a2Before = _messagePadding(tester, 'a2');
 
-      // Simulate a streaming token on a2: in-place part mutation, no
-      // messagesVersion bump (the load-bearing fact for 方案 B).
       final store = serverStore.conversationFor(sid);
       expect(store, isNotNull, reason: 'conversation store must be wired');
-      store!.onPartUpdated(
-        {'type': 'text', 'id': 'pa2', 'messageID': 'a2'},
-        ' more',
-      );
+      store!.onStepStarted('a2');
+      store.onTextDelta('a2', 0, ' more');
       await tester.pump();
       await tester.pump();
 

@@ -10,6 +10,8 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'v2_test_fixtures.dart';
+
 /// SubagentPanel (design-subagent-status) widget 约定：
 /// - task tool part 渲染为面板而非 ToolChip：收起态显示 agent 名 + 描述
 /// - 点击展开 → post-frame 触发 loadChildSessionMessages（REST 快照）→
@@ -17,19 +19,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// - metadata.sessionId 是权威来源（不依赖 findChildSession 启发式）
 /// - 无 childSessionId 时展开显示「子会话未就绪」
 class _MockClient extends OpencodeClient {
-  final Map<String, List<MessageEntry>> entriesBySession;
+  final Map<String, List<SessionMessage>> entriesBySession;
   _MockClient(this.entriesBySession) : super(_noopDio());
 
   @override
   Future<MessagesPage> messagesPage(
     String sessionId, {
     required int limit,
-    String? before,
+    String? cursor,
   }) async =>
-      MessagesPage(entriesBySession[sessionId] ?? const [], null);
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
+      MessagesPage(entriesBySession[sessionId] ?? const [], null, null);
 }
 
 Dio _noopDio() => Dio(
@@ -42,7 +41,7 @@ Dio _noopDio() => Dio(
 Future<void> _pumpConversation(
   WidgetTester tester, {
   required String sessionId,
-  required Map<String, List<MessageEntry>> entriesBySession,
+  required Map<String, List<SessionMessage>> entriesBySession,
 }) async {
   SharedPreferences.setMockInitialValues({});
   serverStore.client = _MockClient(entriesBySession);
@@ -68,50 +67,33 @@ Future<void> _pumpConversation(
   );
 }
 
-MessageEntry _taskMessage(String sid, String id, int created,
+SessionMessage _taskMessage(String sid, String id, int created,
     {required String status, String? childSessionId}) {
-  return MessageEntry(
-    info: MessageInfo(
-      id: id,
-      role: 'assistant',
-      sessionID: sid,
-      created: created,
-      finish: 'stop',
-    ),
-    parts: [
-      MessagePart({
-        'type': 'tool',
-        'id': 'p$id',
-        'tool': 'task',
-        'state': {
-          'status': status,
-          'input': {
-            'subagent_type': 'explore',
-            'description': '调研仓库结构',
-          },
-          if (childSessionId != null)
-            'metadata': {'sessionId': childSessionId},
+  return assistantMsg(
+    id: id,
+    created: created,
+    finish: 'stop',
+    content: [
+      toolPart(
+        id: 'p$id',
+        name: 'task',
+        status: status,
+        input: {
+          'subagent_type': 'explore',
+          'description': '调研仓库结构',
         },
-      }),
+        metadata:
+            childSessionId != null ? {'sessionId': childSessionId} : null,
+      ),
     ],
   );
 }
 
-MessageEntry _childExchange(String sid, int created) => MessageEntry(
-      info: MessageInfo(
-        id: 'cm$created',
-        role: 'assistant',
-        sessionID: sid,
-        created: created,
-        finish: 'stop',
-      ),
-      parts: [
-        MessagePart({
-          'type': 'text',
-          'id': 'cp$created',
-          'text': '子会话产出 $created',
-        }),
-      ],
+SessionMessage _childExchange(String sid, int created) => assistantMsg(
+      id: 'cm$created',
+      created: created,
+      finish: 'stop',
+      content: [textPart('子会话产出 $created')],
     );
 
 Future<void> _settle(WidgetTester tester, bool Function() probe) async {

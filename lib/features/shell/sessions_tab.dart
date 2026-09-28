@@ -190,7 +190,7 @@ class _SessionsTabState extends State<SessionsTab> {
     final project = serverStore.projectDisplayOf(s);
     final projectPath = s.projectID == 'global'
         ? s.directory
-        : (serverStore.projectOf(s.projectID)?.worktree ?? s.directory);
+        : (serverStore.projectOf(s.projectID)?.canonical ?? s.directory);
     return s.title.toLowerCase().contains(q) ||
         project.toLowerCase().contains(q) ||
         projectPath.toLowerCase().contains(q) ||

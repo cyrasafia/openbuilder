@@ -1,14 +1,11 @@
 import 'dart:typed_data';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/attachments/attachment_pipeline.dart';
-import 'package:open_builder/core/attachments/file_ref.dart';
 import 'package:open_builder/core/cache/cache_store.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
-import 'package:open_builder/core/net/net_error.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
@@ -16,8 +13,8 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 
-// 指向丢弃端口的非空 client；被测逻辑（addOptimisticUserMessage /
-// lastMessagePreview / DisplayPart.from）均不发起网络请求。
+import 'v2_test_fixtures.dart';
+
 OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
       id: 't',
       name: 'test',
@@ -25,46 +22,6 @@ OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
       username: 'opencode',
       password: '',
     )));
-
-// Client whose messagesPage returns a fixed window — for reconcile (_mergeParts)
-// tests. todos() short-circuits to skip the second await in reconcile.
-class _MockClient extends OpencodeClient {
-  final List<MessageEntry> entries;
-  _MockClient(this.entries)
-      : super(Dio(BaseOptions(
-            connectTimeout: const Duration(milliseconds: 1),
-            receiveTimeout: const Duration(milliseconds: 1))));
-  @override
-  Future<MessagesPage> messagesPage(String sessionId,
-      {required int limit, String? before}) async {
-    if (before != null) return MessagesPage(const [], null);
-    return MessagesPage(entries, null);
-  }
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => const [];
-}
-
-const _fileRef = FileRef(
-  path: 'docs/design-run-assembly.md',
-  absolute: '/x/docs/design-run-assembly.md',
-  filename: 'design-run-assembly.md',
-  isDir: false,
-);
-
-Map<String, dynamic> _filePartRaw(String id, String mid) => {
-      'id': id,
-      'messageID': mid,
-      'type': 'file',
-      'mime': 'text/plain',
-      'filename': 'design-run-assembly.md',
-      'url': 'file:///x/docs/design-run-assembly.md',
-      'source': {
-        'type': 'file',
-        'path': 'docs/design-run-assembly.md',
-        'text': {'value': '', 'start': 0, 'end': 0},
-      },
-    };
 
 late CacheStore _cache;
 late Directory _tmp;
@@ -84,39 +41,52 @@ void main() {
     FileCacheStore.rootBaseOverride = null;
     if (await _tmp.exists()) await _tmp.delete(recursive: true);
   });
-  group('DisplayPart.from file branch (AT-4: 工厂不解码)', () {
-    test('extracts mime/url/filename, previewThumb null', () {
-      final dp = DisplayPart.from(MessagePart({
-        'id': 'f1',
-        'type': 'file',
-        'mime': 'image/png',
-        'url': 'data:image/png;base64,AAAA',
-        'filename': 'a.png',
-      }));
-      expect(dp.type, 'file');
-      expect(dp.fileMime, 'image/png');
-      expect(dp.fileUrl, 'data:image/png;base64,AAAA');
-      expect(dp.filename, 'a.png');
-      expect(dp.previewThumb, isNull);
+  group('user message file parts from wire (AT-4: 工厂不解码)', () {
+    test('extracts mime from data url, name/uri verbatim', () {
+      final conv = _conv('s0', _fakeClient());
+      final d = conv.toDisplayForTest(userMsg(
+        id: 'm_f1',
+        text: 'see attached',
+        files: [
+          {
+            'uri': 'data:image/png;base64,AAAA',
+            'name': 'a.png',
+          },
+        ],
+      ))!;
+      expect(d.parts.length, 2);
+      expect(d.parts[0].type, 'text');
+      expect(d.parts[1].type, 'file');
+      expect(d.parts[1].fileMime, 'image/png');
+      expect(d.parts[1].fileUrl, 'data:image/png;base64,AAAA');
+      expect(d.parts[1].filename, 'a.png');
     });
 
-    test('http url + no filename', () {
-      final dp = DisplayPart.from(MessagePart({
-        'id': 'f2',
-        'type': 'file',
-        'mime': 'application/pdf',
-        'url': 'https://example.com/x.pdf',
-      }));
-      expect(dp.fileMime, 'application/pdf');
-      expect(dp.fileUrl, 'https://example.com/x.pdf');
-      expect(dp.filename, isNull);
-      expect(dp.previewThumb, isNull);
+    test('http uri + no name', () {
+      final conv = _conv('s0', _fakeClient());
+      final d = conv.toDisplayForTest(userMsg(
+        id: 'm_f2',
+        text: 'x',
+        files: [
+          {'uri': 'https://example.com/x.pdf'},
+        ],
+      ))!;
+      expect(d.parts[1].fileUrl, 'https://example.com/x.pdf');
+      expect(d.parts[1].filename, isNull);
+      expect(d.parts[1].fileMime, isNull);
     });
 
-    test('missing url defaults to empty string', () {
-      final dp = DisplayPart.from(
-          MessagePart({'id': 'f3', 'type': 'file', 'mime': 'image/png'}));
-      expect(dp.fileUrl, '');
+    test('file:// uri has no mime', () {
+      final conv = _conv('s0', _fakeClient());
+      final d = conv.toDisplayForTest(userMsg(
+        id: 'm_f3',
+        text: 'x',
+        files: [
+          {'uri': 'file:///x/docs/a.md', 'name': 'a.md'},
+        ],
+      ))!;
+      expect(d.parts[1].fileMime, isNull);
+      expect(d.parts[1].filename, 'a.md');
     });
   });
 
@@ -134,7 +104,7 @@ void main() {
       ]);
       expect(conv.messages.length, 1);
       final msg = conv.messages.single;
-      expect(msg.info.role, 'user');
+      expect(msg.isUser, isTrue);
       expect(msg.optimistic, isTrue);
       expect(msg.parts.length, 2);
       expect(msg.parts[0].type, 'text');
@@ -160,7 +130,7 @@ void main() {
       expect(msg.parts[0].filename, 'x.pdf');
     });
 
-    test('backward compat: single-arg still works', () {
+    test('plain text only', () {
       final conv = _conv('s3', _fakeClient());
       conv.addOptimisticUserMessage('plain');
       final msg = conv.messages.single;
@@ -173,43 +143,26 @@ void main() {
   group('lastMessagePreview hides reasoning when asked', () {
     test('reasoning-only last message: shown by default, null when hidden', () {
       final conv = _conv('s6', _fakeClient());
-      conv.onPartUpdated(
-          <String, dynamic>{
-            'messageID': 'm1',
-            'id': 'r1',
-            'type': 'reasoning',
-          },
-          'Let me think...');
+      conv.onStepStarted('m1');
+      conv.onReasoningStarted('m1', 0);
+      conv.onReasoningDelta('m1', 0, 'Let me think...');
       expect(conv.lastMessagePreview(), 'Let me think...');
       expect(conv.lastMessagePreview(hideReasoning: true), isNull);
     });
 
     test('reasoning as last part falls back to earlier text when hidden', () {
       final conv = _conv('s7', _fakeClient());
-      conv.onPartUpdated(
-          <String, dynamic>{
-            'messageID': 'm1',
-            'id': 't1',
-            'type': 'text',
-          },
-          'final answer');
-      conv.onPartUpdated(
-          <String, dynamic>{
-            'messageID': 'm1',
-            'id': 'r1',
-            'type': 'reasoning',
-          },
-          'thinking out loud');
-      // Default: reasoning is the last renderable part, so it wins.
+      conv.onStepStarted('m1');
+      conv.onTextStarted('m1', 0);
+      conv.onTextDelta('m1', 0, 'final answer');
+      conv.onReasoningStarted('m1', 0);
+      conv.onReasoningDelta('m1', 0, 'thinking out loud');
       expect(conv.lastMessagePreview(), 'thinking out loud');
-      // Hidden: reasoning skipped, falls back to the earlier text part.
       expect(conv.lastMessagePreview(hideReasoning: true), 'final answer');
     });
   });
 
   group('lastMessagePreview file fallback', () {
-    // Locale pushed down from app_state in production; tests pass it directly
-    // to assert the localized prefix + attachment fallback.
     final zh = lookupAppLocalizations(const Locale('zh'));
     final en = lookupAppLocalizations(const Locale('en'));
 
@@ -239,158 +192,62 @@ void main() {
     });
   });
 
-  group('lastMessagePreview subtask', () {
-    final zh = lookupAppLocalizations(const Locale('zh'));
-    final en = lookupAppLocalizations(const Locale('en'));
-
-    test('subtask body is populated from prompt field, preview stays concise',
-        () {
-      final conv = _conv('s_st', _fakeClient());
-      conv.onMessageUpdated(
-          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st', created: 1));
-      conv.onPartUpdated(
-          {'id': 'p1', 'messageID': 'm1', 'type': 'subtask', 'command': 'review',
-           'prompt': 'You are a code reviewer. Review the code for bugs.'},
-          null);
-      // The expanded prompt (server `prompt` field) feeds the message body.
-      expect(conv.messages.single.parts.single.text,
-          'You are a code reviewer. Review the code for bugs.');
-      // Preview is command-based (the verbose prompt would be a poor one-liner).
-      expect(conv.lastMessagePreview(loc: zh), '你: subtask: review');
-      expect(conv.lastMessagePreview(loc: en), 'You: subtask: review');
-    });
-
-    test('subtask without prompt falls back to subtask: review', () {
-      final conv = _conv('s_st3', _fakeClient());
-      conv.onMessageUpdated(
-          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st3', created: 1));
-      conv.onPartUpdated({
-        'id': 'p1',
-        'messageID': 'm1',
-        'type': 'subtask',
-        'command': 'review',
-      }, null);
-      expect(conv.lastMessagePreview(loc: zh), '你: subtask: review');
-      expect(conv.lastMessagePreview(loc: en), 'You: subtask: review');
-    });
-
-    test('subtask with empty command and text falls back to bare subtask', () {
-      final conv = _conv('s_st4', _fakeClient());
-      conv.onMessageUpdated(
-          MessageInfo(id: 'm1', role: 'user', sessionID: 's_st4', created: 1));
-      conv.onPartUpdated({
-        'id': 'p1',
-        'messageID': 'm1',
-        'type': 'subtask',
-      }, null);
-      expect(conv.lastMessagePreview(loc: zh), '你: subtask');
-      expect(conv.lastMessagePreview(loc: en), 'You: subtask');
-    });
-  });
-
-  // Error display coverage: tool part state.error extraction + persistence.
   group('tool part error extraction', () {
-    test('extracts string error from state.error', () {
-      final dp = DisplayPart.from(MessagePart({
-        'id': 'p1',
-        'type': 'tool',
-        'tool': 'bash',
-        'state': {
-          'status': 'error',
-          'input': {'command': 'ls'},
-          'error': 'permission denied',
-        },
-      }));
+    DisplayMessage displayWith(ToolContent tool) {
+      final conv = _conv('s_tool', _fakeClient());
+      return conv.toDisplayForTest(assistantMsg(
+        id: 'm_tool',
+        content: [tool],
+        finish: 'stop',
+      ))!;
+    }
+
+    test('error tool state extracts message', () {
+      final d = displayWith(toolPart(
+        id: 'c1',
+        status: 'error',
+        input: {'command': 'ls'},
+        error: 'permission denied',
+      ));
+      final dp = d.parts.single;
       expect(dp.toolStatus, 'error');
       expect(dp.toolError, 'permission denied');
     });
 
-    test('extracts message from structured error object', () {
-      final dp = DisplayPart.from(MessagePart({
-        'id': 'p2',
-        'type': 'tool',
-        'tool': 'bash',
-        'state': {
-          'status': 'error',
-          'input': {'command': 'ls'},
-          'error': {'type': 'unknown', 'message': 'exec failed'},
-        },
-      }));
-      expect(dp.toolError, 'exec failed');
+    test('running tool state has no error', () {
+      final d = displayWith(toolPart(
+        id: 'c2',
+        status: 'running',
+        input: {'command': 'ls'},
+      ));
+      expect(d.parts.single.toolError, isNull);
     });
 
-    test('toolError null when state.error missing', () {
-      final dp = DisplayPart.from(MessagePart({
-        'id': 'p3',
-        'type': 'tool',
-        'tool': 'bash',
-        'state': {
-          'status': 'running',
-          'input': {'command': 'ls'},
-        },
-      }));
-      expect(dp.toolError, isNull);
-    });
-
-    test('onPartUpdated carries error from SSE', () {
+    test('onToolFailed carries error from SSE', () {
       final conv = _conv('s6', _fakeClient());
-      conv.onPartUpdated({
-        'id': 'p4',
-        'messageID': 'm1',
-        'type': 'tool',
-        'tool': 'bash',
-        'state': {
-          'status': 'error',
-          'input': {'command': 'ls'},
-          'error': 'network unreachable',
-        },
-      }, null);
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'c3', 'bash');
+      conv.onToolFailed('m1', 'c3', {'type': 'x', 'message': 'network unreachable'});
       expect(conv.messages.length, 1);
       final part = conv.messages.single.parts.single;
       expect(part.toolStatus, 'error');
       expect(part.toolError, 'network unreachable');
     });
 
-    test('onPartUpdated does not clear toolError when later state omits error', () {
+    test('onToolFailed does not clear toolError when error map empty', () {
       final conv = _conv('s6', _fakeClient());
-      conv.onPartUpdated({
-        'id': 'p4',
-        'messageID': 'm1',
-        'type': 'tool',
-        'tool': 'bash',
-        'state': {
-          'status': 'error',
-          'input': {'command': 'ls'},
-          'error': 'network unreachable',
-        },
-      }, null);
-      // A later update that repeats status but omits error should not wipe the text.
-      conv.onPartUpdated({
-        'id': 'p4',
-        'messageID': 'm1',
-        'type': 'tool',
-        'tool': 'bash',
-        'state': {
-          'status': 'error',
-          'input': {'command': 'ls'},
-        },
-      }, null);
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'c4', 'bash');
+      conv.onToolFailed('m1', 'c4', {'message': 'network unreachable'});
+      conv.onToolFailed('m1', 'c4', const {'message': ''});
       expect(conv.messages.single.parts.single.toolError, 'network unreachable');
     });
 
     test('cache round-trip preserves toolError', () async {
-      final conv = _conv('s7', _fakeClient());
-      conv.onPartUpdated({
-        'id': 'p5',
-        'messageID': 'm2',
-        'type': 'tool',
-        'tool': 'bash',
-        'state': {
-          'status': 'error',
-          'input': {'command': 'ls'},
-          'error': 'disk full',
-        },
-      }, null);
+      final conv = _conv('s7', PageMockClient(const []));
+      conv.onStepStarted('m2');
+      conv.onToolInputStarted('m2', 'c5', 'bash');
+      conv.onToolFailed('m2', 'c5', {'message': 'disk full'});
       await conv.saveCacheForTest();
 
       final restored = _conv('s7', _fakeClient());
@@ -398,715 +255,394 @@ void main() {
       expect(restored.messages.length, 1);
       expect(restored.messages.single.parts.single.toolError, 'disk full');
     });
-
-    test('cache round-trip preserves subtask command and expanded prompt',
-        () async {
-      final conv = _conv('s7c', _fakeClient());
-      conv.onPartUpdated({
-        'id': 'pst',
-        'messageID': 'mst',
-        'type': 'subtask',
-        'command': 'review',
-        'prompt': 'You are a code reviewer. Review the code for bugs.',
-      }, null);
-      await conv.saveCacheForTest();
-
-      final restored = _conv('s7c', _fakeClient());
-      await restored.loadCacheForTest();
-      expect(restored.messages.length, 1);
-      expect(restored.messages.single.parts.single.command, 'review');
-      expect(restored.messages.single.parts.single.text,
-          'You are a code reviewer. Review the code for bugs.');
-    });
   });
 
-  // M-1 覆盖：directory 空边界 + setDirectory 回填语义。
-  group('question reply directory guard (M-1)', () {
-    final q = QuestionRequest(
-        id: 'que_t1', sessionID: 's1', questions: const []);
-
-    test('replyQuestion throws when directory empty and keeps the card', () async {
-      final conv = _conv('s1', _fakeClient()); // directory 默认 ''
-      expect(conv.directory, '');
-      conv.onQuestion(q);
-      expect(conv.questions.length, 1);
-      await expectLater(
-        conv.replyQuestion(q, const [
-          ['a']
-        ]),
-        throwsA(isA<KnownError>()),
-      );
-      // 抛错前不移除卡片：用户可重试。
-      expect(conv.questions.length, 1);
-    });
-
-    test('rejectQuestion throws when directory empty and keeps the card', () async {
-      final conv = _conv('s1', _fakeClient());
-      conv.onQuestion(q);
-      await expectLater(conv.rejectQuestion(q), throwsA(isA<KnownError>()));
-      expect(conv.questions.length, 1);
-    });
-
+  group('form reply (v2 session-scoped)', () {
     test('setDirectory fills only when current is empty', () {
-      final conv = _conv('s1', _fakeClient());
+      final conv = _conv('s_q', _fakeClient());
       expect(conv.directory, '');
       conv.setDirectory('/a');
       expect(conv.directory, '/a');
-      // 非空时不覆盖（避免回填覆盖已注入的有效值）。
       conv.setDirectory('/b');
       expect(conv.directory, '/a');
-      // 空 dir 永不填充。
-      conv.setDirectory('');
-      expect(conv.directory, '/a');
+    });
+
+    test('onForm adds pending and dedupes identical', () {
+      final conv = _conv('s_q', _fakeClient());
+      final f = formInfo(
+        id: 'frm_1',
+        sessionID: 's_q',
+        fields: [selectField('choice', options: [option('yes', 'Yes')])],
+      );
+      conv.onForm(f);
+      expect(conv.forms.length, 1);
+      var notified = 0;
+      conv.addListener(() => notified++);
+      conv.onForm(formInfo(
+        id: 'frm_1',
+        sessionID: 's_q',
+        fields: [selectField('choice', options: [option('yes', 'Yes')])],
+      ));
+      expect(conv.forms.length, 1);
+      expect(notified, 0);
+    });
+
+    test('onFormReplied removes card', () {
+      final conv = _conv('s_q', _fakeClient());
+      conv.onForm(formInfo(id: 'frm_2', sessionID: 's_q'));
+      expect(conv.forms.length, 1);
+      conv.onFormReplied('frm_2');
+      expect(conv.forms, isEmpty);
+    });
+
+    test('settled form (state answered) is not injected', () {
+      final conv = _conv('s_q', _fakeClient());
+      conv.onForm(formInfo(id: 'frm_3', sessionID: 's_q', stateStatus: 'answered'));
+      expect(conv.forms, isEmpty);
     });
   });
 
-  group('retry part error propagation', () {
-    test('retry part propagates error to parent message info.error', () {
-      final conv = _conv('s8', _fakeClient());
-      // Simulate a message updated (assistant message, no error yet).
-      conv.onMessageUpdated(MessageInfo(
-        id: 'msg_r1',
-        role: 'assistant',
-        sessionID: 's8',
-        created: 1000,
-      ));
-      expect(conv.messages.single.info.error, isNull);
-
-      // Simulate a retry part arriving with an APIError.
-      conv.onPartUpdated({
-        'id': 'prt_retry1',
-        'messageID': 'msg_r1',
-        'sessionID': 's8',
-        'type': 'retry',
-        'attempt': 1,
-        'error': {
-          'name': 'APIError',
-          'data': {
-            'message': 'Weekly/Monthly Limit Exhausted',
-            'isRetryable': true,
-          },
-        },
-        'time': {'created': 1001},
-      }, null);
-
-      // The retry part is hidden, so no parts added.
-      expect(conv.messages.single.parts, isEmpty);
-      // But the error is propagated to the message's info.error.
-      final err = conv.messages.single.info.error;
-      expect(err, isNotNull);
-      expect(err!['name'], 'APIError');
-      expect(err['data']['message'], 'Weekly/Monthly Limit Exhausted');
+  group('retry scheduled error propagation', () {
+    test('retry.scheduled propagates error to message error', () {
+      final conv = _conv('s6', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onRetryScheduled('m1', 1, {'message': 'provider 502'});
+      expect(conv.isRetry, isTrue);
+      expect(conv.retryMessage, 'provider 502');
+      expect(conv.messages.single.error, isNotNull);
+      expect(conv.messages.single.error!['message'], 'provider 502');
     });
 
-    test('retry part does not overwrite existing message error', () {
-      final conv = _conv('s9', _fakeClient());
-      conv.onMessageUpdated(MessageInfo(
-        id: 'msg_r2',
-        role: 'assistant',
-        sessionID: 's9',
-        created: 2000,
-        error: {'name': 'ProviderAuthError', 'data': {'message': 'auth failed', 'providerID': 'openrouter'}},
-      ));
-      expect(conv.messages.single.info.error, isNotNull);
-
-      conv.onPartUpdated({
-        'id': 'prt_retry2',
-        'messageID': 'msg_r2',
-        'sessionID': 's9',
-        'type': 'retry',
-        'attempt': 1,
-        'error': {'name': 'APIError', 'data': {'message': 'rate limit', 'isRetryable': true}},
-        'time': {'created': 2001},
-      }, null);
-
-      // Original error preserved; retry error not overwritten.
-      expect(conv.messages.single.info.error!['name'], 'ProviderAuthError');
+    test('retry.scheduled does not overwrite existing message error', () {
+      final conv = _conv('s6', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onStepFailed('m1', {'message': 'original failure'});
+      conv.onRetryScheduled('m1', 1, {'message': 'provider 502'});
+      expect(conv.messages.single.error!['message'], 'original failure');
     });
 
-    test('empty retry error does not propagate', () {
-      final conv = _conv('s10', _fakeClient());
-      conv.onMessageUpdated(MessageInfo(
-        id: 'msg_r3',
-        role: 'assistant',
-        sessionID: 's10',
-        created: 3000,
-      ));
-
-      conv.onPartUpdated({
-        'id': 'prt_retry3',
-        'messageID': 'msg_r3',
-        'sessionID': 's10',
-        'type': 'retry',
-        'attempt': 1,
-        'error': <String, dynamic>{},
-        'time': {'created': 3001},
-      }, null);
-
-      expect(conv.messages.single.info.error, isNull);
-    });
-
-    test('message.updated preserves retry error when new info lacks error', () {
-      final conv = _conv('s11', _fakeClient());
-      // 1. message.updated arrives first (no error).
-      conv.onMessageUpdated(MessageInfo(
-        id: 'msg_r4',
-        role: 'assistant',
-        sessionID: 's11',
-        created: 4000,
-      ));
-      // 2. Retry part arrives, sets error on message.
-      conv.onPartUpdated({
-        'id': 'prt_retry4',
-        'messageID': 'msg_r4',
-        'sessionID': 's11',
-        'type': 'retry',
-        'attempt': 1,
-        'error': {'name': 'APIError', 'data': {'message': 'rate limit', 'isRetryable': true}},
-        'time': {'created': 4001},
-      }, null);
-      expect(conv.messages.single.info.error, isNotNull);
-
-      // 3. Another message.updated arrives WITHOUT error (e.g., status bump).
-      conv.onMessageUpdated(MessageInfo(
-        id: 'msg_r4',
-        role: 'assistant',
-        sessionID: 's11',
-        created: 4000,
-        finish: 'error',
-      ));
-      // Retry error is preserved, not overwritten to null.
-      expect(conv.messages.single.info.error!['name'], 'APIError');
+    test('empty retry error does not set message error', () {
+      final conv = _conv('s6', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onRetryScheduled('m1', 1, const {'message': ''});
+      expect(conv.messages.single.error, isNull);
+      expect(conv.isRetry, isTrue);
     });
   });
 
   group('setStatus retry message', () {
-    ConversationStore newConv() => _conv('s12', _fakeClient());
-
     test('retry status stores message', () {
-      final conv = newConv();
-      conv.setStatus('retry', retryMessage: 'rate limit hit');
-      expect(conv.status, 'retry');
-      expect(conv.retryMessage, 'rate limit hit');
+      final conv = _conv('s', _fakeClient());
+      conv.setStatus('retry', retryMessage: 'boom');
+      expect(conv.retryMessage, 'boom');
+      expect(conv.isRetry, isTrue);
     });
 
     test('consecutive retry with empty message preserves last message', () {
-      final conv = newConv();
-      conv.setStatus('retry', retryMessage: 'rate limit hit');
-      conv.setStatus('retry', retryMessage: null);
-      expect(conv.retryMessage, 'rate limit hit');
-      conv.setStatus('retry', retryMessage: '');
-      expect(conv.retryMessage, 'rate limit hit');
-      conv.setStatus('retry', retryMessage: 'auth failed');
-      expect(conv.retryMessage, 'auth failed');
+      final conv = _conv('s', _fakeClient());
+      conv.setStatus('retry', retryMessage: 'boom');
+      conv.setStatus('retry');
+      expect(conv.retryMessage, 'boom');
     });
 
     test('non-retry transition clears retryMessage', () {
-      final conv = newConv();
-      conv.setStatus('retry', retryMessage: 'rate limit hit');
-      expect(conv.retryMessage, isNotNull);
-      conv.setStatus('busy');
-      expect(conv.retryMessage, isNull);
-      conv.setStatus('retry', retryMessage: 'again');
+      final conv = _conv('s', _fakeClient());
+      conv.setStatus('retry', retryMessage: 'boom');
       conv.setStatus('idle');
       expect(conv.retryMessage, isNull);
     });
 
     test('no notify when status and retryMessage unchanged', () {
-      final conv = newConv();
-      conv.setStatus('retry', retryMessage: 'rate limit hit');
-      var notifies = 0;
-      conv.addListener(() => notifies++);
-      conv.setStatus('retry', retryMessage: 'rate limit hit');
-      expect(notifies, 0);
-      conv.setStatus('retry', retryMessage: null);
-      expect(notifies, 0);
+      final conv = _conv('s', _fakeClient());
+      conv.setStatus('retry', retryMessage: 'boom');
+      var notified = 0;
+      conv.addListener(() => notified++);
+      conv.setStatus('retry', retryMessage: 'boom');
+      expect(notified, 0);
     });
 
     test('notifies when retryMessage changes', () {
-      final conv = newConv();
-      conv.setStatus('retry', retryMessage: 'rate limit hit');
-      var notifies = 0;
-      conv.addListener(() => notifies++);
-      conv.setStatus('retry', retryMessage: 'auth failed');
-      expect(notifies, 1);
-      expect(conv.retryMessage, 'auth failed');
+      final conv = _conv('s', _fakeClient());
+      conv.setStatus('retry', retryMessage: 'a');
+      var notified = 0;
+      conv.addListener(() => notified++);
+      conv.setStatus('retry', retryMessage: 'b');
+      expect(notified, 1);
     });
   });
 
-  group('synthetic text part filtering', () {
-    test('shouldHidePartForTest hides synthetic text', () {
-      expect(
-        ConversationStore.shouldHidePartForTest(
-            {'type': 'text', 'synthetic': true, 'text': 'file content'}),
-        isTrue,
-      );
-    });
-
-    test('shouldHidePartForTest keeps real text', () {
-      expect(
-        ConversationStore.shouldHidePartForTest(
-            {'type': 'text', 'text': 'hello'}),
-        isFalse,
-      );
-    });
-
-    test('shouldHidePartForTest keeps file parts', () {
-      expect(
-        ConversationStore.shouldHidePartForTest(
-            {'type': 'file', 'url': 'data:...', 'filename': 'a.txt'}),
-        isFalse,
-      );
-    });
-
-    test('toDisplayForTest filters synthetic text but keeps file + real text', () {
-      final conv = _conv('s_syn', _fakeClient());
-      final dm = conv.toDisplayForTest(MessageEntry.fromJson({
-        'info': {
-          'id': 'msg_u1',
-          'role': 'user',
-          'time': {'created': 1000},
-        },
-        'parts': [
-          {'id': 'prt1', 'type': 'text', 'text': 'check this file'},
-          {'id': 'prt2', 'type': 'file', 'url': 'data:text/plain;base64,AA==',
-           'filename': 'test.txt'},
-          {'id': 'prt3', 'type': 'text', 'synthetic': true,
-           'text': 'Called the Read tool with the following input: {"filePath":"test.txt"}'},
-          {'id': 'prt4', 'type': 'text', 'synthetic': true,
-           'text': 'file content here...'},
-        ],
-      }));
-      expect(dm.parts.length, 2);
-      expect(dm.parts[0].type, 'text');
-      expect(dm.parts[0].text, 'check this file');
-      expect(dm.parts[1].type, 'file');
-      expect(dm.parts[1].filename, 'test.txt');
-    });
-
-    test('onPartUpdated skips synthetic text from SSE', () {
-      final conv = _conv('s_syn2', _fakeClient());
-      conv.onMessageUpdated(MessageInfo(
-        id: 'msg_u2', role: 'user', sessionID: 's_syn2', created: 2000));
-      conv.onPartUpdated({
-        'id': 'prt_real',
-        'messageID': 'msg_u2',
-        'type': 'text',
-        'text': 'my message',
-      }, null);
-      conv.onPartUpdated({
-        'id': 'prt_syn1',
-        'messageID': 'msg_u2',
-        'type': 'text',
-        'text': 'Called the Read tool...',
-        'synthetic': true,
-      }, null);
-      conv.onPartUpdated({
-        'id': 'prt_syn2',
-        'messageID': 'msg_u2',
-        'type': 'text',
-        'text': 'file content...',
-        'synthetic': true,
-      }, null);
-      final msg = conv.messages.single;
-      expect(msg.parts.length, 1);
-      expect(msg.parts.single.type, 'text');
-      expect(msg.parts.single.text, 'my message');
-    });
-
-    test('onPartUpdated keeps file parts from SSE', () {
-      final conv = _conv('s_syn3', _fakeClient());
-      conv.onMessageUpdated(MessageInfo(
-          id: 'msg_u3', role: 'user', sessionID: 's_syn3', created: 3000));
-      conv.onPartUpdated({
-        'id': 'prt_file',
-        'messageID': 'msg_u3',
-        'type': 'file',
-        'url': 'data:image/png;base64,AAAA',
-        'filename': 'pic.png',
-      }, null);
-      final msg = conv.messages.single;
-      expect(msg.parts.length, 1);
-      expect(msg.parts.single.type, 'file');
-      expect(msg.parts.single.filename, 'pic.png');
-    });
-
-    // The server emits a synthetic user message ("The following tool was
-    // executed by the user") for shell commands whose only part is hidden.
-    // It must be hidden from rendering instead of producing an empty bubble.
-    test('synthetic-only user message renders no empty bubble', () {
-      final conv = _conv('s_syn4', _fakeClient());
-      conv.onMessageUpdated(MessageInfo(
-          id: 'msg_u4', role: 'user', sessionID: 's_syn4', created: 4000));
-      conv.onPartUpdated({
-        'id': 'prt_shell',
-        'messageID': 'msg_u4',
-        'type': 'text',
-        'text': 'The following tool was executed by the user',
-        'synthetic': true,
-      }, null);
-      // The hidden part is skipped; the message stays in the store but is
-      // excluded from rendering so no empty bubble appears.
-      expect(conv.messages.single.info.id, 'msg_u4');
-      expect(conv.messages.single.parts, isEmpty);
-      expect(conv.renderableMessages, isEmpty);
-    });
-
-    // Regression: a hidden part arriving before a visible part must not drop
-    // the user message or resurrect it with the wrong role.
-    test('user message renders when visible part follows hidden part', () {
-      final conv = _conv('s_syn5', _fakeClient());
-      conv.onMessageUpdated(MessageInfo(
-          id: 'msg_u5', role: 'user', sessionID: 's_syn5', created: 5000));
-      conv.onPartUpdated({
-        'id': 'prt_syn',
-        'messageID': 'msg_u5',
-        'type': 'text',
-        'text': 'synthetic echo',
-        'synthetic': true,
-      }, null);
-      conv.onPartUpdated({
-        'id': 'prt_real',
-        'messageID': 'msg_u5',
-        'type': 'text',
-        'text': 'real message',
-      }, null);
-      expect(conv.renderableMessages.length, 1);
-      final msg = conv.renderableMessages.single;
-      expect(msg.info.role, 'user');
-      expect(msg.parts.single.text, 'real message');
+  group('empty user message filtering', () {
+    test('toDisplayForTest builds empty text part for empty user text', () {
+      final conv = _conv('s', _fakeClient());
+      final d = conv.toDisplayForTest(userMsg(id: 'm_e', text: ''))!;
+      expect(d.parts.length, 1);
+      expect(d.parts[0].type, 'text');
     });
 
     test('isEmptyUserForTest flags only non-optimistic empty user messages', () {
-      final emptyUser = DisplayMessage(MessageInfo(id: 'x', role: 'user'));
+      final conv = _conv('s', _fakeClient());
+      final emptyUser = conv.toDisplayForTest(userMsg(id: 'm_e', text: ''))!;
       expect(ConversationStore.isEmptyUserForTest(emptyUser), isTrue);
-      final userWithPart = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
-        ..parts.add(DisplayPart(id: 'p', type: 'text', text: 'hi'));
-      expect(ConversationStore.isEmptyUserForTest(userWithPart), isFalse);
-      final emptyAssistant = DisplayMessage(MessageInfo(id: 'x', role: 'assistant'));
-      expect(ConversationStore.isEmptyUserForTest(emptyAssistant), isFalse);
-      final optimisticEmpty =
-          DisplayMessage(MessageInfo(id: 'x', role: 'user'), optimistic: true);
-      expect(ConversationStore.isEmptyUserForTest(optimisticEmpty), isFalse);
+
+      final withText = conv.toDisplayForTest(userMsg(id: 'm_t', text: 'hi'))!;
+      expect(ConversationStore.isEmptyUserForTest(withText), isFalse);
+
+      final assistant = conv.toDisplayForTest(assistantMsg(id: 'm_a'))!;
+      expect(ConversationStore.isEmptyUserForTest(assistant), isFalse);
     });
 
-    // Slash commands can leave a user message whose only part is a blank text
-    // (e.g. an echoed control message with empty body). The renderer draws the
-    // green bubble but no text → empty bubble. It must be filtered like the
-    // shell synthetic case.
-    test('blank-text-only user message renders no empty bubble', () {
-      final conv = _conv('s_cmd1', _fakeClient());
-      conv.onMessageUpdated(MessageInfo(
-          id: 'msg_c1', role: 'user', sessionID: 's_cmd1', created: 6000));
-      conv.onPartUpdated({
-        'id': 'prt_blank',
-        'messageID': 'msg_c1',
-        'type': 'text',
-        'text': '',
-      }, null);
-      expect(conv.messages.single.parts.single.text, '');
-      expect(conv.renderableMessages, isEmpty);
+    test('whitespace-only text message renders no empty bubble', () {
+      final conv = _conv('s', _fakeClient());
+      final d = conv.toDisplayForTest(userMsg(id: 'm_w', text: '   '))!;
+      expect(ConversationStore.isEmptyUserForTest(d), isTrue);
     });
 
-    // A whitespace-only text part is equally contentless and must be filtered.
-    test('whitespace-only text part renders no empty bubble', () {
-      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
-        ..parts.add(DisplayPart(id: 'p', type: 'text', text: '   \n  '));
-      expect(ConversationStore.isEmptyUserForTest(m), isTrue);
-    });
-
-    // A user message whose only part is non-text/non-file (e.g. a tool part the
-    // server attaches to a command echo) renders nothing in user mode → filter.
-    test('non-renderable-only user message renders no empty bubble', () {
-      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
-        ..parts.add(DisplayPart(id: 'p', type: 'tool', tool: 'Bash'));
-      expect(ConversationStore.isEmptyUserForTest(m), isTrue);
-    });
-
-    // An attachment-only user message (file part, no text) is NOT empty — the
-    // attachment must still render.
     test('file-only user message is not empty', () {
-      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
-        ..parts.add(DisplayPart(
-            id: 'p', type: 'file', filename: 'a.png', fileUrl: 'data:'));
-      expect(ConversationStore.isEmptyUserForTest(m), isFalse);
-    });
-
-    // A subtask part renders its expanded prompt (text), so a user message
-    // whose only part is a subtask is NOT empty.
-    test('subtask-only user message is not empty', () {
-      final m = DisplayMessage(MessageInfo(id: 'x', role: 'user'))
-        ..parts.add(DisplayPart(id: 'p', type: 'subtask',
-                                command: 'review',
-                                text: 'Review the code'));
-      expect(ConversationStore.isEmptyUserForTest(m), isFalse);
+      final conv = _conv('s', _fakeClient());
+      final d = conv.toDisplayForTest(userMsg(
+        id: 'm_f',
+        text: '',
+        files: [
+          {'uri': 'data:image/png;base64,AAAA', 'name': 'a.png'},
+        ],
+      ))!;
+      expect(ConversationStore.isEmptyUserForTest(d), isFalse);
     });
   });
 
-  // 会话输入框草稿暂存（docs/design-compose-draft.md §10）。
-  // CD-15：方案 A 下 loadDraftOnly() 公开，直接构造 store 不会自动读盘——
-  // 验证草稿加载须显式调用 loadDraftOnly()；setUp 已隔离 SharedPreferences。
   group('draft persistence (CD-1~31)', () {
     test('setDraft updates memory only and does not notify', () {
-      final conv = _conv('d1', _fakeClient());
-      var notifies = 0;
-      conv.addListener(() => notifies++);
-      conv.setDraft('hello', shell: true);
+      final conv = _conv('s', _fakeClient());
+      var notified = 0;
+      conv.addListener(() => notified++);
+      conv.setDraft('hello');
       expect(conv.draftText, 'hello');
-      expect(conv.draftShell, isTrue);
-      expect(notifies, 0); // §6 D3：setDraft 高频调用，不触发整页重建
+      expect(notified, 0);
     });
 
     test('persistDraft writes draft/draftShell into blob', () async {
-      final conv = _conv('d2', _fakeClient());
-      conv.setDraft('unsent text', shell: true);
+      final conv = _conv('s1', _fakeClient());
+      conv.setDraft('typing', shell: true);
       await conv.persistDraft();
-      final restored = _conv('d2', _fakeClient());
+
+      final restored = _conv('s1', _fakeClient());
       await restored.loadDraftOnly();
-      expect(restored.draftText, 'unsent text');
+      expect(restored.draftText, 'typing');
       expect(restored.draftShell, isTrue);
-      expect(restored.draftLoaded, isTrue);
     });
 
-    test('loadDraftOnly reads only draft, ignores messages/todos (CD-1)', () async {
-      final seed = _conv('d3', _fakeClient());
-      seed.onPartUpdated(
-          {'id': 'p1', 'messageID': 'm1', 'type': 'text'}, 'a real message');
-      await seed.saveCacheForTest();
+    test('loadDraftOnly reads only draft, ignores messages (CD-1)', () async {
+      final conv = _conv('s2', PageMockClient(const []));
+      conv.onStepStarted('m1');
+      conv.onTextDelta('m1', 0, 'streamed body');
+      await conv.persistDraft();
+      conv.setDraft('');
 
-      final restored = _conv('d3', _fakeClient());
+      final restored = _conv('s2', _fakeClient());
       await restored.loadDraftOnly();
-      expect(restored.draftText, ''); // 无 draft 字段 → 兜底空
-      expect(restored.draftShell, isFalse);
-      expect(restored.draftLoaded, isTrue);
-      expect(restored.messages, isEmpty); // 独立于消息缓存路径，不读消息
-    });
-
-    test('backward compat: blob without draft fields → empty (CD-7)', () async {
-      await _cache.write(
-          'conv/d4',
-          '{"messages":[],"todos":[],"segments":[],"cachedSessionUpdated":null}');
-      final conv = _conv('d4', _fakeClient());
-      await conv.loadDraftOnly();
-      expect(conv.draftText, '');
-      expect(conv.draftShell, isFalse);
-      expect(conv.draftLoaded, isTrue);
-    });
-
-    test('loadDraftOnly is idempotent (_draftLoaded guard)', () async {
-      await _cache.write('conv/d5', '{"draft":"first","draftShell":false}');
-      final conv = _conv('d5', _fakeClient());
-      await conv.loadDraftOnly();
-      expect(conv.draftText, 'first');
-      // 改 backing 值；第二次调用须被守卫拦住、不重读。
-      await _cache.write('conv/d5', '{"draft":"second","draftShell":false}');
-      await conv.loadDraftOnly();
-      expect(conv.draftText, 'first');
+      expect(restored.draftText, '');
+      expect(restored.messages, isEmpty);
     });
 
     test('loadDraftOnly on missing blob sets draftLoaded without throw', () async {
-      final conv = _conv('d6', _fakeClient()); // 无缓存
+      final conv = _conv('s_none', _fakeClient());
       await conv.loadDraftOnly();
-      expect(conv.draftText, '');
       expect(conv.draftLoaded, isTrue);
-    });
-
-    test('loadDraftOnly on corrupt blob does not throw, sets draftLoaded',
-        () async {
-      await _cache.write('conv/d7', '{not valid json');
-      final conv = _conv('d7', _fakeClient());
-      await conv.loadDraftOnly();
-      expect(conv.draftText, '');
-      expect(conv.draftLoaded, isTrue);
-    });
-
-    test('persistDraft after dispose is safe (CD-3/CD-20 ordering)', () async {
-      final conv = _conv('d8', _fakeClient());
-      conv.setDraft('x');
-      conv.dispose();
-      await conv.persistDraft(); // _saveCache 不检查 _disposed；写仍有效、不抛
     });
 
     test('loadDraftOnly notifies on completion (reactive restore, §5.3)',
         () async {
-      await _cache.write('conv/d9', '{"draft":"restored","draftShell":true}');
-      final conv = _conv('d9', _fakeClient());
-      var notifies = 0;
-      conv.addListener(() => notifies++);
-      await conv.loadDraftOnly();
-      expect(notifies, 1); // 完成后 notify → 页面 _onDraftChange 回填
-      expect(conv.draftText, 'restored');
-      expect(conv.draftShell, isTrue);
+      final conv = _conv('s3', _fakeClient());
+      conv.setDraft('keep');
+      await conv.persistDraft();
+
+      final restored = _conv('s3', _fakeClient());
+      var notified = 0;
+      restored.addListener(() => notified++);
+      await restored.loadDraftOnly();
+      expect(notified, 1);
+      expect(restored.draftText, 'keep');
     });
   });
 
-  // 方案一：乐观 part 迁移到权威消息。附件在乐观→权威切换的空窗期不消失，
-  // 且权威 part 到达后按 type 1:1 去重，无重复。
-  group('optimistic→authoritative part bridging (option A)', () {
-    test('optimistic file part bridges onto authoritative user message', () {
-      final conv = _conv('ob1', _fakeClient());
-      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
-      // message.updated(user) lands BEFORE any part.updated — the gap window.
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'm1', role: 'user', sessionID: 'ob1', created: 100));
-      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm1');
-      // File + text placeholders survive the prune: no disappearance gap.
-      expect(msg.parts.where((p) => p.type == 'file').length, 1);
-      expect(msg.parts.where((p) => p.type == 'file').single.id,
-          startsWith('optimistic_'));
-      expect(msg.parts.where((p) => p.type == 'text').length, 1);
-    });
-
-    test('file stays visible even if part.updated(file) is never delivered',
+  group('optimistic→authoritative bridging', () {
+    test('inbox.enqueued(user) replaces optimistic and bridges file parts',
         () {
-      // The original bug: optimistic pruned → file gone until reconcile.
-      // With bridging the placeholder persists, so the file never disappears.
-      final conv = _conv('ob2', _fakeClient());
-      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'm2', role: 'user', sessionID: 'ob2', created: 100));
-      conv.onPartUpdated(
-          {'id': 'pt', 'messageID': 'm2', 'type': 'text', 'text': '看下这个文件'},
-          null);
-      // No part.updated(file) — placeholder must remain.
-      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm2');
+      final conv = _conv('s1', _fakeClient());
+      conv.addOptimisticUserMessage('hi', attachments: [
+        AttachmentPreview(
+          mime: 'image/png',
+          filename: 'a.png',
+          dataUrl: 'data:image/png;base64,AAAA',
+        ),
+      ]);
+      conv.onInboxEnqueued('msg_real_1', {
+        'type': 'user',
+        'payload': {'text': 'hi'},
+      });
+      expect(conv.messages.length, 1);
+      final msg = conv.messages.single;
+      expect(msg.id, 'msg_real_1');
+      expect(msg.optimistic, isFalse);
       expect(msg.parts.where((p) => p.type == 'file').length, 1);
+      expect(msg.parts.where((p) => p.type == 'file').single.fileUrl,
+          'data:image/png;base64,AAAA');
     });
 
-    test('authoritative part.updated evicts placeholder 1:1 (no duplicates)',
-        () {
-      final conv = _conv('ob3', _fakeClient());
-      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'm3', role: 'user', sessionID: 'ob3', created: 100));
-      conv.onPartUpdated(
-          {'id': 'pt', 'messageID': 'm3', 'type': 'text', 'text': '看下这个文件'},
-          null);
-      conv.onPartUpdated(_filePartRaw('pf', 'm3'), null);
-      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm3');
-      final files = msg.parts.where((p) => p.type == 'file').toList();
-      expect(files.length, 1); // placeholder evicted, not duplicated
-      expect(files.single.id, 'pf'); // authoritative replaced the guess
-      expect(files.single.source?['path'], 'docs/design-run-assembly.md');
-      expect(msg.parts.where((p) => p.type == 'text').length, 1);
-    });
-
-    test('part order preserved when server delivers file before text', () {
-      // Regression: optimistic inserts text→file, but the server may emit
-      // message.part.updated in a different order (file before text for
-      // @-mentions). The real part must replace its placeholder IN PLACE so
-      // text stays above file — not get appended to the list tail.
-      final conv = _conv('ob3b', _fakeClient());
-      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'm3b', role: 'user', sessionID: 'ob3b', created: 100));
-      // Server delivers file part FIRST, then text.
-      conv.onPartUpdated(_filePartRaw('pf', 'm3b'), null);
-      conv.onPartUpdated(
-          {'id': 'pt', 'messageID': 'm3b', 'type': 'text', 'text': '看下这个文件'},
-          null);
-      final msg =
-          conv.renderableMessages.firstWhere((m) => m.info.id == 'm3b');
-      final types = msg.parts.map((p) => p.type).toList();
-      expect(types, ['text', 'file']); // text above file, not reversed
-    });
-
-    test('reconcile drops placeholder superseded by REST part', () async {
-      final entries = [
-        MessageEntry.fromJson({
-          'info': {
-            'id': 'm4',
-            'role': 'user',
-            'sessionID': 'ob4',
-            'time': {'created': 100},
-          },
-          'parts': [
-            {'id': 'pt', 'type': 'text', 'text': '看下这个文件'},
-            _filePartRaw('pf', 'm4'),
+    test('authoritative files in payload evict placeholders 1:1', () {
+      final conv = _conv('s2', _fakeClient());
+      conv.addOptimisticUserMessage('', attachments: [
+        AttachmentPreview(
+            mime: 'image/png',
+            filename: 'a.png',
+            dataUrl: 'data:image/png;base64,AAAA'),
+      ]);
+      conv.onInboxEnqueued('msg_real_2', {
+        'type': 'user',
+        'payload': {
+          'text': '',
+          'files': [
+            {'uri': 'data:image/png;base64,AAAA', 'name': 'a.png'},
           ],
-        }),
-      ];
-      final conv = _conv('ob4', _MockClient(entries));
-      conv.addOptimisticUserMessage('看下这个文件', fileRefs: const [_fileRef]);
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'm4', role: 'user', sessionID: 'ob4', created: 100));
-      // Placeholder is now on the message; reconcile merges REST (real parts).
-      await conv.reload();
-      final msg = conv.renderableMessages.firstWhere((m) => m.info.id == 'm4');
-      expect(msg.parts.where((p) => p.type == 'file').length, 1);
-      expect(msg.parts.where((p) => p.type == 'file').single.id, 'pf');
-      expect(msg.parts.any((p) => p.id.startsWith('optimistic_')), isFalse);
-    });
-
-    test('cache round-trip preserves file fields', () async {
-      final conv = _conv('ob5', _fakeClient());
-      conv.onPartUpdated(_filePartRaw('pf', 'm5'), null);
-      await conv.saveCacheForTest();
-      final restored = _conv('ob5', _fakeClient());
-      await restored.loadCacheForTest();
-      final fp = restored.messages.single.parts.single;
-      expect(fp.type, 'file');
-      expect(fp.filename, 'design-run-assembly.md');
-      expect(fp.fileUrl, 'file:///x/docs/design-run-assembly.md');
-      expect(fp.source?['path'], 'docs/design-run-assembly.md');
+        },
+      });
+      final files = conv.messages.single.parts.where((p) => p.type == 'file');
+      expect(files.length, 1);
     });
 
     test('bridges oldest (FIFO) optimistic when multiple sends are pending',
         () {
-      // Send-while-busy edge: two optimistic user messages pending. The server
-      // creates in send order, so the first authoritative to land must pick up
-      // the FIRST optimistic's parts — not the newer send.
-      final conv = _conv('ob6', _fakeClient());
-      conv.addOptimisticUserMessage('A', fileRefs: const [_fileRef]);
-      conv.addOptimisticUserMessage('B');
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'mA', role: 'user', sessionID: 'ob6', created: 100));
-      final a = conv.renderableMessages.firstWhere((m) => m.info.id == 'mA');
-      expect(a.parts.where((p) => p.type == 'text').single.text, 'A');
-      expect(a.parts.where((p) => p.type == 'file').length, 1);
+      final conv = _conv('s3', _fakeClient());
+      conv.addOptimisticUserMessage('first');
+      conv.addOptimisticUserMessage('second');
+      conv.onInboxEnqueued('msg_real_3', {
+        'type': 'user',
+        'payload': {'text': 'first'},
+      });
+      expect(conv.messages.length, 1);
+      expect(conv.messages.single.id, 'msg_real_3');
+      expect(conv.messages.single.parts.first.text, 'first');
+    });
+  });
+
+  group('message content updated (authoritative parts)', () {
+    test('content.updated replaces parts of existing message', () {
+      final conv = _conv('s1', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onTextStarted('m1', 0);
+      conv.onTextDelta('m1', 0, 'partial');
+      conv.onMessageContentUpdated('m1', [textPart('authoritative text')]);
+      expect(conv.messages.single.parts.where((p) => p.type == 'text').single.text,
+          'authoritative text');
     });
 
-    test('offline cache restore settles unfinished assistant message (JANK-4 R1-3)', () async {
-      // Cache saved mid-stream (finish==null) then restored OFFLINE: the
-      // half-streamed assistant message must be settled to finish='stop' so it
-      // renders via the stable markdown path, not the streaming downgrade.
-      final conv = _conv('j4a', _fakeClient());
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'm1', role: 'assistant', sessionID: 'j4a', created: 100));
-      conv.onPartUpdated({
-        'id': 'p1',
-        'messageID': 'm1',
-        'type': 'text',
-        'text': 'partial **bold**',
-      }, null);
+    test('content.updated for unknown message inserts it', () {
+      final conv = _conv('s2', _fakeClient());
+      conv.onMessageContentUpdated('m_new', [textPart('fresh')]);
+      expect(conv.messages.single.id, 'm_new');
+      expect(conv.messages.single.parts.single.text, 'fresh');
+    });
+  });
+
+  group('cache round-trip preserves file fields', () {
+    test('user message with files survives save/load', () async {
+      final conv = _conv('s1', PageMockClient(const []));
+      conv.onInboxEnqueued('msg_f1', {
+        'type': 'user',
+        'payload': {
+          'text': 'see',
+          'files': [
+            {'uri': 'data:image/png;base64,AAAA', 'name': 'a.png'},
+          ],
+        },
+      });
       await conv.saveCacheForTest();
 
-      final restored = _conv('j4a', _fakeClient());
+      final restored = _conv('s1', _fakeClient());
       await restored.loadCacheForTest();
-      expect(restored.messages.single.info.finish, 'stop');
+      final msg = restored.messages.single;
+      expect(msg.isUser, isTrue);
+      final file = msg.parts.where((p) => p.type == 'file').single;
+      expect(file.fileUrl, 'data:image/png;base64,AAAA');
+      expect(file.filename, 'a.png');
+      expect(file.fileMime, 'image/png');
     });
+  });
 
-    test('preheat restore keeps unfinished assistant message streaming (JANK-4 R2-1)', () async {
-      // Online preheat: the session may still be streaming. A finish==null
-      // cache entry must stay finish==null — synthesizing 'stop' here would
-      // make _cachedMessage cache a half-text widget that part deltas never
-      // invalidate (messagesVersion is not bumped per token).
-      final conv = _conv('j4b', _fakeClient());
-      conv.onMessageUpdated(const MessageInfo(
-          id: 'm1', role: 'assistant', sessionID: 'j4b', created: 100));
-      conv.onPartUpdated({
-        'id': 'p1',
-        'messageID': 'm1',
-        'type': 'text',
-        'text': 'partial',
-      }, null);
-      conv.sessionUpdated = 1234;
+  group('offline cache restore settles unfinished assistant message', () {
+    test('terminal load injects finish stop for streaming message', () async {
+      final conv = _conv('s1', PageMockClient(const []));
+      conv.onStepStarted('m1');
+      conv.onTextStarted('m1', 0);
+      conv.onTextDelta('m1', 0, 'half streamed');
       await conv.saveCacheForTest();
 
-      final preheated = _conv('j4b', _fakeClient());
-      preheated.sessionUpdated = 1234;
-      await preheated.preheatCacheForTest();
-      expect(preheated.messages.single.info.finish, isNull);
+      final restored = _conv('s1', _fakeClient());
+      await restored.loadCacheForTest();
+      final msg = restored.messages.single;
+      expect(msg.isAssistant, isTrue);
+      expect(msg.finish, 'stop');
+      expect(msg.parts.single.text, 'half streamed');
+    });
+
+    test('preheat restore keeps unfinished assistant message streaming',
+        () async {
+      final conv = _conv('s1', PageMockClient(const []));
+      conv.sessionUpdated = 42;
+      conv.onStepStarted('m1');
+      conv.onTextDelta('m1', 0, 'streaming now');
+      await conv.saveCacheForTest();
+
+      final restored = _conv('s1', _fakeClient());
+      restored.sessionUpdated = 42;
+      await restored.preheatCacheForTest();
+      final msg = restored.messages.single;
+      expect(msg.finish, isNull);
+      expect(msg.parts.single.text, 'streaming now');
+    });
+  });
+
+  group('todos derived from todowrite tool calls', () {
+    test('latest todowrite input wins', () {
+      final conv = _conv('s1', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'c1', 'todowrite');
+      conv.onToolCalled('m1', 'c1', {
+        'todos': [
+          {'content': 'step a', 'status': 'in_progress'},
+          {'content': 'step b', 'status': 'pending'},
+        ],
+      }, null);
+      expect(conv.todos.length, 2);
+      expect(conv.todos.first.content, 'step a');
+      expect(conv.todos.first.active, isTrue);
+
+      conv.onToolInputStarted('m1', 'c2', 'todowrite');
+      conv.onToolCalled('m1', 'c2', {
+        'todos': [
+          {'content': 'step a', 'status': 'completed'},
+          {'content': 'step b', 'status': 'in_progress'},
+        ],
+      }, null);
+      expect(conv.todos.length, 2);
+      expect(conv.todos.first.done, isTrue);
+      expect(conv.todos[1].active, isTrue);
+    });
+
+    test('no todowrite leaves todos empty', () {
+      final conv = _conv('s2', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'c1', 'bash');
+      conv.onToolCalled('m1', 'c1', {'command': 'ls'}, null);
+      expect(conv.todos, isEmpty);
+    });
+
+    test('todowrite without todos key is ignored', () {
+      final conv = _conv('s3', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'c1', 'todowrite');
+      conv.onToolCalled('m1', 'c1', const {}, null);
+      expect(conv.todos, isEmpty);
     });
   });
 }

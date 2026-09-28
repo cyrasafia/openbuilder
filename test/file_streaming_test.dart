@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -70,48 +71,35 @@ void main() {
   });
 
   group('parseStreamedFile', () {
-    test('text content yields text + is not binary', () {
-      final body = utf8.encode(jsonEncode({
-        'type': 'text',
-        'content': 'hello world',
-      }));
-      final f = parseStreamedFile(body);
+    test('text mime yields text + is not binary', () {
+      final body = utf8.encode('hello world');
+      final f = parseStreamedFile((body, 'text/plain'));
       expect(f.isBinary, isFalse);
       expect(f.text, 'hello world');
       expect(f.bytes, isNull);
     });
 
-    test('binary base64 content decodes to bytes', () {
-      final raw = [1, 2, 3, 250];
-      final body = utf8.encode(jsonEncode({
-        'type': 'binary',
-        'content': base64Encode(raw),
-        'encoding': 'base64',
-        'mimeType': 'image/png',
-      }));
-      final f = parseStreamedFile(body);
+    test('binary mime yields raw bytes', () {
+      final raw = Uint8List.fromList([1, 2, 3, 250]);
+      final f = parseStreamedFile((raw, 'image/png'));
       expect(f.isBinary, isTrue);
       expect(f.mimeType, 'image/png');
       expect(f.bytes, raw);
       expect(f.text, isNull);
     });
 
-    test('binary without base64 falls to text branch (bytes null)', () {
-      final body = utf8.encode(jsonEncode({
-        'type': 'binary',
-        'content': '',
-        'encoding': '',
-      }));
-      final f = parseStreamedFile(body);
-      expect(f.isBinary, isTrue);
-      expect(f.bytes, isNull);
+    test('null mime defaults to text', () {
+      final body = utf8.encode('plain text');
+      final f = parseStreamedFile((body, null));
+      expect(f.isBinary, isFalse);
+      expect(f.text, 'plain text');
     });
 
-    test('defaults type to text when absent', () {
-      final body = utf8.encode(jsonEncode({'content': 'x'}));
-      final f = parseStreamedFile(body);
+    test('json mime is text', () {
+      final body = utf8.encode('{"a":1}');
+      final f = parseStreamedFile((body, 'application/json'));
       expect(f.isBinary, isFalse);
-      expect(f.text, 'x');
+      expect(f.text, '{"a":1}');
     });
   });
 }

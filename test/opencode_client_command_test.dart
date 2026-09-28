@@ -48,52 +48,99 @@ class _Adapter implements HttpClientAdapter {
   }
 }
 
+
+class _TwoResponseAdapter implements HttpClientAdapter {
+  final _Capture cap;
+  final String firstBody;
+  final String? secondBody;
+  final int secondStatus;
+  var calls = 0;
+
+  _TwoResponseAdapter(
+    this.cap, {
+    required this.firstBody,
+    required this.secondBody,
+    required this.secondStatus,
+  });
+
+  @override
+  void close({bool force = false}) {}
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    calls++;
+    cap.method = options.method;
+    cap.path = options.path;
+    cap.query = options.queryParameters;
+    if (calls == 1) {
+      return ResponseBody.fromString(firstBody, 200, headers: {
+        Headers.contentTypeHeader: ['application/json'],
+      });
+    }
+    final body = secondBody ?? '[]';
+    return ResponseBody.fromString(body, secondStatus, headers: {
+      Headers.contentTypeHeader: ['application/json'],
+    });
+  }
+}
+
 OpencodeClient _client(_Capture cap, {String body = '{}'}) {
   final dio = Dio(BaseOptions(baseUrl: 'http://test'))
     ..httpClientAdapter = _Adapter(cap, body: body);
   return OpencodeClient(dio);
 }
 
+OpencodeClient _captureTwo(
+  _Capture cap, {
+  String firstBody = '{}',
+  String? secondBody,
+  int secondStatus = 200,
+}) {
+  final dio = Dio(BaseOptions(baseUrl: 'http://test'))
+    ..httpClientAdapter = _TwoResponseAdapter(
+      cap,
+      firstBody: firstBody,
+      secondBody: secondBody,
+      secondStatus: secondStatus,
+    );
+  return OpencodeClient(dio);
+}
+
 void main() {
-  test('command: POST /session/:id/command with command + arguments', () async {
+  test('command: POST /api/session/:id/command with name + text', () async {
     final cap = _Capture();
     await _client(cap).command('s1', command: 'review');
     expect(cap.method, 'POST');
-    expect(cap.path, '/session/s1/command');
-    expect(cap.body!['command'], 'review');
-    expect(cap.body!['arguments'], '');
-    expect(cap.body!.containsKey('agent'), isFalse,
-        reason: 'agent must be omitted when null, not sent as JSON null');
-    expect(cap.body!.containsKey('parts'), isFalse,
-        reason: 'parts must be omitted when empty');
+    expect(cap.path, '/api/session/s1/command');
+    expect(cap.body!['name'], 'review');
+    expect(cap.body!['text'], '');
+    expect(cap.body!.containsKey('files'), isFalse,
+        reason: 'files must be omitted when empty');
   });
 
-  test('command: forwards directory, agent, arguments, parts', () async {
+  test('command: forwards command name, arguments, files', () async {
     final cap = _Capture();
     await _client(cap).command(
       's1',
-      directory: '/work',
-      agent: 'build',
       command: 'review',
       arguments: 'HEAD~1',
-      parts: [
+      files: [
         {
-          'type': 'file',
-          'mime': 'image/png',
-          'url': 'data:image/png;base64,AAAA',
-          'filename': 'a.png',
+          'uri': 'data:image/png;base64,AAAA',
+          'name': 'a.png',
         },
       ],
     );
-    expect(cap.query!['directory'], '/work');
-    expect(cap.body!['agent'], 'build');
-    expect(cap.body!['arguments'], 'HEAD~1');
-    expect(cap.body!['parts'], [
+    expect(cap.body!['name'], 'review');
+    expect(cap.body!['text'], 'HEAD~1');
+    expect(cap.body!['files'], [
       {
-        'type': 'file',
-        'mime': 'image/png',
-        'url': 'data:image/png;base64,AAAA',
-        'filename': 'a.png',
+        'uri': 'data:image/png;base64,AAAA',
+        'name': 'a.png',
       },
     ]);
   });
@@ -108,28 +155,47 @@ void main() {
     expect(cap.sendTimeout, const Duration(seconds: 120));
   });
 
-  test('getMergedCommands: GET /command bare array with source field', () async {
+  test('getMergedCommands: command + skill merge with skill flag', () async {
     final cap = _Capture();
-    final mergedJson = jsonEncode([
-      {'name': 'init', 'description': 'setup AGENTS.md', 'source': 'command'},
-      {'name': 'grilling', 'description': 'stress-test plans', 'source': 'skill'},
-    ]);
-    final res =
-        await _client(cap, body: mergedJson).getMergedCommands(directory: '/w');
-    expect(cap.method, 'GET');
-    expect(cap.path, '/command');
-    expect(cap.query!['directory'], '/w');
+    final cmdJson = jsonEncode({
+      'location': {'directory': '/w'},
+      'data': [
+        {'name': 'init', 'description': 'setup AGENTS.md'},
+      ],
+    });
+    final skillJson = jsonEncode({
+      'location': {'directory': '/w'},
+      'data': [
+        {'id': 'grilling', 'name': 'grilling', 'description': 'stress-test plans'},
+      ],
+    });
+    final res = await _captureTwo(
+      cap,
+      firstBody: cmdJson,
+      secondBody: skillJson,
+    ).getMergedCommands(directory: '/w');
     expect(res, hasLength(2));
     expect(res[0].name, 'init');
-    expect(res[0].source, 'command');
+    expect(res[0].skill, isFalse);
     expect(res[1].name, 'grilling');
-    expect(res[1].isSkill, isTrue);
+    expect(res[1].skill, isTrue);
   });
 
-  test('getMergedCommands: omits directory when absent', () async {
+  test('getMergedCommands: skill fetch failure degrades to commands only',
+      () async {
     final cap = _Capture();
-    await _client(cap, body: '[]').getMergedCommands();
-    expect(cap.path, '/command');
-    expect(cap.query, isEmpty);
+    final cmdJson = jsonEncode({
+      'location': {'directory': '/w'},
+      'data': [
+        {'name': 'init', 'description': 'setup AGENTS.md'},
+      ],
+    });
+    final res = await _captureTwo(
+      cap,
+      firstBody: cmdJson,
+      secondStatus: 500,
+    ).getMergedCommands(directory: '/w');
+    expect(res, hasLength(1));
+    expect(res[0].name, 'init');
   });
 }

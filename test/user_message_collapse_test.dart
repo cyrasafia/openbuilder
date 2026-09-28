@@ -11,6 +11,8 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'v2_test_fixtures.dart';
+
 /// User-message collapse: a user message whose natural height exceeds
 /// screen-height × 0.4 (test surface 800×600 → 240px, plus a 24px minimum
 /// gain) renders collapsed by default — clamped to 240px with an expand
@@ -21,19 +23,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// （类 tool chip）切换折叠/展开；切换带高度动画（中间高度严格介于 clamp
 /// 与自然高度之间）。
 class _MockClient extends OpencodeClient {
-  final List<MessageEntry> entries;
+  final List<SessionMessage> entries;
   _MockClient(this.entries) : super(_noopDio());
 
   @override
   Future<MessagesPage> messagesPage(
     String sessionId, {
     required int limit,
-    String? before,
+    String? cursor,
   }) async =>
-      MessagesPage(entries, null);
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
+      MessagesPage(entries, null, null);
 }
 
 Dio _noopDio() => Dio(
@@ -46,7 +45,7 @@ Dio _noopDio() => Dio(
 Future<void> _pumpConversation(
   WidgetTester tester, {
   required String sessionId,
-  required List<MessageEntry> entries,
+  required List<SessionMessage> entries,
 }) async {
   SharedPreferences.setMockInitialValues({});
   serverStore.client = _MockClient(entries);
@@ -87,22 +86,15 @@ Future<void> _waitCollapsed(WidgetTester tester, Finder host) =>
       return tester.getSize(host).height == 240.0;
     });
 
-MessageEntry _user(String sid, String id, String text, int created) =>
-    MessageEntry(
-      info: MessageInfo(id: id, role: 'user', sessionID: sid, created: created),
-      parts: [MessagePart({'type': 'text', 'id': 'p$id', 'text': text})],
-    );
+SessionMessage _user(String sid, String id, String text, int created) =>
+    userMsg(id: id, text: text, created: created);
 
-MessageEntry _assistant(String sid, String id, String text, int created) =>
-    MessageEntry(
-      info: MessageInfo(
-        id: id,
-        role: 'assistant',
-        sessionID: sid,
-        created: created,
-        finish: 'stop',
-      ),
-      parts: [MessagePart({'type': 'text', 'id': 'p$id', 'text': text})],
+SessionMessage _assistant(String sid, String id, String text, int created) =>
+    assistantMsg(
+      id: id,
+      created: created,
+      content: [textPart(text)],
+      finish: 'stop',
     );
 
 void main() {

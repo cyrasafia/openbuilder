@@ -11,7 +11,7 @@ void main() {
       name: 'test',
       address: 'http://localhost:15120',
       username: 'opencode',
-      password: '',
+      password: '1234321',
     );
     final HealthInfo h;
     try {

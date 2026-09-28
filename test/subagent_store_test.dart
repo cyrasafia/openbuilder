@@ -10,6 +10,8 @@ import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 
+import 'v2_test_fixtures.dart';
+
 // design-subagent-status §D3 的 store 层约定：
 // - SSE session.created 的子会话（parentID 非空）进 `_childSessions`，
 //   不进可见 `_sessions`
@@ -70,7 +72,7 @@ void main() {
           _child('kid', 'par', created: 5, title: 'task'));
       store.onEventForTesting(OpencodeEvent(
         type: 'session.deleted',
-        properties: {'info': {'id': 'kid'}},
+        properties: {'sessionID': 'kid'},
       ));
       expect(store.findChildSession('par'), isNull);
     });
@@ -173,11 +175,8 @@ void main() {
       expect(store.conversationForRead('kid'), isNull);
 
       final kid = store.ensureConversation('kid')!;
-      kid.onPartUpdated(<String, dynamic>{
-        'messageID': 'm1',
-        'id': 'p1',
-        'type': 'text',
-      }, 'accumulated');
+      kid.onStepStarted('m1');
+      kid.onTextDelta('m1', 0, 'accumulated');
 
       // One more filler over the cap — the child must NOT be the victim.
       store.ensureConversation('overflow');
@@ -200,22 +199,15 @@ void main() {
   });
 
   group('DisplayPart.toolMetadata plumbing', () {
-    test('onPartUpdated keeps metadata from SSE tool part updates', () {
+    test('onToolProgress keeps metadata from SSE tool events', () {
       final conv = ConversationStore('s1', _fakeClient());
-      conv.onPartUpdated(<String, dynamic>{
-        'messageID': 'm1',
-        'id': 'tp1',
-        'type': 'tool',
-        'tool': 'task',
-        'state': {
-          'status': 'running',
-          'input': {
-            'subagent_type': 'explore',
-            'description': 'explore lib',
-          },
-          'metadata': {'sessionId': 'kid_123'},
-        },
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'tp1', 'task');
+      conv.onToolCalled('m1', 'tp1', {
+        'subagent_type': 'explore',
+        'description': 'explore lib',
       }, null);
+      conv.onToolProgress('m1', 'tp1', {'sessionId': 'kid_123'});
       final dp = conv.messages.single.parts.single;
       expect(dp.tool, 'task');
       expect(dp.toolStatus, 'running');
@@ -223,47 +215,12 @@ void main() {
       expect(dp.toolInput?['subagent_type'], 'explore');
     });
 
-    test('DisplayPart.from captures state.metadata', () {
-      final p = MessagePart(<String, dynamic>{
-        'id': 'tp2',
-        'type': 'tool',
-        'tool': 'task',
-        'state': {
-          'status': 'completed',
-          'metadata': {'sessionId': 'kid_456'},
-        },
-      });
-      final dp = DisplayPart.from(p);
-      expect(dp.toolMetadata?['sessionId'], 'kid_456');
-    });
-
-    test('merge keeps SSE metadata when REST lacks it', () {
-      // _mergeParts runs on reconcile: REST authoritative entry wins, but
-      // SSE-only fields (metadata) must carry over. Route via conv.load()
-      // is networked; instead drive the same merge through reconcile-free
-      // surface: onPartUpdated (SSE) then verify _mergeParts preserves by
-      // invoking the private path indirectly — assert the SSE dp keeps it
-      // after a second part update without metadata (defensive overwrite
-      // must not clear it since null skips assignment).
+    test('metadata survives an update that omits it', () {
       final conv = ConversationStore('s1', _fakeClient());
-      conv.onPartUpdated(<String, dynamic>{
-        'messageID': 'm1',
-        'id': 'tp1',
-        'type': 'tool',
-        'tool': 'task',
-        'state': {
-          'status': 'running',
-          'metadata': {'sessionId': 'kid'},
-        },
-      }, null);
-      // Follow-up update without metadata (server omits the field).
-      conv.onPartUpdated(<String, dynamic>{
-        'messageID': 'm1',
-        'id': 'tp1',
-        'type': 'tool',
-        'tool': 'task',
-        'state': {'status': 'completed'},
-      }, null);
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'tp1', 'task');
+      conv.onToolProgress('m1', 'tp1', {'sessionId': 'kid'});
+      conv.onToolSuccess('m1', 'tp1', toolContent('done'));
       final dp = conv.messages.single.parts.single;
       expect(dp.toolMetadata?['sessionId'], 'kid',
           reason: 'missing metadata must not clear the accumulated value');
@@ -286,20 +243,24 @@ void main() {
         );
 
     OpencodeEvent questionAsk(String sid, String qid) => OpencodeEvent(
-          type: 'question.asked',
+          type: 'form.created',
           properties: {
-            'id': qid,
-            'sessionID': sid,
-            'questions': [
-              {
-                'question': 'proceed?',
-                'header': 'Confirm',
-                'options': [
-                  {'label': 'yes', 'value': 'yes'},
-                  {'label': 'no', 'value': 'no'},
-                ],
-              }
-            ],
+            'form': {
+              'id': qid,
+              'sessionID': sid,
+              'title': 'Confirm',
+              'fields': [
+                {
+                  'key': 'choice',
+                  'type': 'string',
+                  'title': 'proceed?',
+                  'options': [
+                    {'label': 'yes', 'value': 'yes'},
+                    {'label': 'no', 'value': 'no'},
+                  ],
+                }
+              ],
+            },
           },
         );
 
@@ -348,15 +309,15 @@ void main() {
       final parent = store.ensureConversation('par')!;
 
       store.onEventForTesting(questionAsk('kid', 'q-1'));
-      expect(parent.questions.single.id, 'q-1');
+      expect(parent.forms.single.id, 'q-1');
       expect(store.agentIndicatorStateOf('par').pauseReason,
           AgentPauseReason.choice);
 
       store.onEventForTesting(const OpencodeEvent(
-        type: 'question.replied',
-        properties: {'sessionID': 'kid', 'requestID': 'q-1'},
+        type: 'form.replied',
+        properties: {'sessionID': 'kid', 'id': 'q-1'},
       ));
-      expect(parent.questions, isEmpty);
+      expect(parent.forms, isEmpty);
     });
 
     test('late child registration adopts pending cards (SSE race)', () {
@@ -403,7 +364,7 @@ void main() {
       await parent.respondPermission(parent.permissions.single, 'once');
 
       expect(cap.method, 'POST');
-      expect(cap.path, '/session/kid/permissions/perm-1',
+      expect(cap.path, '/api/session/kid/permission/perm-1/reply',
           reason: 'server-side pending lives under the child session');
       expect(parent.permissions, isEmpty,
           reason: 'successful reply removes the hosted card');
@@ -556,9 +517,7 @@ void main() {
 
       store.onEventForTesting(const OpencodeEvent(
         type: 'session.deleted',
-        properties: {
-          'info': {'id': 'kid'}
-        },
+        properties: {'sessionID': 'kid'},
       ));
 
       expect(parent.permissions, isEmpty);
@@ -605,7 +564,7 @@ class _EmptyBackfillClient extends OpencodeClient {
       const [];
 
   @override
-  Future<List<QuestionRequest>> listQuestions({String? directory}) async =>
+  Future<List<FormInfo>> listForms({String? directory}) async =>
       const [];
 }
 

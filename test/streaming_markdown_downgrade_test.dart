@@ -24,12 +24,9 @@ class _MockClient extends OpencodeClient {
   Future<MessagesPage> messagesPage(
     String sessionId, {
     required int limit,
-    String? before,
+    String? cursor,
   }) async =>
-      MessagesPage(const [], null);
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
+      const MessagesPage([], null, null);
 }
 
 Dio _noopDio() => Dio(
@@ -91,26 +88,19 @@ void main() {
 
     // Start an unfinished assistant message and stream tokens into it.
     serverStore.onEventForTesting(OpencodeEvent(
-      type: 'message.updated',
+      type: 'session.step.started',
       properties: {
-        'info': {
-          'id': 'a1',
-          'role': 'assistant',
-          'sessionID': sid,
-          'time': {'created': 1000},
-        },
+        'sessionID': sid,
+        'assistantMessageID': 'a1',
       },
     ));
     await tester.pump();
     serverStore.onEventForTesting(OpencodeEvent(
-      type: 'message.part.updated',
+      type: 'session.text.delta',
       properties: {
-        'part': {
-          'id': 'pa1',
-          'type': 'text',
-          'messageID': 'a1',
-          'sessionID': sid,
-        },
+        'sessionID': sid,
+        'assistantMessageID': 'a1',
+        'ordinal': 0,
         'delta': 'streaming **bold** body',
       },
     ));
@@ -121,17 +111,13 @@ void main() {
     expect(find.text('streaming **bold** body'), findsOneWidget);
     expect(find.byType(MarkdownBody), findsNothing);
 
-    // Settle: message.updated with finish → cache invalidation → markdown.
+    // Settle: step.ended carries finish → cache invalidation → markdown.
     serverStore.onEventForTesting(OpencodeEvent(
-      type: 'message.updated',
+      type: 'session.step.ended',
       properties: {
-        'info': {
-          'id': 'a1',
-          'role': 'assistant',
-          'sessionID': sid,
-          'time': {'created': 1000},
-          'finish': 'stop',
-        },
+        'sessionID': sid,
+        'assistantMessageID': 'a1',
+        'finish': 'stop',
       },
     ));
     await tester.pumpAndSettle();

@@ -8,16 +8,16 @@ void main() {
         'id': 'per_1',
         'sessionID': 'ses_1',
         'permission': 'external_directory',
-        'patterns': ['/tmp/outside/*'],
+        'resources': ['/tmp/outside/*'],
         'metadata': {
           'filepath': '/tmp/outside/secret.txt',
           'parentDir': '/tmp/outside',
         },
         'always': ['/tmp/outside/*'],
       });
-      expect(p.type, 'external_directory');
+      expect(p.action, 'external_directory');
       expect(p.externalDirectoryPath, '/tmp/outside');
-      expect(p.patterns, ['/tmp/outside/*']);
+      expect(p.resources, ['/tmp/outside/*']);
       expect(p.metadata?['parentDir'], '/tmp/outside');
     });
 
@@ -26,7 +26,7 @@ void main() {
         'id': 'per_2',
         'sessionID': 'ses_1',
         'permission': 'external_directory',
-        'patterns': ['/tmp/outside/*'],
+        'resources': ['/tmp/outside/*'],
         'metadata': {'parentDir': '/tmp/outside'},
         'always': [],
       });
@@ -38,7 +38,7 @@ void main() {
         'id': 'per_3',
         'sessionID': 'ses_1',
         'permission': 'external_directory',
-        'patterns': ['/home/me/elsewhere/*'],
+        'resources': ['/home/me/elsewhere/*'],
         'metadata': <String, dynamic>{},
         'always': [],
       });
@@ -50,7 +50,7 @@ void main() {
         'id': 'per_4',
         'sessionID': 'ses_1',
         'permission': 'external_directory',
-        'patterns': <String>[],
+        'resources': <String>[],
       });
       expect(p.externalDirectoryPath, isNull);
     });
@@ -66,9 +66,9 @@ void main() {
           'parentDir': '/tmp/outside',
         },
       });
-      expect(p.type, 'external_directory');
+      expect(p.action, 'external_directory');
       expect(p.externalDirectoryPath, '/tmp/outside');
-      expect(p.patterns, ['/tmp/outside/*']);
+      expect(p.resources, ['/tmp/outside/*']);
     });
 
     test('v2 external_directory no metadata → derives from resources', () {
@@ -78,7 +78,7 @@ void main() {
         'action': 'external_directory',
         'resources': ['/data/elsewhere/*'],
       });
-      expect(p.type, 'external_directory');
+      expect(p.action, 'external_directory');
       expect(p.externalDirectoryPath, '/data/elsewhere');
     });
 
@@ -87,11 +87,11 @@ void main() {
         'id': 'per_7',
         'sessionID': 'ses_1',
         'permission': 'bash',
-        'patterns': ['rm -rf /'],
+        'resources': ['rm -rf /'],
         'metadata': <String, dynamic>{},
         'always': [],
       });
-      expect(p.type, 'bash');
+      expect(p.action, 'bash');
     });
 
     test('unknown permission type → type preserved verbatim', () {
@@ -99,17 +99,17 @@ void main() {
         'id': 'per_8',
         'sessionID': 'ses_1',
         'permission': 'webfetch',
-        'patterns': [],
+        'resources': [],
         'metadata': <String, dynamic>{},
         'always': [],
       });
-      expect(p.type, 'webfetch');
+      expect(p.action, 'webfetch');
     });
 
     test('empty payload → empty type, no patterns', () {
       final p = Permission.fromJson({'id': 'per_9', 'sessionID': 'ses_1'});
-      expect(p.type, '');
-      expect(p.patterns, isEmpty);
+      expect(p.action, '');
+      expect(p.resources, isEmpty);
     });
 
     test('parentDir empty string is ignored, filepath used instead', () {
@@ -117,7 +117,7 @@ void main() {
         'id': 'per_10',
         'sessionID': 'ses_1',
         'permission': 'external_directory',
-        'patterns': ['/tmp/outside/*'],
+        'resources': ['/tmp/outside/*'],
         'metadata': {'parentDir': '', 'filepath': '/tmp/outside/file.txt'},
         'always': [],
       });
@@ -129,10 +129,10 @@ void main() {
         'id': 'per_11',
         'sessionID': 'ses_1',
         'type': 'external_directory',
-        'patterns': ['/tmp/outside/*'],
+        'resources': ['/tmp/outside/*'],
         'metadata': {'parentDir': '/tmp/outside'},
       });
-      expect(p.type, 'external_directory');
+      expect(p.action, 'external_directory');
       expect(p.externalDirectoryPath, '/tmp/outside');
     });
   });

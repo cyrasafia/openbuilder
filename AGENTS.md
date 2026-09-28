@@ -88,10 +88,10 @@ flutter test                     # 含 widget + parse + smoke（smoke 需本地 
 
 本机已有一个常驻 opencode 服务可供联调 / smoke 测试：
 
-- 地址：`http://localhost:15120`
-- 认证：用户名 `opencode`，密码为空（Basic Auth）
+- 地址：`http://localhost:15120`（**v2.0.18**，`/api/*` 面）
+- 认证：用户名 `opencode`，密码 `1234321`（Basic Auth；v2 强制密码）
 
-可用于触发 SSE 事件、权限卡、会话流等真实交互。**禁止杀死该进程**（它会中断正在进行的推理 / 测试）；如需独立环境，请新起一个实例到**其他端口**，并用各自 PID 精确管理，不要用 `pkill -f "opencode serve"` 之类的通配杀进程。
+可用于触发 SSE 事件、权限卡、form 卡、会话流等真实交互。**禁止杀死该进程**（它会中断正在进行的推理 / 测试）；如需独立环境，请新起一个实例到**其他端口**（隔离 DB：`OPENCODE_DB=/tmp/opencode/v2-test.db OPENCODE_PASSWORD=<pw> opencode serve --port <port>`），并用各自 PID 精确管理，不要用 `pkill -f "opencode serve"` 之类的通配杀进程。
 
 ### JDK 要求
 
@@ -165,7 +165,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design-file-view-deferred-render.md` | 文件详情页延迟渲染门控（动画期间仅后台任务；占位符动画判定修复既有门控失效、容器根路由双门控、Markdown HTML 预构建 + 签名比较去双跑；二期：WebView 首绘门控覆盖层 + 代码高亮预构建 + 测宽估算 top-K 瘦身挂载帧） |
 | `design-file-streaming.md` | 文件内容下载层修订（零下载路由 + 统一进度 + 内容驱动渲染，修订 design-file-view 的下载模型） |
 | `design-file-cache.md` | 文件内容缓存可行性调研（**结论：不可行，暂不做**；实测服务端无 ETag/Last-Modified/size/mtime/hash、无 conditional/Range；头部探测三元素仅概率验证且小文件场景自相矛盾；上游加 ETag 或 FileNode 元数据后重启） |
-| `design-v2-migration.md` | **前瞻记录（未来迁移，暂不动）** OpenCode V2 差异与迁移路线 |
+| `design-v2-migration.md` | OpenCode V2 迁移（**已落地**：v2-only 切换按 2.0.18 契约完成；含 form/permission 事件族实测修正、todo=todowrite 推导、归档无 API 等落地结论；配套 `plan-v2-migration.md` 执行计划与 `review-v2-migration.md` 核对报告） |
 | `design-migrate-flutter-markdown-plus.md` | 迁移 flutter_markdown → flutter_markdown_plus（已停用包替换，drop-in） |
 | `design-scroll-to-turn-top.md` | 回到轮次顶部悬浮按钮（几何判定、run 合并、reversed 坐标偏移） |
 | `design-conversation-scroll-perf.md` | 会话列表滚动卡顿优化（根因记录：包 2 屏 cacheExtent × 重条目 × 每帧 O(N)，keep-alive/降频/控件收口三层方案；§7.5 键盘掉帧两连修：有界 keep-alive + 消息 widget 实例记忆化） |

@@ -9,6 +9,8 @@ import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'v2_test_fixtures.dart';
+
 /// Tests for the incremental reconcile + segmented lazy-load design
 /// (design-incremental-reconcile.md).
 ///
@@ -75,8 +77,8 @@ void main() {
       expect(conv.messages.length, 10); // m1..m5 + m11..m15
       // Only the bottom segment (m11..m15) is reachable:
       expect(conv.renderableMessages.length, 5);
-      expect(conv.renderableMessages.first.info.id, 'm15');
-      expect(conv.renderableMessages.last.info.id, 'm11');
+      expect(conv.renderableMessages.first.id, 'm15');
+      expect(conv.renderableMessages.last.id, 'm11');
     });
 
     test('loadOnePage bridges gap to older segment', () async {
@@ -145,13 +147,10 @@ void main() {
       final conv = ConversationStore('s1', client);
       await conv.reconcile();
       // SSE delivers a new message
-      conv.onMessageUpdated(MessageInfo(id: 'm_new', role: 'assistant', created: 400));
-      conv.onPartUpdated(
-        <String, dynamic>{'messageID': 'm_new', 'id': 'p_new', 'type': 'text'},
-        'streamed',
-      );
+      conv.onStepStarted('m_new');
+      conv.onTextDelta('m_new', 0, 'streamed');
       expect(conv.renderableMessages.length, 4);
-      expect(conv.renderableMessages.first.info.id, 'm_new');
+      expect(conv.renderableMessages.first.id, 'm_new');
     });
 
     test('window-range deletion removes reverted message', () async {
@@ -162,7 +161,7 @@ void main() {
       ]);
       final conv = ConversationStore('s1', client);
       await conv.reconcile();
-      expect(conv.messages.any((m) => m.info.id == 'm3'), isTrue);
+      expect(conv.messages.any((m) => m.id == 'm3'), isTrue);
       // Second reconcile: window has m1,m2,m4,m5 (m3 deleted server-side)
       client.addPages([
         _PageSpec([
@@ -171,7 +170,7 @@ void main() {
         ], null),
       ]);
       await conv.reconcile();
-      expect(conv.messages.any((m) => m.info.id == 'm3'), isFalse);
+      expect(conv.messages.any((m) => m.id == 'm3'), isFalse);
       expect(conv.messages.length, 4);
     });
 
@@ -278,24 +277,17 @@ void main() {
     });
 
     // IR-5(4): old cache schema (no segments/cachedSessionUpdated) reads OK.
-    test('old cache schema (no segments field) degrades gracefully', () async {
-      SharedPreferences.setMockInitialValues({});
-      final prefs = await SharedPreferences.getInstance();
-      // Write a legacy cache (no 'segments' / 'cachedSessionUpdated')
-      await prefs.setString('conv_s1', jsonEncode({
+    test('old v1 cache blob (no v field) degrades gracefully', () async {
+      final cs = FileCacheStore('legacy');
+      await cs.write('conv/s1', jsonEncode({
         'messages': [
-          {
-            'info': MessageInfo(id: 'old1', role: 'user', created: 100).toJson(),
-            'parts': [],
-          },
+          {'info': {'id': 'old1', 'role': 'user', 'created': 100}, 'parts': []},
         ],
         'todos': [],
       }));
       final client = _PageMockClient([_PageSpec(_entries(1, 3), null)]);
-      final conv = ConversationStore('s1', client);
-      // Don't set sessionUpdated → preheat skipped (null != null)
+      final conv = ConversationStore('s1', client, cacheStore: cs);
       await conv.load();
-      // Reconcile loaded fresh data; old cache didn't crash
       expect(conv.loaded, isTrue);
       expect(conv.messages.length, 3);
     });
@@ -351,78 +343,57 @@ void main() {
 
     // The server stores a synthetic-only user message for shell commands;
     // reconcile must drop it so it never renders as an empty bubble.
-    test('reconcile drops synthetic-only user message (no empty bubble)',
+    test('reconcile drops empty-text user message (no empty bubble)',
         () async {
-      final assistant = MessageEntry(
-        info: MessageInfo(
-            id: 'm1', role: 'assistant', created: 100, finish: 'stop'),
-        parts: [MessagePart({'type': 'text', 'id': 'p1', 'text': 'done'})],
-      );
-      final syntheticUser = MessageEntry(
-        info: MessageInfo(id: 'm2', role: 'user', created: 200),
-        parts: [
-          MessagePart({
-            'type': 'text',
-            'id': 'p2',
-            'text': 'The following tool was executed by the user',
-            'synthetic': true,
-          })
-        ],
-      );
+      final assistant = assistantMsg(
+          id: 'm1', created: 100, content: [textPart('done')], finish: 'stop');
+      final emptyUser = userMsg(id: 'm2', text: '', created: 200);
       final client =
-          _PageMockClient([_PageSpec([assistant, syntheticUser], null)]);
+          _PageMockClient([_PageSpec([assistant, emptyUser], null)]);
       final conv = ConversationStore('s_shell', client);
       await conv.reconcile();
       expect(conv.messages.length, 1);
-      expect(conv.messages.single.info.id, 'm1');
+      expect(conv.messages.single.id, 'm1');
     });
 
     // A slash command can leave a user message whose only part is a blank text
     // (echoed control message with empty body). Reconcile must drop it so it
     // never renders as an empty bubble.
-    test('reconcile drops blank-text-only user message (no empty bubble)',
+    test('reconcile drops whitespace-only user message (no empty bubble)',
         () async {
-      final assistant = MessageEntry(
-        info: MessageInfo(
-            id: 'm1', role: 'assistant', created: 100, finish: 'stop'),
-        parts: [MessagePart({'type': 'text', 'id': 'p1', 'text': 'done'})],
-      );
-      final blankUser = MessageEntry(
-        info: MessageInfo(id: 'm2', role: 'user', created: 200),
-        parts: [
-          MessagePart({'type': 'text', 'id': 'p2', 'text': ''}),
-        ],
-      );
+      final assistant = assistantMsg(
+          id: 'm1', created: 100, content: [textPart('done')], finish: 'stop');
+      final blankUser = userMsg(id: 'm2', text: '   ', created: 200);
       final client =
           _PageMockClient([_PageSpec([assistant, blankUser], null)]);
       final conv = ConversationStore('s_cmd', client);
       await conv.reconcile();
       expect(conv.messages.length, 1);
-      expect(conv.messages.single.info.id, 'm1');
+      expect(conv.messages.single.id, 'm1');
     });
   });
 }
 
-/// Build a list of MessageEntry with ids m{from}..m{to}, created = from*100..to*100.
-List<MessageEntry> _entries(int from, int to) {
-  final result = <MessageEntry>[];
+List<SessionMessage> _entries(int from, int to) {
+  final result = <SessionMessage>[];
   for (var i = from; i <= to; i++) {
-    result.add(MessageEntry(
-      info: MessageInfo(
+    if (i % 2 == 0) {
+      result.add(assistantMsg(
         id: 'm$i',
-        role: i % 2 == 0 ? 'assistant' : 'user',
         created: i * 100,
-        finish: i % 2 == 0 ? 'stop' : null,
-      ),
-      parts: [MessagePart({'type': 'text', 'id': 'p$i', 'text': 'msg $i'})],
-    ));
+        content: [textPart('msg $i')],
+        finish: 'stop',
+      ));
+    } else {
+      result.add(userMsg(id: 'm$i', text: 'msg $i', created: i * 100));
+    }
   }
   return result;
 }
 
 /// A single page's mock response.
 class _PageSpec {
-  final List<MessageEntry> entries;
+  final List<SessionMessage> entries;
   final String? nextCursor;
   _PageSpec(this.entries, this.nextCursor);
 }
@@ -442,40 +413,28 @@ class _PageMockClient extends OpencodeClient {
 
   @override
   Future<MessagesPage> messagesPage(String sessionId,
-      {required int limit, String? before}) async {
+      {required int limit, String? cursor}) async {
     if (failNext) {
       failNext = false;
       throw Exception('simulated network failure');
     }
-    if (_pages.isEmpty) return MessagesPage(const [], null);
+    if (_pages.isEmpty) return const MessagesPage([], null, null);
     final spec = _pages.removeAt(0);
-    return MessagesPage(spec.entries, spec.nextCursor);
+    return MessagesPage(spec.entries, spec.nextCursor, null);
   }
-
-  @override
-  Future<List<MessageEntry>> messages(String sessionId, {int? limit}) async {
-    if (_pages.isEmpty) return const [];
-    return _pages.first.entries;
-  }
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
 }
 
 /// Simulates an old server that ignores `limit` and returns the full list
 /// with no cursor (degradation path).
 class _DegradationMockClient extends OpencodeClient {
-  final List<MessageEntry> all;
+  final List<SessionMessage> all;
   _DegradationMockClient(this.all) : super(_noopDio());
 
   @override
   Future<MessagesPage> messagesPage(String sessionId,
-      {required int limit, String? before}) async {
-    return MessagesPage(all, null); // full list, no cursor
+      {required int limit, String? cursor}) async {
+    return MessagesPage(all, null, null); // full list, no cursor
   }
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
 }
 
 /// Always throws on messagesPage — used to test preheat-then-fail (IR-7).
@@ -484,12 +443,9 @@ class _AlwaysFailMockClient extends OpencodeClient {
 
   @override
   Future<MessagesPage> messagesPage(String sessionId,
-      {required int limit, String? before}) async {
+      {required int limit, String? cursor}) async {
     throw Exception('network error');
   }
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
 }
 
 Dio _noopDio() => Dio(BaseOptions(

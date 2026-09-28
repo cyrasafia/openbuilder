@@ -35,21 +35,22 @@ class _DiffListScreenState extends State<DiffListScreen> {
   }
 
   Future<String?> _lastUserMessageId(OpencodeClient c) async {
-    String? before;
+    String? cursor;
     const maxPages = 10;
     for (var p = 0; p < maxPages; p++) {
       final page = await c.messagesPage(
         widget.sessionId,
         limit: 100,
-        before: before,
+        cursor: cursor,
       );
       for (var i = page.entries.length - 1; i >= 0; i--) {
-        if (page.entries[i].info.role == 'user') {
-          return page.entries[i].info.id;
+        final e = page.entries[i];
+        if (e is UserMessage) {
+          return e.id;
         }
       }
-      if (page.nextCursor == null) return null;
-      before = page.nextCursor;
+      if (page.olderCursor == null) return null;
+      cursor = page.olderCursor;
     }
     return null;
   }
@@ -86,7 +87,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
         final diffs = await c.diff(
           widget.sessionId,
           directory: widget.directory,
-          mode: mode == DiffMode.branch ? 'branch' : 'git',
+          mode: mode == DiffMode.branch ? 'branch' : 'working',
           messageID: messageID,
         );
         if (gen != _loadGen) return;
@@ -130,7 +131,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
   bool get _canShowLastMessage {
     final conv = serverStore.conversationForRead(widget.sessionId);
     if (conv == null) return true;
-    return conv.messages.any((m) => m.info.role == 'user');
+    return conv.messages.any((m) => m.isUser);
   }
 
   @override

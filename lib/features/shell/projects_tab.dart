@@ -221,17 +221,17 @@ List<_ProjItem> _buildItems(BuildContext context, String query) {
       }
       continue;
     }
-    if (!_matchesQuery(p.displayName, p.worktree, query)) continue;
+    if (!_matchesQuery(p.displayName, p.canonical, query)) continue;
     final sess = serverStore.sessions.where((s) => s.projectID == p.id);
     // See note above: monotonic activity (includes archived) for sort.
     final last = serverStore.lastActivityForProject(p.id);
     items.add(_ProjItem(
       name: p.displayName,
-      subtitle: p.worktree,
+      subtitle: p.canonical,
       icon: p.icon,
       states: _statesFor(
         sess,
-        mainWorktree: p.worktree,
+        mainWorktree: p.canonical,
         sandboxOrder: {
           for (var i = 0; i < p.sandboxes.length; i++) p.sandboxes[i]: i,
         },

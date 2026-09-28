@@ -3,21 +3,17 @@ import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/domain/models.dart';
 
-// Unit tests for the /global/event single-stream layer (see
-// design-sse-global-event.md): envelope parsing in `parseGlobalEvent` and the
-// ServerStore directory gate in `_onGlobalEvent`.
+// Unit tests for the /api/event single-stream layer: envelope parsing in
+// `parseGlobalEvent` and the ServerStore directory gate in `_onGlobalEvent`.
 
 OpencodeEvent _sessionCreated({required String id, required String directory}) =>
     OpencodeEvent(
       type: 'session.created',
       properties: <String, dynamic>{
-        'info': <String, dynamic>{
-          'id': id,
-          'projectID': 'p1',
-          'directory': directory,
-          'title': 't',
-          'time': <String, dynamic>{'created': 1, 'updated': 1},
-        },
+        'sessionID': id,
+        'projectID': 'p1',
+        'location': {'directory': directory},
+        'title': 't',
       },
     );
 
@@ -25,38 +21,32 @@ SessionModel _session({required String id, required String directory}) =>
     SessionModel.fromJson({
       'id': id,
       'projectID': 'p1',
-      'directory': directory,
+      'location': {'directory': directory},
       'title': 't',
       'time': {'created': 1, 'updated': 1},
     });
 
-ProjectModel _project(String worktree, {List<String> sandboxes = const []}) =>
-    ProjectModel(id: 'p1', worktree: worktree, sandboxes: sandboxes);
+ProjectModel _project(String canonical, {List<String> sandboxes = const []}) =>
+    ProjectModel(id: 'p1', canonical: canonical, sandboxes: sandboxes);
 
 void main() {
   group('parseGlobalEvent', () {
-    test('envelope with directory parses', () {
+    test('envelope with location parses', () {
       final gev = parseGlobalEvent(
-          '{"directory":"/repo","project":"p1","payload":{"id":"evt_1","type":"session.status","properties":{"sessionID":"s1"}}}');
+          '{"id":"evt_1","created":1790000000000,"type":"session.text.delta","location":{"directory":"/repo"},"data":{"sessionID":"s1","delta":"x"}}');
       expect(gev, isNotNull);
       expect(gev!.directory, '/repo');
-      expect(gev.event.type, 'session.status');
+      expect(gev.event.type, 'session.text.delta');
       expect(gev.event.id, 'evt_1');
       expect(gev.event.properties['sessionID'], 's1');
     });
 
-    test('missing directory defaults to global', () {
+    test('missing location defaults to global', () {
       final gev = parseGlobalEvent(
-          '{"payload":{"type":"server.heartbeat","properties":{}}}');
+          '{"id":"evt_2","type":"server.heartbeat","data":{}}');
       expect(gev, isNotNull);
       expect(gev!.directory, 'global');
       expect(gev.event.type, 'server.heartbeat');
-    });
-
-    test('sync double-emit wrapper is dropped', () {
-      final gev = parseGlobalEvent(
-          '{"directory":"/repo","payload":{"type":"sync","syncEvent":{"id":"evt_1","type":"message.part.updated.1","seq":1,"aggregateID":"s1","data":{}}}}');
-      expect(gev, isNull);
     });
 
     test('malformed JSON is dropped', () {
@@ -64,14 +54,10 @@ void main() {
       expect(parseGlobalEvent(''), isNull);
     });
 
-    test('non-envelope payloads are dropped', () {
-      // Bare legacy-style event (no envelope): the /event frame shape must
-      // NOT be parsed as a global envelope.
-      expect(
-          parseGlobalEvent('{"id":"evt_1","type":"session.status","properties":{}}'),
-          isNull);
-      expect(parseGlobalEvent('{"payload":"scalar"}'), isNull);
-      expect(parseGlobalEvent('{"payload":{"properties":{}}}'), isNull);
+    test('frames without a type are dropped', () {
+      expect(parseGlobalEvent('{"id":"evt_1","data":{}}'), isNull);
+      expect(parseGlobalEvent('{"data":"scalar"}'), isNull);
+      expect(parseGlobalEvent('{"id":"evt_1","type":""}'), isNull);
     });
   });
 
@@ -86,7 +72,7 @@ void main() {
       store.dispose();
     });
 
-    test('events from a project worktree pass the gate', () {
+    test('events from a project canonical pass the gate', () {
       final store = ServerStore();
       store.setProjectsForTesting([_project('/repo')]);
       store.onGlobalEventForTesting('/repo', _sessionCreated(id: 's1', directory: '/repo'));
@@ -105,35 +91,52 @@ void main() {
       store.dispose();
     });
 
-    test('events from a known session directory pass the gate', () {
+    test('session-scoped events without location route by sessionID', () {
       final store = ServerStore();
-      // No projects — the session's own directory keeps it covered.
       store.upsertSessionForTesting(_session(id: 's1', directory: '/known'));
       store.onGlobalEventForTesting(
-          '/known',
+          'global',
           const OpencodeEvent(
-              type: 'session.status',
+              type: 'session.execution.started',
               properties: {
                 'sessionID': 's1',
-                'status': {'type': 'busy'},
               }));
       expect(store.statusOf('s1').type, 'busy',
-          reason: 'known session directories are part of the gate universe');
+          reason: 'location-less session events route by the session table');
+      store.dispose();
+    });
+
+    test('session-scoped events for unknown sessions are dropped', () {
+      final store = ServerStore();
+      store.onGlobalEventForTesting(
+          'global',
+          const OpencodeEvent(
+              type: 'session.execution.started',
+              properties: {
+                'sessionID': 's-unknown',
+              }));
+      expect(store.statusOf('s-unknown').type, 'idle');
       store.dispose();
     });
 
     test('directory-less global frames bypass the gate', () {
       final store = ServerStore();
-      // server.connected arrives with directory 'global' — must never be
-      // dropped by the gate (it drives reconcile).
+      final before = store.reconcileScheduleCountForTesting;
       store.onGlobalEventForTesting(
-          'global', _sessionCreated(id: 's1', directory: '/repo'));
-      expect(store.sessions.map((s) => s.id), contains('s1'),
+          'global',
+          const OpencodeEvent(
+              type: 'worktree.resolved',
+              properties: {
+                'projectID': 'p9',
+                'directory': '/newly-adopted',
+                'previous': 'global',
+              }));
+      expect(store.reconcileScheduleCountForTesting, greaterThan(before),
           reason: "'global' frames bypass the directory gate");
       store.dispose();
     });
 
-    test('isGatedDirectoryForTesting covers worktree/sandbox/session dirs', () {
+    test('isGatedDirectoryForTesting covers canonical/sandbox/session dirs', () {
       final store = ServerStore();
       store.setProjectsForTesting(
           [_project('/repo', sandboxes: const ['/repo/.sandboxes/a1'])]);
@@ -150,11 +153,6 @@ void main() {
   });
 
   group('reconcile scheduling on state transitions', () {
-    // The SseClient emits connected state on EVERY data frame. Scheduling
-    // reconcile per emission would reset the 800ms debounce on every token of
-    // an active stream, deferring the post-disconnect reconcile indefinitely
-    // while the server is busy. Reconcile must be scheduled exactly once per
-    // not-live → live transition.
     test('per-frame connected emissions schedule reconcile only once', () {
       final store = ServerStore();
       store.onSseStateForTesting(const SseState(connected: true));

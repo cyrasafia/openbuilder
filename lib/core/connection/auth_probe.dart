@@ -80,7 +80,7 @@ class AuthProbe {
       _metadataFromWellKnown(issuer);
 
   Future<_HealthProbe?> _health(String baseUrl) async {
-    for (final path in const ['/global/health', '/api/health']) {
+    for (final path in const ['/api/info', '/global/health', '/api/health']) {
       try {
         final resp = await _getText('$baseUrl$path');
         if (resp.statusCode == 404) continue;

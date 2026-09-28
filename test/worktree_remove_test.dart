@@ -19,7 +19,7 @@ ProjectModel _project({
 }) =>
     ProjectModel(
       id: _projectId,
-      worktree: _mainDir,
+      canonical: _mainDir,
       vcs: 'git',
       sandboxes: sandboxes,
     );
@@ -67,11 +67,11 @@ class _RemoveWorktreeMockClient extends OpencodeClient {
   }
 
   @override
-  Future<void> removeWorktree(String directory,
-      {required String worktreeDir}) async {
+  Future<void> removeWorktree(String projectID, String worktreeDir,
+      {bool force = false}) async {
     callOrder.add('remove');
     removeCalls++;
-    lastDirectory = directory;
+    lastDirectory = projectID;
     lastWorktreeDir = worktreeDir;
     if (failRemove) throw Exception('server error');
   }
@@ -90,7 +90,7 @@ void main() {
       await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
 
       expect(client.removeCalls, 1);
-      expect(client.lastDirectory, _mainDir);
+      expect(client.lastDirectory, _projectId);
       expect(client.lastWorktreeDir, _sandboxDir);
 
       final project = store.projectOf(_projectId)!;
@@ -117,17 +117,19 @@ void main() {
       expect(store.conversationForRead('sb1'), isNull);
     });
 
-    test('succeeds when project not found (no sandbox update, still cleans sessions)',
+    test('unknown project (canonical not registered) throws instead of guessing',
         () async {
       final client = _RemoveWorktreeMockClient();
       final store = ServerStore()..client = client;
-      // No project seeded — _projects is empty.
+      // No project seeded — _projects is empty: the v2 worktree API needs
+      // projectID, which cannot be resolved from the canonical path.
       store.upsertSessionForTesting(_session('sb1', _sandboxDir));
 
-      await store.removeWorktree(_mainDir, worktreeDir: _sandboxDir);
-
-      expect(client.removeCalls, 1);
-      expect(store.sessions.any((s) => s.directory == _sandboxDir), isFalse);
+      await expectLater(
+        store.removeWorktree(_mainDir, worktreeDir: _sandboxDir),
+        throwsA(isA<KnownError>()),
+      );
+      expect(client.removeCalls, 0);
     });
 
     test('throws OperationException when API fails and does not mutate state',

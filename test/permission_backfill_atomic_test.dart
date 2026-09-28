@@ -9,11 +9,10 @@ import 'package:open_builder/domain/models.dart';
 
 class _BackfillMockClient extends OpencodeClient {
   final Future<List<Permission>> Function(String directory)? permissionsHandler;
-  final Future<List<QuestionRequest>> Function(String? directory)?
-      questionsHandler;
+  final Future<List<FormInfo>> Function(String? directory)? formsHandler;
   final void Function(String directory)? onPermissionFetch;
   _BackfillMockClient(
-      {this.permissionsHandler, this.questionsHandler, this.onPermissionFetch})
+      {this.permissionsHandler, this.formsHandler, this.onPermissionFetch})
       : super(_noopDio());
 
   @override
@@ -24,9 +23,9 @@ class _BackfillMockClient extends OpencodeClient {
   }
 
   @override
-  Future<List<QuestionRequest>> listQuestions({String? directory}) async =>
-      await (questionsHandler?.call(directory) ??
-          Future.value(const <QuestionRequest>[]));
+  Future<List<FormInfo>> listForms({String? directory}) async =>
+      await (formsHandler?.call(directory) ??
+          Future.value(const <FormInfo>[]));
 }
 
 Dio _noopDio() => Dio(BaseOptions(
@@ -45,7 +44,7 @@ SessionModel _session(String id, {String dir = '/d'}) => SessionModel(
 void _askPermission(ServerStore store, Permission p) =>
     store.onEventForTesting(OpencodeEvent(
       type: 'permission.asked',
-      properties: {'id': p.id, 'sessionID': p.sessionID, 'permission': p.type},
+      properties: {'id': p.id, 'sessionID': p.sessionID, 'action': p.action},
     ));
 
 void _replyPermission(ServerStore store, String sid, String pid) =>
@@ -54,16 +53,23 @@ void _replyPermission(ServerStore store, String sid, String pid) =>
       properties: {'sessionID': sid, 'requestID': pid},
     ));
 
-void _askQuestion(ServerStore store, QuestionRequest q) =>
+void _askForm(ServerStore store, FormInfo f) =>
     store.onEventForTesting(OpencodeEvent(
-      type: 'question.asked',
-      properties: {'id': q.id, 'sessionID': q.sessionID, 'questions': const []},
+      type: 'form.created',
+      properties: {
+        'form': {
+          'id': f.id,
+          'sessionID': f.sessionID,
+          'title': f.title,
+          'fields': const [],
+        },
+      },
     ));
 
-void _replyQuestion(ServerStore store, String sid, String qid) =>
+void _replyForm(ServerStore store, String sid, String fid) =>
     store.onEventForTesting(OpencodeEvent(
-      type: 'question.replied',
-      properties: {'sessionID': sid, 'requestID': qid},
+      type: 'form.replied',
+      properties: {'sessionID': sid, 'id': fid},
     ));
 
 void main() {
@@ -73,7 +79,7 @@ void main() {
     // 空 pending 画出来 → 指示器在「需要授权」和「运行中」之间闪烁。
     test('pending permission stays visible while backfill is in flight',
         () async {
-      final perm = Permission(id: 'per_1', type: 'bash', sessionID: 's1');
+      final perm = Permission(id: 'per_1', action: 'bash', sessionID: 's1');
       late ServerStore store;
       var observedEmptyDuringWindow = false;
       final client = _BackfillMockClient(
@@ -97,8 +103,8 @@ void main() {
 
     test('permission asked during backfill window survives the swap',
         () async {
-      final p1 = Permission(id: 'per_1', type: 'bash', sessionID: 's1');
-      final p2 = Permission(id: 'per_2', type: 'bash', sessionID: 's2');
+      final p1 = Permission(id: 'per_1', action: 'bash', sessionID: 's1');
+      final p2 = Permission(id: 'per_2', action: 'bash', sessionID: 's2');
       late ServerStore store;
       var fired = false;
       final client = _BackfillMockClient(
@@ -122,7 +128,7 @@ void main() {
 
     test('permission replied during backfill window is not resurrected',
         () async {
-      final p1 = Permission(id: 'per_1', type: 'bash', sessionID: 's1');
+      final p1 = Permission(id: 'per_1', action: 'bash', sessionID: 's1');
       late ServerStore store;
       var fired = false;
       final client = _BackfillMockClient(
@@ -146,7 +152,7 @@ void main() {
     // prev/live 都看不到它 —— 只能靠 swap 前重查 _recentlyResolved 守卫。
     test('permission resolved after REST echo but before swap is dropped',
         () async {
-      final p2 = Permission(id: 'per_2', type: 'bash', sessionID: 's2');
+      final p2 = Permission(id: 'per_2', action: 'bash', sessionID: 's2');
       late ServerStore store;
       final client = _BackfillMockClient(
         permissionsHandler: (dir) async => dir == '/d1' ? [p2] : const [],
@@ -169,7 +175,7 @@ void main() {
     // 回复路径 —— SSE handler 也必须登记 resolved 守卫，否则下一次
     // backfill 的陈旧快照会把已回复的卡复活。
     test('SSE permission.replied registers the resolved guard', () async {
-      final p1 = Permission(id: 'per_1', type: 'bash', sessionID: 's1');
+      final p1 = Permission(id: 'per_1', action: 'bash', sessionID: 's1');
       final client = _BackfillMockClient(
         permissionsHandler: (_) async => [p1],
       );
@@ -184,16 +190,15 @@ void main() {
           reason: 'cross-client reply must not be resurrected by backfill');
     });
 
-    test('SSE question.replied registers the resolved guard', () async {
-      final q1 = QuestionRequest(
-          id: 'que_1', sessionID: 's1', questions: const []);
+    test('SSE form.replied registers the resolved guard', () async {
+      final f1 = FormInfo(id: 'frm_1', sessionID: 's1', title: 'q', fields: const []);
       final client = _BackfillMockClient(
-        questionsHandler: (_) async => [q1],
+        formsHandler: (_) async => [f1],
       );
       final store = ServerStore()..client = client;
       store.upsertSessionForTesting(_session('s1'));
-      _askQuestion(store, q1);
-      _replyQuestion(store, 's1', q1.id);
+      _askForm(store, f1);
+      _replyForm(store, 's1', f1.id);
       expect(store.hasPendingQuestion('s1'), isFalse);
 
       await store.backfillQuestionsForTesting();

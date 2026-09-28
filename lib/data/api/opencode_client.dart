@@ -8,18 +8,13 @@ import '../../core/net/raw_download.dart'
     as raw_download;
 import '../../domain/models.dart';
 
-/// Paginated message window from `GET /session/:id/message?limit=&before=`.
-///
-/// [entries] are ascending (oldest→newest). [nextCursor] is the opaque
-/// `X-Next-Cursor` header anchoring [entries]'s oldest message; pass it as
-/// `before` to fetch the next older page. Null means no more older history.
 class MessagesPage {
-  final List<MessageEntry> entries;
-  final String? nextCursor;
-  const MessagesPage(this.entries, this.nextCursor);
+  final List<SessionMessage> entries;
+  final String? olderCursor;
+  final String? newerCursor;
+  const MessagesPage(this.entries, this.olderCursor, this.newerCursor);
 }
 
-/// Server health from `GET /global/health`.
 class HealthInfo {
   final bool healthy;
   final String version;
@@ -27,59 +22,59 @@ class HealthInfo {
   const HealthInfo({required this.healthy, required this.version});
 
   factory HealthInfo.fromJson(Map<String, dynamic> j) => HealthInfo(
-        healthy: j['healthy'] == true,
+        healthy: j['healthy'] != false,
         version: (j['version'] ?? '').toString(),
       );
 }
 
-/// Thin, hand-written typed client for the opencode HTTP API.
-///
-/// Spec pinned at `opencode_openapi.json` (see `tool/gen_client.sh`); endpoints
-/// are added by hand against v2 types. SSE is handled by `SseClient`.
 class OpencodeClient {
   final Dio dio;
   OpencodeClient(this.dio);
 
-  /// `GET /global/health` → `{ healthy, version }`.
+  static const int _defaultListLimit = 1000;
+
+  Map<String, dynamic> _locationQuery(String? directory) =>
+      directory == null || directory.isEmpty
+          ? const {}
+          : {'location[directory]': directory};
+
   Future<HealthInfo> health() async {
-    final r = await dio.get<dynamic>('/global/health');
+    final r = await dio.get<dynamic>('/api/info');
     return HealthInfo.fromJson(_asMap(r.data));
   }
 
-  /// `GET /project`
-  Future<List<ProjectModel>> projects() async =>
-      _getModels('/project', ProjectModel.fromJson);
-
-  /// `GET /project/current`
-  Future<ProjectModel> currentProject() async {
-    final r = await dio.get<dynamic>('/project/current');
-    return ProjectModel.fromJson(_asMap(r.data));
+  Future<Map<String, dynamic>> info() async {
+    final r = await dio.get<dynamic>('/api/info');
+    return _asMap(r.data);
   }
 
-  /// `PATCH /project/{projectID}` — update project name / icon / commands.
-  ///
-  /// [name] is sent only when non-null.
-  ///
-  /// When [updateIcon] is true, the `icon` object is serialized with only the
-  /// non-null fields included. The server's `Project.Icon` schema declares
-  /// each field as `optional(Schema.String)`, which accepts a missing key
-  /// (leave unchanged) or a string, but **rejects JSON `null`** with a 400.
-  /// Therefore a `null` argument here means "omit the key" (no change), an
-  /// empty string `""` means "clear the stored value" (the avatar renderer
-  /// treats `""` as no image and falls back to the monogram), and any other
-  /// string means "set/replace".
-  ///
-  /// [iconUrl] is the server-managed repo URL; pass the original value to
-  /// echo it, or `null` to leave the stored value untouched.
+  Future<ProjectModel?> currentLocationProject() async {
+    final r = await dio.get<dynamic>('/api/location');
+    final d = _asMap(r.data);
+    final project = d['project'];
+    if (project is! Map) return null;
+    return ProjectModel.fromJson(project.cast<String, dynamic>());
+  }
+
+  Future<List<ProjectModel>> projects() async {
+    final r = await dio.get<dynamic>('/api/project');
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) => ProjectModel.fromJson(e.cast<String, dynamic>()))
+        .toList();
+  }
+
   Future<ProjectModel> updateProject(
     String projectId, {
+    String? canonical,
     String? name,
     bool updateIcon = false,
     String? iconUrl,
     String? iconOverride,
     String? iconColor,
   }) async {
-    final body = <String, dynamic>{};
+    final body = <String, dynamic>{'projectID': projectId};
+    if (canonical != null) body['canonical'] = canonical;
     if (name != null) body['name'] = name;
     if (updateIcon) {
       final icon = <String, dynamic>{};
@@ -88,395 +83,169 @@ class OpencodeClient {
       if (iconColor != null) icon['color'] = iconColor;
       body['icon'] = icon;
     }
-    final r = await dio.patch<dynamic>('/project/$projectId', data: body);
+    final r = await dio.patch<dynamic>('/api/project/$projectId', data: body);
     return ProjectModel.fromJson(_asMap(r.data));
   }
 
-  /// `GET /session` (global, unarchived by default)
-  Future<List<SessionModel>> sessions() async =>
-      _getModels('/session', SessionModel.fromJson);
-
-  /// `GET /session?directory=<path>` — sessions scoped to one project directory.
-  /// Archived sessions are included (the server does not filter them on this
-  /// endpoint); callers must skip `time.archived != null` themselves.
-  Future<List<SessionModel>> sessionsForDirectory(String directory,
-      {int limit = 1000}) async {
-    final r = await dio.get<dynamic>('/session', queryParameters: {
-      'directory': directory,
-      'limit': limit,
-    });
-    return _getModelsFromData(r.data, SessionModel.fromJson);
+  Future<List<SessionModel>> sessions({
+    String? directory,
+    String? project,
+    String? subpath,
+    int limit = _defaultListLimit,
+    String? search,
+    String? parentID,
+  }) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (directory != null && directory.isNotEmpty) {
+      params['directory'] = directory;
+    }
+    if (project != null && project.isNotEmpty) params['project'] = project;
+    if (subpath != null && subpath.isNotEmpty) params['subpath'] = subpath;
+    if (search != null && search.isNotEmpty) params['search'] = search;
+    if (parentID != null) params['parentID'] = parentID;
+    final r = await dio.get<dynamic>('/api/session', queryParameters: params);
+    final data = _asMap(r.data)['data'];
+    final list = data is List ? data : const [];
+    return list
+        .whereType<Map>()
+        .map((e) => SessionModel.fromJson(e.cast<String, dynamic>()))
+        .where((s) => s.archived == null)
+        .toList();
   }
 
-  /// Metadata for a single session.
-  /// `GET /api/session/{id}`
+  Future<List<SessionModel>> sessionsForDirectory(String directory,
+      {int limit = _defaultListLimit}) async {
+    return sessions(directory: directory, limit: limit);
+  }
+
   Future<SessionModel> sessionMeta(String sessionId) async {
     final r = await dio.get<dynamic>('/api/session/$sessionId');
     return SessionModel.fromJson(_asMap(r.data));
   }
 
-  /// `POST /session?directory=<dir>` — create a session in one directory.
-  Future<SessionModel> createSession(String directory) async {
-    final r = await dio.post<dynamic>('/session',
-        queryParameters: {'directory': directory}, data: const {});
+  Future<SessionModel> createSession(String directory, {String? title}) async {
+    final body = <String, dynamic>{
+      'location': {'directory': directory},
+    };
+    if (title != null && title.isNotEmpty) body['title'] = title;
+    final r = await dio.post<dynamic>('/api/session', data: body);
     return SessionModel.fromJson(_asMap(r.data));
   }
 
-  /// `GET /experimental/worktree?directory=<dir>` — all worktree directories
-  /// for a project (sandbox worktrees beyond the project's main worktree).
-  Future<List<String>> worktrees(String directory) async {
-    final r = await dio.get<dynamic>('/experimental/worktree',
-        queryParameters: {'directory': directory});
-    if (r.data is List) {
-      return (r.data as List).map((e) => e.toString()).toList();
-    }
-    return const [];
+  Future<void> deleteSession(String sessionId) async {
+    await dio.delete<dynamic>('/api/session/$sessionId');
   }
 
-  /// `POST /experimental/worktree?directory=<dir>` — create a worktree.
-  /// Body: `{name?, startCommand?}` → returns `{name, branch?, directory}`.
-  /// If [name] is omitted, the server generates a random adjective-noun slug.
-  Future<WorktreeResult> createWorktree(String directory,
-      {String? name, String? startCommand}) async {
-    final body = <String, dynamic>{};
-    if (name != null && name.isNotEmpty) body['name'] = name;
-    if (startCommand != null && startCommand.isNotEmpty) {
-      body['startCommand'] = startCommand;
-    }
-    final r = await dio.post<dynamic>('/experimental/worktree',
-        queryParameters: {'directory': directory}, data: body);
-    final d = r.data as Map<String, dynamic>;
-    return WorktreeResult.fromJson(d.cast());
-  }
-
-  /// `DELETE /experimental/worktree?directory=<dir>` — remove a worktree.
-  Future<void> removeWorktree(String directory,
-      {required String worktreeDir}) async {
-    await dio.delete<dynamic>('/experimental/worktree',
-        queryParameters: {'directory': directory},
-        data: {'directory': worktreeDir});
-  }
-
-  /// Available slash commands for a session's directory.
-  /// `GET /command?directory=<dir>` → bare `[{name, description, agent, source}]`.
-  /// This is the registry `POST /session/:id/command` executes from: built-in
-  /// commands (init/review), config/plugin commands, MCP prompts, and the full
-  /// skill set including external `~/.claude/skills` / `~/.agents/skills`. It
-  /// is the only command endpoint that honors the flat `?directory=` query
-  /// (the `/api/*` v2 routes ignore it and answer for the server's default
-  /// location). Every entry expands server-side — the client sends name +
-  /// arguments only. The v2 `/api/command`/`/api/skill` endpoints are not
-  /// called until v2 is GA, and `/config` (previously read for client-side
-  /// template expansion) is no longer needed.
-  Future<List<CommandInfo>> getMergedCommands({String? directory}) async {
-    final params = <String, dynamic>{};
-    if (directory != null && directory.isNotEmpty) {
-      params['directory'] = directory;
-    }
-    final r = await dio.get<dynamic>('/command', queryParameters: params);
-    return _getModelsFromData(r.data, CommandInfo.fromJson);
-  }
-
-  /// `GET /session/status?directory=<dir>` → `{ sessionID: {type: idle|busy|retry} }`.
-  /// Without a directory the endpoint returns `{}`.
-  Future<Map<String, SessionStatusValue>> sessionStatus({String? directory}) async {
-    final r = await dio.get<dynamic>('/session/status',
-        queryParameters:
-            directory != null && directory.isNotEmpty ? {'directory': directory} : null);
-    final m = _asMap(r.data);
-    return m.map((k, v) => MapEntry(
-        k, SessionStatusValue.fromJson(v is Map ? v.cast() : const {})));
-  }
-
-  /// `GET /session/:id/message?limit=` — full message list (no pagination).
-  Future<List<MessageEntry>> messages(String sessionId, {int? limit}) async {
-    final r = await dio.get<dynamic>(
-      '/session/$sessionId/message',
-      queryParameters: limit == null ? null : {'limit': limit},
-    );
-    return _getModelsFromData(r.data, MessageEntry.fromJson);
-  }
-
-  /// `GET /session/:id/message?limit=&before=` — paginated window.
-  ///
-  /// Without [before]: returns the latest [limit] messages (ascending). If
-  /// older history exists, [MessagesPage.nextCursor] is non-null (opaque
-  /// cursor anchoring the oldest message of the returned page).
-  ///
-  /// With [before]: returns the next older page (strictly older than the
-  /// cursor anchor). Requires [limit] (server returns 400 otherwise).
-  ///
-  /// Older servers ignoring `limit` return the full list with `nextCursor`
-  /// null — degrades gracefully to a full fetch.
-  Future<MessagesPage> messagesPage(String sessionId,
-      {required int limit, String? before}) async {
-    final params = <String, dynamic>{'limit': limit};
-    if (before != null) params['before'] = before;
-    final r = await dio.get<dynamic>(
-      '/session/$sessionId/message',
-      queryParameters: params,
-    );
-    final cursor = r.headers.value('x-next-cursor');
-    return MessagesPage(
-        _getModelsFromData(r.data, MessageEntry.fromJson), cursor);
-  }
-
-  /// Same as [messagesPage] but decodes JSON + parses entries in a background
-  /// isolate via [compute], avoiding UI-isolate jank on large message windows.
-  /// Fetches the response body as plain text (skipping dio's auto-decode),
-  /// then passes the raw string to the isolate for jsonDecode + fromJson.
-  ///
-  /// Subclasses (e.g. test mocks) that override [messagesPage] are automatically
-  /// covered: this method calls [messagesPage] as a fallback when the raw-text
-  /// path is unavailable (mocks return pre-parsed data, not a JSON string).
-  Future<MessagesPage> messagesPageCompute(String sessionId,
-      {required int limit, String? before}) async {
-    // Test mocks override messagesPage with pre-parsed results; detect by
-    // checking if this is a subclass with an overridden messagesPage.
-    if (runtimeType != OpencodeClient) {
-      return messagesPage(sessionId, limit: limit, before: before);
-    }
-    final params = <String, dynamic>{'limit': limit};
-    if (before != null) params['before'] = before;
-    final r = await dio.get<String>(
-      '/session/$sessionId/message',
-      queryParameters: params,
-      options: Options(responseType: ResponseType.plain),
-    );
-    final cursor = r.headers.value('x-next-cursor');
-    final body = r.data ?? '';
-    if (body.isEmpty) return MessagesPage(const [], cursor);
-    final entries = await compute(decodeMessageEntries, body);
-    return MessagesPage(entries, cursor);
-  }
-
-  /// `GET /session/:id/message/:messageID`
-  Future<MessageEntry> message(String sessionId, String messageId) async {
-    final r = await dio.get<dynamic>('/session/$sessionId/message/$messageId');
-    return MessageEntry.fromJson(_asMap(r.data));
-  }
-
-  /// `GET /session/:id/todo`
-  Future<List<Todo>> todos(String sessionId) async {
-    final r = await dio.get<dynamic>('/session/$sessionId/todo');
-    return _getModelsFromData(r.data, Todo.fromJson);
-  }
-
-  /// `GET /permission?directory=<dir>` — pending permission requests.
-  Future<List<Permission>> pendingPermissions(String directory) async {
-    final r = await dio.get<dynamic>('/permission',
-        queryParameters: {'directory': directory});
-    if (r.data is List) {
-      return (r.data as List)
-          .map((e) => Permission.fromJson(
-              (e as Map).cast<String, dynamic>()))
-          .toList();
-    }
-    return const [];
-  }
-
-  /// `POST /session/:id/permissions/:permissionID` — respond to a permission.
-  /// [response] is one of: `'once'`, `'always'`, `'reject'`.
-  Future<void> respondPermission(
-    String sessionId,
-    String permissionId,
-    String response,
-  ) async {
-    await dio.post(
-      '/session/$sessionId/permissions/$permissionId',
-      data: {'response': response},
-    );
-  }
-
-  /// `POST /session/:id/prompt_async` — send a message and return immediately.
-  /// [parts] is the message payload, e.g. `[{'type':'text','text':'...'}]`.
-  Future<void> prompt(
-    String sessionId, {
-    String? directory,
-    String? agent,
-    required List<Map<String, dynamic>> parts,
-    Duration? sendTimeout,
-  }) async {
-    final body = <String, dynamic>{'parts': parts};
-    if (agent != null) body['agent'] = agent;
-    await dio.post(
-      '/session/$sessionId/prompt_async',
-      queryParameters:
-          directory != null ? {'directory': directory} : null,
-      data: body,
-      options: sendTimeout == null
-          ? null
-          : Options(sendTimeout: sendTimeout),
-    );
-  }
-
-  /// `POST /session/:id/shell` — run a shell command and return immediately.
-  /// Mirrors `prompt_async`: the command is executed by an agent and its
-  /// output streams back through SSE. [command] is the raw command without
-  /// the leading `!`; [agent] defaults to the primary `build` agent.
-  Future<void> shell(
-    String sessionId, {
-    String? directory,
-    String? agent,
-    required String command,
-  }) async {
-    await dio.post(
-      '/session/$sessionId/shell',
-      queryParameters:
-          directory != null ? {'directory': directory} : null,
-      data: {'agent': agent ?? 'build', 'command': command},
-    );
-  }
-
-  /// `POST /session/:id/command` — execute a slash command by expanding its
-  /// template with [arguments], then return immediately (mirrors
-  /// `prompt_async`; output streams back through SSE). [command] is the name
-  /// without the leading `/` (e.g. "review"); [arguments] feeds `$ARGUMENTS`
-  /// and positional `$N` placeholders in the template. [parts] carries file
-  /// attachments, same shape as `prompt`. This is the only way to actually
-  /// trigger a registered command — sending `/name` through `prompt` just
-  /// posts it as a literal user message and never expands the template.
-  Future<void> command(
-    String sessionId, {
-    String? directory,
-    String? agent,
-    required String command,
-    String arguments = '',
-    List<Map<String, dynamic>> parts = const [],
-    Duration? sendTimeout,
-  }) async {
-    final body = <String, dynamic>{
-      'command': command,
-      'arguments': arguments,
-    };
-    if (agent != null) body['agent'] = agent;
-    if (parts.isNotEmpty) body['parts'] = parts;
-    await dio.post(
-      '/session/$sessionId/command',
-      queryParameters:
-          directory != null ? {'directory': directory} : null,
-      data: body,
-      options: sendTimeout == null
-          ? null
-          : Options(sendTimeout: sendTimeout),
-    );
-  }
-
-  /// `POST /session/:id/abort` — stop a running session.
-  Future<void> abort(String sessionId, {String? directory}) async {
-    await dio.post(
-      '/session/$sessionId/abort',
-      queryParameters: directory != null ? {'directory': directory} : null,
-    );
-  }
-
-  /// `DELETE /session/:id` — permanently delete a session (hard delete).
-  Future<void> deleteSession(String sessionId, {String? directory}) async {
-    await dio.delete(
-      '/session/$sessionId',
-      queryParameters: directory != null ? {'directory': directory} : null,
-    );
-  }
-
-  /// `PATCH /session/:id` — archive (set `time.archived`) or un-archive.
-  Future<void> archive(String sessionId, {String? directory, int? archived}) async {
-    await dio.patch(
-      '/session/$sessionId',
-      queryParameters: directory != null ? {'directory': directory} : null,
-      data: {
-        'time': {'archived': archived},
-      },
-    );
-  }
-
-  /// `PATCH /session/:id` — update session title.
-  Future<void> updateTitle(String sessionId, String title,
-      {String? directory}) async {
-    await dio.patch(
-      '/session/$sessionId',
-      queryParameters: directory != null ? {'directory': directory} : null,
+  Future<void> updateTitle(String sessionId, String title) async {
+    await dio.patch<dynamic>(
+      '/api/session/$sessionId',
       data: {'title': title},
     );
   }
 
-  /// `POST /session/:id/share` — generate a share link. Returns the updated session.
-  Future<SessionModel> share(String sessionId, {String? directory}) async {
-    final r = await dio.post(
-      '/session/$sessionId/share',
-      queryParameters: directory != null ? {'directory': directory} : null,
-    );
-    return SessionModel.fromJson(_asMap(r.data));
+  Future<Map<String, SessionStatusValue>> activeSessions() async {
+    final r = await dio.get<dynamic>('/api/session/active');
+    final d = _asMap(r.data)['data'];
+    if (d is! Map) return const {};
+    return d.map((k, v) => MapEntry(k.toString(),
+        const SessionStatusValue('busy')));
   }
 
-  // ── Agent / Model switching (v2 API) ──
-
-  /// `GET /agent?directory=<dir>` — list available agents.
-  Future<List<AgentInfo>> listAgents({String? directory}) async {
-    final r = await dio.get<dynamic>('/agent',
-        queryParameters: directory != null && directory.isNotEmpty
-            ? {'directory': directory}
-            : null);
+  Future<List<WorktreeInfo>> worktrees(String projectID) async {
+    final r = await dio.get<dynamic>('/api/worktree',
+        queryParameters: {'projectID': projectID});
     if (r.data is List) {
       return (r.data as List)
-          .map((e) => AgentInfo.fromJson((e as Map).cast<String, dynamic>()))
-          .where((a) => !a.hidden && a.mode == 'primary')
+          .whereType<Map>()
+          .map((e) => WorktreeInfo.fromJson(e.cast<String, dynamic>()))
           .toList();
     }
     return const [];
   }
 
-  /// `GET /config/providers?directory=<dir>` — all connected (authenticated)
-  /// providers and their models. Returns models flattened across providers.
-  ///
-  /// Unlike `GET /api/model` (which only surfaces the active `opencode` Zen
-  /// catalog), this endpoint lists every configured provider (zai, deepseek,
-  /// ollama-cloud, ...) and is the canonical source for switchable models.
-  ///
-  /// The provider objects contain a plaintext API `key`; it is intentionally
-  /// not read here — only each model entry is parsed.
-  Future<List<ModelInfo>> listConfigProviders({String? directory}) async {
-    final params = <String, dynamic>{};
-    if (directory != null && directory.isNotEmpty) {
-      params['directory'] = directory;
+  Future<WorktreeInfo> createWorktree(
+    String projectID, {
+    String? name,
+    String? branch,
+    String? from,
+    String? directory,
+  }) async {
+    final body = <String, dynamic>{'projectID': projectID};
+    if (name != null && name.isNotEmpty) body['name'] = name;
+    if (branch != null && branch.isNotEmpty) body['branch'] = branch;
+    if (from != null && from.isNotEmpty) body['from'] = from;
+    if (directory != null && directory.isNotEmpty) body['directory'] = directory;
+    final r = await dio.post<dynamic>('/api/worktree', data: body);
+    return WorktreeInfo.fromJson(_asMap(r.data));
+  }
+
+  Future<void> removeWorktree(
+    String projectID,
+    String worktreeDir, {
+    bool force = false,
+  }) async {
+    await dio.delete<dynamic>('/api/worktree', data: {
+      'projectID': projectID,
+      'directory': worktreeDir,
+      'force': force,
+    });
+  }
+
+  Future<List<CommandInfo>> getMergedCommands({String? directory}) async {
+    final results = await Future.wait([
+      _try(() async {
+        final r = await dio.get<dynamic>('/api/command',
+            queryParameters: _locationQuery(directory));
+        return _dataList(r.data);
+      }),
+      _try(() async {
+        final r = await dio.get<dynamic>('/api/skill',
+            queryParameters: _locationQuery(directory));
+        return _dataList(r.data);
+      }),
+    ]);
+    final out = <CommandInfo>[];
+    for (final e in results[0]) {
+      if (e is! Map) continue;
+      out.add(CommandInfo.fromJson(e.cast<String, dynamic>()));
     }
-    final r = await dio.get<dynamic>(
-      '/config/providers',
-      queryParameters: params,
-    );
-    final d = r.data is Map ? (r.data as Map) : {};
-    final providers = d['providers'];
-    final out = <ModelInfo>[];
-    if (providers is List) {
-      for (final p in providers) {
-        if (p is! Map) continue;
-        final models = p['models'];
-        if (models is Map) {
-          for (final v in models.values) {
-            if (v is Map) {
-              out.add(ModelInfo.fromJson(v.cast<String, dynamic>()));
-            }
-          }
-        }
-      }
+    for (final e in results[1]) {
+      if (e is! Map) continue;
+      final s = SkillInfo.fromJson(e.cast<String, dynamic>());
+      out.add(CommandInfo(
+        name: s.id,
+        description: s.description ?? s.name,
+        skill: true,
+      ));
     }
-    // Defensive: /config/providers exposes only connected providers, but a
-    // provider may still advertise deprecated/disabled models. Block those
-    // explicitly (blacklist) rather than gating on status == 'active': a
-    // usable preview/beta model (e.g. qwen3.8-max-preview, status=beta, with
-    // variants) would otherwise be silently dropped. ModelInfo tolerates
-    // missing status/enabled (defaults 'active' / true).
-    return out
+    return out;
+  }
+
+  Future<List<AgentInfo>> listAgents({String? directory}) async {
+    final r = await dio.get<dynamic>('/api/agent',
+        queryParameters: _locationQuery(directory));
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) => AgentInfo.fromJson(e.cast<String, dynamic>()))
+        .where((a) => !a.hidden && a.mode == 'primary')
+        .toList();
+  }
+
+  Future<List<ModelInfo>> listModels({String? directory}) async {
+    final r = await dio.get<dynamic>('/api/model',
+        queryParameters: _locationQuery(directory));
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) => ModelInfo.fromJson(e.cast<String, dynamic>()))
         .where((m) =>
             m.enabled && m.status != 'deprecated' && m.status != 'disabled')
         .toList();
   }
 
-  /// `POST /api/session/:id/agent` — switch the session's agent.
   Future<void> switchAgent(String sessionId, String agent) async {
     await dio.post('/api/session/$sessionId/agent', data: {'agent': agent});
   }
 
-  /// `POST /api/session/:id/model` — switch the session's model.
   Future<void> switchModel(String sessionId, ModelRef model) async {
     final m = <String, dynamic>{
       'id': model.id,
@@ -488,74 +257,206 @@ class OpencodeClient {
     await dio.post('/api/session/$sessionId/model', data: {'model': m});
   }
 
-  // ── Questions ──
+  Future<List<SessionMessage>> messages(String sessionId, {int? limit}) async {
+    final r = await dio.get<dynamic>(
+      '/api/session/$sessionId/message',
+      queryParameters: {
+        'order': 'asc',
+        'limit': ?limit,
+      },
+    );
+    return _messageListFrom(r.data);
+  }
 
-  /// `GET /question?directory=<dir>` — list pending questions.
-  Future<List<QuestionRequest>> listQuestions({String? directory}) async {
-    final r = await dio.get<dynamic>('/question',
-        queryParameters:
-            directory != null && directory.isNotEmpty ? {'directory': directory} : null);
-    if (r.data is List) {
-      return (r.data as List)
-          .map((e) => QuestionRequest.fromJson((e as Map).cast<String, dynamic>()))
-          .toList();
+  Future<MessagesPage> messagesPage(String sessionId,
+      {required int limit, String? cursor}) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['order'] = 'desc';
     }
-    return const [];
-  }
-
-  /// `POST /question/:id/reply?directory=<dir>` — reply to a question.
-  ///
-  /// opencode 的 question pending 是 per-directory instance 隔离的：HTTP 路由
-  /// 由 `WorkspaceRoutingMiddleware` 按 `directory` query/header 解析到对应
-  /// instance，不带 directory 会落到默认实例(cwd) → 404。这里必须带 directory
-  /// 才能命中卡所在 instance（与 `listQuestions` 的 directory 用法一致）。
-  /// [answers] is a list of answer arrays (one per question), each containing
-  /// selected option labels.
-  Future<void> replyQuestion(String questionId, String directory, List<List<String>> answers) async {
-    await dio.post(
-      '/question/$questionId/reply',
-      queryParameters: {'directory': directory},
-      data: {'answers': answers},
+    final r = await dio.get<dynamic>(
+      '/api/session/$sessionId/message',
+      queryParameters: params,
+    );
+    final d = _asMap(r.data);
+    final cur = (d['cursor'] as Map?) ?? const {};
+    final entries = _messageListFrom(d['data']).reversed.toList();
+    return MessagesPage(
+      entries,
+      cur['next']?.toString(),
+      cur['previous']?.toString(),
     );
   }
 
-  /// `POST /question/:id/reject?directory=<dir>` — reject a question.
-  Future<void> rejectQuestion(String questionId, String directory) async {
-    await dio.post(
-      '/question/$questionId/reject',
-      queryParameters: {'directory': directory},
+  Future<MessagesPage> messagesPageCompute(String sessionId,
+      {required int limit, String? cursor}) async {
+    if (runtimeType != OpencodeClient) {
+      return messagesPage(sessionId, limit: limit, cursor: cursor);
+    }
+    final params = <String, dynamic>{'limit': limit};
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['order'] = 'desc';
+    }
+    final r = await dio.get<String>(
+      '/api/session/$sessionId/message',
+      queryParameters: params,
+      options: Options(responseType: ResponseType.plain),
+    );
+    final body = r.data ?? '';
+    if (body.isEmpty) {
+      return MessagesPage(const [], null, null);
+    }
+    final parsed = await compute(decodeMessagePage, body);
+    return MessagesPage(
+      parsed.entries.reversed.toList(),
+      parsed.olderCursor,
+      parsed.newerCursor,
     );
   }
 
-  /// `POST /session/:id/revert` — revert the session back to [messageID].
-  Future<void> revert(
+  Future<SessionMessage> message(String sessionId, String messageId) async {
+    final r = await dio.get<dynamic>('/api/session/$sessionId/message/$messageId');
+    return SessionMessage.fromJson(_asMap(r.data));
+  }
+
+  Future<List<Permission>> pendingPermissions(String directory) async {
+    final r = await dio.get<dynamic>('/api/permission/request',
+        queryParameters: _locationQuery(directory));
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) => Permission.fromJson(e.cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<List<Permission>> sessionPermissions(String sessionId) async {
+    final r = await dio.get<dynamic>('/api/session/$sessionId/permission');
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) => Permission.fromJson(e.cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<void> respondPermission(
+    String sessionId,
+    String permissionId,
+    String response,
+  ) async {
+    await dio.post(
+      '/api/session/$sessionId/permission/$permissionId/reply',
+      data: {'decision': response},
+    );
+  }
+
+  Future<List<FormInfo>> listForms({String? directory}) async {
+    final r = await dio.get<dynamic>('/api/form',
+        queryParameters: _locationQuery(directory));
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) => FormInfo.fromJson(e.cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<List<FormInfo>> sessionForms(String sessionId) async {
+    final r = await dio.get<dynamic>('/api/session/$sessionId/form');
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) => FormInfo.fromJson(e.cast<String, dynamic>()))
+        .toList();
+  }
+
+  Future<void> replyForm(
+    String sessionId,
+    String formId,
+    Map<String, dynamic> answer,
+  ) async {
+    await dio.post(
+      '/api/session/$sessionId/form/$formId/reply',
+      data: {'answer': answer},
+    );
+  }
+
+  Future<void> cancelForm(String sessionId, String formId) async {
+    await dio.delete<dynamic>('/api/session/$sessionId/form/$formId');
+  }
+
+  Future<Map<String, dynamic>> prompt(
     String sessionId, {
-    String? directory,
-    required String messageID,
+    required String text,
+    List<Map<String, dynamic>> files = const [],
+    String? agent,
+    Duration? sendTimeout,
+  }) async {
+    final body = <String, dynamic>{'text': text};
+    if (files.isNotEmpty) body['files'] = files;
+    if (agent != null && agent.isNotEmpty) {
+      body['agents'] = [
+        {'name': agent}
+      ];
+    }
+    final r = await dio.post(
+      '/api/session/$sessionId/prompt',
+      data: body,
+      options: sendTimeout == null ? null : Options(sendTimeout: sendTimeout),
+    );
+    return _asMap(r.data);
+  }
+
+  Future<void> shell(
+    String sessionId, {
+    required String command,
   }) async {
     await dio.post(
-      '/session/$sessionId/revert',
-      queryParameters: directory != null ? {'directory': directory} : null,
-      data: {'messageID': messageID},
+      '/api/session/$sessionId/shell',
+      data: {'command': command},
     );
   }
 
-  /// `GET /vcs/diff?mode=...&context=...` or `GET /session/:id/diff?messageID=...`
-  /// → list of changed files in [directory].
-  ///
-  /// [sessionId] is only used when [messageID] is provided; VCS diff
-  /// endpoints are scoped by [directory] rather than session.
-  ///
-  /// When [messageID] is provided, uses the per-message session diff endpoint.
-  /// Otherwise uses `/vcs/diff` with [mode] (`git` / `branch`).
-  ///
-  /// [context] (VCS diff only) is the number of unchanged context lines shown
-  /// around each hunk. The server's internal default (when omitted) returns
-  /// the **entire file** as context wrapped in a single hunk, which bloats the
-  /// patch and tanks the diff detail page. A small value (e.g. [kVcsDiffContext],
-  /// the same as `git diff --unified=3`) gives minimal hunks. The
-  /// `/session/:id/diff` endpoint has no `context` parameter and is unaffected.
-  /// When omitted, the VCS path defaults to [kVcsDiffContext].
+  Future<void> command(
+    String sessionId, {
+    required String command,
+    String arguments = '',
+    List<Map<String, dynamic>> files = const [],
+    Duration? sendTimeout,
+  }) async {
+    final body = <String, dynamic>{
+      'name': command,
+      'text': arguments,
+    };
+    if (files.isNotEmpty) body['files'] = files;
+    await dio.post(
+      '/api/session/$sessionId/command',
+      data: body,
+      options: sendTimeout == null ? null : Options(sendTimeout: sendTimeout),
+    );
+  }
+
+  Future<void> activateSkill(String sessionId, String skillId) async {
+    await dio.post(
+      '/api/experimental/session/$sessionId/skill',
+      data: {'id': skillId},
+    );
+  }
+
+  Future<void> interrupt(String sessionId) async {
+    await dio.post('/api/session/$sessionId/interrupt');
+  }
+
+  Future<void> compact(String sessionId) async {
+    await dio.post('/api/session/$sessionId/compact');
+  }
+
+  Future<void> revert(String sessionId, {required String messageID}) async {
+    await dio.post(
+      '/api/session/$sessionId/revert/stage',
+      data: {'messageID': messageID},
+    );
+    await dio.post('/api/session/$sessionId/revert/commit');
+  }
+
   Future<List<FileDiff>> diff(
     String sessionId, {
     String? directory,
@@ -565,46 +466,44 @@ class OpencodeClient {
   }) async {
     final dir = directory != null && directory.isNotEmpty ? directory : null;
     if (messageID != null && messageID.isNotEmpty) {
-      final params = <String, dynamic>{'messageID': messageID};
-      if (dir != null) params['directory'] = dir;
+      final params = <String, dynamic>{'from': messageID, 'context': context ?? kVcsDiffContext};
       final r = await dio.get<dynamic>(
-        '/session/$sessionId/diff',
+        '/api/session/$sessionId/diff',
         queryParameters: params,
       );
-      return _getModelsFromData(r.data, FileDiff.fromJson);
+      return _diffListFrom(r.data);
     }
-    final params = <String, dynamic>{'mode': mode ?? 'git'};
-    if (dir != null) params['directory'] = dir;
-    params['context'] = context ?? kVcsDiffContext;
-    final r = await dio.get<dynamic>('/vcs/diff', queryParameters: params);
-    return _getModelsFromData(r.data, FileDiff.fromJson);
+    final params = <String, dynamic>{
+      'mode': mode ?? 'working',
+      'context': context ?? kVcsDiffContext,
+    };
+    if (dir != null) params.addAll(_locationQuery(dir));
+    final r = await dio.get<dynamic>('/api/vcs/diff', queryParameters: params);
+    return _diffListFrom(r.data);
   }
 
-  /// `GET /file` — list files/dirs under [path] within [directory].
   Future<List<FileNode>> listFiles({
     required String directory,
     required String path,
   }) async {
-    final r = await dio.get<dynamic>('/file', queryParameters: {
-      'directory': directory,
-      'path': path,
-    });
-    return _getModelsFromData(r.data, FileNode.fromJson);
+    final params = _locationQuery(directory);
+    if (path.isNotEmpty && path != '.') params['path'] = path;
+    final r = await dio.get<dynamic>('/api/fs/list', queryParameters: params);
+    final base = _asMap(r.data)['location'];
+    final baseDir = base is Map ? base['directory']?.toString() ?? directory : directory;
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) {
+          final entry = e.cast<String, dynamic>();
+          return FileNode.fromFsEntry(
+            (entry['path'] ?? '').toString(),
+            (entry['type'] ?? 'file').toString(),
+            baseDirectory: baseDir,
+          );
+        })
+        .toList();
   }
 
-  /// `GET /file/content` streamed, with download progress and off-main-isolate
-  /// parsing. Returns a [StreamedFile] where binary base64 is already decoded
-  /// to bytes; text is returned as a string. `type`/`mimeType` are the server's
-  /// authoritative values used for render dispatch.
-  ///
-  /// Progress accuracy: the request runs on a client whose transparent gzip
-  /// decompression is disabled (see `raw_download`). dio's `onReceiveProgress`
-  /// therefore counts pre-decompression bytes, which match the `Content-Length`
-  /// header — so `received/total` is an accurate transfer ratio whether or not
-  /// the server gzips. The body is gunzipped afterwards before parsing.
-  ///
-  /// Bodies under [_inlineParseLimit] are parsed on the calling thread to avoid
-  /// per-open isolate-spawn latency for the common small-file case.
   Future<StreamedFile> readFileStream({
     required String directory,
     required String path,
@@ -613,9 +512,13 @@ class OpencodeClient {
   }) async {
     final raw = raw_download.rawDownloadDio(dio);
     try {
+      final encoded = path
+          .split('/')
+          .map((s) => Uri.encodeComponent(s))
+          .join('/');
       final r = await raw.get<dynamic>(
-        '/file/content',
-        queryParameters: {'directory': directory, 'path': path},
+        '/api/fs/read/$encoded',
+        queryParameters: _locationQuery(directory),
         options: Options(responseType: ResponseType.bytes),
         onReceiveProgress: onProgress,
         cancelToken: cancelToken,
@@ -624,21 +527,16 @@ class OpencodeClient {
         r.data as Uint8List,
         r.headers.value('content-encoding'),
       );
-      if (body.length < _inlineParseLimit) return parseStreamedFile(body);
-      return compute(parseStreamedFile, body);
+      final mime = r.headers.value('content-type')?.split(';').first.trim();
+      if (body.length < _inlineParseLimit) {
+        return parseStreamedFile((body, mime));
+      }
+      return compute(parseStreamedFile, (body, mime));
     } finally {
       raw.close(force: true);
     }
   }
 
-  /// `GET /find/file?query=` — search files within [directory]/[path].
-  ///
-  /// Unlike `GET /file`, the server returns a plain array of relative path
-  /// strings (directories carry a trailing `/`), not [FileNode] objects, so we
-  /// derive the node fields from each path here. The endpoint has no `path`
-  /// param — it scopes by `directory` only — so [path] is composed into the
-  /// search root, and each server-returned path (relative to that root) is
-  /// re-prefixed with [path] so results stay relative to [directory].
   Future<List<FileNode>> findFiles({
     required String directory,
     required String path,
@@ -652,56 +550,53 @@ class OpencodeClient {
         : base.isEmpty
             ? path
             : '$base/$path';
-    final r = await dio.get<dynamic>('/find/file', queryParameters: {
-      'directory': searchRoot,
+    final r = await dio.get<dynamic>('/api/fs/find', queryParameters: {
+      ..._locationQuery(searchRoot),
       'query': query,
     });
-    final data = r.data;
-    List<dynamic> raw;
-    if (data is List) {
-      raw = data;
-    } else if (data is String && data.trim().isNotEmpty) {
-      final d = jsonDecode(data);
-      raw = d is List ? d : const [];
-    } else {
-      raw = const [];
-    }
     String toRel(String s) => path.isEmpty ? s : '$path/$s';
-    return raw
-        .whereType<String>()
-        .where((s) => s.isNotEmpty)
-        .map((s) => FileNode.fromSearchPath(toRel(s)))
+    return _dataList(r.data)
+        .whereType<Map>()
+        .map((e) {
+          final entry = e.cast<String, dynamic>();
+          final p = (entry['path'] ?? '').toString();
+          return FileNode.fromFsEntry(
+            toRel(p),
+            (entry['type'] ?? 'file').toString(),
+          );
+        })
         .toList();
   }
 
-  // ---- helpers ----
-
-  Future<List<T>> _getModels<T>(
-          String path, T Function(Map<String, dynamic>) fromJson) async =>
-      _getModelsFromData((await dio.get<dynamic>(path)).data, fromJson);
-
-  List<T> _getModelsFromData<T>(
-      dynamic data, T Function(Map<String, dynamic>) fromJson) {
-    final list = _asList(data);
-    return list.map(fromJson).toList();
+  List<FileDiff> _diffListFrom(dynamic data) {
+    final list = data is Map ? data['data'] : data;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) => FileDiff.fromJson(e.cast<String, dynamic>()))
+        .toList();
   }
 
-  static List<Map<String, dynamic>> _asList(dynamic data) {
-    if (data is List) {
-      return data
-          .map((e) => e is Map ? e.cast<String, dynamic>() : <String, dynamic>{})
-          .toList();
+  List<SessionMessage> _messageListFrom(dynamic data) {
+    final list = data is Map ? data['data'] : data;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((e) => SessionMessage.fromJson(e.cast<String, dynamic>()))
+        .toList(growable: false);
+  }
+
+  List<dynamic> _dataList(dynamic data) {
+    final list = data is Map ? data['data'] : data;
+    return list is List ? list : const [];
+  }
+
+  Future<List<dynamic>> _try(Future<List<dynamic>> Function() f) async {
+    try {
+      return await f();
+    } catch (_) {
+      return const [];
     }
-    if (data is String && data.trim().isNotEmpty) {
-      final d = jsonDecode(data);
-      if (d is List) {
-        return d
-            .map((e) =>
-                e is Map ? e.cast<String, dynamic>() : <String, dynamic>{})
-            .toList();
-      }
-    }
-    return const [];
   }
 
   static Map<String, dynamic> _asMap(dynamic data) {
@@ -715,49 +610,68 @@ class OpencodeClient {
   }
 }
 
-/// Bodies below this many bytes are parsed on the calling thread instead of
-/// spawning an isolate, avoiding per-open spawn latency for the common
-/// small-file case (mirrors the old ImageView `_syncDecodeLimit` threshold).
 const int _inlineParseLimit = 500 * 1024;
 
-/// Decode a raw JSON string from `GET /session/:id/message` into
-/// [MessageEntry]s. Top-level so it can run via `compute`, off the UI isolate.
 @visibleForTesting
-List<MessageEntry> decodeMessageEntries(String body) {
-  final list = jsonDecode(body);
-  if (list is! List) return const [];
-  return list
-      .whereType<Map>()
-      .map((e) => MessageEntry.fromJson(e.cast<String, dynamic>()))
-      .toList(growable: false);
+class DecodedMessagePage {
+  final List<SessionMessage> entries;
+  final String? olderCursor;
+  final String? newerCursor;
+  const DecodedMessagePage(this.entries, this.olderCursor, this.newerCursor);
 }
 
-/// Default number of unchanged context lines requested from `/vcs/diff`.
-///
-/// The server's internal default (when `context` is omitted) returns the
-/// **entire file** as context wrapped in a single hunk, which bloats the patch
-/// and tanks the diff detail page. `3` matches `git diff --unified=3` and
-/// yields minimal hunks. See `OpencodeClient.diff`'s doc comment.
+@visibleForTesting
+DecodedMessagePage decodeMessagePage(String body) {
+  final d = jsonDecode(body);
+  if (d is! Map) return const DecodedMessagePage([], null, null);
+  final list = d['data'];
+  final cur = (d['cursor'] as Map?) ?? const {};
+  final entries = list is List
+      ? list
+          .whereType<Map>()
+          .map((e) => SessionMessage.fromJson(e.cast<String, dynamic>()))
+          .toList(growable: false)
+      : const <SessionMessage>[];
+  return DecodedMessagePage(
+    entries,
+    cur['next']?.toString(),
+    cur['previous']?.toString(),
+  );
+}
+
 const int kVcsDiffContext = 3;
 
-/// Parses a streamed `/file/content` JSON body (received as raw bytes) into a
-/// [StreamedFile]. Top-level so it can run via `compute`. Binary base64 content
-/// is decoded to bytes here, off the main isolate.
 @visibleForTesting
-StreamedFile parseStreamedFile(Uint8List body) {
-  final j = jsonDecode(utf8.decode(body)) as Map<String, dynamic>;
-  final type = (j['type'] ?? 'text').toString();
-  final mime = j['mimeType']?.toString();
-  if (type == 'binary' && (j['encoding'] ?? '').toString() == 'base64') {
+StreamedFile parseStreamedFile((Uint8List, String?) args) {
+  final body = args.$1;
+  final mime = args.$2;
+  final type = _isTextMime(mime) ? 'text' : 'binary';
+  if (type == 'text') {
     return StreamedFile(
       type: type,
       mimeType: mime,
-      bytes: base64Decode(j['content'].toString()),
+      text: utf8.decode(body, allowMalformed: true),
     );
   }
   return StreamedFile(
     type: type,
     mimeType: mime,
-    text: j['content']?.toString() ?? '',
+    bytes: body,
   );
+}
+
+bool _isTextMime(String? mime) {
+  if (mime == null || mime.isEmpty) return true;
+  final m = mime.toLowerCase();
+  if (m.startsWith('text/')) return true;
+  if (m == 'application/json') return true;
+  if (m == 'application/jsonl') return true;
+  if (m == 'application/json5') return true;
+  if (m == 'application/xml') return true;
+  if (m == 'application/yaml' || m == 'application/x-yaml' || m == 'text/yaml') {
+    return true;
+  }
+  if (m == 'application/javascript' || m == 'text/javascript') return true;
+  if (m == 'application/x-empty') return true;
+  return false;
 }

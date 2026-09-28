@@ -25,14 +25,12 @@ class _MockClient extends OpencodeClient {
           path: 'src/',
           absolute: '/tmp/proj/src',
           type: 'directory',
-          ignored: false,
         ),
         const FileNode(
           name: 'main.dart',
           path: 'lib/main.dart',
           absolute: '/tmp/proj/lib/main.dart',
           type: 'file',
-          ignored: false,
         ),
       ];
 }

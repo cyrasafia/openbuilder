@@ -475,7 +475,7 @@ class _ConversationScreenState extends State<ConversationScreen>
             if (idx >= 0 && idx < msgCount) {
               final ch = child.size.height;
               if (ch > 0) {
-                final cid = msgs[idx].info.id;
+                final cid = msgs[idx].id;
                 if (_heightCache[cid] != ch) _heightCache[cid] = ch;
               }
             }
@@ -492,7 +492,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     var visLowIdx = -1;
     var topEdge = lastTop; // 当前消息的 trailing（顶）边
     for (var i = lastIdx; i >= 0; i--) {
-      final mi = _heightCache[msgs[i].info.id];
+      final mi = _heightCache[msgs[i].id];
       if (mi == null || mi <= 0) break; // 缺口，无法定位
       if (viewBottom < topEdge + eps && viewBottom >= topEdge - mi - eps) {
         visLowIdx = i;
@@ -506,13 +506,13 @@ class _ConversationScreenState extends State<ConversationScreen>
       // （列表头/用户消息仍在上一页）沿用旧语义自成一 run。
       var lo = visLowIdx;
       var hi = visLowIdx;
-      if (msgs[hi].info.role != 'user') {
-        while (hi < msgCount - 1 && msgs[hi + 1].info.role != 'user') {
+      if (!msgs[hi].isUser) {
+        while (hi < msgCount - 1 && !msgs[hi + 1].isUser) {
           hi++;
         }
         if (hi < msgCount - 1) hi++;
       }
-      while (lo > 0 && msgs[lo - 1].info.role != 'user') {
+      while (lo > 0 && !msgs[lo - 1].isUser) {
         lo--;
       }
       // runTop = msgs[hi] 的 trailing 边，相对 lastTop 锚。
@@ -520,7 +520,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       var runTop = lastTop;
       if (hi >= lastIdx) {
         for (var i = lastIdx; i < hi; i++) {
-          final mi = _heightCache[msgs[i + 1].info.id];
+          final mi = _heightCache[msgs[i + 1].id];
           if (mi == null || mi <= 0) {
             gap = true;
             break;
@@ -529,7 +529,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         }
       } else {
         for (var i = lastIdx; i > hi; i--) {
-          final mi = _heightCache[msgs[i].info.id];
+          final mi = _heightCache[msgs[i].id];
           if (mi == null || mi <= 0) {
             gap = true;
             break;
@@ -540,7 +540,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       // run 自身跨度（≥2 屏门槛）。
       var span = 0.0;
       for (var i = lo; i <= hi; i++) {
-        final mi = _heightCache[msgs[i].info.id];
+        final mi = _heightCache[msgs[i].id];
         if (mi == null || mi <= 0) {
           gap = true;
           break;
@@ -559,7 +559,7 @@ class _ConversationScreenState extends State<ConversationScreen>
             target = runTop - h;
           }
         }
-        _drivePreAssembly(conv, gap: gap, runTopId: msgs[hi].info.id);
+        _drivePreAssembly(conv, gap: gap, runTopId: msgs[hi].id);
       } else {
         _stopDriver();
       }
@@ -682,23 +682,61 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Widget _cachedMessage(DisplayMessage msg) {
-    final id = msg.info.id;
-    // Only an unfinished non-user (streaming assistant) message mutates in
-    // place per token; its cached widget would be a stale snapshot. User
-    // messages and finished assistant messages have stable content → cache.
-    if (msg.info.role == 'user') {
+    final id = msg.id;
+    if (msg.isUser) {
       return _messageChildCache[id] ??= _userBubble(msg);
     }
-    if (msg.info.finish == null) {
+    if (msg.type != 'assistant') {
+      return _messageChildCache[id] ??= _noticeMessage(msg);
+    }
+    if (msg.finish == null) {
       _messageChildCache.remove(id);
       return _message(msg, stable: false);
     }
     return _messageChildCache[id] ??= _message(msg, stable: true);
   }
 
+  Widget _noticeMessage(DisplayMessage m) {
+    final scheme = Theme.of(context).colorScheme;
+    final label = switch (m.type) {
+      'system' => m.description ?? m.text ?? '',
+      'synthetic' => m.text ?? '',
+      'skill' => m.description ?? m.text ?? '',
+      'shell' => '\$ ${m.shellCommand ?? ''}',
+      'agent-switched' => '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}',
+      'model-switched' => '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}',
+      'compaction' => 'context compaction',
+      _ => m.text ?? '',
+    };
+    if (label.trim().isEmpty) return const SizedBox.shrink();
+    return Padding(
+      key: ValueKey(m.id),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+      child: Row(
+        children: [
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest.withAlpha(120),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                label,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: scheme.outline),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 用户气泡（无外层 Padding/Align——折叠壳挂在气泡级，裁剪宽度即气泡宽）。
   Widget _userBubble(DisplayMessage msg) {
-    final id = msg.info.id;
+    final id = msg.id;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -726,8 +764,8 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Widget _measuredMessage(DisplayMessage msg) {
-    final id = msg.info.id;
-    final isUser = msg.info.role == 'user';
+    final id = msg.id;
+    final isUser = msg.isUser;
     _noteMessageBuilt(id);
     final key = _sizeKeys.putIfAbsent(id, () => GlobalKey());
     // SizeChangedLayoutNotifier 跳过首次布局（_oldSize==null），静态消息
@@ -788,7 +826,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Widget _userCollapseHost(DisplayMessage msg) {
-    final id = msg.info.id;
+    final id = msg.id;
     return Padding(
       key: ValueKey(id),
       padding: const EdgeInsets.only(
@@ -932,8 +970,8 @@ class _ConversationScreenState extends State<ConversationScreen>
   /// 挂载但不参与 layout（高度是流式前的旧值），同样按未测驱逐。
   void _onBusyEnd(List<DisplayMessage> msgs) {
     for (final m in msgs) {
-      final isUser = m.info.role == 'user';
-      final id = m.info.id;
+      final isUser = m.isUser;
+      final id = m.id;
       final rb = _sizeKeys[id]?.currentContext?.findRenderObject();
       final laidOut =
           rb is RenderObject && !(_sliverParentDataOf(rb)?.keptAlive ?? true);
@@ -945,7 +983,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _pruneMessageCaches(List<DisplayMessage> msgs) {
-    final ids = <String>{for (final m in msgs) m.info.id};
+    final ids = <String>{for (final m in msgs) m.id};
     _sizeKeys.removeWhere((id, _) => !ids.contains(id));
     _heightCache.removeWhere((id, _) => !ids.contains(id));
     _messageChildCache.removeWhere((id, _) => !ids.contains(id));
@@ -1150,7 +1188,7 @@ class _ConversationScreenState extends State<ConversationScreen>
             }
             final showFooter =
                 conv.permissions.isNotEmpty ||
-                conv.questions.isNotEmpty ||
+                conv.forms.isNotEmpty ||
                 conv.todos.any((t) => !t.done);
             return Column(
               children: [
@@ -1174,7 +1212,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                     child: _FooterPanel(
                       todos: conv.todos,
                       permissions: conv.permissions,
-                      questions: conv.questions,
+                      questions: conv.forms,
                       store: conv,
                     ),
                   ),
@@ -1364,8 +1402,6 @@ class _ConversationScreenState extends State<ConversationScreen>
           serverStore.reflectPreviewFrom(widget.sessionId);
           await client.shell(
             widget.sessionId,
-            directory: directory,
-            agent: session?.agent,
             command: command,
           );
           conv.setStatus('busy');
@@ -1390,15 +1426,14 @@ class _ConversationScreenState extends State<ConversationScreen>
             final arguments = firstSpace == -1
                 ? ''
                 : text.substring(firstSpace + 1).trim();
-            final cmdParts = <Map<String, dynamic>>[
+            final cmdFiles = <Map<String, dynamic>>[
               for (final a in attachments)
                 {
-                  'type': 'file',
-                  'mime': a.mime,
-                  'url': a.dataUrl,
-                  'filename': a.filename,
+                  'uri': a.dataUrl,
+                  'name': a.filename,
                 },
-              for (final r in fileRefs) r.toFilePart(),
+              for (final r in fileRefs)
+                {'uri': 'file://${r.absolute}', 'name': r.filename},
             ];
             conv.addOptimisticUserMessage(
               text,
@@ -1406,55 +1441,51 @@ class _ConversationScreenState extends State<ConversationScreen>
               fileRefs: fileRefs,
             );
             serverStore.reflectPreviewFrom(widget.sessionId);
-            final totalLen = cmdParts.fold<int>(
+            final totalLen = cmdFiles.fold<int>(
               0,
-              (s, p) => s + (p['url']?.toString().length ?? 0),
+              (s, p) => (p['uri']?.toString().length ?? 0) + s,
             );
-            await client.command(
-              widget.sessionId,
-              directory: directory,
-              agent: matched.agent ?? agent,
-              command: matched.name,
-              arguments: arguments,
-              parts: cmdParts,
-              sendTimeout: totalLen > 2 * 1024 * 1024
-                  ? const Duration(seconds: 120)
-                  : null,
-            );
+            if (matched.skill) {
+              await client.activateSkill(widget.sessionId, matched.name);
+            } else {
+              await client.command(
+                widget.sessionId,
+                command: matched.name,
+                arguments: arguments,
+                files: cmdFiles,
+                sendTimeout: totalLen > 2 * 1024 * 1024
+                    ? const Duration(seconds: 120)
+                    : null,
+              );
+            }
             conv.setStatus('busy');
           }
         }
         if (!isCommand) {
-          final parts = <Map<String, dynamic>>[];
-          if (text.isNotEmpty) {
-            parts.add({'type': 'text', 'text': text});
-          }
-          for (final a in attachments) {
-            parts.add({
-              'type': 'file',
-              'mime': a.mime,
-              'url': a.dataUrl,
-              'filename': a.filename,
-            });
-          }
-          for (final r in fileRefs) {
-            parts.add(r.toFilePart());
-          }
+          final files = <Map<String, dynamic>>[
+            for (final a in attachments)
+              {
+                'uri': a.dataUrl,
+                'name': a.filename,
+              },
+            for (final r in fileRefs)
+              {'uri': 'file://${r.absolute}', 'name': r.filename},
+          ];
           conv.addOptimisticUserMessage(
             text,
             attachments: attachments,
             fileRefs: fileRefs,
           );
           serverStore.reflectPreviewFrom(widget.sessionId);
-          final totalLen = parts.fold<int>(
+          final totalLen = files.fold<int>(
             0,
-            (s, p) => s + (p['url']?.toString().length ?? 0),
+            (s, p) => (p['uri']?.toString().length ?? 0) + s,
           );
           await client.prompt(
             widget.sessionId,
-            directory: directory,
+            text: text,
+            files: files,
             agent: agent,
-            parts: parts,
             sendTimeout: totalLen > 2 * 1024 * 1024
                 ? const Duration(seconds: 120)
                 : null,
@@ -1497,7 +1528,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final client = serverStore.client;
     if (client == null) return false;
     try {
-      await client.abort(widget.sessionId, directory: directory);
+      await client.interrupt(widget.sessionId);
       return true;
     } catch (e) {
       if (mounted) {
@@ -1515,13 +1546,13 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   Widget _message(DisplayMessage m, {required bool stable}) {
     return Padding(
-      key: ValueKey(m.info.id),
+      key: ValueKey(m.id),
       padding: const EdgeInsets.only(right: 24, top: 10, bottom: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _parts(m.parts, user: false, stable: stable),
-          if (m.info.error != null) _errorBanner(m.info.error!),
+          if (m.error != null) _errorBanner(m.error!),
         ],
       ),
     );
@@ -1984,7 +2015,7 @@ class _TodoCard extends StatelessWidget {
 class _FooterPanel extends StatefulWidget {
   final List<Todo> todos;
   final List<Permission> permissions;
-  final List<QuestionRequest> questions;
+  final List<FormInfo> questions;
   final ConversationStore store;
   const _FooterPanel({
     required this.todos,
@@ -2015,9 +2046,9 @@ class _FooterPanelState extends State<_FooterPanel> {
       );
     } else if (widget.questions.isNotEmpty) {
       children.add(
-        _QuestionCard(
+        _FormCard(
           key: ValueKey(widget.questions.first.id),
-          question: widget.questions.first,
+          form: widget.questions.first,
           store: widget.store,
           queueTotal: totalPending,
         ),
@@ -2816,7 +2847,7 @@ class _SubagentMessageList extends StatelessWidget {
         itemBuilder: (context, i) {
           final m = messages[i];
           return _SubagentMessage(
-            key: ValueKey(m.info.id),
+            key: ValueKey(m.id),
             message: m,
             parentSessionId: parentSessionId,
           );
@@ -2925,17 +2956,17 @@ class _SubagentMessageState extends State<_SubagentMessage> {
     final theme = Theme.of(context);
     final appColors = theme.extension<AppColors>()!;
     final m = widget.message;
-    final isUser = m.info.role == 'user';
-    final streaming = !isUser && m.info.finish == null;
+    final isUser = m.isUser;
+    final streaming = !isUser && m.finish == null;
     final text = TextStyle(fontSize: 13, height: 1.45, color: appColors.code);
 
     final children = <Widget>[];
-    if (m.info.error != null) {
+    if (m.error != null) {
       children.add(
         Padding(
           padding: const EdgeInsets.only(bottom: 4),
           child: Text(
-            _errorText(m.info.error!),
+            _errorText(m.error!),
             style: const TextStyle(
               fontSize: 12,
               color: Color(0xFFF85149),
@@ -3497,48 +3528,70 @@ class _PermissionCardState extends State<_PermissionCard> {
   }
 }
 
-class _QuestionCard extends StatefulWidget {
-  final QuestionRequest question;
+class _FormCard extends StatefulWidget {
+  final FormInfo form;
   final ConversationStore store;
   final int queueTotal;
-  const _QuestionCard({
+  const _FormCard({
     super.key,
-    required this.question,
+    required this.form,
     required this.store,
     this.queueTotal = 1,
   });
 
   @override
-  State<_QuestionCard> createState() => _QuestionCardState();
+  State<_FormCard> createState() => _FormCardState();
 }
 
-class _QuestionCardState extends State<_QuestionCard> {
-  final Map<int, Set<String>> _selected = {};
+class _FormCardState extends State<_FormCard> {
+  final Map<String, Set<String>> _selected = {};
+  final Map<String, TextEditingController> _textCtl = {};
   bool _replying = false;
   int _step = 0;
   bool _collapsed = false;
 
-  void _toggle(int qIdx, String label) {
-    final q = widget.question.questions[qIdx];
+  List<FormFieldSpec> get _fields => widget.form.fields;
+
+  FormFieldSpec get _field => _fields[_step];
+
+  void _toggle(String key, String value, bool multiselect) {
     setState(() {
-      final sel = _selected.putIfAbsent(qIdx, () => {});
-      if (sel.contains(label)) {
-        sel.remove(label);
+      final sel = _selected.putIfAbsent(key, () => {});
+      if (sel.contains(value)) {
+        sel.remove(value);
       } else {
-        if (!q.multiple) sel.clear();
-        sel.add(label);
+        if (!multiselect) sel.clear();
+        sel.add(value);
       }
     });
   }
 
-  Future<void> _reply() async {
-    final answers = <List<String>>[];
-    for (var i = 0; i < widget.question.questions.length; i++) {
-      answers.add((_selected[i] ?? const {}).toList());
+  TextEditingController _ctlFor(String key) =>
+      _textCtl.putIfAbsent(key, TextEditingController.new);
+
+  Map<String, dynamic> _buildAnswer() {
+    final answer = <String, dynamic>{};
+    for (final f in _fields) {
+      if (f.type == 'string' && f.options.isNotEmpty) {
+        final sel = (_selected[f.key] ?? const <String>{}).toList();
+        answer[f.key] = f.isMultiselect ? sel : (sel.isEmpty ? '' : sel.first);
+      } else if (f.type == 'boolean') {
+        answer[f.key] = (_selected[f.key]?.isNotEmpty ?? false);
+      } else if (f.type == 'integer' || f.type == 'number') {
+        final t = _ctlFor(f.key).text.trim();
+        answer[f.key] =
+            f.type == 'integer' ? (int.tryParse(t) ?? 0) : (double.tryParse(t) ?? 0);
+      } else {
+        answer[f.key] = _ctlFor(f.key).text;
+      }
     }
+    return answer;
+  }
+
+  Future<void> _reply() async {
     setState(() => _replying = true);
     try {
-      await widget.store.replyQuestion(widget.question, answers);
+      await widget.store.replyForm(widget.form, _buildAnswer());
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3557,7 +3610,7 @@ class _QuestionCardState extends State<_QuestionCard> {
   Future<void> _reject() async {
     setState(() => _replying = true);
     try {
-      await widget.store.rejectQuestion(widget.question);
+      await widget.store.cancelForm(widget.form);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3573,9 +3626,18 @@ class _QuestionCardState extends State<_QuestionCard> {
     }
   }
 
-  bool get _stepAnswered => (_selected[_step] ?? const {}).isNotEmpty;
+  bool get _stepAnswered {
+    final f = _field;
+    if (f.type == 'string' && f.options.isNotEmpty) {
+      return (_selected[f.key] ?? const {}).isNotEmpty;
+    }
+    if (f.type == 'boolean') {
+      return _selected.containsKey(f.key);
+    }
+    return _ctlFor(f.key).text.trim().isNotEmpty;
+  }
 
-  bool get _isLastStep => _step >= widget.question.questions.length - 1;
+  bool get _isLastStep => _step >= _fields.length - 1;
 
   void _next() {
     if (_stepAnswered && !_isLastStep) {
@@ -3584,10 +3646,17 @@ class _QuestionCardState extends State<_QuestionCard> {
   }
 
   @override
+  void dispose() {
+    for (final ctl in _textCtl.values) {
+      ctl.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final totalSub = widget.question.questions.length;
-    final q = widget.question.questions[_step];
+    final totalSub = _fields.length;
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
@@ -3608,7 +3677,7 @@ class _QuestionCardState extends State<_QuestionCard> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    q.header,
+                    widget.form.title,
                     style: const TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
@@ -3651,7 +3720,7 @@ class _QuestionCardState extends State<_QuestionCard> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _questionBlock(_step),
+                    _fieldBlock(_field),
                     const SizedBox(height: 12),
                     Row(
                       children: [
@@ -3698,80 +3767,150 @@ class _QuestionCardState extends State<_QuestionCard> {
     );
   }
 
-  Widget _questionBlock(int qIdx) {
-    final q = widget.question.questions[qIdx];
-    final sel = _selected[qIdx] ?? const <String>{};
+  Widget _fieldBlock(FormFieldSpec f) {
+    final scheme = Theme.of(context).colorScheme;
+    final sel = _selected[f.key] ?? const <String>{};
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 6),
-        Text(
-          q.question,
-          style: TextStyle(
-            fontSize: 13,
-            color: Theme.of(context).colorScheme.onSurface,
+        if ((f.title ?? f.description ?? '').isNotEmpty)
+          Text(
+            f.title ?? f.description ?? '',
+            style: TextStyle(
+              fontSize: 13,
+              color: scheme.onSurface,
+            ),
           ),
-        ),
+        if ((f.description ?? '').isNotEmpty && (f.title ?? '').isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              f.description!,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: scheme.outline),
+            ),
+          ),
         const SizedBox(height: 8),
-        for (final opt in q.options)
+        if (f.type == 'string' && f.options.isNotEmpty)
+          for (final opt in f.options)
+            InkWell(
+              onTap: _replying
+                  ? null
+                  : () => _toggle(f.key, opt.value, f.isMultiselect),
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: sel.contains(opt.value)
+                      ? scheme.tertiary.withAlpha(60)
+                      : scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: sel.contains(opt.value)
+                        ? scheme.tertiary
+                        : Colors.transparent,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      sel.contains(opt.value)
+                          ? (f.isMultiselect
+                                ? Icons.check_box
+                                : Icons.radio_button_checked)
+                          : (f.isMultiselect
+                                ? Icons.check_box_outline_blank
+                                : Icons.radio_button_unchecked),
+                      size: 18,
+                      color: scheme.tertiary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            opt.label,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                          if ((opt.description ?? '').isNotEmpty)
+                            Text(
+                              opt.description!,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: scheme.outline,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+        else if (f.type == 'boolean')
           InkWell(
-            onTap: _replying ? null : () => _toggle(qIdx, opt.label),
+            onTap: _replying ? null : () => _toggle(f.key, 'true', true),
             borderRadius: BorderRadius.circular(8),
             child: Container(
               width: double.infinity,
               margin: const EdgeInsets.only(bottom: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(
-                color: sel.contains(opt.label)
-                    ? Theme.of(context).colorScheme.tertiary.withAlpha(60)
-                    : Theme.of(context).colorScheme.surfaceContainerHighest,
+                color: sel.isNotEmpty
+                    ? scheme.tertiary.withAlpha(60)
+                    : scheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: sel.contains(opt.label)
-                      ? Theme.of(context).colorScheme.tertiary
-                      : Colors.transparent,
+                  color: sel.isNotEmpty ? scheme.tertiary : Colors.transparent,
                 ),
               ),
               child: Row(
                 children: [
                   Icon(
-                    sel.contains(opt.label)
-                        ? (q.multiple
-                              ? Icons.check_box
-                              : Icons.radio_button_checked)
-                        : (q.multiple
-                              ? Icons.check_box_outline_blank
-                              : Icons.radio_button_unchecked),
+                    sel.isNotEmpty
+                        ? Icons.check_box
+                        : Icons.check_box_outline_blank,
                     size: 18,
-                    color: Theme.of(context).colorScheme.tertiary,
+                    color: scheme.tertiary,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          opt.label,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w400,
-                          ),
-                        ),
-                        if (opt.description.isNotEmpty)
-                          Text(
-                            opt.description,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Theme.of(context).colorScheme.outline,
-                            ),
-                          ),
-                      ],
+                    child: Text(
+                      f.title ?? f.key,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w400,
+                      ),
                     ),
                   ),
                 ],
               ),
+            ),
+          )
+        else
+          TextField(
+            controller: _ctlFor(f.key),
+            enabled: !_replying,
+            keyboardType: f.type == 'integer' || f.type == 'number'
+                ? TextInputType.number
+                : TextInputType.text,
+            maxLines: f.type == 'string' ? 3 : 1,
+            decoration: InputDecoration(
+              hintText: f.placeholder ?? '',
+              isDense: true,
+              border: const OutlineInputBorder(),
             ),
           ),
       ],
@@ -5024,7 +5163,6 @@ class _MoreMenu extends StatelessWidget {
       itemBuilder: (_) => [
         PopupMenuItem(value: 'refresh', child: Text(loc.convRefresh)),
         PopupMenuItem(value: 'rename', child: Text(loc.convRename)),
-        PopupMenuItem(value: 'archive', child: Text(loc.convArchive)),
       ],
     );
   }
@@ -5036,46 +5174,6 @@ class _MoreMenu extends StatelessWidget {
         if (conv != null) unawaited(conv.reload());
       case 'rename':
         await _showRenameDialog(context);
-      case 'archive':
-        final client = serverStore.client;
-        if (client == null) return;
-        final ok = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: Text(l(ctx).convArchiveTitle),
-            content: Text(l(ctx).convArchiveConfirm),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: Text(l(ctx).cancel),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: Text(l(ctx).convArchive),
-              ),
-            ],
-          ),
-        );
-        if (ok == true) {
-          try {
-            await client.archive(
-              sessionId,
-              directory: directory,
-              archived: DateTime.now().millisecondsSinceEpoch,
-            );
-            if (context.mounted) context.pop();
-          } catch (e) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    l(context).archiveFailed(friendlyMessage(l(context), e)),
-                  ),
-                ),
-              );
-            }
-          }
-        }
     }
   }
 
@@ -5111,7 +5209,7 @@ class _MoreMenu extends StatelessWidget {
       final title = ctl.text.trim();
       if (title.isEmpty) return;
       try {
-        await client.updateTitle(sessionId, title, directory: directory);
+        await client.updateTitle(sessionId, title);
         unawaited(serverStore.refresh());
       } catch (e) {
         if (context.mounted) {

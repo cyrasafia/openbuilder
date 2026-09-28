@@ -29,31 +29,6 @@ const _profile = ConnectionProfile(
   password: '',
 );
 
-// SSE `session.updated` event with the given session fields. `archived`
-// simulates the result of PATCH /session/:id { time: { archived: ... } }.
-OpencodeEvent _sessionEvent({
-  required String id,
-  required String projectID,
-  required String directory,
-  required int updated,
-  int? archived,
-}) {
-  final time = <String, dynamic>{'updated': updated};
-  if (archived != null) time['archived'] = archived;
-  return OpencodeEvent(
-    type: 'session.updated',
-    properties: <String, dynamic>{
-      'info': <String, dynamic>{
-        'id': id,
-        'projectID': projectID,
-        'directory': directory,
-        'title': 't',
-        'time': time,
-      },
-    },
-  );
-}
-
 // Direct SessionModel constructor — for tests that need to drive REST-path
 // code (e.g. _addSessions) without going through SSE event parsing.
 // time map shape matches `_sessionEvent` (only `updated` + optional
@@ -96,16 +71,16 @@ void main() {
   test('archiving last session keeps project activity (PA-1)', () {
     final store = ServerStore()..client = _fakeClient();
     // Seed two unarchived sessions for project 'p1', updated=1000 and 2000.
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/repo', updated: 1000));
-    store.onEventForTesting(_sessionEvent(
-        id: 's2', projectID: 'p1', directory: '/repo', updated: 2000));
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/repo', updated: 1000));
+    store.upsertSessionForTesting(
+        _session(id: 's2', projectID: 'p1', directory: '/repo', updated: 2000));
     expect(store.lastActivityForProject('p1'), 2000);
     // Archive the most-recent session. setArchived leaves `time.updated`
     // unchanged (verified in opencode source), so we send updated=2000 with
     // archived set.
-    store.onEventForTesting(_sessionEvent(
-        id: 's2',
+    store.upsertSessionForTesting(
+        _session(id: 's2',
         projectID: 'p1',
         directory: '/repo',
         updated: 2000,
@@ -115,8 +90,8 @@ void main() {
     // ...but the project's activity is preserved → no sink-to-bottom.
     expect(store.lastActivityForProject('p1'), 2000);
     // Archive the remaining session too — activity still preserves the max.
-    store.onEventForTesting(_sessionEvent(
-        id: 's1',
+    store.upsertSessionForTesting(
+        _session(id: 's1',
         projectID: 'p1',
         directory: '/repo',
         updated: 1000,
@@ -131,21 +106,21 @@ void main() {
   // under projectID='global'. Verifies the keying scheme `global\0$directory`.
   test('global project activity is keyed per-directory (PA-2)', () {
     final store = ServerStore()..client = _fakeClient();
-    store.onEventForTesting(_sessionEvent(
-        id: 'g1',
+    store.upsertSessionForTesting(
+        _session(id: 'g1',
         projectID: 'global',
         directory: '/dirA',
         updated: 1500));
-    store.onEventForTesting(_sessionEvent(
-        id: 'g2',
+    store.upsertSessionForTesting(
+        _session(id: 'g2',
         projectID: 'global',
         directory: '/dirB',
         updated: 3000));
     expect(store.lastActivityForGlobalDir('/dirA'), 1500);
     expect(store.lastActivityForGlobalDir('/dirB'), 3000);
     // Cross-talk check: archiving in /dirA must not affect /dirB.
-    store.onEventForTesting(_sessionEvent(
-        id: 'g1',
+    store.upsertSessionForTesting(
+        _session(id: 'g1',
         projectID: 'global',
         directory: '/dirA',
         updated: 1500,
@@ -160,16 +135,16 @@ void main() {
   // `_bumpLastActivity` `if (s.updated > current)` condition.
   test('activity is monotonic against older updates (PA-3)', () {
     final store = ServerStore()..client = _fakeClient();
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/r', updated: 2000));
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 2000));
     expect(store.lastActivityForProject('p1'), 2000);
     // An older update arrives (e.g. reordered SSE event) — must not regress.
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/r', updated: 500));
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 500));
     expect(store.lastActivityForProject('p1'), 2000);
     // A newer update bumps it forward.
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/r', updated: 5000));
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 5000));
     expect(store.lastActivityForProject('p1'), 5000);
     store.dispose();
   });
@@ -209,15 +184,13 @@ void main() {
   // `_lastActivityByKey.remove(...)` line.
   test('hard delete keeps project activity (PA-5)', () {
     final store = ServerStore()..client = _fakeClient();
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/r', updated: 4321));
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 4321));
     expect(store.lastActivityForProject('p1'), 4321);
     // Drive a session.deleted event → _removeSession.
     store.onEventForTesting(const OpencodeEvent(
       type: 'session.deleted',
-      properties: <String, dynamic>{
-        'info': <String, dynamic>{'id': 's1'},
-      },
+      properties: <String, dynamic>{'sessionID': 's1'},
     ));
     expect(store.sessions, isEmpty);
     // Activity is preserved even though the session is gone.
@@ -247,19 +220,19 @@ void main() {
   test('desktop unarchive (archived: 0 event) keeps session visible (PA-6)',
       () {
     final store = ServerStore()..client = _fakeClient();
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/r', updated: 1000));
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 1000));
     // Archive from the mobile UI (real timestamp) — session drops out.
-    store.onEventForTesting(_sessionEvent(
-        id: 's1',
+    store.upsertSessionForTesting(
+        _session(id: 's1',
         projectID: 'p1',
         directory: '/r',
         updated: 1000,
         archived: 9999));
     expect(store.sessions.where((s) => s.id == 's1'), isEmpty);
     // Desktop un-archive writes archived: 0 — session must come back.
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/r', updated: 2000,
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 2000,
         archived: 0));
     expect(store.sessions.where((s) => s.id == 's1'), isNotEmpty);
     store.dispose();
@@ -295,8 +268,8 @@ void main() {
   test('cache load uses monotonic-max merge (PA-R2b)', () async {
     // In-memory value 9000 (fresher, set by SSE).
     final store = ServerStore()..client = _fakeClient();
-    store.onEventForTesting(_sessionEvent(
-        id: 's1', projectID: 'p1', directory: '/r', updated: 9000));
+    store.upsertSessionForTesting(
+        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 9000));
     expect(store.lastActivityForProject('p1'), 9000);
     // Cache has an older value 5000 — must NOT overwrite.
     await FileCacheStore(_profile.id).write('server', jsonEncode({

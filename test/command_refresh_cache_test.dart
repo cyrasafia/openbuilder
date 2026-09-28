@@ -29,7 +29,7 @@ class _CmdClient extends OpencodeClient {
 const _dir = '/work';
 final _cmd = const CommandInfo(name: 'review', description: 'code review');
 final _skill = const CommandInfo(
-    name: 'tavily-search', description: 'web search', source: 'skill');
+    name: 'tavily-search', description: 'web search', skill: true);
 
 void main() {
   test('a healthy answer applies directly', () async {

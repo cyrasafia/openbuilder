@@ -8,26 +8,31 @@ import 'sse_transport.dart' if (dart.library.html) 'sse_transport_web.dart'
 
 const _tag = 'SSE';
 
-/// A parsed opencode SSE event (`data: {id,type,properties}`).
 class OpencodeEvent {
   final String? id;
   final String type;
   final Map<String, dynamic> properties;
+  final String? directory;
 
-  const OpencodeEvent({this.id, required this.type, required this.properties});
+  const OpencodeEvent({
+    this.id,
+    required this.type,
+    required this.properties,
+    this.directory,
+  });
 
   factory OpencodeEvent.fromJson(Map<String, dynamic> j) => OpencodeEvent(
         id: j['id']?.toString(),
         type: (j['type'] ?? '').toString(),
-        properties: j['properties'] is Map
-            ? (j['properties'] as Map).cast<String, dynamic>()
+        properties: j['data'] is Map
+            ? (j['data'] as Map).cast<String, dynamic>()
             : const {},
+        directory: j['location'] is Map
+            ? (j['location'] as Map)['directory']?.toString()
+            : null,
       );
 }
 
-/// An [OpencodeEvent] with its `/global/event` envelope directory attached.
-/// `directory` is `'global'` for frames without one (`server.connected` /
-/// `server.heartbeat`).
 class GlobalOpencodeEvent {
   final String directory;
   final OpencodeEvent event;
@@ -35,13 +40,6 @@ class GlobalOpencodeEvent {
   const GlobalOpencodeEvent({required this.directory, required this.event});
 }
 
-/// Parses one raw SSE `data:` frame from `/global/event`.
-///
-/// Envelope: `{"directory": "/abs/dir"?, "project"?, "payload": {id,type,properties}}`.
-/// Returns null for malformed JSON, non-envelope payloads, and the `sync`
-/// double-emit (each durable event is re-sent wrapped as
-/// `{"payload":{"type":"sync","syncEvent":{…}}}` — the original event already
-/// preceded it, so the wrapper must be dropped).
 GlobalOpencodeEvent? parseGlobalEvent(String data) {
   final Map<String, dynamic> j;
   try {
@@ -49,33 +47,19 @@ GlobalOpencodeEvent? parseGlobalEvent(String data) {
   } catch (_) {
     return null;
   }
-  final payload = j['payload'];
-  if (payload is! Map) return null;
-  final map = payload.cast<String, dynamic>();
-  if (map['type'] == 'sync') return null;
-  final ev = OpencodeEvent.fromJson(map);
+  final ev = OpencodeEvent.fromJson(j);
   if (ev.type.isEmpty) return null;
-  final directory = j['directory']?.toString() ?? 'global';
+  final directory = ev.directory ?? 'global';
   return GlobalOpencodeEvent(directory: directory, event: ev);
 }
 
-/// Lifecycle state of the SSE connection, for UI indicators (specs §11).
 class SseState {
   final bool connected;
   final bool reconnecting;
-  /// Current reconnect attempt (1-based); 0 when connected / idle.
   final int attempt;
   const SseState({this.connected = false, this.reconnecting = false, this.attempt = 0});
 }
 
-/// Connects to `GET /global/event` (single GlobalBus stream, server ≥ v1.0.66),
-/// parses envelopes, and reconnects with exponential backoff on the IO
-/// transport (web's EventSource reconnects by itself). Reconciliation is
-/// driven by `server.connected` (re-emitted on each connect).
-///
-/// No `Last-Event-ID`: server SSE frames carry no `id:` and the server never
-/// honors the header — disconnect recovery is REST reconciliation.
-/// See design-sse-global-event.md.
 class SseClient {
   final Uri uri;
   final Map<String, String> headers;
@@ -91,28 +75,17 @@ class SseClient {
   bool _reconnectPending = false;
   bool _kickReconnect = false;
   Timer? _heartbeatTimer;
-  // Load-bearing, NOT redundant with the transport's `.timeout()`: created
-  // before the transport call, so it consistently fires first and cancels the
-  // async* generator, causing the generator's cancellation machinery to
-  // DISCARD the transport's TimeoutException. Removing it lets that
-  // TimeoutException escape through the async* error channel into the zone
-  // (flutter_test flags it as unhandled). See sse_transport.dart doc comment.
   Timer? _connectTimer;
   static const _heartbeatTimeout = Duration(seconds: 60);
 
-  /// Overall timeout for one connect attempt (connection + response headers).
-  /// Bounds the previously-unbounded header-wait phase — a server that accepts
-  /// TCP but never sends response headers (e.g., overloaded) would otherwise
-  /// hang until the 60s heartbeat backstop. See design-sse-reconnect-recovery.md §12.
   @visibleForTesting
   static Duration overallTimeout = const Duration(seconds: 15);
 
   SseClient({required String baseUrl, this.headers = const {}, String? label})
-      : uri = Uri.parse('$baseUrl/global/event'),
-        label = label ?? '/global/event';
+      : uri = Uri.parse('$baseUrl/api/event'),
+        label = label ?? '/api/event';
 
   Stream<GlobalOpencodeEvent> get events => _controller.stream;
-  /// Lifecycle changes (connected / reconnecting + attempt), for UI banners.
   Stream<SseState> get state => _stateCtl.stream;
   bool get isRunning => !_stopped;
 
@@ -147,13 +120,6 @@ class SseClient {
     _startHeartbeatTimer();
     _connectTimer?.cancel();
     _connectTimer = Timer(overallTimeout, _onConnectTimeout);
-    // Cancel any previous subscription BEFORE overwriting _sub. Without this,
-    // each reconnect abandoned the old stream alive: error(onError) and
-    // onDone both fired for the dead connection while the new one was already
-    // listening, so every reconnect multiplied the live subscription count
-    // (duplicate `server.connected` / `session.status` deliveries in the
-    // logs) and each dead copy triggered ANOTHER _onDrop → another
-    // reconnect — the reconnect storm.
     _sub?.cancel();
     _sub = null;
     AppLogger.I.d(_tag, 'connect start $label');
@@ -186,8 +152,6 @@ class SseClient {
     _onDrop('heartbeat');
   }
 
-  /// Transport dropped (error/done). Schedule one reconnect, guarding against
-  /// duplicate scheduling while a backoff is already pending.
   void _onDrop([String? reason]) {
     if (_stopped) return;
     if (_reconnectPending) return;
@@ -196,8 +160,7 @@ class SseClient {
     _connectTimer = null;
     final r = reason != null ? ' ($reason)' : '';
     AppLogger.I.w(_tag, 'dropped $label$r');
-    _reconnectPending = true; // set synchronously: a same-tick second drop
-    // from the old subscription's cancel-echo must not double-schedule.
+    _reconnectPending = true;
     unawaited(_scheduleReconnect());
   }
 
@@ -207,12 +170,6 @@ class SseClient {
     _emit(SseState(reconnecting: true, attempt: _reconnectAttempt));
     final waitSeconds = _backoff;
     _backoff = (_backoff * 2).clamp(1, 30);
-    // A kick that arrived while no backoff was pending (lost kick) leaves
-    // the flag set on purpose. But once a reconnect cycle starts, that stale
-    // flag must be consumed HERE, not inside the sleep loop: the loop exits
-    // at its first 200ms poll either way, and a flag left set would make the
-    // NEXT cycle's sleep exit immediately too, reconnecting twice per drop
-    // (attempt 1 + attempt 2 in the same millisecond in the logs).
     final kicked = _kickReconnect;
     _kickReconnect = false;
     final deadline = DateTime.now().add(Duration(seconds: waitSeconds));
@@ -228,15 +185,6 @@ class SseClient {
     _connect();
   }
 
-  /// Wake from backoff sleep and reconnect immediately, resetting the backoff
-  /// that was earned under suspended-network conditions (e.g., Android Doze
-  /// while backgrounded). Called by ServerStore on app resume / SSE start.
-  ///
-  /// The flag is set unconditionally: a kick landing while a connect is in
-  /// flight (_reconnectPending == false) persists into the next
-  /// _scheduleReconnect, which consumes it up front (zero added delay), and
-  /// the backoff reset caps that cycle at 1s — the lost-kick window stays
-  /// closed while the flag never survives past one cycle.
   void reconnectNow() {
     if (_stopped) return;
     _backoff = 1;
@@ -247,7 +195,7 @@ class SseClient {
   }
 
   void _onData(String data) {
-    _backoff = 1; // healthy
+    _backoff = 1;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer(_heartbeatTimeout, _onHeartbeatTimeout);
     if (!_connected) {
@@ -258,8 +206,6 @@ class SseClient {
     }
     final gev = parseGlobalEvent(data);
     if (gev != null) _controller.add(gev);
-    // Always emit connected on receiving data — covers first connect
-    // AND reconnect.
     if (!_stateCtl.isClosed) {
       _reconnectAttempt = 0;
       _emit(const SseState(connected: true));

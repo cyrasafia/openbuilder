@@ -38,23 +38,28 @@ OpencodeClient _client(_Capture cap, {String body = '[]'}) {
   return OpencodeClient(dio);
 }
 
+String _entriesBody(List<Map<String, dynamic>> entries) => jsonEncode({
+      'location': {'directory': '/work'},
+      'data': entries,
+    });
+
 void main() {
   group('findFiles', () {
-    test('parses array of relative path strings into FileNodes', () async {
+    test('parses FileSystem.Entry objects into FileNodes', () async {
       final cap = _Capture();
       final res = await _client(
         cap,
-        body: jsonEncode([
-          'lib/main.dart',
-          'lib/features/files/binary_view.dart',
-          'lib/',
-          'pubspec.yaml',
+        body: _entriesBody([
+          {'path': 'lib/main.dart', 'type': 'file'},
+          {'path': 'lib/features/files/binary_view.dart', 'type': 'file'},
+          {'path': 'lib/', 'type': 'directory'},
+          {'path': 'pubspec.yaml', 'type': 'file'},
         ]),
       ).findFiles(directory: '/work', path: '', query: 'lib');
 
       expect(cap.method, 'GET');
-      expect(cap.path, '/find/file');
-      expect(cap.query!['directory'], '/work');
+      expect(cap.path, '/api/fs/find');
+      expect(cap.query!['location[directory]'], '/work');
       expect(cap.query!['query'], 'lib');
 
       expect(res, hasLength(4));
@@ -81,11 +86,13 @@ void main() {
       final cap = _Capture();
       final res = await _client(
         cap,
-        body: jsonEncode(['code_view.dart', 'binary_view.dart']),
+        body: _entriesBody([
+          {'path': 'code_view.dart', 'type': 'file'},
+          {'path': 'binary_view.dart', 'type': 'file'},
+        ]),
       ).findFiles(directory: '/work', path: 'lib/features/files', query: 'view');
 
-      // search root is directory + '/' + path
-      expect(cap.query!['directory'], '/work/lib/features/files');
+      expect(cap.query!['location[directory]'], '/work/lib/features/files');
 
       expect(res[0].path, 'lib/features/files/code_view.dart');
       expect(res[0].name, 'code_view.dart');
@@ -97,18 +104,20 @@ void main() {
         () async {
       final cap = _Capture();
       await _client(cap).findFiles(directory: '', path: 'lib', query: 'x');
-      expect(cap.query!['directory'], 'lib');
+      expect(cap.query!['location[directory]'], 'lib');
     });
 
-    test('drops empty-string entries instead of making phantom nodes',
-        () async {
+    test('entries without type default to file', () async {
       final cap = _Capture();
       final res = await _client(
         cap,
-        body: jsonEncode(['main.dart', '']),
+        body: _entriesBody([
+          {'path': 'main.dart'},
+        ]),
       ).findFiles(directory: '/work', path: '', query: 'x');
       expect(res, hasLength(1));
       expect(res[0].name, 'main.dart');
+      expect(res[0].isDir, isFalse);
     });
 
     test('strips trailing slash from directory when composing the search root',
@@ -119,17 +128,7 @@ void main() {
         path: 'lib',
         query: 'x',
       );
-      expect(cap.query!['directory'], '/work/lib');
-    });
-
-    test('returns empty list for non-array payload', () async {
-      final cap = _Capture();
-      final res = await _client(cap, body: '{}').findFiles(
-        directory: '/work',
-        path: '',
-        query: 'x',
-      );
-      expect(res, isEmpty);
+      expect(cap.query!['location[directory]'], '/work/lib');
     });
   });
 }

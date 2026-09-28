@@ -71,7 +71,7 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
       _error = null;
     });
     try {
-      final models = await client.listConfigProviders();
+      final models = await client.listModels();
       // Ignore the result if the active server changed during the fetch —
       // a later _load() is in flight and would otherwise overwrite with a
       // stale list.

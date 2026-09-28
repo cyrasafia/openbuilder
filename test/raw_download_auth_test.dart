@@ -138,9 +138,8 @@ void main() {
       }
       req.response
         ..statusCode = 200
-        ..headers.contentType = ContentType.json
-        ..write(jsonEncode(
-            {'type': 'text', 'mimeType': 'text/plain', 'content': 'hello'}));
+        ..headers.contentType = ContentType.text
+        ..write('hello');
       await req.response.close();
     });
 

@@ -10,7 +10,7 @@ AppLocalizations l(BuildContext context) => AppLocalizations.of(context)!;
 /// conversation permission card (has context) and the notification body (no
 /// context — loads loc via delegate) so the type→title mapping never drifts.
 String permissionTitle(AppLocalizations loc, Permission p) {
-  switch (p.type) {
+  switch (p.action) {
     case 'external_directory':
       final dir = p.externalDirectoryPath;
       return dir != null
@@ -19,6 +19,6 @@ String permissionTitle(AppLocalizations loc, Permission p) {
     case 'bash':
       return loc.permissionExecute;
     default:
-      return p.type.isEmpty ? loc.permissionRequest : p.type;
+      return p.action.isEmpty ? loc.permissionRequest : p.action;
   }
 }

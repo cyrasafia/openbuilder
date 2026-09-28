@@ -60,7 +60,7 @@ class ProjectDetailScreen extends StatelessWidget {
         final scopedTitle = directory == null
             ? (project?.displayName ?? 'global')
             : (directory!.isEmpty ? 'global' : directory!.split('/').last);
-        final scopedWorktree = directory ?? (project?.worktree ?? '');
+        final scopedWorktree = directory ?? (project?.canonical ?? '');
         final p = project;
         final wsCapable = p?.workspaceCapable ?? false;
         final wsEnabled = wsCapable && serverStore.workspaceEnabled(p!.id);
@@ -81,7 +81,7 @@ class ProjectDetailScreen extends StatelessWidget {
               _ProjectCard(
                 name: scopedTitle,
                 icon: project?.icon,
-                worktree: scopedWorktree,
+                canonical: scopedWorktree,
                 sessionCount: sessions.length,
                 workspaceCapable: wsCapable,
                 workspaceEnabled: wsEnabled,
@@ -161,12 +161,12 @@ class ProjectDetailScreen extends StatelessWidget {
   ) async {
     if (!project.workspaceCapable ||
         !serverStore.workspaceEnabled(project.id)) {
-      await _createSession(context, project.worktree);
+      await _createSession(context, project.canonical);
       return;
     }
     final workspaces = [
-      project.worktree,
-      ...project.sandboxes.where((dir) => dir != project.worktree),
+      project.canonical,
+      ...project.sandboxes.where((dir) => dir != project.canonical),
     ];
     final directory = await showModalBottomSheet<String>(
       context: context,
@@ -190,7 +190,7 @@ class ProjectDetailScreen extends StatelessWidget {
                 (dir) => ListTile(
                   leading: const Icon(Icons.call_split),
                   title: Text(
-                    dir == project.worktree
+                    dir == project.canonical
                         ? l(ctx).projectMainWorkspace
                         : dir.split('/').last,
                   ),
@@ -341,7 +341,7 @@ class ProjectDetailScreen extends StatelessWidget {
                           final pending = pendingWorktreeDir;
                           final session = pending == null
                               ? await serverStore.createSessionInNewWorktree(
-                                  project.worktree,
+                                  project.canonical,
                                   reconcileFirst: worktreeStepFailed,
                                 )
                               : await serverStore.createSession(pending);
@@ -569,7 +569,7 @@ class _ViewInsetsFreezer extends StatelessWidget {
 class _ProjectCard extends StatelessWidget {
   final String name;
   final ProjectIcon? icon;
-  final String worktree;
+  final String canonical;
   final int sessionCount;
   final bool workspaceCapable;
   final bool workspaceEnabled;
@@ -581,7 +581,7 @@ class _ProjectCard extends StatelessWidget {
   const _ProjectCard({
     required this.name,
     required this.icon,
-    required this.worktree,
+    required this.canonical,
     required this.sessionCount,
     required this.workspaceCapable,
     required this.workspaceEnabled,
@@ -631,7 +631,7 @@ class _ProjectCard extends StatelessWidget {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            worktree,
+                            canonical,
                             style: AppTheme.mono.copyWith(
                               fontSize: 12,
                               color: muted,

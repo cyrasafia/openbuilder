@@ -69,7 +69,7 @@ void main() {
       iconColor: null,
     );
     expect(cap.lastMethod, 'PATCH');
-    expect(cap.lastPath, '/project/p1');
+    expect(cap.lastPath, '/api/project/p1');
     final icon = cap.lastBody!['icon'] as Map<String, dynamic>;
     expect(icon.containsKey('url'), isFalse,
         reason: 'null iconUrl must be omitted, not sent as JSON null');

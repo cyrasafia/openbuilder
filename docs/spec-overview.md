@@ -99,52 +99,50 @@ openbuilder/
 
 DTO 来自手写的 client；`domain/` 放精简的不可变模型 + `fromDto`。
 
-### 4.1 opencode 关键数据模型（来自 spec）
+### 4.1 opencode 关键数据模型（来自 spec，v2.0.18）
 
 ```ts
-Project   = { id, worktree, vcs?, name?, icon?{url,override,color}, commands?, time:{created,updated,initialized?}, sandboxes[] }
-Session   = { id, projectID, directory, parentID?, title, summary?, share?, time{created,updated,initialized?,archived?}, ... }
-Path      = { state, config, worktree, directory }
-VcsInfo   = { branch }
-FileDiff  = { file, before, after, additions, deletions }
-Todo      = { id, content, status, priority }                 // status: pending|in_progress|completed|cancelled
-SessionStatus = { type: "idle" } | { type:"busy" } | { type:"retry", attempt, message, next }
-FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
+Project   = { id, canonical, vcs?, name?, icon?{url,override,color}, commands?{start}, time:{created,updated,active}, sandboxes[] }
+Session   = { id, projectID, location:{directory}, parentID?, title?, outcome?, time{created,updated,idle?,viewed?,archived?}, agent?, model?, cost, tokens, metadata? }
+Message   = tagged union by type: user | assistant | agent-switched | model-switched | location-switched |
+            synthetic | system | skill | shell | compaction | idle
+Assistant = { id, time, agent, model, content: [text | reasoning | tool][], finish?, cost, tokens, error? }
+ToolState = { status: streaming | running | completed | error, input, content, metadata }
+Form      = { id, sessionID, title, fields[] }                    // 取代 v1 question；答复 {fieldKey: value}
+Permission= { id, sessionID, action, resources, save, metadata }  // v1 的 type/patterns 改名
+Todo      = 消息流中 todowrite 工具调用的 state.input.todos（无端点无事件，客户端推导）
+FileDiff  = { file, patch, additions, deletions, status }
 ```
 
-> **Worktree 结论**：`Project.worktree` 即 git worktree 路径；`Session` 经 `projectID/directory` 归属某 worktree；多数端点支持 `?directory=` 切换作用域。**worktree 并行任务 = 切换 Project/工作目录**，客户端不发明新概念。
+> **Worktree 结论**：`Project.canonical` 即主 checkout 路径（v2 自愈：旧 canonical 消失后自动改写并发 `project.updated`）；`Session` 经 `location.directory` 归属。worktree 并行任务 = 切换 directory，客户端不发明新概念。
 
-### 4.2 端点映射表
+### 4.2 端点映射表（v2 /api 面）
 
-| 用途 | HTTP | 实现（client / store） | 说明 / worktree 作用域 |
-|---|---|---|---|
-| 健康检查 | `GET /global/health` | `ServerRepo.health()` | 连接测试，返回版本 |
-| 列 worktree | `GET /project?directory=` | `ProjectRepo.list(dir)` | `Project.worktree` |
-| 当前 worktree | `GET /project/current?directory=` | `ProjectRepo.current(dir)` | |
-| 路径信息 | `GET /path?directory=` | `ProjectRepo.path(dir)` | |
-| 分支 | `GET /vcs?directory=` | `ProjectRepo.vcs(dir)` | `VcsInfo.branch` |
-| 会话列表 | `GET /session?directory=` | `SessionRepo.list(dir)` | 按 worktree 过滤 |
-| 全量状态 | `GET /session/status` | `SessionRepo.statusMap()` | `{id: idle\|busy\|retry}` |
-| 会话详情 | `GET /session/:id` | `SessionRepo.get(id)` | |
-| 新建会话 | `POST /session` | `SessionRepo.create({title?, parentID?, dir})` | body `{parentID?, title?}` |
-| 删除/中止 | `DELETE /session/:id` · `POST /session/:id/abort` | `SessionRepo.delete/abort` | |
-| 分享/取消 | `POST|DELETE /session/:id/share` | — | |
-| 消息列表 | `GET /session/:id/message` | `MessageRepo.list(id)` | `{info, parts}[]` |
-| **发消息（流式）** | `POST /session/:id/prompt_async` | `MessageRepo.promptAsync(id, parts)` | 返回 204，结果走 SSE |
-| 同步发（兜底） | `POST /session/:id/message` | `MessageRepo.prompt(id, parts)` | 弱网/回退 |
-| 斜杠命令 | `GET /command` + `POST /session/:id/command` | `CommandRepo.list/run` | |
-| Shell | `POST /session/:id/shell` | `MessageRepo.shell(id, cmd)` | 运行 shell 命令 |
-| Worktree 创建 | `POST /experimental/worktree?directory=` | `WorktreeRepo.create(dir, {name, startCommand?})` | 原生端点，返回 `{name, branch?, directory}`；SSE `worktree.ready`/`worktree.failed` |
-| Worktree 列表 | `GET /experimental/worktree?directory=` | `WorktreeRepo.list(dir)` | `string[]` |
-| Worktree 删除 | `DELETE /experimental/worktree?directory=` | `WorktreeRepo.remove(dir, {directory})` | |
-| Worktree 重置 | `POST /experimental/worktree/reset?directory=` | `WorktreeRepo.reset(dir, {directory})` | |
-| Todo 进度 | `GET /session/:id/todo` | `SessionRepo.todos(id)` | 初次拉取；后续靠 SSE |
-| **Diff** | `GET /session/:id/diff?messageID=` | `DiffRepo.sessionDiff(id, msg?)` | `FileDiff[]` |
-| 权限响应 | `POST /session/:id/permissions/:pid` | `PermissionRepo.respond(...)` | body `{response, remember?}` |
-| 文件树 | `GET /file?path=` · `/file/content?path=` | `FileRepo.list/read` | `FileContent{type,content,patch}` |
-| 文件搜索 | `GET /find?pattern=` · `/find/file?query=` · `/find/symbol?query=` | `FileRepo.search*` | |
-| 实时事件（单全局流，已实施） | `GET /global/event`（SSE，v1.0.66+） | `EventRepo.globalStream()` | GlobalBus 无过滤直通，信封 `{directory, payload}` 客户端路由/闸门，见 [design-sse-global-event.md](design-sse-global-event.md) |
-| 实时事件（历史方案，已替换） | `GET /event?directory=`（SSE） | `EventRepo.stream(dir)` | 同一总线按 directory 过滤的子集；裸 `/event` 不带参数只推 connected/heartbeat（design-on-demand-sse.md §1.3 误判出处） |
+| 用途 | HTTP | 说明 |
+|---|---|---|
+| 健康检查 | `GET /api/info` | `{version, pid, urls, paths}` |
+| 项目列表 | `GET /api/project` | `{location, data}` 包裹 |
+| 当前位置 | `GET /api/location` | `{directory, project{id,directory,canonical}}` |
+| 项目更新 | `PATCH /api/project/:id` | `{name?, icon?, commands?, canonical?}` |
+| 会话列表 | `GET /api/session?directory=&limit=&order=&search=&parentID=` | `{data, cursor}`；cursor 不可与 order 并用；含 archived，客户端过滤 |
+| 运行中会话 | `GET /api/session/active` | `{data: {sid: {type: running}}}`，替代 v1 `/session/status` |
+| 会话 CRUD | `GET/POST/DELETE/PATCH /api/session/:id` | PATCH body 仅 `{title?, metadata?, permissions?}`（归档无 API） |
+| 消息分页 | `GET /api/session/:id/message?limit=&order=&cursor=&type=` | `{data, cursor}`；desc 下 `cursor.next` 向更老翻页 |
+| **发消息** | `POST /api/session/:id/prompt` | 200 + `{data: SessionInbox.User}`；body `{text, files?, agents?, skills?, metadata?, delivery?}` |
+| 斜杠命令 | `GET /api/command` + `POST /api/session/:id/command` | body `{name, text, files?}`；skills 由 `/api/skill` 合并，skill 执行走 experimental 端点 |
+| Shell | `POST /api/session/:id/shell` | body `{command}` |
+| 中止 | `POST /api/session/:id/interrupt` | |
+| Worktree 组 | `GET/POST/DELETE /api/worktree` + `POST /api/worktree/refresh` | 按 projectID；列表含主 checkout；create 执行 `commands.start` |
+| Todo | —（无端点） | 从消息流 `todowrite` 工具调用推导 |
+| **Diff** | `GET /api/session/:id/diff?from=&to=&context=` · `GET /api/vcs/diff?mode=working\|branch\|committed` | mode 取代 v1 `git/branch` |
+| Revert | `POST /api/session/:id/revert/stage` + `/revert/commit` | 两段式 |
+| 权限 | `GET /api/permission/request` · `POST /api/session/:id/permission/:rid/reply` | reply body `{decision: once\|always\|reject}` |
+| Form | `GET /api/form` · `GET/POST/DELETE /api/session/:id/form*` | 取代 v1 question 体系 |
+| 文件树 | `GET /api/fs/list?location[directory]=&path=` | 相对路径 `{path, type}`（目录带尾 `/`） |
+| 文件内容 | `GET /api/fs/read/<path>?location[directory]=` | 原始内容 + content-type 头（二进制判定按 mime） |
+| 文件搜索 | `GET /api/fs/find?location[directory]=&query=` | `{location, data: [{path, type}]}` |
+| 实时事件 | `GET /api/event`（SSE） | 信封 `{id, created?, type, location?, data, durable?}`；volatile 无回放 |
+| 模型/Agent | `GET /api/model` · `GET /api/agent` · `POST /api/session/:id/agent\|model` | |
 
 > 表中 `Repo.*` 为规划命名，实际未抽独立 `repositories/` 包：原始方法由手写 `OpencodeClient` 提供，`ServerStore` / `ConversationStore`（ChangeNotifier）直接调用并聚合状态。
 
@@ -153,10 +151,10 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 ## 5. SSE 与实时进度（核心）
 
 `SseClient`（`core/sse/`）：
-- 端点：单条 `GET /global/event` 全局流，信封按 directory 客户端路由/闸门（[design-sse-global-event.md](design-sse-global-event.md)，2026-08-24 已实施）
-- 基于 `dio` 的 `send` 拿 `ResponseBody.stream`，按行解析 `data:`
-- 鉴权头与 baseUrl 复用 `core/net` 的 dio 实例（带可选 basic auth）
-- 自动重连：指数退避（1→30s 上限）。~~重连后重发 `Last-Event-ID`~~——server SSE 帧无 `id:` 字段（`id: undefined`），`Last-Event-ID` 从未生效，断线恢复全靠 REST 对账（见 design-sse-global-event.md §1.3）
+- 端点：单条 `GET /api/event` 全局流（v2 契约），信封 `{id, created?, type, location?, data, durable?}`；带 location 的事件按 directory 客户端路由/闸门，无 location 的会话事件按 `data.sessionID` 路由
+- 基于 `dio` 的 `send` 拿 `ResponseBody.stream`，按行解析 `data:`（`: heartbeat` 注释行由 transport 丢弃）
+- 鉴权头与 baseUrl 复用 `core/net` 的 dio 实例（v2 强制 Basic：用户名 `opencode` + 服务器密码）
+- 自动重连：指数退避（1→30s 上限）。v2 官方语义为 **volatile**（无回放、无续传，慢消费者被断流）——断线恢复必须全量对账（design-incremental-reconcile 路线为唯一正确解）
 - 生命周期：app 进前台→连；进后台→保持 30s 后断（省电），回前台→重连 + 全量对账
 - 事件由 `ServerStore` / `ConversationStore`（ChangeNotifier）直接处理并 `notifyListeners()`，各 feature 用 `ListenableBuilder` 订阅更新
 
@@ -165,19 +163,22 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 | 事件 | 处理 |
 |---|---|
 | `server.connected` | 标记连接 OK，触发全量对账 |
-| `session.status` / `session.idle` | 更新会话状态徽标（idle/busy/retry） |
-| `session.created/updated/deleted` | 增量更新会话列表 |
-| `todo.updated` | 刷新该 session 的 todo 进度条/清单 |
-| `message.part.updated` (+`delta`) | **流式追加 token**到当前对话视图 |
-| `message.updated` / `message.removed` | 消息元数据/删除同步 |
-| `session.diff` | 增量刷新 diff 角标（不自动跳转） |
-| `permission.updated` | 弹权限卡 + 本地通知 |
-| `vcs.branch.updated` | 刷新 worktree 分支显示 |
-| `session.error` | 错误 toast + 状态标记 |
+| `session.execution.started/succeeded/failed/interrupted` | 会话状态徽标（busy→idle；取代 v1 session.status/idle） |
+| `session.retry.scheduled` | retry 态 + 错误横幅 |
+| `session.created/renamed/deleted/moved` | 增量更新会话列表 |
+| `session.text.delta` / `session.reasoning.delta` | **流式追加 token**到当前对话视图（按 assistantMessageID+ordinal 定位） |
+| `session.tool.input.started/delta/ended` / `session.tool.called/progress/success/failed` | 工具卡全生命周期（按 call id 定位） |
+| `session.step.started/streamed/ended/failed` | 轮次起止（finish/cost/tokens 权威落账） |
+| `session.message.content.updated` | assistant content 权威对账 |
+| `session.inbox.enqueued/delivered` | 用户消息权威插入（乐观消息替换） |
+| `permission.asked` / `permission.replied` | 权限卡 + 本地通知（v2 同名保留） |
+| `form.created` / `form.replied` / `form.cancelled` | form 卡（取代 v1 question.*） |
+| `project.updated` / `worktree.resolved` / `worktree.updated` | 项目与 worktree 增量（含 reconcile 触发） |
+| registry 族（`command/agent/model/provider/skill/... .updated`） | 刷新斜杠命令缓存（取代 v1 catalog.updated） |
 
 ### 5.2 发消息的流式策略
 
-`POST /prompt_async` → 204 → 监听 SSE 的 `message.part.updated(delta)` 做打字机效果，`message.updated` 完成收尾。弱网或 SSE 不可用时回退到阻塞的 `POST /message`。
+`POST /api/session/:id/prompt` → 200（返回入箱用户消息）→ 监听 SSE 的 `session.text.delta`/`session.reasoning.delta` 做打字机效果（按 assistantMessageID+ordinal 定位 part），`session.tool.*` 驱动工具卡，`session.step.ended/failed` 收尾（finish/cost/tokens）。乐观消息由 `session.inbox.enqueued` 的权威用户消息替换。
 
 ---
 
@@ -237,14 +238,14 @@ FileContent = { type:"text"|"binary", content, diff?, patch?:{hunks[]} }
 - mDNS：`bonsoir` 发现 `opencode.local`；列出可点击直连（端口随服务广播）
 - Tailscale：用户手填 `100.x.y.z` 或 MagicDNS 主机名，无需特殊代码（系统 VPN 透明路由）
 - basic auth（可选）：dio `BasicAuth` 拦截器；不强制（服务器未设 `OPENCODE_SERVER_PASSWORD` 时省略）
-- 连接测试：`GET /global/health` → 显示 server 版本
+- 连接测试：`GET /api/info` → 显示 server 版本
 
 ---
 
 ## 11. 错误处理 / 弱网 / 离线
 
 - 统一 `ApiResult<T>`（sealed：`Ok / NetError / HttpError / Unauthorized / Parse`）
-- SSE 断线：状态条提示「重连中 (n)…」，重连后**对账**（重拉 `session/status`、`todos`、当前会话 `message`）
+- SSE 断线：状态条提示「重连中 (n)…」，重连后**对账**（重拉会话列表 + `session/active` + 当前会话消息；v2 volatile 契约下断线必丢事件）
 - 离线：当前未实现本地缓存（纯在线瘦客户端）；Phase 3 计划做弱网对账 + 离线只读回看（见 plan §3）
 
 ---

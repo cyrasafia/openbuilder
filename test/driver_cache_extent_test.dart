@@ -11,6 +11,8 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'v2_test_fixtures.dart';
+
 /// Regression lock: the pre-assembly driver actually expands the viewport's
 /// cacheExtent when the run top is unmounted (a height gap exists).
 ///
@@ -31,19 +33,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 250).
 
 class _MockClient extends OpencodeClient {
-  final List<MessageEntry> entries;
+  final List<SessionMessage> entries;
   _MockClient(this.entries) : super(_noopDio());
 
   @override
   Future<MessagesPage> messagesPage(
     String sessionId, {
     required int limit,
-    String? before,
+    String? cursor,
   }) async =>
-      MessagesPage(entries, null);
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
+      MessagesPage(entries, null, null);
 }
 
 Dio _noopDio() => Dio(
@@ -56,7 +55,7 @@ Dio _noopDio() => Dio(
 Future<void> _pumpConversation(
   WidgetTester tester, {
   required String sessionId,
-  required List<MessageEntry> entries,
+  required List<SessionMessage> entries,
 }) async {
   SharedPreferences.setMockInitialValues({});
   serverStore.client = _MockClient(entries);
@@ -101,34 +100,14 @@ void main() {
       // user + its replies). Each assistant reply is tall enough that, pinned
       // at the bottom, the run top (u1) sits well outside the initial 250px
       // cache window → gap.
-      final entries = <MessageEntry>[
-        MessageEntry(
-          info: MessageInfo(
-            id: 'u1',
-            role: 'user',
-            sessionID: sid,
-            created: 1000,
-          ),
-          parts: [
-            MessagePart({'type': 'text', 'id': 'pu1', 'text': 'question'}),
-          ],
-        ),
+      final entries = <SessionMessage>[
+        userMsg(id: 'u1', text: 'question', created: 1000),
         for (var i = 0; i < 25; i++)
-          MessageEntry(
-            info: MessageInfo(
-              id: 'a$i',
-              role: 'assistant',
-              sessionID: sid,
-              created: 2000 + i,
-              finish: 'stop',
-            ),
-            parts: [
-              MessagePart({
-                'type': 'text',
-                'id': 'pa$i',
-                'text': 'assistant reply number $i\n' * 6,
-              }),
-            ],
+          assistantMsg(
+            id: 'a$i',
+            created: 2000 + i,
+            content: [textPart('assistant reply number $i\n' * 6)],
+            finish: 'stop',
           ),
       ];
       await _pumpConversation(tester, sessionId: sid, entries: entries);

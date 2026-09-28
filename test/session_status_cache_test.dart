@@ -40,16 +40,13 @@ SessionModel _session({required String id, required String directory}) =>
     });
 
 OpencodeEvent _statusEvent(String sid, String type) => OpencodeEvent(
-      type: 'session.status',
-      properties: {
-        'sessionID': sid,
-        'status': {'type': type},
-      },
+      type: 'session.execution.started',
+      properties: {'sessionID': sid},
     );
 
 void main() {
-  test('resume keeps cached status when a directory fetch fails', () {
-    // Pre-leave state: both sessions busy (seeded live via SSE).
+  test('resume keeps cached status when the active-sessions fetch fails', () {
+    // Pre-leave state: both sessions busy (seeded live via execution events).
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
     store.upsertSessionForTesting(_session(id: 's2', directory: '/dirB'));
@@ -58,18 +55,20 @@ void main() {
     expect(store.statusOf('s1').type, 'busy');
     expect(store.statusOf('s2').type, 'busy');
 
-    // Resume refresh: /dirA fetched ok (s1 → idle), /dirB fetch FAILED.
+    // Resume refresh: the single active-sessions call FAILED — cached values
+    // survive (fetch failure must not wipe known busy indicators).
     store.mergeStatusForTesting(
-      fresh: const {'s1': SessionStatusValue('idle')},
+      fresh: const {},
       sessions: [
         _session(id: 's1', directory: '/dirA'),
         _session(id: 's2', directory: '/dirB'),
       ],
-      fetchedDirs: {'/dirA'},
+      fetchedDirs: const {},
     );
-    expect(store.statusOf('s1').type, 'idle', reason: 'fresh value wins');
+    expect(store.statusOf('s1').type, 'busy',
+        reason: 'cached pre-leave status retained on fetch failure');
     expect(store.statusOf('s2').type, 'busy',
-        reason: 'cached pre-leave status retained for failed dir');
+        reason: 'cached pre-leave status retained on fetch failure');
     store.dispose();
   });
 
@@ -102,7 +101,7 @@ void main() {
     store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
     store.onEventForTesting(_statusEvent('s1', 'busy'));
 
-    // Dir fetched ok but server returned no entry for s1 ⇒ it is idle now.
+    // Fetch succeeded but the server returned no entry for s1 ⇒ idle now.
     store.mergeStatusForTesting(
       fresh: const {},
       sessions: [_session(id: 's1', directory: '/dirA')],

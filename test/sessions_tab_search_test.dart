@@ -21,8 +21,8 @@ Widget _wrap() => MaterialApp(
 
 void _seed() {
   serverStore.setProjectsForTesting(const [
-    ProjectModel(id: 'alpha', worktree: '/home/dev/alpha', name: 'Alpha'),
-    ProjectModel(id: 'beta', worktree: '/work/other/beta', name: 'Rocket'),
+    ProjectModel(id: 'alpha', canonical: '/home/dev/alpha', name: 'Alpha'),
+    ProjectModel(id: 'beta', canonical: '/work/other/beta', name: 'Rocket'),
   ]);
   serverStore.upsertSessionForTesting(const SessionModel(
     id: 's1',
@@ -104,7 +104,7 @@ void main() {
   testWidgets('global sessions match by directory path (SS-3)',
       (tester) async {
     serverStore.setProjectsForTesting(
-        const [ProjectModel(id: 'global', worktree: '/')]);
+        const [ProjectModel(id: 'global', canonical: '/')]);
     serverStore.upsertSessionForTesting(const SessionModel(
       id: 'g1',
       projectID: 'global',

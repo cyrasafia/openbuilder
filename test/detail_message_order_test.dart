@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
-import 'package:open_builder/domain/models.dart';
 
 /// Regression test for the detail-page message order bug.
 ///
@@ -22,12 +21,9 @@ class _MockClient extends OpencodeClient {
   _MockClient() : super(_dio());
   @override
   Future<MessagesPage> messagesPage(String sessionId,
-      {required int limit, String? before}) async {
-    return MessagesPage(const [], null);
+      {required int limit, String? cursor}) async {
+    return const MessagesPage([], null, null);
   }
-
-  @override
-  Future<List<Todo>> todos(String sessionId) async => [];
 }
 
 Dio _dio() => Dio(BaseOptions(
@@ -38,25 +34,22 @@ Dio _dio() => Dio(BaseOptions(
 void main() {
   test('renderableMessages is newest-first (correct for reverse ListView)', () {
     final conv = ConversationStore('s1', _MockClient());
-    // Insert oldest→newest via onMessageUpdated (sorts by created ascending).
     for (var i = 1; i <= 5; i++) {
-      conv.onMessageUpdated(MessageInfo(
-        id: 'm$i',
-        role: 'assistant',
-        created: 1000 * i,
-      ));
+      conv.onStepStarted('m$i');
+      conv.onTextDelta('m$i', 0, 'msg $i');
+      conv.onStepEnded('m$i', finish: 'stop');
     }
     // No reconcile yet → _segments empty → renderableMessages = _messages.reversed.
     final r = conv.renderableMessages;
-    expect(r.first.info.id, 'm5', reason: 'newest must be first');
-    expect(r.last.info.id, 'm1', reason: 'oldest must be last');
+    expect(r.first.id, 'm5', reason: 'newest must be first');
+    expect(r.last.id, 'm1', reason: 'oldest must be last');
 
     // The screen builds ListView children as:
     //   ...renderableMessages.map(_message)   // (NO extra .reversed)
     // With reverse:true, children[0] is at the visual bottom. So the FIRST
     // child (after padding/typing) = renderableMessages.first = newest →
     // newest at the bottom. Assert the contract the screen relies on:
-    expect(r.first.info.id, 'm5');
+    expect(r.first.id, 'm5');
   });
 
   testWidgets('reverse ListView renders newest at the bottom',

@@ -276,3 +276,12 @@ v2 的 TS 生态为 `packages/protocol`（Effect HttpApi 定义）+ `packages/sd
 ### 修复复审
 
 （文档为基线记录，无代码改动。未来迁移落地时，配套 `review-v2-*.md` 核对。）
+
+## 落地记录（2026-09-28，迁移实施完成）
+
+> 本次迁移实施的实际结论与执行情况，详见 `docs/plan-v2-migration.md`（执行计划）与 `docs/review-v2-migration.md`（核对报告）。要点：
+
+- **用户决策定案**：v2-only 切换（不做双兼容）；消息模型全面 typed union 重构（域层 sealed 层级 + UI 按 type 分发）；share 功能删除；todo 面板保留（数据源改消息流 `todowrite` 推导）；归档操作移除（v2.0.18 无归档 API，console 亦为 stub）；配对认证延后。
+- **实测修正本文档两处判断**：① form/permission **存在**到达事件族（`permission.asked/replied` 同名保留、`form.created/replied/cancelled`）——「无到达事件需轮询」结论错误，console 轮询仅为 backfill；② 分页游标方向：desc 首页经 **`cursor.next`** 向更老翻页（本文 §分页契约表「双向」描述需按此理解），`cursor.previous` 指向更新方向。
+- **基线换锚落地**：`opencode_openapi_v2.json` pin 为 2.0.18 实测 spec（115 路径/247 schema，源 `GET /openapi.json`），`tool/gen_client.sh` 改指 v2 服务器。
+- 验收：`flutter analyze --fatal-infos` 零 issue；`flutter test` 645/645（含 15120 真实 v2 smoke）。

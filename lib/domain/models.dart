@@ -2,44 +2,53 @@ import 'package:flutter/foundation.dart';
 
 class ProjectModel {
   final String id;
-  final String worktree;
+  final String canonical;
   final String? vcs;
   final String? name;
   final ProjectIcon? icon;
   final ProjectCommands? commands;
   final List<String> sandboxes;
   final int created;
+  final int updated;
+  final int active;
 
   const ProjectModel({
     required this.id,
-    required this.worktree,
+    required this.canonical,
     this.vcs,
     this.name,
     this.icon,
     this.commands,
     this.sandboxes = const [],
     this.created = 0,
+    this.updated = 0,
+    this.active = 0,
   });
 
-  factory ProjectModel.fromJson(Map<String, dynamic> j) => ProjectModel(
-    id: (j['id'] ?? '').toString(),
-    worktree: (j['worktree'] ?? '').toString(),
-    vcs: j['vcs']?.toString(),
-    name: j['name']?.toString(),
-    icon: j['icon'] is Map ? ProjectIcon.fromJson(j['icon']) : null,
-    commands: j['commands'] is Map
-        ? ProjectCommands.fromJson(
-            (j['commands'] as Map).cast<String, dynamic>(),
-          )
-        : null,
-    sandboxes: (j['sandboxes'] as List? ?? [])
-        .map((e) => e.toString())
-        .toList(growable: false),
-    created: _i(j['time'] is Map ? (j['time'] as Map)['created'] : 0),
-  );
+  factory ProjectModel.fromJson(Map<String, dynamic> j) {
+    final time = (j['time'] as Map?) ?? const {};
+    return ProjectModel(
+      id: (j['id'] ?? '').toString(),
+      canonical: (j['canonical'] ?? j['worktree'] ?? '').toString(),
+      vcs: j['vcs']?.toString(),
+      name: j['name']?.toString(),
+      icon: j['icon'] is Map ? ProjectIcon.fromJson(j['icon']) : null,
+      commands: j['commands'] is Map
+          ? ProjectCommands.fromJson(
+              (j['commands'] as Map).cast<String, dynamic>(),
+            )
+          : null,
+      sandboxes: (j['sandboxes'] as List? ?? [])
+          .map((e) => e.toString())
+          .toList(growable: false),
+      created: _i(time['created']),
+      updated: _i(time['updated']),
+      active: _i(time['active']),
+    );
+  }
 
   String get worktreeName =>
-      worktree.isEmpty || worktree == '/' ? 'global' : worktree.split('/').last;
+      canonical.isEmpty || canonical == '/' ? 'global' : canonical.split('/').last;
 
   bool get workspacesEnabled => commands != null;
 
@@ -53,13 +62,13 @@ class ProjectModel {
 
   Map<String, dynamic> toJson() => {
     'id': id,
-    'worktree': worktree,
+    'canonical': canonical,
     if (vcs != null) 'vcs': vcs,
     if (name != null) 'name': name,
     if (icon != null) 'icon': icon!.toJson(),
     if (commands != null) 'commands': commands!.toJson(),
     'sandboxes': sandboxes,
-    'time': {'created': created},
+    'time': {'created': created, 'updated': updated, 'active': active},
   };
 }
 
@@ -92,54 +101,76 @@ class ProjectIcon {
     if (color != null) 'color': color,
   };
 
-  /// Best image source (data URL or http URL); null → fallback to monogram.
   String? get image => override ?? url;
 }
 
-/// A slash command available in a session's directory, from `GET /command`.
-/// Every entry expands server-side via `POST /session/:id/command` — the client
-/// sends name + arguments only and never handles templates.
 class CommandInfo {
   final String name;
   final String description;
   final String? agent;
-  final String? source;
+  final bool skill;
   const CommandInfo({
     required this.name,
     this.description = '',
     this.agent,
-    this.source,
+    this.skill = false,
   });
 
   factory CommandInfo.fromJson(Map<String, dynamic> j) => CommandInfo(
     name: (j['name'] ?? '').toString(),
     description: (j['description'] ?? '').toString(),
     agent: j['agent']?.toString(),
-    source: j['source']?.toString(),
+    skill: j['skill'] == true || j['source'] == 'skill',
   );
 
   String get slash => name.startsWith('/') ? name : '/$name';
-  bool get isSkill => source == 'skill';
+}
+
+class SkillInfo {
+  final String id;
+  final String name;
+  final String? description;
+  const SkillInfo({required this.id, required this.name, this.description});
+
+  factory SkillInfo.fromJson(Map<String, dynamic> j) => SkillInfo(
+    id: (j['id'] ?? '').toString(),
+    name: (j['name'] ?? j['id'] ?? '').toString(),
+    description: j['description']?.toString(),
+  );
 }
 
 class Tokens {
   final int input;
   final int output;
   final int reasoning;
-  const Tokens({this.input = 0, this.output = 0, this.reasoning = 0});
+  final int cacheRead;
+  final int cacheWrite;
+  const Tokens({
+    this.input = 0,
+    this.output = 0,
+    this.reasoning = 0,
+    this.cacheRead = 0,
+    this.cacheWrite = 0,
+  });
 
   int get total => input + output;
 
-  factory Tokens.fromJson(Map<String, dynamic> j) => Tokens(
-    input: _i(j['input']),
-    output: _i(j['output']),
-    reasoning: _i(j['reasoning']),
-  );
+  factory Tokens.fromJson(Map<String, dynamic> j) {
+    final cache = (j['cache'] as Map?) ?? const {};
+    return Tokens(
+      input: _i(j['input']),
+      output: _i(j['output']),
+      reasoning: _i(j['reasoning']),
+      cacheRead: _i(cache['read']),
+      cacheWrite: _i(cache['write']),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'input': input,
     'output': output,
     'reasoning': reasoning,
+    'cache': {'read': cacheRead, 'write': cacheWrite},
   };
 }
 
@@ -152,11 +183,14 @@ class SessionModel {
   final int updated;
   final int? archived;
   final String? parentID;
-  final String? workspaceID;
   final double cost;
   final Tokens tokens;
   final String? agent;
   final ModelRef? model;
+  final String? outcome;
+  final int? idle;
+  final int? viewed;
+  final String? subpath;
 
   const SessionModel({
     required this.id,
@@ -167,26 +201,29 @@ class SessionModel {
     required this.updated,
     this.archived,
     this.parentID,
-    this.workspaceID,
     this.cost = 0,
     this.tokens = const Tokens(),
     this.agent,
     this.model,
+    this.outcome,
+    this.idle,
+    this.viewed,
+    this.subpath,
   });
 
   factory SessionModel.fromJson(Map<String, dynamic> j) {
     final time = (j['time'] as Map?) ?? const {};
     final archivedAt = _i(time['archived']);
+    final location = (j['location'] as Map?) ?? const {};
     return SessionModel(
       id: (j['id'] ?? '').toString(),
       projectID: (j['projectID'] ?? '').toString(),
-      directory: (j['directory'] ?? '').toString(),
+      directory: (location['directory'] ?? j['directory'] ?? '').toString(),
       title: (j['title'] ?? 'Untitled').toString(),
       created: _i(time['created']),
       updated: _i(time['updated']),
       archived: archivedAt != 0 ? archivedAt : null,
       parentID: j['parentID']?.toString(),
-      workspaceID: j['workspaceID']?.toString(),
       cost: _d(j['cost']),
       tokens: j['tokens'] is Map
           ? Tokens.fromJson(j['tokens'] as Map<String, dynamic>)
@@ -195,8 +232,42 @@ class SessionModel {
       model: j['model'] is Map
           ? ModelRef.fromJson((j['model'] as Map).cast<String, dynamic>())
           : null,
+      outcome: j['outcome']?.toString(),
+      idle: _ni(time['idle']),
+      viewed: _ni(time['viewed']),
+      subpath: j['subpath']?.toString(),
     );
   }
+
+  SessionModel copyWith({
+    String? title,
+    String? agent,
+    ModelRef? model,
+    double? cost,
+    Tokens? tokens,
+    int? updated,
+    int? idle,
+    int? viewed,
+    String? outcome,
+  }) =>
+      SessionModel(
+        id: id,
+        projectID: projectID,
+        directory: directory,
+        title: title ?? this.title,
+        created: created,
+        updated: updated ?? this.updated,
+        archived: archived,
+        parentID: parentID,
+        cost: cost ?? this.cost,
+        tokens: tokens ?? this.tokens,
+        agent: agent ?? this.agent,
+        model: model ?? this.model,
+        outcome: outcome ?? this.outcome,
+        idle: idle ?? this.idle,
+        viewed: viewed ?? this.viewed,
+        subpath: subpath,
+      );
 
   String get dirName =>
       directory.isEmpty ? 'global' : directory.split('/').last;
@@ -204,38 +275,30 @@ class SessionModel {
   Map<String, dynamic> toJson() => {
     'id': id,
     'projectID': projectID,
-    'directory': directory,
+    'location': {'directory': directory},
     'title': title,
     'time': {
       'created': created,
       'updated': updated,
       if (archived != null) 'archived': archived,
+      if (idle != null) 'idle': idle,
+      if (viewed != null) 'viewed': viewed,
     },
     if (parentID != null) 'parentID': parentID,
-    if (workspaceID != null) 'workspaceID': workspaceID,
-    'cost': cost,
+    if (cost != 0) 'cost': cost,
     'tokens': tokens.toJson(),
     if (agent != null) 'agent': agent,
     if (model != null) 'model': model!.toJson(),
+    if (outcome != null) 'outcome': outcome,
+    if (subpath != null) 'subpath': subpath,
   };
 }
 
-/// `idle` | `busy` | `retry`
-///
-/// The `retry` variant carries an error `message` (see OpenAPI `SessionStatus`),
-/// preserved here so the detail page can surface the retry reason instead of
-/// only showing a "running" typing-dots animation.
 class SessionStatusValue {
   final String type;
   final String? message;
 
   const SessionStatusValue(this.type, {this.message});
-
-  factory SessionStatusValue.fromJson(Map<String, dynamic> j) =>
-      SessionStatusValue(
-        (j['type'] ?? 'idle').toString(),
-        message: j['message']?.toString(),
-      );
 
   Map<String, dynamic> toJson() => {
     'type': type,
@@ -282,117 +345,630 @@ class AgentIndicatorState {
       other.pendingCount == pendingCount;
 
   @override
-  int get hashCode =>
-      Object.hash(state, pauseReason, pendingCount);
+  int get hashCode => Object.hash(state, pauseReason, pendingCount);
 }
 
-class MessageInfo {
+sealed class SessionMessage {
   final String id;
-  final String role; // user | assistant
-  final String? sessionID;
-  final int? created;
-  final int? completed;
-  final double cost;
-  final String? modelID;
-  final String? finish;
-  final Map<String, dynamic>? error;
-
-  const MessageInfo({
+  final Map<String, dynamic> raw;
+  final Map<String, dynamic>? metadata;
+  final int created;
+  const SessionMessage({
     required this.id,
-    required this.role,
-    this.sessionID,
-    this.created,
-    this.completed,
-    this.cost = 0,
-    this.modelID,
-    this.finish,
-    this.error,
+    required this.raw,
+    this.metadata,
+    required this.created,
   });
 
-  factory MessageInfo.fromJson(Map<String, dynamic> j) => MessageInfo(
-    id: (j['id'] ?? '').toString(),
-    role: (j['role'] ?? 'assistant').toString(),
-    sessionID: j['sessionID']?.toString(),
-    created: j['time'] is Map ? _i((j['time'] as Map)['created']) : null,
-    completed: j['time'] is Map ? _i((j['time'] as Map)['completed']) : null,
-    cost: _d(j['cost']),
-    modelID: j['modelID']?.toString(),
-    finish: j['finish']?.toString(),
-    error: _parseMessageError(j['error']),
-  );
-
-  Map<String, dynamic> toJson() => {
-    'id': id,
-    'role': role,
-    'sessionID': sessionID,
-    'time': {
-      if (created != null) 'created': created,
-      if (completed != null) 'completed': completed,
-    },
-    'cost': cost,
-    'modelID': modelID,
-    'finish': finish,
-    'error': error,
-  };
-}
-
-/// Loose part wrapper over raw JSON. Types: text, reasoning, tool,
-/// step-start, step-finish, file, subtask, snapshot, patch, agent, ...
-@immutable
-class MessagePart {
-  final Map<String, dynamic> raw;
-  const MessagePart(this.raw);
-
-  String get type => (raw['type'] ?? '').toString();
-  String get id => (raw['id'] ?? '').toString();
-  String? get text => _str('text');
-  String? get tool => _str('tool');
-  Map<String, dynamic>? get state => raw['state'] is Map
-      ? (raw['state'] as Map).cast<String, dynamic>()
-      : null;
-  String? get stateStatus => state?['status']?.toString();
-  String? get stateTitle => state?['title']?.toString();
-  String? get stateOutput => state?['output']?.toString();
-
-  String? _str(String k) {
-    final v = raw[k];
-    return v is String ? v : null;
+  factory SessionMessage.fromJson(Map<String, dynamic> j) {
+    final id = (j['id'] ?? '').toString();
+    final time = (j['time'] as Map?) ?? const {};
+    final created = _i(time['created']);
+    final metadata = j['metadata'] is Map
+        ? (j['metadata'] as Map).cast<String, dynamic>()
+        : null;
+    switch (j['type']) {
+      case 'user':
+        return UserMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          text: (j['text'] ?? '').toString(),
+          files: (j['files'] as List? ?? [])
+              .whereType<Map>()
+              .map((e) => FileAttachment.fromJson(e.cast<String, dynamic>()))
+              .toList(growable: false),
+        );
+      case 'assistant':
+        return AssistantMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          streamed: _ni(time['streamed']),
+          completed: _ni(time['completed']),
+          agent: (j['agent'] ?? '').toString(),
+          model: j['model'] is Map
+              ? ModelRef.fromJson((j['model'] as Map).cast<String, dynamic>())
+              : null,
+          content: (j['content'] as List? ?? [])
+              .whereType<Map>()
+              .map((e) => AssistantContent.fromJson(e.cast<String, dynamic>()))
+              .toList(growable: false),
+          snapshot: j['snapshot'] is Map
+              ? SnapshotRef.fromJson((j['snapshot'] as Map).cast<String, dynamic>())
+              : null,
+          finish: j['finish']?.toString(),
+          rawFinish: j['rawFinish']?.toString(),
+          cost: _d(j['cost']),
+          tokens: j['tokens'] is Map
+              ? Tokens.fromJson((j['tokens'] as Map).cast<String, dynamic>())
+              : null,
+          error: j['error'] is Map
+              ? StructuredError.fromJson(
+                  (j['error'] as Map).cast<String, dynamic>())
+              : null,
+          retry: j['retry'] is Map
+              ? RetryInfo.fromJson((j['retry'] as Map).cast<String, dynamic>())
+              : null,
+        );
+      case 'agent-switched':
+        return AgentSwitchedMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          agent: j['agent']?.toString(),
+          previous: j['previous']?.toString(),
+        );
+      case 'model-switched':
+        return ModelSwitchedMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          model: j['model'] is Map
+              ? ModelRef.fromJson((j['model'] as Map).cast<String, dynamic>())
+              : null,
+          previous: j['previous'] is Map
+              ? ModelRef.fromJson((j['previous'] as Map).cast<String, dynamic>())
+              : null,
+        );
+      case 'location-switched':
+        final loc = (j['location'] as Map?) ?? const {};
+        return LocationSwitchedMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          directory: (loc['directory'] ?? '').toString(),
+          projectID: (j['projectID'] ?? '').toString(),
+          subpath: j['subpath']?.toString(),
+          previous: (j['previous'] as Map?)?['directory']?.toString(),
+        );
+      case 'synthetic':
+        return SyntheticMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          text: (j['text'] ?? '').toString(),
+          description: j['description']?.toString(),
+        );
+      case 'system':
+        return SystemMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          text: (j['text'] ?? '').toString(),
+          description: j['description']?.toString(),
+        );
+      case 'skill':
+        return SkillMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          skill: (j['skill'] ?? '').toString(),
+          name: (j['name'] ?? '').toString(),
+          text: (j['text'] ?? '').toString(),
+        );
+      case 'shell':
+        final output = (j['output'] as Map?) ?? const {};
+        return ShellMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          completed: _ni(time['completed']),
+          shellID: (j['shellID'] ?? '').toString(),
+          command: (j['command'] ?? '').toString(),
+          status: (j['status'] ?? 'running').toString(),
+          exit: _ni(j['exit']),
+          output: output['output']?.toString() ?? '',
+        );
+      case 'compaction':
+        return CompactionMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          status: (j['status'] ?? 'running').toString(),
+          reason: j['reason']?.toString(),
+          text: j['text']?.toString(),
+          cost: _d(j['cost']),
+          tokens: j['tokens'] is Map
+              ? Tokens.fromJson((j['tokens'] as Map).cast<String, dynamic>())
+              : null,
+          error: j['error'] is Map
+              ? StructuredError.fromJson(
+                  (j['error'] as Map).cast<String, dynamic>())
+              : null,
+        );
+      case 'idle':
+        return IdleMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          outcome: j['outcome']?.toString(),
+        );
+      default:
+        return UnknownMessage(
+          id: id,
+          raw: j,
+          metadata: metadata,
+          created: created,
+          type: (j['type'] ?? '').toString(),
+        );
+    }
   }
 
-  /// One-line preview for the session list (frontend §2.2 D1).
-  String get preview {
-    switch (type) {
+  String get kind => switch (this) {
+    UserMessage() => 'user',
+    AssistantMessage() => 'assistant',
+    AgentSwitchedMessage() => 'agent-switched',
+    ModelSwitchedMessage() => 'model-switched',
+    LocationSwitchedMessage() => 'location-switched',
+    SyntheticMessage() => 'synthetic',
+    SystemMessage() => 'system',
+    SkillMessage() => 'skill',
+    ShellMessage() => 'shell',
+    CompactionMessage() => 'compaction',
+    IdleMessage() => 'idle',
+    UnknownMessage() => (raw['type'] ?? '').toString(),
+  };
+
+  Map<String, dynamic> toJson() => raw;
+}
+
+class UserMessage extends SessionMessage {
+  final String text;
+  final List<FileAttachment> files;
+  const UserMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    required this.text,
+    this.files = const [],
+  });
+}
+
+class AssistantMessage extends SessionMessage {
+  final int? streamed;
+  final int? completed;
+  final String agent;
+  final ModelRef? model;
+  final List<AssistantContent> content;
+  final SnapshotRef? snapshot;
+  final String? finish;
+  final String? rawFinish;
+  final double cost;
+  final Tokens? tokens;
+  final StructuredError? error;
+  final RetryInfo? retry;
+  const AssistantMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    this.streamed,
+    this.completed,
+    required this.agent,
+    required this.model,
+    required this.content,
+    this.snapshot,
+    this.finish,
+    this.rawFinish,
+    this.cost = 0,
+    this.tokens,
+    this.error,
+    this.retry,
+  });
+}
+
+class AgentSwitchedMessage extends SessionMessage {
+  final String? agent;
+  final String? previous;
+  const AgentSwitchedMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    this.agent,
+    this.previous,
+  });
+}
+
+class ModelSwitchedMessage extends SessionMessage {
+  final ModelRef? model;
+  final ModelRef? previous;
+  const ModelSwitchedMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    this.model,
+    this.previous,
+  });
+}
+
+class LocationSwitchedMessage extends SessionMessage {
+  final String directory;
+  final String projectID;
+  final String? subpath;
+  final String? previous;
+  const LocationSwitchedMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    required this.directory,
+    required this.projectID,
+    this.subpath,
+    this.previous,
+  });
+}
+
+class SyntheticMessage extends SessionMessage {
+  final String text;
+  final String? description;
+  const SyntheticMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    required this.text,
+    this.description,
+  });
+}
+
+class SystemMessage extends SessionMessage {
+  final String text;
+  final String? description;
+  const SystemMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    required this.text,
+    this.description,
+  });
+}
+
+class SkillMessage extends SessionMessage {
+  final String skill;
+  final String name;
+  final String text;
+  const SkillMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    required this.skill,
+    required this.name,
+    required this.text,
+  });
+}
+
+class ShellMessage extends SessionMessage {
+  final int? completed;
+  final String shellID;
+  final String command;
+  final String status;
+  final int? exit;
+  final String output;
+  const ShellMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    this.completed,
+    required this.shellID,
+    required this.command,
+    required this.status,
+    this.exit,
+    this.output = '',
+  });
+}
+
+class CompactionMessage extends SessionMessage {
+  final String status;
+  final String? reason;
+  final String? text;
+  final double cost;
+  final Tokens? tokens;
+  final StructuredError? error;
+  const CompactionMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    required this.status,
+    this.reason,
+    this.text,
+    this.cost = 0,
+    this.tokens,
+    this.error,
+  });
+}
+
+class IdleMessage extends SessionMessage {
+  final String? outcome;
+  const IdleMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    this.outcome,
+  });
+}
+
+class UnknownMessage extends SessionMessage {
+  final String type;
+  const UnknownMessage({
+    required super.id,
+    required super.raw,
+    super.metadata,
+    required super.created,
+    required this.type,
+  });
+}
+
+sealed class AssistantContent {
+  final String type;
+  const AssistantContent(this.type);
+
+  factory AssistantContent.fromJson(Map<String, dynamic> j) {
+    switch (j['type']) {
       case 'text':
+        return TextContent(
+          id: j['id']?.toString(),
+          text: (j['text'] ?? '').toString(),
+        );
       case 'reasoning':
-        return (text ?? '').replaceAll('\n', ' ');
+        return ReasoningContent(
+          id: j['id']?.toString(),
+          text: (j['text'] ?? '').toString(),
+        );
       case 'tool':
-        final st = stateStatus ?? '';
-        return '${tool ?? 'tool'}${st.isEmpty ? '' : ' · $st'}';
+        final time = (j['time'] as Map?) ?? const {};
+        return ToolContent(
+          id: (j['id'] ?? '').toString(),
+          name: (j['name'] ?? '').toString(),
+          executed: j['executed'] == true,
+          state: ToolState.fromJson(
+            (j['state'] as Map?)?.cast<String, dynamic>() ??
+                const <String, dynamic>{},
+          ),
+          created: _i(time['created']),
+          ran: _ni(time['ran']),
+          completed: _ni(time['completed']),
+        );
       default:
-        return '';
+        return TextContent(id: j['id']?.toString(), text: j['text']?.toString() ?? '');
     }
   }
 }
 
-class MessageEntry {
-  final MessageInfo info;
-  final List<MessagePart> parts;
-  const MessageEntry({required this.info, required this.parts});
+class TextContent extends AssistantContent {
+  final String? id;
+  final String text;
+  const TextContent({this.id, required this.text}) : super('text');
+}
 
-  factory MessageEntry.fromJson(Map<String, dynamic> j) => MessageEntry(
-    info: MessageInfo.fromJson(
-      (j['info'] as Map?)?.cast<String, dynamic>() ?? const {},
-    ),
-    parts: ((j['parts'] as List?) ?? [])
-        .map((e) => MessagePart((e as Map).cast<String, dynamic>()))
-        .toList(growable: false),
+class ReasoningContent extends AssistantContent {
+  final String? id;
+  final String text;
+  const ReasoningContent({this.id, required this.text}) : super('reasoning');
+}
+
+class ToolContent extends AssistantContent {
+  final String id;
+  final String name;
+  final bool executed;
+  final ToolState state;
+  final int created;
+  final int? ran;
+  final int? completed;
+  const ToolContent({
+    required this.id,
+    required this.name,
+    required this.executed,
+    required this.state,
+    required this.created,
+    this.ran,
+    this.completed,
+  }) : super('tool');
+}
+
+sealed class ToolState {
+  const ToolState();
+
+  factory ToolState.fromJson(Map<String, dynamic> j) {
+    switch (j['status']) {
+      case 'streaming':
+        return StreamingToolState(input: j['input']?.toString() ?? '');
+      case 'running':
+        return RunningToolState(
+          input: _map(j['input']),
+          metadata: _map(j['metadata']),
+        );
+      case 'completed':
+        return CompletedToolState(
+          input: _map(j['input']),
+          content: (j['content'] as List? ?? [])
+              .whereType<Map>()
+              .map((e) => ToolContentItem.fromJson(e.cast<String, dynamic>()))
+              .toList(growable: false),
+          metadata: _map(j['metadata']),
+        );
+      case 'error':
+        return ErrorToolState(
+          input: _map(j['input']),
+          error: j['error'] is Map
+              ? StructuredError.fromJson(
+                  (j['error'] as Map).cast<String, dynamic>())
+              : StructuredError(type: 'error', message: j['error']?.toString() ?? ''),
+          content: (j['content'] as List? ?? [])
+              .whereType<Map>()
+              .map((e) => ToolContentItem.fromJson(e.cast<String, dynamic>()))
+              .toList(growable: false),
+          metadata: _map(j['metadata']),
+        );
+      default:
+        return RunningToolState(input: _map(j['input']), metadata: null);
+    }
+  }
+
+  String get status => switch (this) {
+    StreamingToolState() => 'streaming',
+    RunningToolState() => 'running',
+    CompletedToolState() => 'completed',
+    ErrorToolState() => 'error',
+  };
+}
+
+class StreamingToolState extends ToolState {
+  final String input;
+  const StreamingToolState({required this.input});
+}
+
+class RunningToolState extends ToolState {
+  final Map<String, dynamic>? input;
+  final Map<String, dynamic>? metadata;
+  const RunningToolState({this.input, this.metadata});
+}
+
+class CompletedToolState extends ToolState {
+  final Map<String, dynamic>? input;
+  final List<ToolContentItem> content;
+  final Map<String, dynamic>? metadata;
+  const CompletedToolState({
+    this.input,
+    required this.content,
+    this.metadata,
+  });
+}
+
+class ErrorToolState extends ToolState {
+  final Map<String, dynamic>? input;
+  final StructuredError error;
+  final List<ToolContentItem> content;
+  final Map<String, dynamic>? metadata;
+  const ErrorToolState({
+    this.input,
+    required this.error,
+    this.content = const [],
+    this.metadata,
+  });
+}
+
+class ToolContentItem {
+  final String type;
+  final String text;
+  const ToolContentItem({required this.type, required this.text});
+
+  factory ToolContentItem.fromJson(Map<String, dynamic> j) => ToolContentItem(
+    type: (j['type'] ?? 'text').toString(),
+    text: (j['text'] ?? '').toString(),
   );
+}
+
+class SnapshotRef {
+  final String? start;
+  final String? end;
+  final List<String> files;
+  const SnapshotRef({this.start, this.end, this.files = const []});
+
+  factory SnapshotRef.fromJson(Map<String, dynamic> j) => SnapshotRef(
+    start: j['start']?.toString(),
+    end: j['end']?.toString(),
+    files: (j['files'] as List? ?? []).map((e) => e.toString()).toList(),
+  );
+}
+
+class StructuredError {
+  final String type;
+  final String message;
+  final int? status;
+  const StructuredError({required this.type, required this.message, this.status});
+
+  factory StructuredError.fromJson(Map<String, dynamic> j) => StructuredError(
+    type: (j['type'] ?? 'error').toString(),
+    message: (j['message'] ?? '').toString(),
+    status: _ni(j['status']),
+  );
+
+  Map<String, dynamic> toJson() =>
+      {'type': type, 'message': message, if (status != null) 'status': status};
+}
+
+class RetryInfo {
+  final int? attempt;
+  final int? at;
+  final StructuredError? error;
+  const RetryInfo({this.attempt, this.at, this.error});
+
+  factory RetryInfo.fromJson(Map<String, dynamic> j) => RetryInfo(
+    attempt: _ni(j['attempt']),
+    at: _ni(j['at']),
+    error: j['error'] is Map
+        ? StructuredError.fromJson((j['error'] as Map).cast<String, dynamic>())
+        : null,
+  );
+}
+
+class FileAttachment {
+  final String uri;
+  final String? name;
+  final String? description;
+  const FileAttachment({
+    required this.uri,
+    this.name,
+    this.description,
+  });
+
+  factory FileAttachment.fromJson(Map<String, dynamic> j) => FileAttachment(
+    uri: (j['uri'] ?? '').toString(),
+    name: j['name']?.toString(),
+    description: j['description']?.toString(),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'uri': uri,
+    if (name != null) 'name': name,
+    if (description != null) 'description': description,
+  };
 }
 
 class Todo {
   final String? id;
   final String content;
-  final String status; // pending | in_progress | completed | cancelled
+  final String status;
   final String priority;
   const Todo({
     this.id,
@@ -420,60 +996,57 @@ class Todo {
   };
 }
 
-/// Result of `POST /experimental/worktree` — a newly created worktree.
-class WorktreeResult {
-  final String name;
-  final String? branch;
+class WorktreeInfo {
   final String directory;
-  const WorktreeResult({
-    required this.name,
-    this.branch,
-    required this.directory,
-  });
+  final String strategy;
+  const WorktreeInfo({required this.directory, this.strategy = 'git'});
 
-  factory WorktreeResult.fromJson(Map<String, dynamic> j) => WorktreeResult(
-    name: (j['name'] ?? '').toString(),
-    branch: j['branch']?.toString(),
+  factory WorktreeInfo.fromJson(Map<String, dynamic> j) => WorktreeInfo(
     directory: (j['directory'] ?? '').toString(),
+    strategy: (j['strategy'] ?? 'git').toString(),
   );
 }
 
 class Permission {
   final String id;
-  final String type;
+  final String action;
   final String sessionID;
-  final List<String> patterns;
+  final List<String> resources;
+  final List<String> save;
   final Map<String, dynamic>? metadata;
+  final String? message;
   const Permission({
     required this.id,
-    required this.type,
+    required this.action,
     required this.sessionID,
-    this.patterns = const [],
+    this.resources = const [],
+    this.save = const [],
     this.metadata,
+    this.message,
   });
 
-  /// Best-effort directory path extracted from metadata/patterns for an
-  /// `external_directory` permission. Consumed by the UI to build a localized
-  /// title; null when no path is derivable.
   String? get externalDirectoryPath =>
-      _externalDirectoryPath(metadata, patterns);
+      _externalDirectoryPath(metadata, resources);
 
   factory Permission.fromJson(Map<String, dynamic> j) {
-    final perm = (j['permission'] ?? j['action'] ?? j['type'] ?? '').toString();
     final meta = j['metadata'] is Map
         ? (j['metadata'] as Map).cast<String, dynamic>()
         : null;
-    final patterns = j['patterns'] is List
-        ? (j['patterns'] as List).map((e) => e.toString()).toList()
-        : (j['resources'] is List
-              ? (j['resources'] as List).map((e) => e.toString()).toList()
+    final resources = j['resources'] is List
+        ? (j['resources'] as List).map((e) => e.toString()).toList()
+        : (j['patterns'] is List
+              ? (j['patterns'] as List).map((e) => e.toString()).toList()
               : const <String>[]);
     return Permission(
-      id: (j['id'] ?? '').toString(),
-      type: perm,
+      id: (j['id'] ?? j['requestID'] ?? '').toString(),
+      action: (j['action'] ?? j['permission'] ?? j['type'] ?? '').toString(),
       sessionID: (j['sessionID'] ?? '').toString(),
-      patterns: patterns,
+      resources: resources,
+      save: j['save'] is List
+          ? (j['save'] as List).map((e) => e.toString()).toList()
+          : const [],
       metadata: meta,
+      message: j['message']?.toString(),
     );
   }
 }
@@ -500,30 +1073,33 @@ int _i(dynamic v) {
   return 0;
 }
 
+int? _ni(dynamic v) {
+  if (v == null) return null;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v);
+  return null;
+}
+
 double _d(dynamic v) {
   if (v is num) return v.toDouble();
   if (v is String) return double.tryParse(v) ?? 0;
   return 0;
 }
 
-Map<String, dynamic>? _parseMessageError(dynamic v) {
-  if (v is Map) return v.cast<String, dynamic>();
-  if (v is String && v.isNotEmpty) return {'message': v};
-  return null;
-}
+Map<String, dynamic>? _map(dynamic v) =>
+    v is Map ? v.cast<String, dynamic>() : null;
 
 class FileNode {
   final String name;
   final String path;
   final String absolute;
-  final String type; // file | directory
-  final bool ignored;
+  final String type;
   const FileNode({
     required this.name,
     required this.path,
     required this.absolute,
     required this.type,
-    required this.ignored,
   });
 
   factory FileNode.fromJson(Map<String, dynamic> j) => FileNode(
@@ -531,8 +1107,28 @@ class FileNode {
     path: (j['path'] ?? '').toString(),
     absolute: (j['absolute'] ?? '').toString(),
     type: (j['type'] ?? 'file').toString(),
-    ignored: j['ignored'] == true,
   );
+
+  factory FileNode.fromFsEntry(
+    String path,
+    String type, {
+    String baseDirectory = '',
+  }) {
+    final isDir = type == 'directory';
+    final normalized = isDir && path.endsWith('/')
+        ? path.substring(0, path.length - 1)
+        : path;
+    final segs = normalized.split('/').where((s) => s.isNotEmpty).toList();
+    final base = baseDirectory.endsWith('/')
+        ? baseDirectory.substring(0, baseDirectory.length - 1)
+        : baseDirectory;
+    return FileNode(
+      name: segs.isEmpty ? normalized : segs.last,
+      path: path,
+      absolute: base.isEmpty ? normalized : '$base/$normalized',
+      type: type,
+    );
+  }
 
   factory FileNode.fromSearchPath(String relPath) {
     final isDir = relPath.endsWith('/');
@@ -543,18 +1139,12 @@ class FileNode {
       path: relPath,
       absolute: '',
       type: isDir ? 'directory' : 'file',
-      ignored: false,
     );
   }
 
   bool get isDir => type == 'directory';
 }
 
-/// Parsed result of a streamed `/file/content` download.
-///
-/// The base64 payload is already decoded to [bytes] off the main isolate, so
-/// the UI never holds the full base64 string. `type`/`mimeType` come from the
-/// server and are the render authority (see `design-file-streaming.md`).
 class StreamedFile {
   final String type;
   final String? mimeType;
@@ -573,10 +1163,10 @@ class StreamedFile {
 
 class FileDiff {
   final String file;
-  final String patch; // unified diff text
+  final String patch;
   final int additions;
   final int deletions;
-  final String status; // added | deleted | modified
+  final String status;
   const FileDiff({
     required this.file,
     required this.patch,
@@ -598,8 +1188,6 @@ class FileDiff {
 
 enum DiffMode { uncommitted, branch, lastMessage }
 
-/// A single content line of a unified diff hunk.
-/// kind: '+' added | '-' removed | ' ' context.
 class DiffLine {
   final String kind;
   final String text;
@@ -608,9 +1196,6 @@ class DiffLine {
   const DiffLine(this.kind, this.text, this.oldNo, this.newNo);
 }
 
-/// One hunk of a unified diff: starts at a `@@ ... @@` header, ends at the next
-/// `@@` or end of patch. File-header metadata (diff --git / index / +++ / ---)
-/// is discarded; only content lines are retained.
 class DiffHunk {
   final int? oldStart;
   final int? newStart;
@@ -626,15 +1211,6 @@ class DiffHunk {
   });
 }
 
-/// Parse a single-file unified diff patch into [DiffHunk]s.
-///
-/// Everything before the first `@@` is file-header metadata and is dropped
-/// (this also fixes the prior parser bug where `+++ b/file` was misclassified
-/// as an added line). Inside a hunk, lines are classified by their single
-/// leading char (`+`/`-`/` `); a content line may itself start with `++`/`--`
-/// (e.g. added `++i` -> raw `+++i`), so no `+++`/`---` check is performed there.
-/// A mid-hunk `diff `/`index ` prefix (unproduceable by content lines) stops
-/// parsing, treating further input as the next file's header.
 List<DiffHunk> parseDiffHunks(String patch) {
   final out = <DiffHunk>[];
   final raws = patch.split('\n');
@@ -693,9 +1269,6 @@ List<DiffHunk> parseDiffHunks(String patch) {
     } else if (raw.isEmpty) {
       continue;
     } else if (raw.startsWith('diff ') || raw.startsWith('index ')) {
-      // Next file's header (content lines can't produce these prefixes).
-      // This parser handles a single-file patch (the caller filters by file),
-      // so stop here rather than letting another file's hunks leak in.
       flush();
       break;
     } else {
@@ -705,8 +1278,6 @@ List<DiffHunk> parseDiffHunks(String patch) {
   flush();
   return out;
 }
-
-// ── Agent / Model types ──
 
 class ModelRef {
   final String id;
@@ -731,11 +1302,13 @@ class ModelRef {
 }
 
 class AgentInfo {
+  final String id;
   final String name;
   final String? description;
   final String mode;
   final bool hidden;
   const AgentInfo({
+    required this.id,
     required this.name,
     this.description,
     required this.mode,
@@ -743,6 +1316,7 @@ class AgentInfo {
   });
 
   factory AgentInfo.fromJson(Map<String, dynamic> j) => AgentInfo(
+    id: (j['id'] ?? '').toString(),
     name: (j['name'] ?? j['id'] ?? '').toString(),
     description: j['description']?.toString(),
     mode: (j['mode'] ?? 'primary').toString(),
@@ -797,93 +1371,135 @@ class ModelInfo {
   }
 }
 
-// ── Question types ──
-
-class QuestionOption {
+class FormOption {
+  final String value;
   final String label;
-  final String description;
-  const QuestionOption({required this.label, required this.description});
+  final String? description;
+  const FormOption({
+    required this.value,
+    required this.label,
+    this.description,
+  });
 
-  factory QuestionOption.fromJson(Map<String, dynamic> j) => QuestionOption(
-    label: (j['label'] ?? '').toString(),
-    description: (j['description'] ?? '').toString(),
+  factory FormOption.fromJson(Map<String, dynamic> j) => FormOption(
+    value: (j['value'] ?? '').toString(),
+    label: (j['label'] ?? j['value'] ?? '').toString(),
+    description: j['description']?.toString(),
   );
 
   @override
   bool operator ==(Object other) =>
-      other is QuestionOption &&
+      other is FormOption &&
+      other.value == value &&
       other.label == label &&
       other.description == description;
 
   @override
-  int get hashCode => Object.hash(label, description);
+  int get hashCode => Object.hash(value, label, description);
 }
 
-class QuestionInfo {
-  final String question;
-  final String header;
-  final List<QuestionOption> options;
-  final bool multiple;
+class FormFieldSpec {
+  final String key;
+  final String type;
+  final String? title;
+  final String? description;
+  final bool required;
+  final bool hidden;
+  final String? placeholder;
   final bool custom;
-  const QuestionInfo({
-    required this.question,
-    required this.header,
-    required this.options,
-    this.multiple = false,
+  final List<FormOption> options;
+  final String? defaultValue;
+
+  const FormFieldSpec({
+    required this.key,
+    required this.type,
+    this.title,
+    this.description,
+    this.required = false,
+    this.hidden = false,
+    this.placeholder,
     this.custom = false,
+    this.options = const [],
+    this.defaultValue,
   });
 
-  factory QuestionInfo.fromJson(Map<String, dynamic> j) => QuestionInfo(
-    question: (j['question'] ?? '').toString(),
-    header: (j['header'] ?? '').toString(),
+  factory FormFieldSpec.fromJson(Map<String, dynamic> j) => FormFieldSpec(
+    key: (j['key'] ?? '').toString(),
+    type: (j['type'] ?? 'string').toString(),
+    title: j['title']?.toString(),
+    description: j['description']?.toString(),
+    required: j['required'] == true,
+    hidden: j['hidden'] == true,
+    placeholder: j['placeholder']?.toString(),
+    custom: j['custom'] == true,
     options: j['options'] is List
         ? (j['options'] as List)
-              .map(
-                (e) =>
-                    QuestionOption.fromJson((e as Map).cast<String, dynamic>()),
-              )
+              .map((e) => FormOption.fromJson((e as Map).cast<String, dynamic>()))
               .toList()
         : const [],
-    multiple: j['multiple'] == true,
-    custom: j['custom'] == true,
+    defaultValue: j['default'] is List
+        ? (j['default'] as List).map((e) => e.toString()).join(',')
+        : j['default']?.toString(),
   );
+
+  bool get isMultiselect => type == 'multiselect';
 
   @override
   bool operator ==(Object other) =>
-      other is QuestionInfo &&
-      other.question == question &&
-      other.header == header &&
-      other.multiple == multiple &&
+      other is FormFieldSpec &&
+      other.key == key &&
+      other.type == type &&
+      other.title == title &&
+      other.required == required &&
       other.custom == custom &&
       other.options.length == options.length &&
-      other.options.asMap().entries.every((e) => options[e.key] == e.value);
+      other.options.asMap().entries
+          .every((e) => options[e.key] == e.value);
+
+  @override
+  int get hashCode => Object.hash(key, type, title, required);
+}
+
+class FormInfo {
+  final String id;
+  final String sessionID;
+  final String title;
+  final List<FormFieldSpec> fields;
+  final String? stateStatus;
+  const FormInfo({
+    required this.id,
+    required this.sessionID,
+    required this.title,
+    required this.fields,
+    this.stateStatus,
+  });
+
+  factory FormInfo.fromJson(Map<String, dynamic> j) => FormInfo(
+    id: (j['id'] ?? '').toString(),
+    sessionID: (j['sessionID'] ?? '').toString(),
+    title: (j['title'] ?? '').toString(),
+    fields: j['fields'] is List
+        ? (j['fields'] as List)
+              .map((e) => FormFieldSpec.fromJson((e as Map).cast<String, dynamic>()))
+              .toList()
+        : const [],
+    stateStatus: j['state'] is Map
+        ? (j['state'] as Map)['status']?.toString()
+        : null,
+  );
+
+  bool get pending => stateStatus == null || stateStatus == 'pending';
+
+  @override
+  bool operator ==(Object other) =>
+      other is FormInfo &&
+      other.id == id &&
+      other.title == title &&
+      other.stateStatus == stateStatus &&
+      other.fields.length == fields.length &&
+      other.fields.asMap().entries.every((e) => fields[e.key] == e.value);
 
   @override
   int get hashCode =>
-      Object.hash(question, header, multiple, custom, Object.hashAll(options));
-}
-
-/// A pending question request: `{id, sessionID, questions[], tool?}`.
-class QuestionRequest {
-  final String id;
-  final String sessionID;
-  final List<QuestionInfo> questions;
-  const QuestionRequest({
-    required this.id,
-    required this.sessionID,
-    required this.questions,
-  });
-
-  factory QuestionRequest.fromJson(Map<String, dynamic> j) => QuestionRequest(
-    id: (j['id'] ?? '').toString(),
-    sessionID: (j['sessionID'] ?? '').toString(),
-    questions: j['questions'] is List
-        ? (j['questions'] as List)
-              .map(
-                (e) =>
-                    QuestionInfo.fromJson((e as Map).cast<String, dynamic>()),
-              )
-              .toList()
-        : const [],
-  );
+      Object.hash(id, title, stateStatus, Object.hashAll(fields));
 }

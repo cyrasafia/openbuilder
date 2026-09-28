@@ -69,7 +69,7 @@ void main() {
     test('CJK payload split mid-code-point parses without FormatException',
         () async {
       final json =
-          '{"payload":{"type":"message.part.updated","properties":{"part":{"text":"你好，世界"}}}}';
+          '{"type":"session.text.delta","data":{"delta":"你好，世界"}}';
       final frame = 'data: $json\n\n';
       final bytes = utf8.encode(frame);
       // Find a split point INSIDE the CJK text: the first byte of 你 is at
@@ -84,7 +84,7 @@ void main() {
       final gev = parseGlobalEvent(frames.first);
       expect(gev, isNotNull,
           reason: 'split multi-byte payload must decode, not throw');
-      expect(gev!.event.type, 'message.part.updated');
+      expect(gev!.event.type, 'session.text.delta');
     });
   });
 
@@ -155,34 +155,32 @@ void main() {
     });
   });
 
-  group('ServerStore: session.status no-op guard', () {
-    OpencodeEvent statusEvent(String sid, String type) => OpencodeEvent(
-          type: 'session.status',
-          properties: {
-            'sessionID': sid,
-            'status': {'type': type},
-          },
+  group('ServerStore: execution status no-op guard', () {
+    OpencodeEvent execEvent(String sid, String type) => OpencodeEvent(
+          type: 'session.execution.$type',
+          properties: {'sessionID': sid},
         );
 
-    test('identical status re-emission does not notify', () {
+    test('identical busy re-emission does not notify, settle change notifies',
+        () {
       final store = ServerStore();
       store.upsertSessionForTesting(SessionModel.fromJson({
         'id': 's1',
         'projectID': 'p1',
-        'directory': '/repo',
+        'location': {'directory': '/repo'},
         'title': 't',
         'time': {'created': 1, 'updated': 1},
       }));
       var notified = 0;
       store.addListener(() => notified++);
-      store.onGlobalEventForTesting('/repo', statusEvent('s1', 'busy'));
+      store.onGlobalEventForTesting('/repo', execEvent('s1', 'started'));
       final first = notified;
-      store.onGlobalEventForTesting('/repo', statusEvent('s1', 'busy'));
-      store.onGlobalEventForTesting('/repo', statusEvent('s1', 'busy'));
+      store.onGlobalEventForTesting('/repo', execEvent('s1', 'started'));
+      store.onGlobalEventForTesting('/repo', execEvent('s1', 'started'));
       expect(notified, first,
           reason: 'duplicate busy re-emissions must not rebuild '
               'every ListenableBuilder(serverStore)');
-      store.onGlobalEventForTesting('/repo', statusEvent('s1', 'idle'));
+      store.onGlobalEventForTesting('/repo', execEvent('s1', 'succeeded'));
       expect(notified, greaterThan(first),
           reason: 'a real status change must still notify');
       store.dispose();
@@ -193,9 +191,9 @@ void main() {
     test('identical permission re-inject does not notify', () {
       final perm = Permission.fromJson({
         'id': 'per_1',
-        'type': 'bash',
+        'action': 'bash',
         'sessionID': 's1',
-        'patterns': ['rm -rf'],
+        'resources': ['rm -rf'],
       });
       final store = ConversationStore('s1', _MockClient(), directory: '/repo');
       var notified = 0;
@@ -207,9 +205,9 @@ void main() {
       expect(notified, first);
       final other = Permission.fromJson({
         'id': 'per_1',
-        'type': 'edit',
+        'action': 'edit',
         'sessionID': 's1',
-        'patterns': ['rm -rf'],
+        'resources': ['rm -rf'],
       });
       store.onPermission(other);
       expect(notified, greaterThan(first),
@@ -220,9 +218,9 @@ void main() {
     test('permission metadata change still notifies', () {
       final perm = Permission.fromJson({
         'id': 'per_1',
-        'type': 'external_directory',
+        'action': 'external_directory',
         'sessionID': 's1',
-        'patterns': [],
+        'resources': [],
         'metadata': {'parentDir': '/a'},
       });
       final store = ConversationStore('s1', _MockClient(), directory: '/repo');
@@ -232,9 +230,9 @@ void main() {
       final first = notified;
       final other = Permission.fromJson({
         'id': 'per_1',
-        'type': 'external_directory',
+        'action': 'external_directory',
         'sessionID': 's1',
-        'patterns': [],
+        'resources': [],
         'metadata': {'parentDir': '/b'},
       });
       store.onPermission(other);
@@ -244,45 +242,39 @@ void main() {
       store.dispose();
     });
 
-    test('question with changed options still notifies', () {
-      final q = QuestionRequest.fromJson({
-        'id': 'q_1',
-        'sessionID': 's1',
-        'questions': [
-          {
-            'question': 'proceed?',
-            'header': 'h',
-            'options': [
-              {'label': 'yes', 'description': ''},
-              {'label': 'no', 'description': ''},
+    test('form with changed fields still notifies', () {
+      FormInfo formWith(List<Map<String, dynamic>> options) =>
+          FormInfo.fromJson({
+            'id': 'frm_1',
+            'sessionID': 's1',
+            'title': 'proceed?',
+            'fields': [
+              {
+                'key': 'choice',
+                'type': 'string',
+                'title': 'proceed?',
+                'options': options,
+              }
             ],
-          }
-        ],
-      });
+          });
+      final q = formWith([
+        {'label': 'yes', 'value': 'yes'},
+        {'label': 'no', 'value': 'no'},
+      ]);
       final store = ConversationStore('s1', _MockClient(), directory: '/repo');
       var notified = 0;
       store.addListener(() => notified++);
-      store.onQuestion(q);
+      store.onForm(q);
       final first = notified;
-      store.onQuestion(q);
+      store.onForm(q);
       expect(notified, first,
-          reason: 'identical question re-inject must not rebuild');
-      final other = QuestionRequest.fromJson({
-        'id': 'q_1',
-        'sessionID': 's1',
-        'questions': [
-          {
-            'question': 'proceed?',
-            'header': 'h',
-            'options': [
-              {'label': 'yes', 'description': ''},
-              {'label': 'no', 'description': ''},
-              {'label': 'maybe', 'description': ''},
-            ],
-          }
-        ],
-      });
-      store.onQuestion(other);
+          reason: 'identical form re-inject must not rebuild');
+      final other = formWith([
+        {'label': 'yes', 'value': 'yes'},
+        {'label': 'no', 'value': 'no'},
+        {'label': 'maybe', 'value': 'maybe'},
+      ]);
+      store.onForm(other);
       expect(notified, greaterThan(first),
           reason: 'a same-id re-ask with changed options must surface, not '
               'be suppressed by the idempotence guard');
