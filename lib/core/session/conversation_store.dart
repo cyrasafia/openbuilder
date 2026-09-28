@@ -1417,6 +1417,9 @@ class ConversationStore extends ChangeNotifier {
     msg.finish = finish ?? 'error';
     msg.error = error;
     _touchMessages(<String>{mid});
+    if (finish != 'tool-calls') {
+      unawaited(_saveCache());
+    }
     notifyListeners();
   }
 

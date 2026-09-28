@@ -13,8 +13,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 // Session status lives only in the in-memory `_statusMap` cache. On background
 // resume it must show the pre-leave status first, then update from REST — and a
 // failed active-sessions fetch must NOT wipe a known busy/retry indicator to
-// idle (the regression behind cdb0872 / SS-1, re-fixed for the v2 single-call
-// active map).
+// idle (the regression behind cdb0872 / SS-1; v2 uses one server-wide
+// GET /api/session/active call instead of v1's per-directory fan-out).
 
 OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
       id: 't',
