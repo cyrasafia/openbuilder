@@ -65,3 +65,6 @@ lib/l10n/gen/
 
 # Flutter golden test failure artifacts (regenerable diff images)
 test/failures/
+
+# Local opencode config (machine-specific external directory permissions)
+opencode.json
