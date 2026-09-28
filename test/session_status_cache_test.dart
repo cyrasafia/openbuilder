@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
@@ -11,8 +12,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 // Session status lives only in the in-memory `_statusMap` cache. On background
 // resume it must show the pre-leave status first, then update from REST — and a
-// directory whose status fetch failed must NOT wipe a known busy/retry
-// indicator to idle (the regression behind cdb0872 / SS-1).
+// failed active-sessions fetch must NOT wipe a known busy/retry indicator to
+// idle (the regression behind cdb0872 / SS-1, re-fixed for the v2 single-call
+// active map).
 
 OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
       id: 't',
@@ -34,12 +36,12 @@ SessionModel _session({required String id, required String directory}) =>
     SessionModel.fromJson({
       'id': id,
       'projectID': 'p1',
-      'directory': directory,
+      'location': {'directory': directory},
       'title': 't',
       'time': {'updated': 1000},
     });
 
-OpencodeEvent _statusEvent(String sid, String type) => OpencodeEvent(
+OpencodeEvent _busyEvent(String sid) => OpencodeEvent(
       type: 'session.execution.started',
       properties: {'sessionID': sid},
     );
@@ -50,8 +52,8 @@ void main() {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
     store.upsertSessionForTesting(_session(id: 's2', directory: '/dirB'));
-    store.onEventForTesting(_statusEvent('s1', 'busy'));
-    store.onEventForTesting(_statusEvent('s2', 'busy'));
+    store.onEventForTesting(_busyEvent('s1'));
+    store.onEventForTesting(_busyEvent('s2'));
     expect(store.statusOf('s1').type, 'busy');
     expect(store.statusOf('s2').type, 'busy');
 
@@ -63,7 +65,7 @@ void main() {
         _session(id: 's1', directory: '/dirA'),
         _session(id: 's2', directory: '/dirB'),
       ],
-      fetchedDirs: const {},
+      fetched: false,
     );
     expect(store.statusOf('s1').type, 'busy',
         reason: 'cached pre-leave status retained on fetch failure');
@@ -72,26 +74,92 @@ void main() {
     store.dispose();
   });
 
-  test('resume applies fresh status for every successfully fetched dir', () {
+  test('failed activeSessions REST call skips the merge (production path)',
+      () async {
+    final store = ServerStore()..client = _FailingActiveClient();
+    store.installSseForTesting(SseClient(baseUrl: 'http://127.0.0.1:9'));
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    store.onEventForTesting(_busyEvent('s1'));
+    expect(store.statusOf('s1').type, 'busy');
+
+    final ok = await store.refreshListAndWorkingSse(force: false);
+    expect(ok, isTrue,
+        reason: 'projects/sessions succeeded; only the active fetch failed');
+    expect(store.statusOf('s1').type, 'busy',
+        reason: 'a failed active-sessions fetch must not reset statuses');
+    store.dispose();
+  });
+
+  test('retry indicator survives a refresh while the session still runs', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    store.onEventForTesting(OpencodeEvent(
+      type: 'session.retry.scheduled',
+      properties: {
+        'sessionID': 's1',
+        'assistantMessageID': 'm1',
+        'attempt': 1,
+        'error': {'message': 'provider 502'},
+      },
+    ));
+    expect(store.statusOf('s1').type, 'retry');
+
+    // Refresh succeeds; the retrying session is still running → present in
+    // the active map as busy. The retry detail must survive the merge.
+    store.mergeStatusForTesting(
+      fresh: const {'s1': SessionStatusValue('busy')},
+      sessions: [_session(id: 's1', directory: '/dirA')],
+    );
+    expect(store.statusOf('s1').type, 'retry',
+        reason: 'still-running retry keeps its retry state over fresh busy');
+    store.dispose();
+  });
+
+  test('stale retry is cleared once the session stops running', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    store.onEventForTesting(OpencodeEvent(
+      type: 'session.retry.scheduled',
+      properties: {
+        'sessionID': 's1',
+        'assistantMessageID': 'm1',
+        'attempt': 1,
+        'error': {'message': 'provider 502'},
+      },
+    ));
+    expect(store.statusOf('s1').type, 'retry');
+
+    // The session settled while SSE was missed: absent from the active map
+    // on a SUCCESSFUL fetch → idle (previously stuck as retry forever).
+    store.mergeStatusForTesting(
+      fresh: const {},
+      sessions: [_session(id: 's1', directory: '/dirA')],
+    );
+    expect(store.statusOf('s1').type, 'idle',
+        reason: 'absence from a successful active fetch means idle');
+    store.dispose();
+  });
+
+  test('resume applies fresh status for every successfully fetched session',
+      () {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
     store.upsertSessionForTesting(_session(id: 's2', directory: '/dirB'));
-    store.onEventForTesting(_statusEvent('s1', 'busy'));
-    store.onEventForTesting(_statusEvent('s2', 'busy'));
+    store.onEventForTesting(_busyEvent('s1'));
+    store.onEventForTesting(_busyEvent('s2'));
 
     store.mergeStatusForTesting(
       fresh: const {
         's1': SessionStatusValue('idle'),
-        's2': SessionStatusValue('retry'),
+        's2': SessionStatusValue('busy'),
       },
       sessions: [
         _session(id: 's1', directory: '/dirA'),
         _session(id: 's2', directory: '/dirB'),
       ],
-      fetchedDirs: {'/dirA', '/dirB'},
     );
     expect(store.statusOf('s1').type, 'idle');
-    expect(store.statusOf('s2').type, 'retry');
+    expect(store.statusOf('s2').type, 'busy');
     store.dispose();
   });
 
@@ -99,13 +167,12 @@ void main() {
       () {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
-    store.onEventForTesting(_statusEvent('s1', 'busy'));
+    store.onEventForTesting(_busyEvent('s1'));
 
     // Fetch succeeded but the server returned no entry for s1 ⇒ idle now.
     store.mergeStatusForTesting(
       fresh: const {},
       sessions: [_session(id: 's1', directory: '/dirA')],
-      fetchedDirs: {'/dirA'},
     );
     expect(store.statusOf('s1').type, 'idle');
     store.dispose();
@@ -130,4 +197,33 @@ void main() {
         reason: 'status must not be persisted/restored from disk');
     store.dispose();
   });
+}
+
+class _FailingActiveClient extends OpencodeClient {
+  _FailingActiveClient()
+      : super(Dio(BaseOptions(
+          connectTimeout: const Duration(milliseconds: 1),
+          receiveTimeout: const Duration(milliseconds: 1),
+        )));
+
+  @override
+  Future<List<ProjectModel>> projects() async => [
+        const ProjectModel(id: 'p1', canonical: '/dirA'),
+      ];
+
+  @override
+  Future<List<SessionModel>> sessions({
+    String? directory,
+    String? project,
+    String? subpath,
+    int limit = 1000,
+    String? search,
+    String? parentID,
+  }) async =>
+      [];
+
+  @override
+  Future<Map<String, SessionStatusValue>> activeSessions() async {
+    throw Exception('active fetch failed');
+  }
 }

@@ -912,7 +912,9 @@ class ServerStore extends ChangeNotifier {
       _sessions = sessions;
       _markGhostSessions(ghostIds);
       final active = await _fetchActiveStatuses();
-      _mergeStatus(fresh: active, fetched: true, sessions: sessions);
+      if (active != null) {
+        _mergeStatus(fresh: active, sessions: sessions);
+      }
       _inferWorkspaceForNewProjects();
       return true;
     } catch (_) {
@@ -920,27 +922,24 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  Future<Map<String, SessionStatusValue>> _fetchActiveStatuses() async {
+  Future<Map<String, SessionStatusValue>?> _fetchActiveStatuses() async {
     try {
       return await client!.activeSessions();
     } catch (_) {
-      return const {};
+      return null;
     }
   }
 
   void _mergeStatus({
     required Map<String, SessionStatusValue> fresh,
-    required bool fetched,
     required List<SessionModel> sessions,
   }) {
-    if (!fetched) return;
-    final merged = <String, SessionStatusValue>{};
+    final merged = Map.of(fresh);
     _statusMap.forEach((id, v) {
-      if (!fresh.containsKey(id) && v.type == 'retry') {
+      if (v.type == 'retry' && fresh.containsKey(id)) {
         merged[id] = v;
       }
     });
-    merged.addAll(fresh);
     _statusMap
       ..clear()
       ..addAll(merged);
@@ -1006,7 +1005,9 @@ class ServerStore extends ChangeNotifier {
       _projects = newProjects;
       _sessions = sessions;
       _markGhostSessions(ghostIds);
-      _mergeStatus(fresh: active, fetched: true, sessions: sessions);
+      if (active != null) {
+        _mergeStatus(fresh: active, sessions: sessions);
+      }
       _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
         final s = statusOf(conv.sessionId);
@@ -1321,9 +1322,11 @@ class ServerStore extends ChangeNotifier {
   void mergeStatusForTesting({
     required Map<String, SessionStatusValue> fresh,
     required List<SessionModel> sessions,
-    required Set<String> fetchedDirs,
-  }) =>
-      _mergeStatus(fresh: fresh, fetched: fetchedDirs.isNotEmpty, sessions: sessions);
+    bool fetched = true,
+  }) {
+    if (!fetched) return;
+    _mergeStatus(fresh: fresh, sessions: sessions);
+  }
 
   @visibleForTesting
   Future<void> backfillQuestionsForTesting() => _backfillForms();
@@ -1374,6 +1377,7 @@ class ServerStore extends ChangeNotifier {
         final d = ev.properties;
         final sid = d['sessionID']?.toString();
         if (sid == null) break;
+        final now = ev.created ?? DateTime.now().millisecondsSinceEpoch;
         _upsertSession(SessionModel(
           id: sid,
           projectID: d['projectID']?.toString() ?? '',
@@ -1381,8 +1385,8 @@ class ServerStore extends ChangeNotifier {
               ? (d['location'] as Map)['directory']?.toString() ?? ''
               : '',
           title: d['title']?.toString() ?? 'Untitled',
-          created: _i(ev.id == null ? 0 : DateTime.now().millisecondsSinceEpoch),
-          updated: DateTime.now().millisecondsSinceEpoch,
+          created: now,
+          updated: now,
           parentID: d['parentID']?.toString(),
           agent: d['agent']?.toString(),
           model: d['model'] is Map
@@ -1482,7 +1486,8 @@ class ServerStore extends ChangeNotifier {
           if (s != null) {
             _upsertSession(s.copyWith(
               cost: _d(ev.properties['cost']),
-              updated: DateTime.now().millisecondsSinceEpoch,
+              updated:
+                  ev.created ?? DateTime.now().millisecondsSinceEpoch,
             ));
           }
         }
@@ -1606,7 +1611,8 @@ class ServerStore extends ChangeNotifier {
         final itemB = ev.properties['item'];
         if (sidB != null && inboxB != null && itemB is Map) {
           final conv = ensureConversation(sidB);
-          conv?.onInboxEnqueued(inboxB, itemB.cast<String, dynamic>());
+          conv?.onInboxEnqueued(inboxB, itemB.cast<String, dynamic>(),
+              created: ev.created);
           if (conv != null) {
             _lastMessage[sidB] = conv.lastMessagePreview(
                     hideReasoning: !_reasoningVisibleInPreview, loc: _loc) ??

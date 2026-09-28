@@ -1244,7 +1244,7 @@ class ConversationStore extends ChangeNotifier {
       msg.modelID = model.id;
       msg.modelProvider = model.providerID;
     }
-    if (msg.finish != null) msg.finish = null;
+    if (msg.finish == 'tool-calls') msg.finish = null;
     notifyListeners();
   }
 
@@ -1256,12 +1256,7 @@ class ConversationStore extends ChangeNotifier {
     DisplayPart dp;
     if (idx == -1) {
       dp = DisplayPart(id: partId, type: kind);
-      final lastSame = msg.parts.lastIndexWhere((x) => x.type == kind);
-      if (lastSame == -1) {
-        msg.parts.add(dp);
-      } else {
-        msg.parts.insert(lastSame + 1, dp);
-      }
+      msg.parts.add(dp);
     } else {
       dp = msg.parts[idx];
     }
@@ -1410,7 +1405,9 @@ class ConversationStore extends ChangeNotifier {
     if (cost != null) msg.cost = cost;
     _recomputeTodos();
     _touchMessages(<String>{mid});
-    unawaited(_saveCache());
+    if (finish != 'tool-calls') {
+      unawaited(_saveCache());
+    }
     notifyListeners();
   }
 
@@ -1477,7 +1474,8 @@ class ConversationStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void onInboxEnqueued(String inboxId, Map<String, dynamic> item) {
+  void onInboxEnqueued(String inboxId, Map<String, dynamic> item,
+      {int? created}) {
     if (item['type'] != 'user') return;
     final payload =
         (item['payload'] as Map?)?.cast<String, dynamic>() ?? const {};
@@ -1486,16 +1484,17 @@ class ConversationStore extends ChangeNotifier {
         .whereType<Map>()
         .map((e) => FileAttachment.fromJson(e.cast<String, dynamic>()))
         .toList();
+    final time = created ?? DateTime.now().millisecondsSinceEpoch;
     final sm = UserMessage(
       id: inboxId,
       raw: {
         'id': inboxId,
         'type': 'user',
-        'time': {'created': DateTime.now().millisecondsSinceEpoch},
+        'time': {'created': time},
         'text': text,
         'files': [for (final f in files) f.toJson()],
       },
-      created: DateTime.now().millisecondsSinceEpoch,
+      created: time,
       text: text,
       files: files,
     );

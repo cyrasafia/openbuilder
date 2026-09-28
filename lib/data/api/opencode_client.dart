@@ -387,16 +387,12 @@ class OpencodeClient {
     String sessionId, {
     required String text,
     List<Map<String, dynamic>> files = const [],
-    String? agent,
+    List<Map<String, dynamic>> skills = const [],
     Duration? sendTimeout,
   }) async {
     final body = <String, dynamic>{'text': text};
     if (files.isNotEmpty) body['files'] = files;
-    if (agent != null && agent.isNotEmpty) {
-      body['agents'] = [
-        {'name': agent}
-      ];
-    }
+    if (skills.isNotEmpty) body['skills'] = skills;
     final r = await dio.post(
       '/api/session/$sessionId/prompt',
       data: body,
@@ -431,13 +427,6 @@ class OpencodeClient {
       '/api/session/$sessionId/command',
       data: body,
       options: sendTimeout == null ? null : Options(sendTimeout: sendTimeout),
-    );
-  }
-
-  Future<void> activateSkill(String sessionId, String skillId) async {
-    await dio.post(
-      '/api/experimental/session/$sessionId/skill',
-      data: {'id': skillId},
     );
   }
 

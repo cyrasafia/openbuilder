@@ -67,6 +67,23 @@
 2. **会话列表 search/parentID 过滤**、`session.move/fork`、inbox 队列 UI 等 v2 新能力未接入（与迁移解耦）。
 3. `subtask` 部件概念（v1 斜杠命令回显）在 v2 消失，相关预览逻辑随迁移移除；SubagentPanel 走 task 工具卡 + 子会话注册表路径不变。
 
+## 评审修复记录（2026-09-28，代码评审后追加）
+
+评审发现 3 个 bug + 1 个行为风险 + 若干次要项，全部修复：
+
+| 项 | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| R-1 | 🔴 | `_fetchActiveStatuses` 吞错返回空表 → 状态合并把瞬时失败当「无运行会话」，抹掉全部 busy/retry 徽标（回归 v1 SS-1/cdb0872 不变量；测试缝直注参数掩盖了生产路径） | 返回 `null` 表示失败，调用方跳过合并；补生产路径回归测试（mock projects/sessions 成功 + activeSessions 抛错 → busy 保留） |
+| R-2 | 🔴 | `_mergeStatus` retry 保留分支：成功抓取后不在 active 表的 retry 会话被**永久保留**（settled 会话不再有事件来清除 → 卡死在 retrying）；仍在跑的 retry 会话反被 fresh 的 busy 覆盖丢失细节 | retry 仅在「仍在 fresh 中（确实在跑）」时保留；缺席即 idle；补两个方向的回归测试 |
+| R-3 | 🔴 | 流式 part 插入用「同类型末位插入」→ 多步消息（reasoning→text→tool→reasoning→text…）parts 按类型聚集，渲染序错乱（`session.message.content.updated` 实测不保证在流中触发，无法自愈） | 改为 started 事件到达序追加（与 tool part 一致）；补交错序回归测试 |
+| R-4 | 🔴 | skill 斜杠调用走 `POST /api/experimental/session/:id/skill {id}` → **参数与附件全部丢失**（`/grilling check my plan` 只发 skill id） | 改走 prompt + `skills: [{id, name}]` 附件（实测：服务器接受并自动展开 skill 内容进 `skills[].text`，参数保留在消息 `text`）；files 一并透传；补 payload 回归测试 |
+| R-5 | 🟡 | 每条 prompt 附带 `agents: [{name: 会话agent}]`（v1 agent 字段的直译）——v2 语义为 @-mention 附件，会话 agent 已由 `POST /api/session/:id/agent` 服务端设置，每条消息带合成 mention 至少冗余、至多改变路由 | 移除 agents 映射与 `agent` 参数（prompt 仅 text/files/skills）；补「无 agents 键」断言 |
+| R-6 | 🟢 | envelope `created`（服务器时间戳）在解析层被丢弃 → `session.created`/`inbox.enqueued`/`usage.updated` 用客户端时钟（排序漂移直到对账）；`session.created` 里 `ev.id == null ? 0 : now` 死条件 | `OpencodeEvent` 增加 `created` 字段并透传至三处消费点 |
+| R-7 | 🟢 | 每个 step.ended 全量落盘 + step.started 清 finish → 长会话每步边界整体重序列化 + 消息缓存丢弃重建 | 落盘仅当 finish ≠ `tool-calls`（消息真正收敛）；finish 仅在为 `tool-calls`（续步）时清除；补生命周期回归测试 |
+| R-8 | 🟢 | shell 命令回显（synthetic 消息）以原始 `<shell .../>` XML 块渲染在通知行 | `_syntheticLabel` 提取 `command="..."` 显示 `$ <命令>` |
+
+修复后验收：`flutter analyze --fatal-infos` 零 issue；`flutter test` 651/651（+6 项新回归：状态失败保留 ×2、retry 双向、part 交错序、step 生命周期、skill payload）。
+
 ## 测试资产说明
 
 - `test/v2_test_fixtures.dart`：v2 wire 构造器（userMsg/assistantMsg/toolPart/PageMockClient/formInfo 等），供所有需要消息/form 夹具的测试复用。

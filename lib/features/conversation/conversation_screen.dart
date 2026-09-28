@@ -696,11 +696,19 @@ class _ConversationScreenState extends State<ConversationScreen>
     return _messageChildCache[id] ??= _message(msg, stable: true);
   }
 
+  String _syntheticLabel(String text) {
+    if (text.startsWith('<shell')) {
+      final cmd = RegExp(r'command="([^"]*)"').firstMatch(text)?.group(1);
+      if (cmd != null && cmd.isNotEmpty) return '\$ $cmd';
+    }
+    return text;
+  }
+
   Widget _noticeMessage(DisplayMessage m) {
     final scheme = Theme.of(context).colorScheme;
     final label = switch (m.type) {
       'system' => m.description ?? m.text ?? '',
-      'synthetic' => m.text ?? '',
+      'synthetic' => _syntheticLabel(m.text ?? ''),
       'skill' => m.description ?? m.text ?? '',
       'shell' => '\$ ${m.shellCommand ?? ''}',
       'agent-switched' => '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}',
@@ -1407,7 +1415,6 @@ class _ConversationScreenState extends State<ConversationScreen>
           conv.setStatus('busy');
         }
       } else {
-        String? agent = session?.agent;
         var isCommand = false;
         if (text.startsWith('/')) {
           await serverStore.refreshCommands(directory: directory);
@@ -1445,17 +1452,26 @@ class _ConversationScreenState extends State<ConversationScreen>
               0,
               (s, p) => (p['uri']?.toString().length ?? 0) + s,
             );
+            final sendTimeout = totalLen > 2 * 1024 * 1024
+                ? const Duration(seconds: 120)
+                : null;
             if (matched.skill) {
-              await client.activateSkill(widget.sessionId, matched.name);
+              await client.prompt(
+                widget.sessionId,
+                text: text,
+                skills: [
+                  {'id': matched.name, 'name': matched.name},
+                ],
+                files: cmdFiles,
+                sendTimeout: sendTimeout,
+              );
             } else {
               await client.command(
                 widget.sessionId,
                 command: matched.name,
                 arguments: arguments,
                 files: cmdFiles,
-                sendTimeout: totalLen > 2 * 1024 * 1024
-                    ? const Duration(seconds: 120)
-                    : null,
+                sendTimeout: sendTimeout,
               );
             }
             conv.setStatus('busy');
@@ -1485,7 +1501,6 @@ class _ConversationScreenState extends State<ConversationScreen>
             widget.sessionId,
             text: text,
             files: files,
-            agent: agent,
             sendTimeout: totalLen > 2 * 1024 * 1024
                 ? const Duration(seconds: 120)
                 : null,

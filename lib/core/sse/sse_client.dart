@@ -10,12 +10,14 @@ const _tag = 'SSE';
 
 class OpencodeEvent {
   final String? id;
+  final int? created;
   final String type;
   final Map<String, dynamic> properties;
   final String? directory;
 
   const OpencodeEvent({
     this.id,
+    this.created,
     required this.type,
     required this.properties,
     this.directory,
@@ -23,6 +25,7 @@ class OpencodeEvent {
 
   factory OpencodeEvent.fromJson(Map<String, dynamic> j) => OpencodeEvent(
         id: j['id']?.toString(),
+        created: j['created'] is num ? (j['created'] as num).toInt() : null,
         type: (j['type'] ?? '').toString(),
         properties: j['data'] is Map
             ? (j['data'] as Map).cast<String, dynamic>()

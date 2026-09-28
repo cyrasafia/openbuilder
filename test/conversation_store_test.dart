@@ -544,6 +544,52 @@ void main() {
     });
   });
 
+  group('streaming part ordering (multi-step messages)', () {
+    test('parts append in started-event arrival order, not by kind', () {
+      final conv = _conv('s1', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onReasoningStarted('m1', 0);
+      conv.onReasoningDelta('m1', 0, 'think 1');
+      conv.onTextStarted('m1', 0);
+      conv.onTextDelta('m1', 0, 'answer 1');
+      conv.onToolInputStarted('m1', 'c1', 'bash');
+      // Second step: new reasoning + text parts for the SAME message.
+      conv.onReasoningStarted('m1', 1);
+      conv.onReasoningDelta('m1', 1, 'think 2');
+      conv.onTextStarted('m1', 1);
+      conv.onTextDelta('m1', 1, 'answer 2');
+      final types = conv.messages.single.parts.map((p) => p.type).toList();
+      expect(types, [
+        'reasoning',
+        'text',
+        'tool',
+        'reasoning',
+        'text',
+      ], reason: 'streaming parts must follow content order, '
+          'not cluster by kind');
+    });
+  });
+
+  group('step finish lifecycle', () {
+    test('step boundary with tool-calls does not persist a settled message',
+        () async {
+      final conv = _conv('s1', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onTextDelta('m1', 0, 'calling tools');
+      conv.onStepEnded('m1', finish: 'tool-calls');
+      expect(conv.messages.single.finish, 'tool-calls');
+      // Continuation step: finish must be cleared so streaming resumes.
+      conv.onStepStarted('m1');
+      expect(conv.messages.single.finish, isNull);
+      conv.onTextDelta('m1', 1, 'final answer');
+      conv.onStepEnded('m1', finish: 'stop');
+      expect(conv.messages.single.finish, 'stop');
+      // A terminal finish is not cleared by a stray later step event.
+      conv.onStepStarted('m1');
+      expect(conv.messages.single.finish, 'stop');
+    });
+  });
+
   group('cache round-trip preserves file fields', () {
     test('user message with files survives save/load', () async {
       final conv = _conv('s1', PageMockClient(const []));

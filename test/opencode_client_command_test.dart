@@ -145,6 +145,26 @@ void main() {
     ]);
   });
 
+  test('prompt: skill invocation carries skills attachment, no agents', () async {
+    final cap = _Capture();
+    await _client(cap).prompt(
+      's1',
+      text: '/grilling check my plan',
+      skills: [
+        {'id': 'grilling', 'name': 'grilling'},
+      ],
+    );
+    expect(cap.method, 'POST');
+    expect(cap.path, '/api/session/s1/prompt');
+    expect(cap.body!['text'], '/grilling check my plan');
+    expect(cap.body!['skills'], [
+      {'id': 'grilling', 'name': 'grilling'},
+    ]);
+    expect(cap.body!.containsKey('agents'), isFalse,
+        reason: 'agent selection is session-level; no synthetic mention '
+            'attachment on every prompt');
+  });
+
   test('command: sendTimeout reaches the dio RequestOptions', () async {
     final cap = _Capture();
     await _client(cap).command(
