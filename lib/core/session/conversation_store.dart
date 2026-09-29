@@ -570,7 +570,15 @@ class ConversationStore extends ChangeNotifier {
     } catch (e) {
       AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
       error = e;
-      _stale = true;
+      if (e is MessagePageTooLargeException) {
+        // 页面超限是永久条件：重试只会周期性重拉多 MB 载荷且永远失败。
+        // 终态化——停掉重试定时器、清 loading，错误态与缓存兜底照常生效；
+        // 用户手动刷新（pull-to-refresh → reconcile）仍可重试。
+        cancelLoadRetry();
+        _stale = false;
+      } else {
+        _stale = true;
+      }
       if (_messages.isEmpty) {
         await _loadCache();
       }

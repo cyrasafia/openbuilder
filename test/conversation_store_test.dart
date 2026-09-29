@@ -1,11 +1,13 @@
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/attachments/attachment_pipeline.dart';
 import 'package:open_builder/core/cache/cache_store.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
+import 'package:open_builder/core/net/net_error.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
@@ -737,4 +739,64 @@ void main() {
       expect(conv.todos, isEmpty);
     });
   });
+
+  group('oversized page terminal handling', () {
+    test('MessagePageTooLargeException is terminal: error kept, no retry loop',
+        () async {
+      final client = _TooLargeClient();
+      final conv = _conv('s1', client);
+      addTearDown(conv.dispose);
+      await conv.load();
+      expect(client.calls, 1);
+      expect(conv.error, isA<MessagePageTooLargeException>());
+      expect(conv.loading, isFalse,
+          reason: 'terminal error must clear the loading spinner');
+      expect(conv.isStale, isFalse,
+          reason: 'page size is permanent — stale-driven reloads must stop');
+      await conv.reloadIfStale();
+      expect(client.calls, 1, reason: 'no stale-driven re-fetch after terminal');
+    });
+
+    test('transport errors keep the stale/retry path', () async {
+      final client = _FailClient();
+      final conv = _conv('s1', client);
+      addTearDown(conv.dispose);
+      await conv.load();
+      expect(conv.error, isNotNull);
+      expect(conv.isStale, isTrue);
+    });
+  });
+}
+
+class _TooLargeClient extends OpencodeClient {
+  int calls = 0;
+  _TooLargeClient()
+      : super(Dio(BaseOptions(
+          connectTimeout: const Duration(milliseconds: 1),
+          receiveTimeout: const Duration(milliseconds: 1),
+        )));
+
+  @override
+  Future<MessagesPage> messagesPageCompute(String sessionId,
+      {required int limit, String? cursor}) async {
+    calls++;
+    throw const MessagePageTooLargeException(
+        size: 99999999, limit: 8388608, sessionId: 's1');
+  }
+}
+
+class _FailClient extends OpencodeClient {
+  _FailClient()
+      : super(Dio(BaseOptions(
+          connectTimeout: const Duration(milliseconds: 1),
+          receiveTimeout: const Duration(milliseconds: 1),
+        )));
+
+  @override
+  Future<MessagesPage> messagesPageCompute(String sessionId,
+      {required int limit, String? cursor}) async {
+    throw DioException(
+        requestOptions: RequestOptions(path: '/x'),
+        type: DioExceptionType.connectionError);
+  }
 }

@@ -32,10 +32,12 @@ class AppLogger {
   Directory? _dir;
   IOSink? _sink;
   String? _currentDate;
+  Timer? _flushTimer;
   final List<LogEntry> _buffer = [];
   final List<String> _retryLines = [];
   static const _maxBuffer = 2000;
   static const _retentionDays = 7;
+  static const _flushInterval = Duration(seconds: 3);
 
   Future<void> init() async {
     if (kIsWeb) return;
@@ -44,6 +46,10 @@ class AppLogger {
     await _dir!.create(recursive: true);
     _rotate();
     _cleanup();
+    _flushTimer?.cancel();
+    _flushTimer = Timer.periodic(_flushInterval, (_) {
+      unawaited(flush());
+    });
   }
 
   void _rotate() {
@@ -199,6 +205,8 @@ class AppLogger {
   }
 
   Future<void> dispose() async {
+    _flushTimer?.cancel();
+    _flushTimer = null;
     await flush();
     try {
       await _sink?.close();
@@ -213,5 +221,7 @@ class AppLogger {
     I._sink = null;
     I._currentDate = null;
     I._retryLines.clear();
+    I._flushTimer?.cancel();
+    I._flushTimer = null;
   }
 }

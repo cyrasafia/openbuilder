@@ -20,6 +20,21 @@ class SessionInWorktreeException extends OperationException {
   });
 }
 
+class MessagePageTooLargeException implements Exception {
+  final int size;
+  final int limit;
+  final String sessionId;
+  const MessagePageTooLargeException({
+    required this.size,
+    required this.limit,
+    required this.sessionId,
+  });
+
+  @override
+  String toString() =>
+      'message page too large ($size bytes > $limit, sid=$sessionId)';
+}
+
 enum FriendlyErrorKind {
   authFailed,
   notFound,
@@ -32,6 +47,7 @@ enum FriendlyErrorKind {
   notConnected,
   diffNotFound,
   diffNoLastMessage,
+  pageTooLarge,
   generic,
 }
 
@@ -42,6 +58,7 @@ class KnownError implements Exception {
 
 FriendlyErrorKind friendlyErrorRaw(Object e) {
   if (e is KnownError) return e.kind;
+  if (e is MessagePageTooLargeException) return FriendlyErrorKind.pageTooLarge;
   if (e is OperationException) return friendlyErrorRaw(e.cause);
   if (e is DioException) {
     final code = e.response?.statusCode;
@@ -77,6 +94,7 @@ String friendlyMessage(AppLocalizations l, Object e) {
     FriendlyErrorKind.notConnected => l.errorNotConnected,
     FriendlyErrorKind.diffNotFound => l.errorDiffNotFound,
     FriendlyErrorKind.diffNoLastMessage => l.errorDiffNoLastMessage,
+    FriendlyErrorKind.pageTooLarge => l.errorPageTooLarge,
     FriendlyErrorKind.generic => l.errorGeneric,
   };
 }

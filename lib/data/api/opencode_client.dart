@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../core/net/net_error.dart';
 import '../../core/net/raw_download.dart'
     if (dart.library.html) '../../core/net/raw_download_web.dart'
     as raw_download;
@@ -301,12 +302,12 @@ class OpencodeClient {
     } else {
       params['order'] = 'desc';
     }
-    final r = await dio.get<String>(
+    final r = await dio.get<ResponseBody>(
       '/api/session/$sessionId/message',
       queryParameters: params,
-      options: Options(responseType: ResponseType.plain),
+      options: Options(responseType: ResponseType.stream),
     );
-    final body = r.data ?? '';
+    final body = await _readBodyBounded(r, sessionId);
     if (body.isEmpty) {
       return MessagesPage(const [], null, null);
     }
@@ -633,6 +634,39 @@ DecodedMessagePage decodeMessagePage(String body) {
     cur['next']?.toString(),
     cur['previous']?.toString(),
   );
+}
+
+const int kMaxMessagePageBytes = 8 << 20;
+
+Future<String> _readBodyBounded(
+    Response<ResponseBody> r, String sessionId) async {
+  final data = r.data;
+  if (data == null) return '';
+  final headerVals = data.headers[Headers.contentLengthHeader];
+  final declared =
+      headerVals == null || headerVals.isEmpty ? null : int.tryParse(headerVals.first);
+  if (declared != null && declared > kMaxMessagePageBytes) {
+    throw MessagePageTooLargeException(
+        size: declared, limit: kMaxMessagePageBytes, sessionId: sessionId);
+  }
+  final chunks = <List<int>>[];
+  var total = 0;
+  await for (final chunk in data.stream) {
+    total += chunk.length;
+    if (total > kMaxMessagePageBytes) {
+      throw MessagePageTooLargeException(
+          size: total, limit: kMaxMessagePageBytes, sessionId: sessionId);
+    }
+    chunks.add(chunk);
+  }
+  if (total == 0) return '';
+  final bytes = Uint8List(total);
+  var offset = 0;
+  for (final c in chunks) {
+    bytes.setAll(offset, c);
+    offset += c.length;
+  }
+  return utf8.decode(bytes, allowMalformed: true);
 }
 
 const int kVcsDiffContext = 3;

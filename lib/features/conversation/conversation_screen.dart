@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -16,7 +17,8 @@ import 'package:flutter/rendering.dart'
         SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
-import 'package:cross_file/cross_file.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_state.dart';
@@ -1775,20 +1777,40 @@ class _ConversationScreenState extends State<ConversationScreen>
       );
     }
     final sheet = user ? _mdStyleUser : _mdStyleAssistant;
+    final overLimit = data.length > _kMarkdownMaxChars;
+    final effective =
+        overLimit ? _truncatedText(data, _kMarkdownMaxChars) : data;
     final linkified =
-        _autolinkCache.putIfAbsent(data, () => autolinkMarkdownLinks(data));
+        _autolinkCache.putIfAbsent(effective, () => autolinkMarkdownLinks(effective));
     if (_autolinkCache.length >= _kAutolinkCacheMax) {
       _autolinkCache.remove(_autolinkCache.keys.first);
     }
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: MarkdownBody(
-        data: linkified,
-        selectable: true,
-        softLineBreak: user,
-        onTapLink: (text, href, title) => _onMdLink(href),
-        onTapText: onTextTap,
-        styleSheet: sheet ?? _buildMdStyle(user: user),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          MarkdownBody(
+            data: linkified,
+            selectable: !overLimit,
+            softLineBreak: user,
+            onTapLink: (text, href, title) => _onMdLink(href),
+            onTapText: onTextTap,
+            styleSheet: sheet ?? _buildMdStyle(user: user),
+          ),
+          if (overLimit)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                l(context).messageTruncated,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -2091,9 +2113,26 @@ class _FooterPanelState extends State<_FooterPanel> {
   }
 }
 
-Widget toolCodeBlock(String body, AppColors appColors) {
+const int kToolCodeMaxChars = 8000;
+const int _kMarkdownMaxChars = 16000;
+
+String _truncatedText(String s, int limit) {
+  if (s.length <= limit) return s;
+  var end = limit;
+  final u = s.codeUnitAt(end - 1);
+  if (u >= 0xD800 && u <= 0xDBFF) end--;
+  return s.substring(0, end);
+}
+
+Widget toolCodeBlock(BuildContext context, String body, AppColors appColors) {
   var text = body;
   if (text.endsWith('\n')) text = text.substring(0, text.length - 1);
+  int? omitted;
+  if (text.length > kToolCodeMaxChars) {
+    final capped = _truncatedText(text, kToolCodeMaxChars);
+    omitted = text.length - capped.length;
+    text = capped;
+  }
   return Container(
     width: double.infinity,
     clipBehavior: Clip.hardEdge,
@@ -2102,18 +2141,39 @@ Widget toolCodeBlock(String body, AppColors appColors) {
       borderRadius: BorderRadius.circular(8),
       border: Border.all(color: appColors.border),
     ),
-    child: SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.all(12),
-      child: Text(
-        text,
-        style: AppTheme.mono.copyWith(fontSize: 13, color: appColors.code),
-      ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: omitted == null
+              ? const EdgeInsets.all(12)
+              : const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: Text(
+            text,
+            style: AppTheme.mono.copyWith(fontSize: 13, color: appColors.code),
+          ),
+        ),
+        if (omitted != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+            child: Text(
+              l(context).toolOutputTruncated(omitted.toString()),
+              style: TextStyle(
+                fontSize: 11,
+                color: appColors.code.withValues(alpha: 0.7),
+              ),
+            ),
+          ),
+      ],
     ),
   );
 }
 
-void copyToolPartContent(BuildContext context, DisplayPart part) {
+const int _kToolCopyFileThreshold = 512 * 1024;
+
+Future<void> copyToolPartContent(BuildContext context, DisplayPart part) async {
   final buf = StringBuffer();
   final input = part.toolInput;
   if (input != null && input.isNotEmpty) {
@@ -2130,10 +2190,42 @@ void copyToolPartContent(BuildContext context, DisplayPart part) {
     buf.write(error);
   }
   if (buf.isEmpty) return;
-  Clipboard.setData(ClipboardData(text: buf.toString()));
-  ScaffoldMessenger.of(
-    context,
-  ).showSnackBar(SnackBar(content: Text(l(context).copied)));
+  final text = buf.toString();
+  final loc = l(context);
+  if (text.length > _kToolCopyFileThreshold) {
+    // Android 剪贴板对 MB 级内容会静默截断/失败——大内容改走临时文件 +
+    // 系统分享面板（用户可存文件/发到别处），保留完整内容。
+    try {
+      final tmp = await getTemporaryDirectory();
+      final file = File(
+          '${tmp.path}/tool-part-${DateTime.now().millisecondsSinceEpoch}.txt');
+      await file.writeAsString(text, flush: true);
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(file.path)]),
+      );
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(loc.copyFailed)),
+        );
+      }
+    }
+    return;
+  }
+  try {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(loc.copied)),
+      );
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(loc.copyFailed)),
+      );
+    }
+  }
 }
 
 void _syncReversedScroll(BuildContext context, GlobalKey key, double dv) {
@@ -2491,6 +2583,7 @@ class _ToolChipState extends State<_ToolChip>
       children.add(const SizedBox(height: 8));
       children.add(
         toolCodeBlock(
+          context,
           const JsonEncoder.withIndent('  ').convert(input),
           appColors,
         ),
@@ -2498,7 +2591,7 @@ class _ToolChipState extends State<_ToolChip>
     }
     if (output != null && output.isNotEmpty) {
       children.add(const SizedBox(height: 8));
-      children.add(toolCodeBlock(output, appColors));
+      children.add(toolCodeBlock(context, output, appColors));
     }
     if (part.toolStatus == 'error' && error != null && error.isNotEmpty) {
       children.add(const SizedBox(height: 8));
@@ -3002,21 +3095,42 @@ class _SubagentMessageState extends State<_SubagentMessage> {
               ),
             );
           } else {
+            final raw = p.text;
+            final overLimit = raw.length > _kMarkdownMaxChars;
+            final effective =
+                overLimit ? _truncatedText(raw, _kMarkdownMaxChars) : raw;
             children.add(
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
-                child: MarkdownBody(
-                  data: _linkify(p.text),
-                  softLineBreak: isUser,
-                  onTapLink: (text, href, title) => _onLink(context, href),
-                  styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                    p: TextStyle(
-                        fontSize: 13, height: 1.45, color: appColors.code),
-                    code: TextStyle(
-                        fontSize: 12,
-                        fontFamily: 'monospace',
-                        color: appColors.code),
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    MarkdownBody(
+                      data: _linkify(effective),
+                      softLineBreak: isUser,
+                      onTapLink: (text, href, title) => _onLink(context, href),
+                      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                        p: TextStyle(
+                            fontSize: 13, height: 1.45, color: appColors.code),
+                        code: TextStyle(
+                            fontSize: 12,
+                            fontFamily: 'monospace',
+                            color: appColors.code),
+                      ),
+                    ),
+                    if (overLimit)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          l(context).messageTruncated,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: theme.colorScheme.outline,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             );

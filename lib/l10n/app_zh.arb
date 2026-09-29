@@ -302,5 +302,10 @@
   "subagentExpand": "展开子会话",
   "subagentCollapse": "收起子会话",
   "subagentNoSession": "子会话未就绪",
-  "subagentLoading": "加载中…"
+  "subagentLoading": "加载中…",
+  "toolOutputTruncated": "输出过长，已截断（省略 {count} 字符）；长按工具卡片可复制完整内容",
+  "@toolOutputTruncated": {"placeholders": {"count": {"type": "String"}}},
+  "messageTruncated": "内容过长，已截断显示",
+  "copyFailed": "复制失败",
+  "errorPageTooLarge": "会话消息过多，超出单次加载上限"
 }
