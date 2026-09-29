@@ -324,6 +324,28 @@ class OpencodeClient {
     return SessionMessage.fromJson(_dataMap(r.data));
   }
 
+  Future<int?> latestMessageAt(String sessionId) async {
+    final r = await dio.get<dynamic>(
+      '/api/session/$sessionId/message',
+      queryParameters: const {'order': 'desc', 'limit': 1},
+    );
+    final data = _asMap(r.data)['data'];
+    if (data is! List || data.isEmpty) return null;
+    final first = data.first;
+    if (first is! Map) return null;
+    final time = first['time'];
+    if (time is! Map) return null;
+    int? latest;
+    for (final key in const ['created', 'streamed', 'completed']) {
+      final v = time[key];
+      if (v is num && v.toInt() > 1e12) {
+        final ms = v.toInt();
+        if (latest == null || ms > latest) latest = ms;
+      }
+    }
+    return latest;
+  }
+
   Future<List<Permission>> pendingPermissions(String directory) async {
     final r = await dio.get<dynamic>('/api/permission/request',
         queryParameters: _locationQuery(directory));
