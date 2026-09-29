@@ -5466,12 +5466,12 @@ class _AgentModelBarState extends State<_AgentModelBar> {
                         )
                       : null,
                   trailing:
-                      serverStore.sessionById(widget.sessionId)?.agent == a.name
+                      serverStore.sessionById(widget.sessionId)?.agent == a.id
                       ? const Icon(Icons.check, size: 18)
                       : null,
                   onTap: () {
                     Navigator.pop(ctx);
-                    _switchAgent(a.name);
+                    _switchAgent(a.id);
                   },
                 ),
               )
@@ -5570,7 +5570,9 @@ class _AgentModelBarState extends State<_AgentModelBar> {
       listenable: serverStore,
       builder: (context, _) {
         final session = serverStore.sessionById(widget.sessionId);
-        final agentName = _optimisticAgent ?? session?.agent ?? '—';
+        final agentId = _optimisticAgent ?? session?.agent ?? '—';
+        final agentMatch = _agents.where((a) => a.id == agentId);
+        final agentName = agentMatch.isEmpty ? agentId : agentMatch.first.name;
         final modelName = session?.model?.id ?? '—';
 
         if (_optimisticAgent != null && session?.agent == _optimisticAgent) {
@@ -5606,10 +5608,10 @@ class _AgentModelBarState extends State<_AgentModelBar> {
               child: Row(
                 children: [
                   if (_agents.length == 2 &&
-                      _agents.any((a) => a.name == agentName))
+                      _agents.any((a) => a.id == agentId))
                     _AgentCapsuleToggle(
                       agents: _agents,
-                      currentAgent: agentName,
+                      currentAgent: agentId,
                       onSwitch: _switching ? null : _switchAgent,
                     )
                   else
@@ -5730,7 +5732,7 @@ class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
   }
 
   void _measure(bool initial) {
-    final idx = widget.agents.indexWhere((a) => a.name == widget.currentAgent);
+    final idx = widget.agents.indexWhere((a) => a.id == widget.currentAgent);
     final stackCtx = _stackKey.currentContext;
     if (idx < 0 || stackCtx == null) return;
     final stackBox = stackCtx.findRenderObject() as RenderBox?;
@@ -5800,7 +5802,7 @@ class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
   }
 
   Widget _buildOption(AgentInfo a, int idx, ColorScheme scheme) {
-    final active = a.name == widget.currentAgent;
+    final active = a.id == widget.currentAgent;
     return Semantics(
       selected: active,
       button: true,
@@ -5810,7 +5812,7 @@ class _AgentCapsuleToggleState extends State<_AgentCapsuleToggle>
         behavior: HitTestBehavior.opaque,
         onTap: widget.onSwitch == null || active
             ? null
-            : () => widget.onSwitch!(a.name),
+            : () => widget.onSwitch!(a.id),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
           child: Row(

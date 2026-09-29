@@ -124,11 +124,25 @@ class OpencodeClient {
     return SessionModel.fromJson(_dataMap(r.data));
   }
 
-  Future<SessionModel> createSession(String directory, {String? title}) async {
+  Future<SessionModel> createSession(
+    String directory, {
+    String? title,
+    String? agent,
+    ModelRef? model,
+  }) async {
     final body = <String, dynamic>{
       'location': {'directory': directory},
     };
     if (title != null && title.isNotEmpty) body['title'] = title;
+    if (agent != null && agent.isNotEmpty) body['agent'] = agent;
+    if (model != null) {
+      final m = <String, dynamic>{
+        'id': model.id,
+        'providerID': model.providerID,
+      };
+      if (model.variant != null) m['variant'] = model.variant;
+      body['model'] = m;
+    }
     final r = await dio.post<dynamic>('/api/session', data: body);
     return SessionModel.fromJson(_dataMap(r.data));
   }

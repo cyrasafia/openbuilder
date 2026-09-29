@@ -446,11 +446,19 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  Future<SessionModel> createSession(String directory) async {
+  Future<SessionModel> createSession(
+    String directory, {
+    String? agent,
+    ModelRef? model,
+  }) async {
     final activeClient = client;
     if (activeClient == null) throw const KnownError(FriendlyErrorKind.notConnected);
     try {
-      final session = await activeClient.createSession(directory);
+      final session = await activeClient.createSession(
+        directory,
+        agent: agent,
+        model: model,
+      );
       _upsertSession(session);
       notifyListeners();
       return session;
@@ -462,6 +470,8 @@ class ServerStore extends ChangeNotifier {
   Future<SessionModel> createSessionInNewWorktree(
     String projectDir, {
     bool reconcileFirst = false,
+    String? agent,
+    ModelRef? model,
   }) async {
     final c = client;
     if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
@@ -506,7 +516,11 @@ class ServerStore extends ChangeNotifier {
     }
     final SessionModel session;
     try {
-      session = await c.createSession(worktree.directory);
+      session = await c.createSession(
+        worktree.directory,
+        agent: agent,
+        model: model,
+      );
     } catch (e) {
       throw SessionInWorktreeException(
         '创建会话',

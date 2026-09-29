@@ -6,7 +6,6 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../app_state.dart';
-import '../../core/logging/app_logger.dart';
 import '../../core/net/net_error.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
@@ -222,8 +221,34 @@ class ProjectDetailScreen extends StatelessWidget {
 
   Future<void> _createSession(BuildContext context, String directory) async {
     try {
-      final session = await serverStore.createSession(directory);
-      unawaited(_applyDefaultAgentModel(session.id, directory));
+      String? targetAgent;
+      ModelRef? targetModel;
+      try {
+        final (agents, models) = await serverStore.fetchAgentsAndModels(
+          directory: directory,
+        );
+        if (agents.isNotEmpty) targetAgent = agents.first.id;
+        if (models.isNotEmpty) {
+          final saved = defaultAgentModelStore.getDefaultModel(
+            connectionStore.activeId,
+          );
+          if (saved != null) {
+            final match = models.where(
+              (m) => m.id == saved.id && m.providerID == saved.providerID,
+            );
+            targetModel = match.isNotEmpty ? saved : null;
+          }
+          targetModel ??= ModelRef(
+            id: models.first.id,
+            providerID: models.first.providerID,
+          );
+        }
+      } catch (_) {}
+      final session = await serverStore.createSession(
+        directory,
+        agent: targetAgent,
+        model: targetModel,
+      );
       if (context.mounted) context.push('/session/${session.id}');
     } catch (e) {
       if (context.mounted) {
@@ -235,59 +260,6 @@ class ProjectDetailScreen extends StatelessWidget {
           ),
         );
       }
-    }
-  }
-
-  Future<void> _applyDefaultAgentModel(
-    String sessionId,
-    String directory,
-  ) async {
-    final client = serverStore.client;
-    if (client == null) return;
-    bool switched = false;
-    try {
-      final (agents, models) = await serverStore.fetchAgentsAndModels(
-        directory: directory,
-      );
-      final session = serverStore.sessionById(sessionId);
-      if (agents.isNotEmpty && session?.agent != agents.first.name) {
-        await client.switchAgent(sessionId, agents.first.name);
-        switched = true;
-      }
-      if (models.isEmpty) {
-        if (switched) unawaited(serverStore.refresh());
-        return;
-      }
-      final saved = defaultAgentModelStore.getDefaultModel(
-        connectionStore.activeId,
-      );
-      ModelRef targetModel;
-      if (saved != null) {
-        final match = models.where(
-          (m) => m.id == saved.id && m.providerID == saved.providerID,
-        );
-        if (match.isNotEmpty) {
-          targetModel = saved;
-        } else {
-          targetModel = ModelRef(
-            id: models.first.id,
-            providerID: models.first.providerID,
-          );
-        }
-      } else {
-        targetModel = ModelRef(
-          id: models.first.id,
-          providerID: models.first.providerID,
-        );
-      }
-      if (session?.model?.id != targetModel.id ||
-          session?.model?.providerID != targetModel.providerID) {
-        await client.switchModel(sessionId, targetModel);
-        switched = true;
-      }
-      if (switched) unawaited(serverStore.refresh());
-    } catch (e) {
-      AppLogger.I.e('ApplyDefaultAgentModel', e.toString());
     }
   }
 
@@ -339,19 +311,47 @@ class ProjectDetailScreen extends StatelessWidget {
                         });
                         try {
                           final pending = pendingWorktreeDir;
+                          String? targetAgent;
+                          ModelRef? targetModel;
+                          try {
+                            final (agents, models) =
+                                await serverStore.fetchAgentsAndModels(
+                              directory: pending ?? project.canonical,
+                            );
+                            if (agents.isNotEmpty) {
+                              targetAgent = agents.first.id;
+                            }
+                            if (models.isNotEmpty) {
+                              final saved = defaultAgentModelStore
+                                  .getDefaultModel(connectionStore.activeId);
+                              if (saved != null) {
+                                final match = models.where(
+                                  (m) =>
+                                      m.id == saved.id &&
+                                      m.providerID == saved.providerID,
+                                );
+                                targetModel =
+                                    match.isNotEmpty ? saved : null;
+                              }
+                              targetModel ??= ModelRef(
+                                id: models.first.id,
+                                providerID: models.first.providerID,
+                              );
+                            }
+                          } catch (_) {}
                           final session = pending == null
                               ? await serverStore.createSessionInNewWorktree(
                                   project.canonical,
                                   reconcileFirst: worktreeStepFailed,
+                                  agent: targetAgent,
+                                  model: targetModel,
                                 )
-                              : await serverStore.createSession(pending);
+                              : await serverStore.createSession(
+                                  pending,
+                                  agent: targetAgent,
+                                  model: targetModel,
+                                );
                           unawaited(serverStore.refresh());
-                          unawaited(
-                            _applyDefaultAgentModel(
-                              session.id,
-                              session.directory,
-                            ),
-                          );
                           if (ctx.mounted) Navigator.pop(ctx);
                           if (context.mounted) {
                             context.push('/session/${session.id}');
