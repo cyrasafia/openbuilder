@@ -659,7 +659,10 @@ class ConversationStore extends ChangeNotifier {
         _messages.remove(existing);
         final recreated = _toDisplay(e);
         if (recreated == null) continue;
-        recreated.parts.addAll(_mergeParts(recreated.parts, existing.parts));
+        final merged = _mergeParts(recreated.parts, existing.parts);
+        recreated.parts
+          ..clear()
+          ..addAll(merged);
         if (_isEmptyUser(recreated)) continue;
         _messages.add(recreated);
         if (!_sameMessage(existing, recreated)) {
@@ -764,6 +767,7 @@ class ConversationStore extends ChangeNotifier {
     final sseById = {for (final p in sse) p.id: p};
     final seen = <String>{};
     for (final rp in rest) {
+      if (!seen.add(rp.id)) continue;
       final sp = sseById[rp.id];
       if (sp != null) {
         seen.add(rp.id);
@@ -781,7 +785,7 @@ class ConversationStore extends ChangeNotifier {
       }
     }
     for (final sp in sse) {
-      if (seen.contains(sp.id)) continue;
+      if (!seen.add(sp.id)) continue;
       if (_isPlaceholderPart(sp) &&
           result.any((r) => r.type == sp.type && !_isPlaceholderPart(r))) {
         continue;
@@ -1484,9 +1488,10 @@ class ConversationStore extends ChangeNotifier {
             authoritative.add(_toolPart('${mid}_tool_${c.id}', c));
         }
       }
+      final merged = _mergeParts(authoritative, existing.parts);
       existing.parts
         ..clear()
-        ..addAll(_mergeParts(authoritative, existing.parts));
+        ..addAll(merged);
       _touchMessages(<String>{mid});
     }
     _recomputeTodos();

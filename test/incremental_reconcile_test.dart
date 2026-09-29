@@ -63,6 +63,36 @@ void main() {
       expect(conv.hasMore, isTrue);
     });
 
+    test('repeat reconcile of the same window must not duplicate parts',
+        () async {
+      final entries = [
+        userMsg(id: 'u1', text: 'hello', created: 100),
+        assistantMsg(
+            id: 'a1',
+            created: 200,
+            content: [textPart('answer')],
+            finish: 'stop'),
+      ];
+      final client = _PageMockClient([
+        _PageSpec(entries, 'c1'),
+        _PageSpec(entries, 'c1'),
+        _PageSpec(entries, 'c1'),
+      ]);
+      final conv = ConversationStore('s1', client);
+      await conv.reconcile();
+      final afterFirst = conv.messages.map((m) => m.parts.length).toList();
+      expect(afterFirst, everyElement(1));
+      await conv.reconcile();
+      await conv.reconcile();
+      for (final m in conv.messages) {
+        expect(m.parts.length, 1,
+            reason:
+                'parts of ${m.id} must not double after repeated reconcile '
+                '(got ${m.parts.map((p) => p.id).toList()})');
+      }
+      expect(conv.renderableMessages.length, 2);
+    });
+
     test('second reconcile no overlap → gap forms, old content unreachable',
         () async {
       final first = _entries(1, 5); // m1..m5
