@@ -22,7 +22,7 @@ Dio rawDownloadDio(Dio base) {
   final raw = Dio(BaseOptions(
     baseUrl: base.options.baseUrl,
     connectTimeout: base.options.connectTimeout,
-    receiveTimeout: base.options.receiveTimeout,
+    receiveTimeout: Duration.zero,
     sendTimeout: base.options.sendTimeout,
     headers: {
       ...base.options.headers,
