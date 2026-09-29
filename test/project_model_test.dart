@@ -6,19 +6,16 @@ void main() {
     final disabled = ProjectModel.fromJson({
       'id': 'disabled',
       'worktree': '/repo/disabled',
-      'sandboxes': ['/repo/disabled-sandbox'],
     });
     final enabledWithoutScript = ProjectModel.fromJson({
       'id': 'enabled-empty',
       'worktree': '/repo/enabled-empty',
       'commands': {'start': ''},
-      'sandboxes': <String>[],
     });
     final enabledWithScript = ProjectModel.fromJson({
       'id': 'enabled-script',
       'worktree': '/repo/enabled-script',
       'commands': {'start': 'setup.sh'},
-      'sandboxes': <String>[],
     });
 
     expect(disabled.workspacesEnabled, isFalse);

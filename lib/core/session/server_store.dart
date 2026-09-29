@@ -81,6 +81,7 @@ class ServerStore extends ChangeNotifier {
   final Map<String, String> _lastMessage = {};
   final Map<String, int> _lastActivityByKey = {};
   final Map<String, bool> _workspaceEnabled = {};
+  final Map<String, List<String>> _worktreeDirs = {};
   final Set<String> _deletingWorktrees = {};
   bool _projectsFetched = false;
   final LinkedHashMap<String, ConversationStore> _conversations =
@@ -319,6 +320,9 @@ class ServerStore extends ChangeNotifier {
     return _workspaceEnabled[projectId] ?? false;
   }
 
+  List<String> worktreeDirsOf(String projectId) =>
+      _worktreeDirs[projectId] ?? const [];
+
   void setWorkspaceEnabled(String projectId, bool enabled) {
     if (projectId == 'global') return;
     if (_workspaceEnabled[projectId] == enabled) return;
@@ -338,16 +342,15 @@ class ServerStore extends ChangeNotifier {
     final activeClient = client;
     if (activeClient == null) throw const KnownError(FriendlyErrorKind.notConnected);
     try {
-      final updated = (await _reconcileSandboxes([
-        await activeClient.updateProject(
-          projectId,
-          name: name,
-          updateIcon: updateIcon,
-          iconUrl: iconUrl,
-          iconOverride: iconOverride,
-          iconColor: iconColor,
-        ),
-      ])).single;
+      final updated = await activeClient.updateProject(
+        projectId,
+        name: name,
+        updateIcon: updateIcon,
+        iconUrl: iconUrl,
+        iconOverride: iconOverride,
+        iconColor: iconColor,
+      );
+      await _reconcileWorktrees([updated]);
       final idx = _projects.indexWhere((p) => p.id == projectId);
       if (idx >= 0) {
         _projects[idx] = updated;
@@ -383,23 +386,10 @@ class ServerStore extends ChangeNotifier {
         ),
       );
       await c.removeWorktree(project.id, worktreeDir);
-      final idx = _projects.indexWhere((p) => p.canonical == projectWorktree);
-      if (idx >= 0) {
-        final p = _projects[idx];
-        _projects[idx] = ProjectModel(
-          id: p.id,
-          canonical: p.canonical,
-          vcs: p.vcs,
-          name: p.name,
-          icon: p.icon,
-          commands: p.commands,
-          sandboxes: p.sandboxes
-              .where((d) => d != worktreeDir)
-              .toList(growable: false),
-          created: p.created,
-          updated: p.updated,
-          active: p.active,
-        );
+      final dirs = _worktreeDirs[project.id];
+      if (dirs != null && dirs.contains(worktreeDir)) {
+        _worktreeDirs[project.id] =
+            dirs.where((d) => d != worktreeDir).toList(growable: false);
       }
       final removedIds = _sessions
           .where((s) => s.directory == worktreeDir)
@@ -422,6 +412,24 @@ class ServerStore extends ChangeNotifier {
 
   bool isWorktreeDeleting(String worktreeDir) =>
       _deletingWorktrees.contains(worktreeDir);
+
+  Future<void> reconcileProjectWorktrees(String projectId) async {
+    final c = client;
+    if (c == null) return;
+    final project = projectOf(projectId);
+    if (project == null || project.canonical.isEmpty) return;
+    try {
+      final wts = await c
+          .worktrees(projectId)
+          .timeout(const Duration(seconds: 3));
+      final dirs = wts.map((w) => w.directory).toList(growable: false);
+      if (dirs.isEmpty) return;
+      if (listEquals(_worktreeDirs[projectId], dirs)) return;
+      _worktreeDirs[projectId] = dirs;
+      _scheduleCacheSave();
+      notifyListeners();
+    } catch (_) {}
+  }
 
   ProjectModel? _projectByCanonical(String canonical) {
     for (final p in _projects) {
@@ -496,21 +504,10 @@ class ServerStore extends ChangeNotifier {
       }
     }
     final worktree = wt;
-    final idx = _projects.indexWhere((p) => p.canonical == projectDir);
-    if (idx >= 0 && !_projects[idx].sandboxes.contains(worktree.directory)) {
-      final p = _projects[idx];
-      _projects[idx] = ProjectModel(
-        id: p.id,
-        canonical: p.canonical,
-        vcs: p.vcs,
-        name: p.name,
-        icon: p.icon,
-        commands: p.commands,
-        sandboxes: [...p.sandboxes, worktree.directory],
-        created: p.created,
-        updated: p.updated,
-        active: p.active,
-      );
+    final dirs = [...worktreeDirsOf(project.id)];
+    if (!dirs.contains(worktree.directory)) {
+      dirs.add(worktree.directory);
+      _worktreeDirs[project.id] = dirs;
       _scheduleCacheSave();
       notifyListeners();
     }
@@ -542,7 +539,7 @@ class ServerStore extends ChangeNotifier {
       final remote = await c.worktrees(project.id);
       final known = <String>{
         project.canonical,
-        ...project.sandboxes,
+        ...worktreeDirsOf(project.id),
       };
       final candidates = remote
           .map((w) => w.directory)
@@ -733,6 +730,7 @@ class ServerStore extends ChangeNotifier {
       _lastMessage.clear();
       _lastActivityByKey.clear();
       _workspaceEnabled.clear();
+      _worktreeDirs.clear();
       _projectsFetched = false;
       commandsNotifier.value = const [];
       _commandsDegraded = false;
@@ -778,7 +776,7 @@ class ServerStore extends ChangeNotifier {
     final dirs = <String>{};
     for (final p in _projects) {
       if (p.canonical.isNotEmpty) dirs.add(p.canonical);
-      for (final d in p.sandboxes) {
+      for (final d in worktreeDirsOf(p.id)) {
         if (d.isNotEmpty) dirs.add(d);
       }
     }
@@ -792,7 +790,7 @@ class ServerStore extends ChangeNotifier {
     if (directory.isEmpty) return false;
     for (final p in _projects) {
       if (p.canonical == directory) return true;
-      if (p.sandboxes.contains(directory)) return true;
+      if (worktreeDirsOf(p.id).contains(directory)) return true;
     }
     for (final s in _sessions) {
       if (s.directory == directory) return true;
@@ -832,49 +830,37 @@ class ServerStore extends ChangeNotifier {
       ..addAll(authHeadersFor(profile));
   }
 
-  List<ProjectModel> _filterSandboxes(
-    List<ProjectModel> projects,
-    Map<String, List<String>> worktreesByDir,
-  ) {
-    return projects.map((p) {
-      if (p.sandboxes.isEmpty || p.canonical.isEmpty) return p;
-      final real = worktreesByDir[p.canonical];
-      if (real == null || real.isEmpty) return p;
-      final valid = real.toSet()..add(p.canonical);
-      final filtered =
-          p.sandboxes.where(valid.contains).toList(growable: false);
-      if (filtered.length == p.sandboxes.length) return p;
-      return ProjectModel(
-        id: p.id,
-        canonical: p.canonical,
-        vcs: p.vcs,
-        name: p.name,
-        icon: p.icon,
-        commands: p.commands,
-        sandboxes: filtered,
-        created: p.created,
-        updated: p.updated,
-        active: p.active,
-      );
-    }).toList();
-  }
-
-  Future<List<ProjectModel>> _reconcileSandboxes(
+  Future<void> _reconcileWorktrees(
     List<ProjectModel> projects, {
     Map<String, List<String>>? worktreesByDir,
+    Iterable<SessionModel>? sessions,
   }) async {
     final c = client;
-    if (c == null) return projects;
+    if (c == null) return;
     final map = worktreesByDir ?? <String, List<String>>{};
+    final byId = {for (final p in projects) p.id: p};
+    final foreignDirProjects = <String>{};
+    for (final s in sessions ?? _sessions) {
+      if (s.directory.isEmpty) continue;
+      final p = byId[s.projectID];
+      if (p == null || p.id == 'global') continue;
+      if (s.directory != p.canonical) foreignDirProjects.add(p.id);
+    }
     await Future.wait(projects.map((p) async {
-      if (p.sandboxes.isEmpty || p.canonical.isEmpty) return;
+      if (!p.workspaceCapable || p.canonical.isEmpty) return;
+      if (_worktreeDirs[p.id]?.isNotEmpty != true &&
+          !(_workspaceEnabled[p.id] ?? false) &&
+          !foreignDirProjects.contains(p.id)) {
+        return;
+      }
       try {
         final wts = await c.worktrees(p.id);
-        map[p.canonical] =
-            wts.map((w) => w.directory).toList(growable: false);
+        final dirs = wts.map((w) => w.directory).toList(growable: false);
+        if (dirs.isEmpty) return;
+        _worktreeDirs[p.id] = dirs;
+        map[p.canonical] = dirs;
       } catch (_) {}
     }));
-    return _filterSandboxes(projects, map);
   }
 
   void _markGhostSessions(Set<String> ids) {
@@ -917,11 +903,10 @@ class ServerStore extends ChangeNotifier {
   Future<bool> _bootstrap() async {
     try {
       final worktreesByDir = <String, List<String>>{};
-      final projects = await _reconcileSandboxes(
-        await client!.projects(),
-        worktreesByDir: worktreesByDir,
-      );
       final sessions = await _fetchAllSessions();
+      final projects = await client!.projects();
+      await _reconcileWorktrees(projects,
+          worktreesByDir: worktreesByDir, sessions: sessions);
       _unghostRecovered(sessions);
       final ghostIds =
           _detectGhostSessionIds(_sessions, sessions, projects, worktreesByDir);
@@ -997,7 +982,8 @@ class ServerStore extends ChangeNotifier {
     });
   }
 
-  Future<bool> refreshListAndWorkingSse({bool force = false}) async {
+  Future<bool> refreshListAndWorkingSse(
+      {bool force = false, bool reconcileWorktrees = false}) async {
     if (client == null) return false;
     PerfProbe.I.markEvent('refresh-start force=$force');
     try {
@@ -1007,10 +993,11 @@ class ServerStore extends ChangeNotifier {
       List<ProjectModel> newProjects;
       final worktreesByDir = <String, List<String>>{};
       if (force || !_projectsFetched) {
-        newProjects = await _reconcileSandboxes(
-          await client!.projects(),
-          worktreesByDir: worktreesByDir,
-        );
+        newProjects = await client!.projects();
+        await _reconcileWorktrees(newProjects, worktreesByDir: worktreesByDir);
+      } else if (reconcileWorktrees) {
+        await _reconcileWorktrees(_projects, worktreesByDir: worktreesByDir);
+        newProjects = _projects;
       } else {
         newProjects = _projects;
       }
@@ -1019,7 +1006,6 @@ class ServerStore extends ChangeNotifier {
       _unghostRecovered(sessions);
       final ghostIds =
           _detectGhostSessionIds(_sessions, sessions, newProjects, worktreesByDir);
-      newProjects = _filterSandboxes(newProjects, worktreesByDir);
       final active = await _fetchActiveStatuses();
       _projects = newProjects;
       _sessions = _mergeFetchedSessions(sessions);
@@ -1079,7 +1065,7 @@ class ServerStore extends ChangeNotifier {
 
   Future<void> _reconcile() async {
     if (client == null) return;
-    await refreshListAndWorkingSse(force: false);
+    await refreshListAndWorkingSse(force: false, reconcileWorktrees: true);
   }
 
   Future<void> _backfillPermissions() async {
@@ -1318,16 +1304,15 @@ class ServerStore extends ChangeNotifier {
   void clearSessionsForTesting() => _sessions = [];
 
   @visibleForTesting
-  Future<List<ProjectModel>> reconcileSandboxesForTesting(
-          List<ProjectModel> projects) =>
-      _reconcileSandboxes(projects);
+  Future<void> reconcileWorktreesForTesting(
+    List<ProjectModel> projects, {
+    Iterable<SessionModel>? sessions,
+  }) =>
+      _reconcileWorktrees(projects, sessions: sessions);
 
   @visibleForTesting
-  List<ProjectModel> filterSandboxesForTesting(
-    List<ProjectModel> projects,
-    Map<String, List<String>> worktreesByDir,
-  ) =>
-      _filterSandboxes(projects, worktreesByDir);
+  void setWorktreeDirsForTesting(String projectId, List<String> dirs) =>
+      _worktreeDirs[projectId] = dirs;
 
   @visibleForTesting
   Set<String> detectGhostSessionIdsForTesting(
@@ -2129,6 +2114,7 @@ class ServerStore extends ChangeNotifier {
     _lastMessage.clear();
     _lastActivityByKey.clear();
     _workspaceEnabled.clear();
+    _worktreeDirs.clear();
     _pendingPermissions.clear();
     _pendingForms.clear();
     _recentlyResolvedForms.clear();
@@ -2284,7 +2270,7 @@ class ServerStore extends ChangeNotifier {
     final stale = _lastFullRefreshAt == null ||
         DateTime.now().difference(_lastFullRefreshAt!) > kMaxRefreshInterval;
     if (stale) {
-      await refreshListAndWorkingSse(force: false);
+      await refreshListAndWorkingSse(force: false, reconcileWorktrees: true);
       return;
     }
 
@@ -2338,6 +2324,7 @@ class ServerStore extends ChangeNotifier {
         'lastMessage': _lastMessage,
         'activity': _lastActivityByKey,
         'workspaceEnabled': _workspaceEnabled,
+        'worktreeDirs': _worktreeDirs,
       };
       await cs.write('server', jsonEncode(j));
     } catch (e) {
@@ -2386,6 +2373,13 @@ class ServerStore extends ChangeNotifier {
       for (final entry in wsRaw.entries) {
         _workspaceEnabled.putIfAbsent(
             entry.key.toString(), () => entry.value == true);
+      }
+      final wtRaw = j['worktreeDirs'] as Map? ?? {};
+      for (final entry in wtRaw.entries) {
+        final dirs = entry.value;
+        if (dirs is! List) continue;
+        _worktreeDirs.putIfAbsent(entry.key.toString(),
+            () => dirs.map((e) => e.toString()).toList(growable: false));
       }
       if (_projects.isNotEmpty || _sessions.isNotEmpty) {
         _projectsFetched = true;

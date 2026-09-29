@@ -4076,7 +4076,7 @@ class _RetryMessage extends StatelessWidget {
 }
 
 /// Shown when a refresh proved the session's worktree directory no longer
-/// exists (ghost sandbox). Same bubble style as `_RetryMessage`, error-colored
+/// exists (ghost worktree). Same bubble style as `_RetryMessage`, error-colored
 /// with a static warning icon — nothing is retrying; the session is unusable.
 class _WorkspaceMissingBanner extends StatelessWidget {
   const _WorkspaceMissingBanner();

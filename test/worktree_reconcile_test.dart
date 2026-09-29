@@ -10,11 +10,10 @@ Dio _noopDio() => Dio(BaseOptions(
       receiveTimeout: const Duration(milliseconds: 1),
     ));
 
-ProjectModel _project(String id, List<String> sandboxes) => ProjectModel(
+ProjectModel _project(String id) => ProjectModel(
       id: id,
       canonical: '/repo/$id',
       vcs: 'git',
-      sandboxes: sandboxes,
     );
 
 SessionModel _session(String id, String projectId, String dir) => SessionModel(
@@ -85,99 +84,118 @@ class _UpdateProjectMockClient extends _WorktreesMockClient {
 }
 
 void main() {
-  group('ServerStore._reconcileSandboxes', () {
-    test('drops ghost sandboxes missing from the worktree list', () async {
+  group('ServerStore._reconcileWorktrees', () {
+    test('replaces the cached list with the remote worktree list', () async {
       final client = _WorktreesMockClient(byProject: {
         'p1': ['/repo/p1', '/wt/real'],
       });
       final store = ServerStore()..client = client;
-      final out = await store.reconcileSandboxesForTesting([
-        _project('p1', ['/repo/p1', '/wt/real', '/wt/ghost']),
-      ]);
-      expect(out.single.sandboxes, ['/repo/p1', '/wt/real']);
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting(
+          'p1', ['/repo/p1', '/wt/real', '/wt/ghost']);
+      await store.reconcileWorktreesForTesting([_project('p1')]);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/real']);
     });
 
-    test('keeps sandboxes untouched when the fetch fails (fail-open)',
-        () async {
+    test('keeps cached worktrees when the fetch fails (fail-open)', () async {
       final client = _WorktreesMockClient(
         failingProjects: {'p1'},
       );
       final store = ServerStore()..client = client;
-      final out = await store.reconcileSandboxesForTesting([
-        _project('p1', ['/repo/p1', '/wt/ghost']),
-      ]);
-      expect(out.single.sandboxes, ['/repo/p1', '/wt/ghost']);
+      store.setWorktreeDirsForTesting('p1', ['/repo/p1', '/wt/ghost']);
+      await store.reconcileWorktreesForTesting([_project('p1')]);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/ghost']);
     });
 
-    test('keeps sandboxes untouched on a 200-empty list (fail-open)',
-        () async {
+    test('keeps cached worktrees on a 200-empty list (fail-open)', () async {
       final client = _WorktreesMockClient(byProject: {'p1': []});
       final store = ServerStore()..client = client;
-      final out = await store.reconcileSandboxesForTesting([
-        _project('p1', ['/repo/p1', '/wt/real']),
-      ]);
-      expect(out.single.sandboxes, ['/repo/p1', '/wt/real']);
+      store.setWorktreeDirsForTesting('p1', ['/repo/p1', '/wt/real']);
+      await store.reconcileWorktreesForTesting([_project('p1')]);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/real']);
     });
 
-    test('always keeps the main worktree even if the list omits it',
+    test('skips projects without cached worktrees or workspace usage',
         () async {
-      final client = _WorktreesMockClient(byProject: {
-        'p1': ['/wt/other'],
-      });
-      final store = ServerStore()..client = client;
-      final out = await store.reconcileSandboxesForTesting([
-        _project('p1', ['/repo/p1', '/wt/ghost']),
-      ]);
-      expect(out.single.sandboxes, ['/repo/p1']);
-    });
-
-    test('skips projects without sandboxes', () async {
       final client = _WorktreesMockClient();
       final store = ServerStore()..client = client;
-      final out = await store.reconcileSandboxesForTesting([
-        _project('p1', []),
+      await store.reconcileWorktreesForTesting([
+        _project('p1'),
         ProjectModel(id: 'global', canonical: '/'),
       ]);
-      expect(out[0].sandboxes, isEmpty);
-      expect(out[1].sandboxes, isEmpty);
+      expect(store.worktreeDirsOf('p1'), isEmpty);
       expect(client.calls, isEmpty);
     });
 
-    test('all-ghost project ends up with empty sandboxes', () async {
+    test('queries worktree list for workspace-enabled projects without '
+        'cached worktrees', () async {
+      final client = _WorktreesMockClient(byProject: {
+        'p1': ['/repo/p1', '/wt/remote'],
+      });
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1'), _project('p2')]);
+      store.setWorkspaceEnabled('p1', true);
+      await store.reconcileWorktreesForTesting([
+        _project('p1'),
+        _project('p2'),
+      ]);
+      expect(client.calls, ['p1']);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/remote']);
+      expect(store.worktreeDirsOf('p2'), isEmpty);
+    });
+
+    test('queries worktree list for projects with sessions outside the '
+        'canonical directory', () async {
+      final client = _WorktreesMockClient(byProject: {
+        'p1': ['/repo/p1', '/wt/remote'],
+      });
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.upsertSessionForTesting(_session('s1', 'p1', '/wt/remote'));
+      await store.reconcileWorktreesForTesting([_project('p1')]);
+      expect(client.calls, ['p1']);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/remote']);
+    });
+
+    test('injected sessions drive the predicate without store state',
+        () async {
+      final client = _WorktreesMockClient(byProject: {
+        'p1': ['/repo/p1', '/wt/remote'],
+      });
+      final store = ServerStore()..client = client;
+      await store.reconcileWorktreesForTesting(
+        [_project('p1')],
+        sessions: [_session('s1', 'p1', '/wt/remote')],
+      );
+      expect(client.calls, ['p1']);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/remote']);
+    });
+
+    test('adopts remote worktrees missing from the local cache', () async {
+      final client = _WorktreesMockClient(byProject: {
+        'p1': ['/repo/p1', '/wt/a', '/wt/b', '/wt/calm'],
+      });
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting('p1', ['/repo/p1', '/wt/calm']);
+      await store.reconcileWorktreesForTesting([_project('p1')]);
+      expect(store.worktreeDirsOf('p1'),
+          ['/repo/p1', '/wt/a', '/wt/b', '/wt/calm']);
+    });
+
+    test('all-ghost cache ends up with only the remote main worktree',
+        () async {
       final client = _WorktreesMockClient(byProject: {
         'p1': ['/repo/p1'],
       });
       final store = ServerStore()..client = client;
-      final out = await store.reconcileSandboxesForTesting([
-        _project('p1', ['/wt/ghost-a', '/wt/ghost-b']),
-      ]);
-      expect(out.single.sandboxes, isEmpty);
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting('p1', ['/wt/ghost-a', '/wt/ghost-b']);
+      await store.reconcileWorktreesForTesting([_project('p1')]);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1']);
     });
 
-    test('preserves other project fields when filtering', () async {
-      final client = _WorktreesMockClient(byProject: {
-        'p1': ['/wt/real'],
-      });
-      final store = ServerStore()..client = client;
-      final p = ProjectModel(
-        id: 'p1',
-        canonical: '/repo/p1',
-        vcs: 'git',
-        name: 'renamed',
-        commands: const ProjectCommands(start: 'make start'),
-        sandboxes: const ['/wt/real', '/wt/ghost'],
-        created: 42,
-      );
-      final out = await store.reconcileSandboxesForTesting([p]);
-      final f = out.single;
-      expect(f.sandboxes, ['/wt/real']);
-      expect(f.name, 'renamed');
-      expect(f.commands?.start, 'make start');
-      expect(f.created, 42);
-      expect(f.vcs, 'git');
-    });
-
-    test('filters projects independently and in parallel', () async {
+    test('reconciles projects independently and in parallel', () async {
       final client = _WorktreesMockClient(
         byProject: {
           'p1': ['/repo/p1'],
@@ -185,61 +203,82 @@ void main() {
         failingProjects: {'p2'},
       );
       final store = ServerStore()..client = client;
-      final out = await store.reconcileSandboxesForTesting([
-        _project('p1', ['/repo/p1', '/wt/ghost']),
-        _project('p2', ['/repo/p2', '/wt/other']),
+      store.setWorktreeDirsForTesting('p1', ['/repo/p1', '/wt/ghost']);
+      store.setWorktreeDirsForTesting('p2', ['/repo/p2', '/wt/other']);
+      await store.reconcileWorktreesForTesting([
+        _project('p1'),
+        _project('p2'),
       ]);
-      expect(out[0].sandboxes, ['/repo/p1']);
-      expect(out[1].sandboxes, ['/repo/p2', '/wt/other']);
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1']);
+      expect(store.worktreeDirsOf('p2'), ['/repo/p2', '/wt/other']);
       expect(client.calls, containsAll(['p1', 'p2']));
     });
   });
 
   group('ServerStore.updateProject', () {
-    test('filters ghosts out of the PATCH response before storing', () async {
+    test('reconciles cached worktrees after a PATCH response', () async {
       final client = _UpdateProjectMockClient(byProject: {
         'p1': ['/repo/p1', '/wt/real'],
       });
-      client.returned = _project('p1', ['/repo/p1', '/wt/real', '/wt/ghost']);
-      final store = ServerStore()
-        ..client = client
-        ..setProjectsForTesting([_project('p1', ['/wt/ghost'])]);
+      client.returned = ProjectModel(
+        id: 'p1',
+        canonical: '/repo/p1',
+        vcs: 'git',
+        name: 'renamed',
+      );
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting(
+          'p1', ['/repo/p1', '/wt/real', '/wt/ghost']);
       final updated = await store.updateProject('p1', name: 'renamed');
-      expect(updated.sandboxes, ['/repo/p1', '/wt/real']);
-      expect(store.projectOf('p1')?.sandboxes, ['/repo/p1', '/wt/real']);
+      expect(updated.name, 'renamed');
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/real']);
     });
 
-    test('keeps raw sandboxes when the worktrees fetch fails', () async {
+    test('keeps cached worktrees when the fetch fails', () async {
       final client = _UpdateProjectMockClient(
         failingProjects: {'p1'},
       );
-      client.returned = _project('p1', ['/repo/p1', '/wt/ghost']);
+      client.returned = _project('p1');
       final store = ServerStore()..client = client;
-      final updated = await store.updateProject('p1', name: 'renamed');
-      expect(updated.sandboxes, ['/repo/p1', '/wt/ghost']);
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting('p1', ['/repo/p1', '/wt/ghost']);
+      await store.updateProject('p1', name: 'renamed');
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/ghost']);
     });
   });
 
-  group('ServerStore._filterSandboxes (pre-fetched map)', () {
-    test('filters ghosts, keeps main, skips missing/empty entries', () {
-      final store = ServerStore();
-      final out = store.filterSandboxesForTesting([
-        _project('p1', ['/repo/p1', '/wt/real', '/wt/ghost']),
-        _project('p2', ['/repo/p2', '/wt/ghost']),
-        _project('p3', ['/repo/p3', '/wt/ghost']),
-      ], {
-        '/repo/p1': ['/repo/p1', '/wt/real'],
-        '/repo/p2': [],
-        // p3 missing entirely
+  group('ServerStore.reconcileProjectWorktrees', () {
+    test('merges fresh remote worktrees into the cache', () async {
+      final client = _WorktreesMockClient(byProject: {
+        'p1': ['/repo/p1', '/wt/a', '/wt/calm'],
       });
-      expect(out[0].sandboxes, ['/repo/p1', '/wt/real']);
-      expect(out[1].sandboxes, ['/repo/p2', '/wt/ghost']);
-      expect(out[2].sandboxes, ['/repo/p3', '/wt/ghost']);
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting('p1', ['/repo/p1', '/wt/calm']);
+      await store.reconcileProjectWorktrees('p1');
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/a', '/wt/calm']);
+    });
+
+    test('keeps cached worktrees when the fetch fails', () async {
+      final client = _WorktreesMockClient(failingProjects: {'p1'});
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting('p1', ['/repo/p1']);
+      await store.reconcileProjectWorktrees('p1');
+      expect(store.worktreeDirsOf('p1'), ['/repo/p1']);
+    });
+
+    test('no-ops for unknown projects', () async {
+      final client = _WorktreesMockClient();
+      final store = ServerStore()..client = client;
+      await store.reconcileProjectWorktrees('missing');
+      expect(client.calls, isEmpty);
     });
   });
 
   group('ServerStore._detectGhostSessionIds', () {
-    final projects = [_project('p1', ['/repo/p1', '/wt/ghost'])];
+    final projects = [_project('p1')];
     final map = {
       '/repo/p1': ['/repo/p1'],
     };
@@ -274,7 +313,7 @@ void main() {
           _session('s2', 'p1', '/wt/real'),
         ],
         [],
-        [_project('p1', [])],
+        [_project('p1')],
         {
           '/repo/p1': ['/repo/p1', '/wt/real'],
         },

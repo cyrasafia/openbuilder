@@ -28,14 +28,13 @@ void main() {
     )));
   });
 
-  test('projects() parses v2 Project{name,icon,sandboxes}', () async {
+  test('projects() parses v2 Project{id,canonical,name,icon}', () async {
     if (!await _serverUp()) return;
     final ps = await _client!.projects();
     expect(ps, isNotEmpty);
     final first = ps.first;
     expect(first.id, isNotEmpty);
     expect(first.canonical, isNotEmpty);
-    expect(first.sandboxes, isA<List>());
   }, timeout: const Timeout(Duration(seconds: 20)));
 
   test('sessions() parses v2 Session + status map', () async {

@@ -124,7 +124,9 @@ class ProjectDetailScreen extends StatelessWidget {
                             context,
                             sessions,
                             scopedWorktree,
-                            project?.sandboxes ?? const [],
+                            project == null
+                                ? const <String>[]
+                                : serverStore.worktreeDirsOf(project.id),
                             alwaysShowHeaders: wsEnabled && directory == null,
                           ),
                         const SizedBox(height: 88),
@@ -163,50 +165,60 @@ class ProjectDetailScreen extends StatelessWidget {
       await _createSession(context, project.canonical);
       return;
     }
-    final workspaces = [
-      project.canonical,
-      ...project.sandboxes.where((dir) => dir != project.canonical),
-    ];
+    unawaited(serverStore.reconcileProjectWorktrees(project.id));
     final directory = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (ctx) => SafeArea(
+      builder: (sheetCtx) => SafeArea(
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(ctx).height * 0.7,
+            maxHeight: MediaQuery.sizeOf(sheetCtx).height * 0.7,
           ),
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              ListTile(
-                title: Text(l(ctx).projectSelectWorkspace),
-                titleTextStyle: Theme.of(
-                  ctx,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              ...workspaces.map(
-                (dir) => ListTile(
-                  leading: const Icon(Icons.call_split),
-                  title: Text(
-                    dir == project.canonical
-                        ? l(ctx).projectMainWorkspace
-                        : dir.split('/').last,
+          child: ListenableBuilder(
+            listenable: serverStore,
+            builder: (sheetCtx, _) {
+              final fresh = serverStore.projectOf(project.id) ?? project;
+              final workspaces = [
+                fresh.canonical,
+                ...serverStore
+                    .worktreeDirsOf(fresh.id)
+                    .where((dir) => dir != fresh.canonical),
+              ];
+              return ListView(
+                shrinkWrap: true,
+                children: [
+                  ListTile(
+                    title: Text(l(sheetCtx).projectSelectWorkspace),
+                    titleTextStyle: Theme.of(sheetCtx)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
                   ),
-                  subtitle: Text(
-                    dir,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  ...workspaces.map(
+                    (dir) => ListTile(
+                      leading: const Icon(Icons.call_split),
+                      title: Text(
+                        dir == fresh.canonical
+                            ? l(sheetCtx).projectMainWorkspace
+                            : dir.split('/').last,
+                      ),
+                      subtitle: Text(
+                        dir,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onTap: () => Navigator.pop(sheetCtx, dir),
+                    ),
                   ),
-                  onTap: () => Navigator.pop(ctx, dir),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.create_new_folder_outlined),
-                title: Text(l(ctx).projectNewWorkspace),
-                onTap: () => Navigator.pop(ctx, ''),
-              ),
-            ],
+                  ListTile(
+                    leading: const Icon(Icons.create_new_folder_outlined),
+                    title: Text(l(sheetCtx).projectNewWorkspace),
+                    onTap: () => Navigator.pop(sheetCtx, ''),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -489,21 +501,21 @@ class ProjectDetailScreen extends StatelessWidget {
   /// true (e.g. a workspace-enabled project viewed at the project level, so
   /// the "主工作区" header still surfaces even with a single populated
   /// worktree). Single-worktree projects with headers suppressed keep a flat
-  /// list. Ordering (main worktree first, then sandboxes, recency within a
+  /// list. Ordering (main worktree first, then cached worktrees, recency within a
   /// group) comes from [groupSessionsByWorktree] so it matches the project
   /// list tab.
   List<Widget> _groupedByWorktree(
     BuildContext context,
     List<SessionModel> all,
     String projectWorktree,
-    List<String> sandboxes, {
+    List<String> worktreeDirs, {
     bool alwaysShowHeaders = false,
   }) {
     final groups = groupSessionsByWorktree(
       all,
       mainWorktree: projectWorktree,
-      sandboxOrder: {
-        for (var i = 0; i < sandboxes.length; i++) sandboxes[i]: i,
+      worktreeOrder: {
+        for (var i = 0; i < worktreeDirs.length; i++) worktreeDirs[i]: i,
       },
     );
     final showHeaders = groups.length > 1 || alwaysShowHeaders;
@@ -514,7 +526,7 @@ class ProjectDetailScreen extends StatelessWidget {
         final name = g.directory == projectWorktree
             ? l(context).projectMainWorkspace
             : (g.directory.isEmpty ? 'global' : g.directory.split('/').last);
-        // Only non-main worktrees (sandboxes) can be removed.
+        // Only non-main worktrees can be removed.
         final canDelete =
             g.directory.isNotEmpty && g.directory != projectWorktree;
         out.add(

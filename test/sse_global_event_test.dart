@@ -26,8 +26,8 @@ SessionModel _session({required String id, required String directory}) =>
       'time': {'created': 1, 'updated': 1},
     });
 
-ProjectModel _project(String canonical, {List<String> sandboxes = const []}) =>
-    ProjectModel(id: 'p1', canonical: canonical, sandboxes: sandboxes);
+ProjectModel _project(String canonical) =>
+    ProjectModel(id: 'p1', canonical: canonical);
 
 void main() {
   group('parseGlobalEvent', () {
@@ -80,13 +80,13 @@ void main() {
       store.dispose();
     });
 
-    test('events from a sandbox directory pass the gate', () {
+    test('events from a worktree directory pass the gate', () {
       final store = ServerStore();
-      store.setProjectsForTesting(
-          [_project('/repo', sandboxes: const ['/repo/.sandboxes/a1'])]);
+      store.setProjectsForTesting([_project('/repo')]);
+      store.setWorktreeDirsForTesting('p1', ['/repo/.worktrees/a1']);
       store.onGlobalEventForTesting(
-          '/repo/.sandboxes/a1',
-          _sessionCreated(id: 's1', directory: '/repo/.sandboxes/a1'));
+          '/repo/.worktrees/a1',
+          _sessionCreated(id: 's1', directory: '/repo/.worktrees/a1'));
       expect(store.sessions.map((s) => s.id), contains('s1'));
       store.dispose();
     });
@@ -136,13 +136,14 @@ void main() {
       store.dispose();
     });
 
-    test('isGatedDirectoryForTesting covers canonical/sandbox/session dirs', () {
+    test('isGatedDirectoryForTesting covers canonical/worktree/session dirs',
+        () {
       final store = ServerStore();
-      store.setProjectsForTesting(
-          [_project('/repo', sandboxes: const ['/repo/.sandboxes/a1'])]);
+      store.setProjectsForTesting([_project('/repo')]);
+      store.setWorktreeDirsForTesting('p1', ['/repo/.worktrees/a1']);
       store.upsertSessionForTesting(_session(id: 's1', directory: '/known'));
       expect(store.isGatedDirectoryForTesting('/repo'), isTrue);
-      expect(store.isGatedDirectoryForTesting('/repo/.sandboxes/a1'), isTrue);
+      expect(store.isGatedDirectoryForTesting('/repo/.worktrees/a1'), isTrue);
       expect(store.isGatedDirectoryForTesting('/known'), isTrue);
       expect(store.isGatedDirectoryForTesting('/elsewhere'), isFalse);
       expect(store.isGatedDirectoryForTesting(''), isFalse,

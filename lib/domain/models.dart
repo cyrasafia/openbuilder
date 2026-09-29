@@ -7,7 +7,6 @@ class ProjectModel {
   final String? name;
   final ProjectIcon? icon;
   final ProjectCommands? commands;
-  final List<String> sandboxes;
   final int created;
   final int updated;
   final int active;
@@ -19,7 +18,6 @@ class ProjectModel {
     this.name,
     this.icon,
     this.commands,
-    this.sandboxes = const [],
     this.created = 0,
     this.updated = 0,
     this.active = 0,
@@ -38,9 +36,6 @@ class ProjectModel {
               (j['commands'] as Map).cast<String, dynamic>(),
             )
           : null,
-      sandboxes: (j['sandboxes'] as List? ?? [])
-          .map((e) => e.toString())
-          .toList(growable: false),
       created: _i(time['created']),
       updated: _i(time['updated']),
       active: _i(time['active']),
@@ -67,7 +62,6 @@ class ProjectModel {
     if (name != null) 'name': name,
     if (icon != null) 'icon': icon!.toJson(),
     if (commands != null) 'commands': commands!.toJson(),
-    'sandboxes': sandboxes,
     'time': {'created': created, 'updated': updated, 'active': active},
   };
 }

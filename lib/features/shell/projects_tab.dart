@@ -212,7 +212,7 @@ List<_ProjItem> _buildItems(BuildContext context, String query) {
           states: _statesFor(
             entry.value,
             mainWorktree: dir,
-            sandboxOrder: const {},
+            worktreeOrder: const {},
           ),
           lastActivity: last,
           onTap: () => context.push(
@@ -223,6 +223,7 @@ List<_ProjItem> _buildItems(BuildContext context, String query) {
     }
     if (!_matchesQuery(p.displayName, p.canonical, query)) continue;
     final sess = serverStore.sessions.where((s) => s.projectID == p.id);
+    final worktreeDirs = serverStore.worktreeDirsOf(p.id);
     // See note above: monotonic activity (includes archived) for sort.
     final last = serverStore.lastActivityForProject(p.id);
     items.add(_ProjItem(
@@ -232,8 +233,8 @@ List<_ProjItem> _buildItems(BuildContext context, String query) {
       states: _statesFor(
         sess,
         mainWorktree: p.canonical,
-        sandboxOrder: {
-          for (var i = 0; i < p.sandboxes.length; i++) p.sandboxes[i]: i,
+        worktreeOrder: {
+          for (var i = 0; i < worktreeDirs.length; i++) worktreeDirs[i]: i,
         },
       ),
       lastActivity: last,
@@ -250,12 +251,12 @@ List<_ProjItem> _buildItems(BuildContext context, String query) {
 List<AgentIndicatorState> _statesFor(
   Iterable<SessionModel> sessions, {
   required String mainWorktree,
-  required Map<String, int> sandboxOrder,
+  required Map<String, int> worktreeOrder,
 }) {
   final groups = groupSessionsByWorktree(
     sessions,
     mainWorktree: mainWorktree,
-    sandboxOrder: sandboxOrder,
+    worktreeOrder: worktreeOrder,
   );
   return [
     for (final g in groups)

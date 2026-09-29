@@ -12,7 +12,7 @@ SessionModel _session(String id, String dir, int updated) => SessionModel(
     );
 
 void main() {
-  test('main worktree is first and sandboxes follow creation order', () {
+  test('main worktree is first and worktrees follow cached order', () {
     final paths = ['/repo/later', '/repo', '/repo/earlier'];
     final order = {'/repo/earlier': 0, '/repo/later': 1};
 
@@ -21,7 +21,7 @@ void main() {
         a,
         b,
         mainWorktree: '/repo',
-        sandboxOrder: order,
+        worktreeOrder: order,
       ),
     );
 
@@ -36,7 +36,7 @@ void main() {
         '/repo',
         '/repo',
         mainWorktree: '/repo',
-        sandboxOrder: order,
+        worktreeOrder: order,
       ),
       0,
     );
@@ -45,7 +45,7 @@ void main() {
         '/repo/known',
         '/repo/unknown',
         mainWorktree: '/repo',
-        sandboxOrder: order,
+        worktreeOrder: order,
       ),
       lessThan(0),
     );
@@ -54,23 +54,23 @@ void main() {
         '/repo/unknown',
         '/repo/known',
         mainWorktree: '/repo',
-        sandboxOrder: order,
+        worktreeOrder: order,
       ),
       greaterThan(0),
     );
   });
 
   group('groupSessionsByWorktree', () {
-    test('main worktree group precedes sandboxes even when older', () {
+    test('main worktree group precedes worktrees even when older', () {
       final groups = groupSessionsByWorktree(
         [
-          _session('sb', '/repo/sandbox', 90),
+          _session('sb', '/repo/wt', 90),
           _session('main', '/repo', 10),
         ],
         mainWorktree: '/repo',
-        sandboxOrder: {'/repo/sandbox': 0},
+        worktreeOrder: {'/repo/wt': 0},
       );
-      expect(groups.map((g) => g.directory), ['/repo', '/repo/sandbox']);
+      expect(groups.map((g) => g.directory), ['/repo', '/repo/wt']);
     });
 
     test('recency order is preserved within a group', () {
@@ -81,20 +81,20 @@ void main() {
           _session('mid', '/repo', 50),
         ],
         mainWorktree: '/repo',
-        sandboxOrder: const {},
+        worktreeOrder: const {},
       );
       expect(groups.single.directory, '/repo');
       expect(groups.single.sessions.map((s) => s.id), ['new', 'mid', 'old']);
     });
 
-    test('sandboxes follow creation order, not alphabetical', () {
+    test('worktrees follow cached order, not alphabetical', () {
       final groups = groupSessionsByWorktree(
         [
           _session('z', '/repo/zeta', 1),
           _session('a', '/repo/alpha', 2),
         ],
         mainWorktree: '/repo',
-        sandboxOrder: {'/repo/zeta': 0, '/repo/alpha': 1},
+        worktreeOrder: {'/repo/zeta': 0, '/repo/alpha': 1},
       );
       expect(groups.map((g) => g.directory), ['/repo/zeta', '/repo/alpha']);
     });
@@ -104,23 +104,23 @@ void main() {
         groupSessionsByWorktree(
           const [],
           mainWorktree: '/repo',
-          sandboxOrder: const {},
+          worktreeOrder: const {},
         ),
         isEmpty,
       );
     });
 
     test('flat ordering matches a flatten across groups', () {
-      // Reproduces the project-list glyph ordering: a newer sandbox session
+      // Reproduces the project-list glyph ordering: a newer worktree session
       // must NOT outrank an older main-worktree session.
       final groups = groupSessionsByWorktree(
         [
-          _session('sbNew', '/repo/sandbox', 999),
+          _session('sbNew', '/repo/wt', 999),
           _session('mainOld', '/repo', 1),
           _session('mainMid', '/repo', 5),
         ],
         mainWorktree: '/repo',
-        sandboxOrder: {'/repo/sandbox': 0},
+        worktreeOrder: {'/repo/wt': 0},
       );
       final flat = [for (final g in groups) for (final s in g.sessions) s.id];
       expect(flat, ['mainMid', 'mainOld', 'sbNew']);
