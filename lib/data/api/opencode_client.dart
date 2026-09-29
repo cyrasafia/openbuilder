@@ -258,7 +258,8 @@ class OpencodeClient {
   }
 
   Future<void> switchAgent(String sessionId, String agent) async {
-    await dio.post('/api/session/$sessionId/agent', data: {'agent': agent});
+    await dio.post('/api/session/$sessionId/agent',
+        data: {'agent': agent.toLowerCase()});
   }
 
   Future<void> switchModel(String sessionId, ModelRef model) async {
