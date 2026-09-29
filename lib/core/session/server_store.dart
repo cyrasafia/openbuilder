@@ -960,7 +960,7 @@ class ServerStore extends ChangeNotifier {
   void _addSessions(Map<String, SessionModel> out, List<SessionModel> list) {
     for (final s in list) {
       _bumpLastActivity(s);
-      if (s.archived != null) continue;
+      if (s.isArchived) continue;
       if (s.parentID != null) {
         _upsertChildSession(s);
         continue;
@@ -1433,6 +1433,12 @@ class ServerStore extends ChangeNotifier {
         if (sid != null) unawaited(_refreshSessionMeta(sid));
         break;
       case 'session.metadata.updated':
+        final sidM = ev.properties['sessionID']?.toString();
+        final metaM = ev.properties['metadata'];
+        if (sidM != null && metaM is Map) {
+          _applyMetadataSnapshot(sidM, metaM);
+        }
+        break;
       case 'session.permissions':
       case 'session.viewed':
       case 'session.forked':
@@ -1836,6 +1842,7 @@ class ServerStore extends ChangeNotifier {
     try {
       final s = await c.sessionMeta(sid);
       _upsertSession(s);
+      notifyListeners();
     } catch (_) {}
   }
 
@@ -1932,6 +1939,16 @@ class ServerStore extends ChangeNotifier {
     if (touched) _notifyActivityThrottled();
   }
 
+  void _applyMetadataSnapshot(String sid, Map meta) {
+    final s = sessionById(sid) ?? _childSessions[sid];
+    final v = meta['archivedAt'];
+    if (s == null) {
+      if (v == null) unawaited(_refreshSessionMeta(sid));
+      return;
+    }
+    _upsertSession(s.withMetadataArchivedAt(v is num ? v.toInt() : null));
+  }
+
   void _upsertSession(SessionModel raw) {
     final idx = _sessions.indexWhere((x) => x.id == raw.id);
     final s = _withEffectiveActivity(
@@ -1939,7 +1956,7 @@ class ServerStore extends ChangeNotifier {
     _bumpLastActivity(s);
     if (s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
-      if (s.archived != null) {
+      if (s.isArchived) {
         final host = _cardHostSessionId(s.id);
         _childSessions.remove(s.id);
         _dropChildCards(s.id, host);
@@ -1949,7 +1966,7 @@ class ServerStore extends ChangeNotifier {
       _scheduleCacheSave();
       return;
     }
-    if (s.archived != null) {
+    if (s.isArchived) {
       _sessions.removeWhere((x) => x.id == s.id);
       _childSessions.remove(s.id);
       _scheduleCacheSave();

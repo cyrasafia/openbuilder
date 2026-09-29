@@ -182,6 +182,7 @@ class SessionModel {
   final int created;
   final int updated;
   final int? archived;
+  final int? metadataArchivedAt;
   final String? parentID;
   final double cost;
   final Tokens tokens;
@@ -200,6 +201,7 @@ class SessionModel {
     required this.created,
     required this.updated,
     this.archived,
+    this.metadataArchivedAt,
     this.parentID,
     this.cost = 0,
     this.tokens = const Tokens(),
@@ -214,6 +216,7 @@ class SessionModel {
   factory SessionModel.fromJson(Map<String, dynamic> j) {
     final time = (j['time'] as Map?) ?? const {};
     final archivedAt = _i(time['archived']);
+    final metadata = (j['metadata'] as Map?) ?? const {};
     final location = (j['location'] as Map?) ?? const {};
     return SessionModel(
       id: (j['id'] ?? '').toString(),
@@ -223,6 +226,7 @@ class SessionModel {
       created: _i(time['created']),
       updated: _i(time['updated']),
       archived: archivedAt != 0 ? archivedAt : null,
+      metadataArchivedAt: _ni(metadata['archivedAt']),
       parentID: j['parentID']?.toString(),
       cost: _d(j['cost']),
       tokens: j['tokens'] is Map
@@ -258,6 +262,7 @@ class SessionModel {
         created: created,
         updated: updated ?? this.updated,
         archived: archived,
+        metadataArchivedAt: metadataArchivedAt,
         parentID: parentID,
         cost: cost ?? this.cost,
         tokens: tokens ?? this.tokens,
@@ -272,6 +277,28 @@ class SessionModel {
   String get dirName =>
       directory.isEmpty ? 'global' : directory.split('/').last;
 
+  bool get isArchived => archived != null || metadataArchivedAt != null;
+
+  SessionModel withMetadataArchivedAt(int? at) => SessionModel(
+        id: id,
+        projectID: projectID,
+        directory: directory,
+        title: title,
+        created: created,
+        updated: updated,
+        archived: archived,
+        metadataArchivedAt: at,
+        parentID: parentID,
+        cost: cost,
+        tokens: tokens,
+        agent: agent,
+        model: model,
+        outcome: outcome,
+        idle: idle,
+        viewed: viewed,
+        subpath: subpath,
+      );
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'projectID': projectID,
@@ -284,6 +311,8 @@ class SessionModel {
       if (idle != null) 'idle': idle,
       if (viewed != null) 'viewed': viewed,
     },
+    if (metadataArchivedAt != null)
+      'metadata': {'archivedAt': metadataArchivedAt},
     if (parentID != null) 'parentID': parentID,
     if (cost != 0) 'cost': cost,
     'tokens': tokens.toJson(),

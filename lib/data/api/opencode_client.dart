@@ -110,7 +110,7 @@ class OpencodeClient {
     return list
         .whereType<Map>()
         .map((e) => SessionModel.fromJson(e.cast<String, dynamic>()))
-        .where((s) => s.archived == null)
+        .where((s) => !s.isArchived)
         .toList();
   }
 
