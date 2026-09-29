@@ -1691,19 +1691,8 @@ class _ConversationScreenState extends State<ConversationScreen>
   }) {
     switch (p.type) {
       case 'subtask':
+        if (!stable) return const SizedBox.shrink();
         final commandName = p.command ?? 'subtask';
-        if (!stable) {
-          // 流式降级渲染不做 markdown——label 直接用纯文本，避免裸 ** 标记。
-          return Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              p.text.isEmpty
-                  ? 'subtask: $commandName'
-                  : 'subtask: $commandName\n\n${p.text}',
-              style: _streamingTextStyle(user),
-            ),
-          );
-        }
         final label = '**subtask: $commandName**';
         final body = p.text;
         final combined = body.isEmpty ? label : '$label\n\n$body';
@@ -1721,7 +1710,7 @@ class _ConversationScreenState extends State<ConversationScreen>
           onTextTap: onTextTap,
         );
       case 'reasoning':
-        if (!showThinking.value) return const SizedBox.shrink();
+        if (!stable || !showThinking.value) return const SizedBox.shrink();
         return _Reasoning(
           key: PageStorageKey(p.id),
           text: p.text,
@@ -1759,22 +1748,8 @@ class _ConversationScreenState extends State<ConversationScreen>
     required bool stable,
     VoidCallback? onTextTap,
   }) {
-    // JANK-4：流式（stable=false）part 降级为 plain Text。MarkdownBody 无增量
-    // 解析，逐 token 全量重解析是 O(L)/token（长回复单帧 >100ms，见
-    // design-frame-drop.md §5）；autolink 同理逐 token 全文重跑。settle 后
-    // （stable=true）走下方 Markdown + 缓存 autolink 路径，与既有渲染一致。
-    //
-    // 用 Text 而非 SelectableText：streaming 期间文本每帧变化，selection registrar
-    // 每帧重建选区 handle + 触发重绘，是 raster 9-48ms 的主因（perprobe-2 实测）。
-    // settle 后切回 MarkdownBody（selectable: true）恢复选区能力。
     if (!stable) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 4),
-        child: Text(
-          data,
-          style: _streamingTextStyle(user),
-        ),
-      );
+      return const SizedBox.shrink();
     }
     final sheet = user ? _mdStyleUser : _mdStyleAssistant;
     final overLimit = data.length > _kMarkdownMaxChars;
@@ -1813,13 +1788,6 @@ class _ConversationScreenState extends State<ConversationScreen>
         ],
       ),
     );
-  }
-
-  /// 流式降级文本样式：对齐 MarkdownBody 的 p 档（fontSize 14 / height 1.45），
-  /// 用户气泡内沿用气泡配色。仅用于未完成 part，settle 后由 Markdown 接管。
-  TextStyle _streamingTextStyle(bool user) {
-    final p = _messagePalette(context, user);
-    return TextStyle(fontSize: 14, height: 1.45, color: p.text);
   }
 
   MarkdownStyleSheet _buildMdStyle({required bool user}) {
