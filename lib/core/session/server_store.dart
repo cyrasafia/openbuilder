@@ -2150,6 +2150,11 @@ class ServerStore extends ChangeNotifier {
   }
 
   static const _agentsModelsTtl = Duration(seconds: 30);
+  @visibleForTesting
+  static const int kAgentsModelsEmptyRetries = 2;
+  @visibleForTesting
+  static Duration agentsModelsEmptyRetryDelay =
+      const Duration(milliseconds: 600);
   final _agentsModelsCache =
       <String, Future<(List<AgentInfo>, List<ModelInfo>)>>{};
   final _agentsModelsInFlight =
@@ -2186,15 +2191,11 @@ class ServerStore extends ChangeNotifier {
   ) {
     late final Future<(List<AgentInfo>, List<ModelInfo>)> fut;
     final epoch = _agentsModelsEpoch;
-    fut = Future.wait([
-      c.listAgents(directory: directory),
-      c.listModels(directory: directory),
-    ]).then((results) {
-      final entry = (
-        results[0] as List<AgentInfo>,
-        results[1] as List<ModelInfo>,
-      );
-      if (identical(c, client) && epoch == _agentsModelsEpoch) {
+    fut = _fetchAgentsAndModels(c, directory).then((entry) {
+      if (identical(c, client) &&
+          epoch == _agentsModelsEpoch &&
+          entry.$1.isNotEmpty &&
+          entry.$2.isNotEmpty) {
         _agentsModelsCache[key] = Future.value(entry);
         _agentsModelsFetchedAt[key] = DateTime.now();
       }
@@ -2205,6 +2206,36 @@ class ServerStore extends ChangeNotifier {
       }
     });
     return fut;
+  }
+
+  Future<(List<AgentInfo>, List<ModelInfo>)> _fetchAgentsAndModels(
+    OpencodeClient c,
+    String? directory,
+  ) async {
+    var entry = await _fetchAgentsAndModelsOnce(c, directory);
+    var attempt = 0;
+    while ((entry.$1.isEmpty || entry.$2.isEmpty) &&
+        attempt < kAgentsModelsEmptyRetries) {
+      if (!identical(c, client)) break;
+      attempt++;
+      await Future<void>.delayed(agentsModelsEmptyRetryDelay);
+      entry = await _fetchAgentsAndModelsOnce(c, directory);
+    }
+    return entry;
+  }
+
+  Future<(List<AgentInfo>, List<ModelInfo>)> _fetchAgentsAndModelsOnce(
+    OpencodeClient c,
+    String? directory,
+  ) async {
+    final results = await Future.wait([
+      c.listAgents(directory: directory),
+      c.listModels(directory: directory),
+    ]);
+    return (
+      results[0] as List<AgentInfo>,
+      results[1] as List<ModelInfo>,
+    );
   }
 
   Future<bool> refresh() async {

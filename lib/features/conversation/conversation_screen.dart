@@ -5340,11 +5340,20 @@ class _AgentModelBarState extends State<_AgentModelBar> {
   bool _loading = false;
   bool _switching = false;
   String? _optimisticAgent;
+  Timer? _emptyRetryTimer;
+  int _emptyRetryCount = 0;
+  static const _maxEmptyRetries = 3;
 
   @override
   void initState() {
     super.initState();
     _loadOptions();
+  }
+
+  @override
+  void dispose() {
+    _emptyRetryTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadOptions() async {
@@ -5361,6 +5370,15 @@ class _AgentModelBarState extends State<_AgentModelBar> {
           _models = models;
           _loading = false;
         });
+        if ((agents.isEmpty || models.isEmpty) &&
+            _emptyRetryTimer == null &&
+            _emptyRetryCount < _maxEmptyRetries) {
+          _emptyRetryCount++;
+          _emptyRetryTimer = Timer(const Duration(seconds: 2), () {
+            _emptyRetryTimer = null;
+            if (mounted) _loadOptions();
+          });
+        }
       }
     } catch (e) {
       if (mounted) {
