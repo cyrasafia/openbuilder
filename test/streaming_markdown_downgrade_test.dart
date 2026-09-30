@@ -12,11 +12,12 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// JANK-4 streaming downgrade: an unfinished assistant text part (finish ==
-/// null) must render as plain Text (no full-document markdown re-parse per
-/// token, no SelectableText selection registrar overhead); when the message
-/// settles (message.updated carries finish), the same part switches to
-/// MarkdownBody via the cache path.
+/// Streaming text render deferral (supersedes the JANK-4 plain-text
+/// downgrade): an unfinished assistant text part (finish == null) renders
+/// NOTHING in the message list — no full-document markdown re-parse per token,
+/// no SelectableText selection registrar overhead, not even a plain Text
+/// downgrade. When the message settles (step.ended carries finish), the same
+/// part switches to MarkdownBody via the cache path.
 class _MockClient extends OpencodeClient {
   _MockClient() : super(_noopDio());
 
@@ -79,12 +80,17 @@ Future<void> _settle(WidgetTester tester, bool Function() probe) async {
 }
 
 void main() {
-  testWidgets('streaming part renders plain text, settled renders markdown',
+  testWidgets('streaming text renders nothing, settled renders markdown',
       (tester) async {
     const sid = 'jank4';
     await _pumpConversation(tester, sessionId: sid);
     await _settle(
         tester, () => serverStore.conversationForRead(sid)?.loaded ?? false);
+    // Open the transition gate (~300ms route animation) so the message body is
+    // actually mounted before asserting on "nothing rendered" — otherwise the
+    // streaming-phase expectations below would pass vacuously behind
+    // SizedBox.shrink.
+    await tester.pump(const Duration(milliseconds: 600));
 
     // Start an unfinished assistant message and stream tokens into it.
     serverStore.onEventForTesting(OpencodeEvent(
@@ -106,12 +112,17 @@ void main() {
     ));
     await tester.pump();
 
-    // Unfinished → plain downgrade (Text), not MarkdownBody.
+    // Unfinished → deferred render: no markdown re-parse, no SelectableText
+    // registrar overhead, and no plain-text downgrade either.
     expect(find.byType(SelectableText), findsNothing);
-    expect(find.text('streaming **bold** body'), findsOneWidget);
     expect(find.byType(MarkdownBody), findsNothing);
+    expect(find.text('streaming **bold** body'), findsNothing);
+    expect(
+      find.textContaining('streaming', findRichText: true),
+      findsNothing,
+    );
 
-    // Settle: step.ended carries finish → cache invalidation → markdown.
+    // Settle: step.ended carries finish → cache path → markdown.
     serverStore.onEventForTesting(OpencodeEvent(
       type: 'session.step.ended',
       properties: {
@@ -122,6 +133,14 @@ void main() {
     ));
     await tester.pumpAndSettle();
     expect(find.byType(MarkdownBody), findsOneWidget);
-    expect(find.textContaining('streaming'), findsOneWidget);
+    expect(
+      find.textContaining('streaming', findRichText: true),
+      findsOneWidget,
+    );
+    // Markdown-rendered: the raw ** markers must not survive as literal text.
+    expect(
+      find.textContaining('**bold**', findRichText: true),
+      findsNothing,
+    );
   });
 }
