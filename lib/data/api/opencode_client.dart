@@ -165,6 +165,20 @@ class OpencodeClient {
     );
   }
 
+  Future<Map<String, dynamic>> archiveSession(String sessionId) async {
+    final r = await dio.get<dynamic>('/api/session/$sessionId');
+    final meta = _dataMap(r.data)['metadata'];
+    final merged = <String, dynamic>{
+      if (meta is Map) ...meta.cast<String, dynamic>(),
+      'archivedAt': DateTime.now().millisecondsSinceEpoch,
+    };
+    await dio.patch<dynamic>(
+      '/api/session/$sessionId',
+      data: {'metadata': merged},
+    );
+    return merged;
+  }
+
   Future<Map<String, SessionStatusValue>> activeSessions() async {
     final r = await dio.get<dynamic>('/api/session/active');
     final d = _asMap(r.data)['data'];

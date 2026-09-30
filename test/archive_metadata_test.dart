@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
+import 'package:open_builder/core/net/net_error.dart';
 import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
@@ -80,6 +82,46 @@ OpencodeEvent _metaEvent(String sid, Map<String, dynamic> metadata) =>
       type: 'session.metadata.updated',
       properties: {'sessionID': sid, 'metadata': metadata},
     );
+
+class _ArchiveAdapter implements HttpClientAdapter {
+  final String getBody;
+  final patches = <Map<String, dynamic>>[];
+  int getCalls = 0;
+  _ArchiveAdapter(this.getBody);
+
+  @override
+  void close({bool force = false}) {}
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (options.method == 'GET') {
+      getCalls++;
+      return _json(getBody);
+    }
+    final bytes = <int>[];
+    if (requestStream != null) {
+      await for (final chunk in requestStream) {
+        bytes.addAll(chunk);
+      }
+    }
+    patches.add(
+      (jsonDecode(utf8.decode(bytes)) as Map).cast<String, dynamic>(),
+    );
+    return _json('{}');
+  }
+
+  static ResponseBody _json(String body) => ResponseBody.fromString(
+        body,
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+}
 
 void main() {
   test('fromJson recognizes both archive sources independently', () {
@@ -219,5 +261,69 @@ void main() {
 
     store.onEventForTesting(_metaEvent('child', {'archivedAt': 300}));
     expect(store.isChildSession('child'), isFalse);
+  });
+
+  test('archiveSession merges whole metadata into REPLACE patch', () async {
+    final adapter = _ArchiveAdapter(
+      '{"data":{"id":"s1","metadata":{"customKey":"v"}}}',
+    );
+    final client = _clientWithAdapter(adapter);
+    final before = DateTime.now().millisecondsSinceEpoch;
+    final merged = await client.archiveSession('s1');
+    final after = DateTime.now().millisecondsSinceEpoch;
+    expect(adapter.getCalls, 1);
+    expect(adapter.patches, hasLength(1));
+    final meta = adapter.patches.single['metadata'] as Map<String, dynamic>;
+    expect(meta['customKey'], 'v');
+    final at = meta['archivedAt'] as int;
+    expect(at, greaterThanOrEqualTo(before));
+    expect(at, lessThanOrEqualTo(after));
+    expect(merged, meta);
+  });
+
+  test('archiveSession patches archivedAt alone when metadata absent',
+      () async {
+    final adapter = _ArchiveAdapter('{"data":{"id":"s1"}}');
+    final client = _clientWithAdapter(adapter);
+    await client.archiveSession('s1');
+    final meta = adapter.patches.single['metadata'] as Map<String, dynamic>;
+    expect(meta.keys, ['archivedAt']);
+  });
+
+  test('archiveSession applies merged snapshot locally, SSE echo is no-op',
+      () async {
+    final adapter = _ArchiveAdapter(
+      '{"data":{"id":"s1","projectID":"p1",'
+      '"location":{"directory":"/dirA"},"title":"t",'
+      '"time":{"updated":1000},"metadata":{"customKey":"v"}}}',
+    );
+    final store = ServerStore()..client = _clientWithAdapter(adapter);
+    store.upsertSessionForTesting(_session('s1'));
+    var notifies = 0;
+    store.addListener(() => notifies++);
+
+    await store.archiveSession('s1');
+
+    expect(store.sessionById('s1'), isNull);
+    expect(notifies, 1);
+    expect(adapter.getCalls, 1);
+    expect(adapter.patches, hasLength(1));
+
+    store.onEventForTesting(
+      _metaEvent('s1', {'customKey': 'v', 'archivedAt': 999}),
+    );
+    await pumpEventQueue();
+    expect(store.sessionById('s1'), isNull);
+    expect(adapter.getCalls, 1);
+  });
+
+  test('archiveSession failure propagates as operation error', () async {
+    final store = ServerStore()..client = _unreachableClient();
+    store.upsertSessionForTesting(_session('s1'));
+    await expectLater(
+      store.archiveSession('s1'),
+      throwsA(isA<OperationException>()),
+    );
+    expect(store.sessionById('s1'), isNotNull);
   });
 }

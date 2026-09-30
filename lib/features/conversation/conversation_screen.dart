@@ -5260,6 +5260,7 @@ class _MoreMenu extends StatelessWidget {
       itemBuilder: (_) => [
         PopupMenuItem(value: 'refresh', child: Text(loc.convRefresh)),
         PopupMenuItem(value: 'rename', child: Text(loc.convRename)),
+        PopupMenuItem(value: 'archive', child: Text(loc.convArchive)),
       ],
     );
   }
@@ -5271,6 +5272,44 @@ class _MoreMenu extends StatelessWidget {
         if (conv != null) unawaited(conv.reload());
       case 'rename':
         await _showRenameDialog(context);
+      case 'archive':
+        await _showArchiveDialog(context);
+    }
+  }
+
+  Future<void> _showArchiveDialog(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l(ctx).convArchiveTitle),
+        content: Text(l(ctx).convArchiveConfirm),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l(ctx).cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l(ctx).convArchive),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      try {
+        await serverStore.archiveSession(sessionId);
+        if (context.mounted) context.pop();
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                l(context).archiveFailed(friendlyMessage(l(context), e)),
+              ),
+            ),
+          );
+        }
+      }
     }
   }
 

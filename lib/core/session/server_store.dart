@@ -485,6 +485,18 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
+  Future<void> archiveSession(String sessionId) async {
+    final activeClient = client;
+    if (activeClient == null) throw const KnownError(FriendlyErrorKind.notConnected);
+    try {
+      final meta = await activeClient.archiveSession(sessionId);
+      _applyMetadataSnapshot(sessionId, meta);
+      notifyListeners();
+    } catch (e) {
+      throw OperationException('归档会话', cause: e);
+    }
+  }
+
   Future<SessionModel> createSessionInNewWorktree(
     String projectDir, {
     bool reconcileFirst = false,
