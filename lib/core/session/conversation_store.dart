@@ -21,6 +21,10 @@ class DisplayPart {
   final String type; // text | reasoning | tool | file
   String? tool;
   String text;
+  // part 级收尾标记：text/reasoning 的 *ended 事件或权威快照（REST/缓存）
+  // 置位；后续 delta 到来即复位。UI 据此在消息未 finish 期间按 part 切换
+  // Markdown 终态渲染与流式降级渲染。
+  bool settled;
   String? toolStatus;
   String? toolTitle;
   String? toolOutput;
@@ -39,6 +43,7 @@ class DisplayPart {
     required this.type,
     this.tool,
     this.text = '',
+    this.settled = false,
     this.toolStatus,
     this.toolTitle,
     this.toolOutput,
@@ -718,6 +723,7 @@ class ConversationStore extends ChangeNotifier {
       a.type == b.type &&
       a.tool == b.tool &&
       a.text == b.text &&
+      a.settled == b.settled &&
       a.toolStatus == b.toolStatus &&
       a.toolOutput == b.toolOutput &&
       a.toolError == b.toolError &&
@@ -773,6 +779,10 @@ class ConversationStore extends ChangeNotifier {
         seen.add(rp.id);
         final merged = _clonePart(rp);
         if (sp.text.length > merged.text.length) merged.text = sp.text;
+        // SSE 侧是直播真值：它说该 part 还没收完（settled=false）就不能被
+        // 快照的默认 settled 盖成 true——否则流中对账会让在流尾段
+        // Markdown↔纯文本来回重排。SSE 没见过的 part（sp==null）仍用快照值。
+        merged.settled = sp.settled;
         if (sp.toolStatus != null) merged.toolStatus = sp.toolStatus;
         if (sp.toolTitle != null) merged.toolTitle = sp.toolTitle;
         if (sp.toolOutput != null) merged.toolOutput = sp.toolOutput;
@@ -800,6 +810,7 @@ class ConversationStore extends ChangeNotifier {
         type: p.type,
         tool: p.tool,
         text: p.text,
+        settled: p.settled,
         toolStatus: p.toolStatus,
         toolTitle: p.toolTitle,
         toolOutput: p.toolOutput,
@@ -1056,6 +1067,7 @@ class ConversationStore extends ChangeNotifier {
           id: '${e.id}_text',
           type: 'text',
           text: e.text,
+          settled: true,
         ));
         var i = 0;
         for (final f in e.files) {
@@ -1097,15 +1109,27 @@ class ConversationStore extends ChangeNotifier {
                 id: '${e.id}_t${ti++}',
                 type: 'text',
                 text: c.text,
+                settled: true,
               ));
             case ReasoningContent():
               m.parts.add(DisplayPart(
                 id: '${e.id}_r${ri++}',
                 type: 'reasoning',
                 text: c.text,
+                settled: true,
               ));
             case ToolContent():
               m.parts.add(_toolPart('${e.id}_tool_${c.id}', c));
+          }
+        }
+        // 未完成消息的快照（预热/对账发现的新消息）：末位若为 text/reasoning
+        // 视为在流尾段，不默认 settled——否则恢复后首个 delta 到来时尾段会
+        // Markdown↔纯文本翻转。末位为 tool（含 streaming 态）时其前的
+        // text/reasoning 必已收尾，保持 settled。
+        if ((e.finish == null || e.finish!.isEmpty) && m.parts.isNotEmpty) {
+          final last = m.parts.last;
+          if (last.type == 'text' || last.type == 'reasoning') {
+            last.settled = false;
           }
         }
         return m;
@@ -1282,9 +1306,11 @@ class ConversationStore extends ChangeNotifier {
     }
     if (delta != null && delta.isNotEmpty) {
       dp.text += delta;
+      dp.settled = false;
     } else if (text != null && text.isNotEmpty) {
       dp.text = text;
     }
+    if (text != null) dp.settled = true;
     _previewableTouch(msg);
     notifyListeners();
   }
@@ -1477,12 +1503,14 @@ class ConversationStore extends ChangeNotifier {
               id: '${mid}_t${ti++}',
               type: 'text',
               text: c.text,
+              settled: true,
             ));
           case ReasoningContent():
             authoritative.add(DisplayPart(
               id: '${mid}_r${ri++}',
               type: 'reasoning',
               text: c.text,
+              settled: true,
             ));
           case ToolContent():
             authoritative.add(_toolPart('${mid}_tool_${c.id}', c));

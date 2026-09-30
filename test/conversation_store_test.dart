@@ -590,6 +590,45 @@ void main() {
       expect(conv.messages.single.id, 'm_new');
       expect(conv.messages.single.parts.single.text, 'fresh');
     });
+
+    test('mid-stream merge keeps SSE settled state per part', () {
+      final conv = _conv('s3', _fakeClient());
+      conv.onStepStarted('m1');
+      conv.onTextStarted('m1', 0);
+      conv.onTextDelta('m1', 0, 'first part done');
+      conv.onTextEnded('m1', 0, 'first part done');
+      conv.onTextStarted('m1', 1);
+      conv.onTextDelta('m1', 1, 'strea');
+      // Reconcile mid-stream: the authoritative snapshot carries both parts,
+      // but the tail is still receiving deltas on the SSE side.
+      conv.onMessageContentUpdated('m1', [
+        textPart('first part done'),
+        textPart('strea'),
+      ]);
+      final texts = conv.messages.single.parts
+          .where((p) => p.type == 'text')
+          .toList();
+      expect(texts[0].settled, isTrue,
+          reason: 'part whose ended event was seen stays settled');
+      expect(texts[1].settled, isFalse,
+          reason: 'in-flight tail must not flip to markdown mid-stream');
+      conv.onTextDelta('m1', 1, 'ming');
+      expect(
+        conv.messages.single.parts
+            .where((p) => p.type == 'text')
+            .elementAt(1)
+            .settled,
+        isFalse,
+      );
+      conv.onTextEnded('m1', 1, 'streaming');
+      expect(
+        conv.messages.single.parts
+            .where((p) => p.type == 'text')
+            .elementAt(1)
+            .settled,
+        isTrue,
+      );
+    });
   });
 
   group('streaming part ordering (multi-step messages)', () {
@@ -693,6 +732,57 @@ void main() {
       final msg = restored.messages.single;
       expect(msg.finish, isNull);
       expect(msg.parts.single.text, 'streaming now');
+      expect(msg.parts.single.settled, isFalse,
+          reason: 'snapshot tail must resume in downgrade render, not flip '
+              'markdown->plain on the first post-resume delta');
+    });
+  });
+
+  group('snapshot tail settle (_toDisplay in-flight heuristics)', () {
+    test('unfinished snapshot with text tail keeps only the tail unsettled',
+        () {
+      final conv = _conv('s1', _fakeClient());
+      final d = conv.toDisplayForTest(assistantMsg(
+        id: 'm1',
+        content: [textPart('done'), textPart('partial tail')],
+      ))!;
+      final texts = d.parts.where((p) => p.type == 'text').toList();
+      expect(texts[0].settled, isTrue);
+      expect(texts[1].settled, isFalse);
+    });
+
+    test('unfinished snapshot with reasoning tail keeps it unsettled', () {
+      final conv = _conv('s2', _fakeClient());
+      final d = conv.toDisplayForTest(assistantMsg(
+        id: 'm2',
+        content: [textPart('answer'), reasoningPart('still thinking')],
+      ))!;
+      expect(
+          d.parts.where((p) => p.type == 'text').single.settled, isTrue);
+      expect(
+          d.parts.where((p) => p.type == 'reasoning').single.settled, isFalse);
+    });
+
+    test('unfinished snapshot ending with tool keeps text settled', () {
+      final conv = _conv('s3', _fakeClient());
+      final d = conv.toDisplayForTest(assistantMsg(
+        id: 'm3',
+        content: [
+          textPart('done'),
+          toolPart(id: 'c1', status: 'running', input: {'command': 'ls'}),
+        ],
+      ))!;
+      expect(d.parts.where((p) => p.type == 'text').single.settled, isTrue);
+    });
+
+    test('finished snapshot keeps all parts settled', () {
+      final conv = _conv('s4', _fakeClient());
+      final d = conv.toDisplayForTest(assistantMsg(
+        id: 'm4',
+        content: [textPart('done')],
+        finish: 'stop',
+      ))!;
+      expect(d.parts.single.settled, isTrue);
     });
   });
 

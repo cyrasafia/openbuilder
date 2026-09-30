@@ -161,6 +161,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   final _keepAliveIds = ValueNotifier<Set<String>>(const {});
   final _messageChildCache = <String, Widget>{};
   final _autolinkCache = <String, String>{};
+  final _partWidgetCache = _PartWidgetCache();
   int? _lastMsgVersion;
   bool? _lastShowThinking;
 
@@ -240,6 +241,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     // Cached message widgets freeze build-time values (theme/locale/textScaler);
     // an inherited change must invalidate them so they rebuild with new styles.
     _messageChildCache.clear();
+    _partWidgetCache.clear();
   }
 
   void _installTransitionGate() {
@@ -1691,26 +1693,38 @@ class _ConversationScreenState extends State<ConversationScreen>
   }) {
     switch (p.type) {
       case 'subtask':
-        if (!stable) return const SizedBox.shrink();
         final commandName = p.command ?? 'subtask';
+        if (!stable && !p.settled) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              p.text.isEmpty
+                  ? 'subtask: $commandName'
+                  : 'subtask: $commandName\n\n${p.text}',
+              style: _streamingTextStyle(user),
+            ),
+          );
+        }
         final label = '**subtask: $commandName**';
         final body = p.text;
         final combined = body.isEmpty ? label : '$label\n\n$body';
         return _markdownPart(
           combined,
           user: user,
-          stable: stable,
+          settled: stable || p.settled,
+          cacheKey: p.id,
           onTextTap: onTextTap,
         );
       case 'text':
         return _markdownPart(
           p.text,
           user: user,
-          stable: stable,
+          settled: stable || p.settled,
+          cacheKey: p.id,
           onTextTap: onTextTap,
         );
       case 'reasoning':
-        if (!stable || !showThinking.value) return const SizedBox.shrink();
+        if (!showThinking.value) return const SizedBox.shrink();
         return _Reasoning(
           key: PageStorageKey(p.id),
           text: p.text,
@@ -1745,22 +1759,38 @@ class _ConversationScreenState extends State<ConversationScreen>
   Widget _markdownPart(
     String data, {
     required bool user,
-    required bool stable,
+    required bool settled,
+    String? cacheKey,
     VoidCallback? onTextTap,
   }) {
-    if (!stable) {
-      return const SizedBox.shrink();
+    if (!settled) {
+      if (data.isEmpty) return const SizedBox.shrink();
+      final overLimit = data.length > _kMarkdownMaxChars;
+      final effective =
+          overLimit ? _truncatedText(data, _kMarkdownMaxChars) : data;
+      return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(
+          effective,
+          style: _streamingTextStyle(user),
+        ),
+      );
     }
     final sheet = user ? _mdStyleUser : _mdStyleAssistant;
     final overLimit = data.length > _kMarkdownMaxChars;
     final effective =
         overLimit ? _truncatedText(data, _kMarkdownMaxChars) : data;
+    final sig = '$user\x1f$effective';
+    if (cacheKey != null) {
+      final cached = _partWidgetCache.lookup(cacheKey, sig);
+      if (cached != null) return cached;
+    }
     final linkified =
         _autolinkCache.putIfAbsent(effective, () => autolinkMarkdownLinks(effective));
     if (_autolinkCache.length >= _kAutolinkCacheMax) {
       _autolinkCache.remove(_autolinkCache.keys.first);
     }
-    return Padding(
+    final built = Padding(
       padding: const EdgeInsets.only(top: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1788,6 +1818,17 @@ class _ConversationScreenState extends State<ConversationScreen>
         ],
       ),
     );
+    if (cacheKey != null) {
+      _partWidgetCache.store(cacheKey, sig, built);
+    }
+    return built;
+  }
+
+  /// 流式降级文本样式：对齐 MarkdownBody 的 p 档（fontSize 14 / height 1.45），
+  /// 用户气泡内沿用气泡配色。仅用于未收尾 part，收尾后由 Markdown 接管。
+  TextStyle _streamingTextStyle(bool user) {
+    final p = _messagePalette(context, user);
+    return TextStyle(fontSize: 14, height: 1.45, color: p.text);
   }
 
   MarkdownStyleSheet _buildMdStyle({required bool user}) {
@@ -2090,6 +2131,35 @@ String _truncatedText(String s, int limit) {
   final u = s.codeUnitAt(end - 1);
   if (u >= 0xD800 && u <= 0xDBFF) end--;
   return s.substring(0, end);
+}
+
+/// 已收尾 part 的 Markdown widget 实例缓存：流式消息（finish==null）不走
+/// _messageChildCache 整条实例缓存，逐 token 重建会连带已收尾 part 的
+/// MarkdownBody 全量重解析；按 part id + 内容签名缓存实例，等值复用让
+/// element 树短路跳过整个子树。随 didChangeDependencies 清空（theme/locale
+/// 变化），容量上限淘汰防泄漏。
+class _PartWidgetCache {
+  static const _max = 128;
+  final _sigs = <String, String>{};
+  final _widgets = <String, Widget>{};
+
+  Widget? lookup(String key, String sig) =>
+      _sigs[key] == sig ? _widgets[key] : null;
+
+  void store(String key, String sig, Widget widget) {
+    if (!_widgets.containsKey(key) && _widgets.length >= _max) {
+      final oldest = _widgets.keys.first;
+      _widgets.remove(oldest);
+      _sigs.remove(oldest);
+    }
+    _sigs[key] = sig;
+    _widgets[key] = widget;
+  }
+
+  void clear() {
+    _sigs.clear();
+    _widgets.clear();
+  }
 }
 
 Widget toolCodeBlock(BuildContext context, String body, AppColors appColors) {
@@ -2964,6 +3034,13 @@ class _SubagentMessage extends StatefulWidget {
 class _SubagentMessageState extends State<_SubagentMessage> {
   String? _linkifiedFor;
   String _linkified = '';
+  final _partCache = _PartWidgetCache();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _partCache.clear();
+  }
 
   /// autolink 记忆化：子会话流式期间 ListenableBuilder 每 part 事件重建，
   /// settled 消息的 text 不变——避免逐次全量重跑（主列表走 _autolinkCache
@@ -3055,7 +3132,7 @@ class _SubagentMessageState extends State<_SubagentMessage> {
       switch (p.type) {
         case 'text':
           if (p.text.trim().isEmpty) break;
-          if (streaming) {
+          if (streaming && !p.settled) {
             children.add(
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
@@ -3067,41 +3144,46 @@ class _SubagentMessageState extends State<_SubagentMessage> {
             final overLimit = raw.length > _kMarkdownMaxChars;
             final effective =
                 overLimit ? _truncatedText(raw, _kMarkdownMaxChars) : raw;
-            children.add(
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    MarkdownBody(
-                      data: _linkify(effective),
-                      softLineBreak: isUser,
-                      onTapLink: (text, href, title) => _onLink(context, href),
-                      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                        p: TextStyle(
-                            fontSize: 13, height: 1.45, color: appColors.code),
-                        code: TextStyle(
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                            color: appColors.code),
-                      ),
+            final cached = _partCache.lookup(p.id, effective);
+            if (cached != null) {
+              children.add(cached);
+              break;
+            }
+            final built = Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  MarkdownBody(
+                    data: _linkify(effective),
+                    softLineBreak: isUser,
+                    onTapLink: (text, href, title) => _onLink(context, href),
+                    styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                      p: TextStyle(
+                          fontSize: 13, height: 1.45, color: appColors.code),
+                      code: TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                          color: appColors.code),
                     ),
-                    if (overLimit)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          l(context).messageTruncated,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: theme.colorScheme.outline,
-                          ),
+                  ),
+                  if (overLimit)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        l(context).messageTruncated,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: theme.colorScheme.outline,
                         ),
                       ),
-                  ],
-                ),
+                    ),
+                ],
               ),
             );
+            _partCache.store(p.id, effective, built);
+            children.add(built);
           }
           break;
         case 'reasoning':

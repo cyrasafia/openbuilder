@@ -319,7 +319,7 @@ probe 1 时间线（KbPerf 事件流）：`applyDefault refresh start` → +294m
 
 ## 5. JANK-4 流式输出逐 token 全量 Markdown 重解析
 
-> 状态：**✅ 已修（2026-08-21，方案 = 流式降级渲染，三轮代码评审通过，评审记录见 §16.2）**。
+> 状态：**✅ 已修（2026-08-21，方案 = 流式降级渲染，三轮代码评审通过，评审记录见 §16.2；2026-09-30 演进为按 part 渲染：f8ea1b9 的「整条消息收完才渲染」被取代，见 §5.4 末尾演化记录）**。
 
 ### 5.1 问题
 
@@ -342,12 +342,15 @@ probe 1 时间线（KbPerf 事件流）：`applyDefault refresh start` → +294m
 4. `conversation_screen.dart:1543`：`MarkdownBody(data: 全文)` —— flutter_markdown_plus **无增量解析**，每 token 从零重解析整篇文档 + 重建全部子树（A2）。`selectable: true` 再叠加 SelectionRegistrar 成本。
 5. 净效果：单帧成本 = autolink O(L) + markdown 解析/布局 O(L)，随回复线性涨；整条流总成本 O(L²)。120Hz 预算 8.3ms，几 KB 回复即每帧超预算一个量级，UI isolate 被占满 → 全 app 卡。
 
-### 5.4 修复（已实施：流式降级渲染 + settle 切换）
+### 5.4 修复（已实施：按 part 流式降级 + 双级 settle 切换）
 
-- **流式降级**（`conversation_screen.dart` `_markdownPart`）：`stable=false`（未完成 assistant 的 text part）改渲染 `SelectableText`（样式对齐 MarkdownBody 的 p 档：fontSize 14 / height 1.45），**跳过 autolink 与 MarkdownBody**——单帧成本从 O(L) 全文重解析降为 O(delta) 文本追加。
-- **settle 切换**：`message.updated(finish!=null)` → `onMessageUpdated` → `_sort()` → `_touchMessages()` → `messagesVersion` 变 → `_messageChildCache.clear()` → 同一 part 切回 MarkdownBody + autolink 缓存路径，终态渲染与既有完全一致。
+- **按 part 降级**（`conversation_screen.dart` `_markdownPart`）：未收尾 part（`DisplayPart.settled == false`）渲染 plain `Text`（样式对齐 MarkdownBody 的 p 档：fontSize 14 / height 1.45，超 `_kMarkdownMaxChars` 截断），**跳过 autolink 与 MarkdownBody**——单帧成本 O(delta) 文本追加。
+- **part 级 settle 切换**：`session.text.ended` / `session.reasoning.ended` → `_onContentDelta` 置 `settled=true`（后续 delta 到来即复位）→ 该 part 立即切 MarkdownBody 终态渲染，**不等整条消息 finish**；REST/缓存快照重建的 part（`_toDisplay` 等）默认 settled，但未完成消息（finish 为空）快照的**末位 text/reasoning 除外**——视为在流尾段（末位为 tool 时其前的 text 必已收尾，保持 settled），防预热/对账恢复后首个 delta 到来时尾段 Markdown↔纯文本翻转。对账合并（`_mergeParts`）对双方都有的 part **以 SSE 侧 settled 为准**——流中对账不会把在流尾段误标已收尾；SSE 没见过的 part 沿用快照值。消息级 settle（`step.ended` 带 finish）后整条走 `_messageChildCache` 缓存路径，与既有终态一致。
+- **已收尾 part 实例缓存**（`_PartWidgetCache`）：流式消息不走整条实例缓存，逐 token 重建会连带已收尾 part 的 MarkdownBody 全量重解析（O(已收尾长度)/token 回归）；按 part id + 内容签名缓存 widget 实例，等值复用让 element 树短路跳过整个子树。`didChangeDependencies` 清空（theme/locale），容量 128 淘汰。子会话面板 `_SubagentMessage` 同构。
 - **subtask 流式分支**：降级期间 label 不用 `**` markdown 语法拼接（纯文本 `subtask: <cmd>`），避免裸标记。
-- **离线半截消息 settle**（评审 R1-3/R2-1 修复）：`_loadCacheFromJson(terminal:)`——离线 `_loadCache` 恢复的 `finish==null` 非 user 消息合成 `finish:'stop'`（缓存快照按终态渲染，防离线裸 markdown 永久停留）；**在线预热 `_maybePreheatCache` 保持 false**（session 可能仍在流式，合成会使 `_cachedMessage` 缓存半截 widget 且 part delta 不 bump version → 冻屏）。回归锁：`test/conversation_store_test.dart` 末两条 + `test/streaming_markdown_downgrade_test.dart`。
+- **离线半截消息 settle**（评审 R1-3/R2-1 修复）：`_loadCacheFromJson(terminal:)`——离线 `_loadCache` 恢复的 `finish==null` 非 user 消息合成 `finish:'stop'`（缓存快照按终态渲染，防离线裸 markdown 永久停留）；**在线预热 `_maybePreheatCache` 保持 false**（session 可能仍在流式，合成会使 `_cachedMessage` 缓存半截 widget 且 part delta 不 bump version → 冻屏；预热快照 part 为 settled，直接按 Markdown 渲染已收尾内容，流式尾部由 delta 复位降级）。回归锁：`test/conversation_store_test.dart` 末两条 + `test/streaming_markdown_downgrade_test.dart`。
+
+**演化记录**：JANK-4 初版降级为 SelectableText（d1b605a）→ 1049b14 去 SelectableText 改 plain Text（选区 registrar raster 成本）→ f8ea1b9 收紧为「流式期不渲染任何文本，整条消息收完才渲染」→ **2026-09-30 按用户要求改回按 part 渲染**：整条延迟对「文本→工具→文本」长 turn 中间态全黑，体验劣化明显；按 part 门控后单帧成本仍是 O(delta)（尾部降级 Text）+ O(1)（已收尾 part 实例短路），JANK-4 根因不回归。
 
 **效果**：流式期间单帧 markdown 成本 143ms@2KB～1302ms@32KB（debug 探针）→ 降级渲染仅一次 `SelectableText` 文本更新；总成本 O(L²)→O(L)。settle 后一次全量 markdown 渲染（同旧首帧成本，用户无感）。
 
