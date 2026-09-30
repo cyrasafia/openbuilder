@@ -190,6 +190,8 @@
   "projectWorkspaceCreatedRetry": "Workspace was created. Tap Create to retry session creation.",
   "projectWorktreeDeleted": "Deleted workspace \"{name}\"",
   "@projectWorktreeDeleted": {"placeholders": {"name": {"type": "String"}}},
+  "worktreeBranchKept": "Branch kept: {branch} (has unmerged commits)",
+  "@worktreeBranchKept": {"placeholders": {"branch": {"type": "String"}}},
   "projectDeleteWorkspace": "Delete workspace",
   "projectDeleteWorkspaceConfirm": "Delete workspace \"{name}\"?\nAll sessions under this workspace will be removed.",
   "@projectDeleteWorkspaceConfirm": {"placeholders": {"name": {"type": "String"}}},

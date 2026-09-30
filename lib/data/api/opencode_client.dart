@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -14,6 +15,12 @@ class MessagesPage {
   final String? olderCursor;
   final String? newerCursor;
   const MessagesPage(this.entries, this.olderCursor, this.newerCursor);
+}
+
+class ShellRunResult {
+  final int? exit;
+  final String output;
+  const ShellRunResult(this.exit, this.output);
 }
 
 class HealthInfo {
@@ -204,6 +211,57 @@ class OpencodeClient {
       'directory': worktreeDir,
       'force': force,
     });
+  }
+
+  /// POST /api/shell 执行一次性命令至终态（design-worktree-branch-sync 的
+  /// 分支挂载/清理通道）。轮询 GET /api/shell/{id}（300ms）至非 running，
+  /// 读 /api/shell/{id}/output 累积输出，best-effort DELETE 清理。超时抛
+  /// [TimeoutException]，端点缺失等异常原样上抛——调用方降级（挂载失败
+  /// = 保持 server 默认 detached）。
+  Future<ShellRunResult> runShell(
+    String command, {
+    String? cwd,
+    int timeoutMs = 15000,
+  }) async {
+    final body = <String, dynamic>{
+      'command': command,
+      'timeout': timeoutMs,
+      if (cwd != null && cwd.isNotEmpty) 'cwd': cwd,
+    };
+    final r = await dio.post<dynamic>('/api/shell', data: body);
+    var info = _shellInfoMap(r.data);
+    final id = (info['id'] ?? '').toString();
+    final deadline = DateTime.now().add(Duration(milliseconds: timeoutMs));
+    while ((info['status'] ?? '') == 'running' &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final g = await dio.get<dynamic>('/api/shell/$id');
+      final next = _shellInfoMap(g.data);
+      if (next.isNotEmpty) info = next;
+    }
+    if ((info['status'] ?? '') == 'running') {
+      throw TimeoutException('shell 未在 ${timeoutMs}ms 内退出: $command');
+    }
+    String output = '';
+    try {
+      final o = await dio.get<dynamic>('/api/shell/$id/output');
+      final data = _asMap(o.data)['data'];
+      if (data is Map) output = (data['output'] ?? '').toString();
+    } finally {
+      unawaited(dio
+          .delete<dynamic>('/api/shell/$id')
+          .then((_) {}, onError: (Object _) {}));
+    }
+    return ShellRunResult(
+      info['exit'] is num ? (info['exit'] as num).toInt() : null,
+      output,
+    );
+  }
+
+  Map<String, dynamic> _shellInfoMap(dynamic raw) {
+    final data = _asMap(raw)['data'];
+    if (data is Map) return data.cast<String, dynamic>();
+    return const {};
   }
 
   Future<List<CommandInfo>> getMergedCommands({String? directory}) async {

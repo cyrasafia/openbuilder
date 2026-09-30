@@ -433,12 +433,23 @@ class ProjectDetailScreen extends StatelessWidget {
                 serverStore
                     .removeWorktree(projectWorktree, worktreeDir: worktreeDir)
                     .then(
-                  (_) {
+                  (keptBranch) {
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(
                           l(context).projectWorktreeDeleted(wtName),
+                        ),
+                      ),
+                    );
+                    if (keptBranch == null) return;
+                    // design-worktree-branch-sync §2.3：未并入其他 ref 的
+                    // 同名分支保留（零静默丢失），10s 提示对齐 desktop。
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        duration: const Duration(seconds: 10),
+                        content: Text(
+                          l(context).worktreeBranchKept(keptBranch),
                         ),
                       ),
                     );

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -368,11 +369,13 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  Future<void> removeWorktree(
+  /// 删除 worktree + 定向本地清理；返回被保留的分支名（含未合并提交，
+  /// 调用方提示用户），null = 无保留或不在管理范围。
+  Future<String?> removeWorktree(
     String projectWorktree, {
     required String worktreeDir,
   }) async {
-    if (_deletingWorktrees.contains(worktreeDir)) return;
+    if (_deletingWorktrees.contains(worktreeDir)) return null;
     final c = client;
     if (c == null) throw const KnownError(FriendlyErrorKind.notConnected);
     final project = _projectByCanonical(projectWorktree);
@@ -405,6 +408,10 @@ class ServerStore extends ChangeNotifier {
         _statusMap.remove(sid);
       }
       _scheduleCacheSave();
+      // 分支清理（design-worktree-branch-sync §2.3）：v2 DELETE 不清分支。
+      // 必须在 worktree DELETE 之后（cleanup 在项目 canonical 下操作）。
+      // 已并入其他 ref → -D；未并入 → 保留 + 返回分支名（零静默丢失）。
+      return await _cleanupWorktreeBranch(c, project, worktreeDir);
     } catch (e) {
       throw OperationException('删除工作区', cause: e);
     } finally {
@@ -514,6 +521,9 @@ class ServerStore extends ChangeNotifier {
       _scheduleCacheSave();
       notifyListeners();
     }
+    // 分支挂载不阻塞会话创建（design-worktree-branch-sync §2.2：挂载延迟
+    // 不得推迟创建流程返回）；失败降级 detached + 日志，不回滚创建。
+    unawaited(_mountWorktreeBranch(c, worktree.directory));
     final SessionModel session;
     try {
       session = await c.createSession(
@@ -551,6 +561,97 @@ class ServerStore extends ChangeNotifier {
       if (candidates.length != 1) return null;
       final dir = candidates.single;
       return WorktreeInfo(directory: dir);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 目录末段 = worktree 名。仅接受 server slug 字符集（[a-z0-9-]）：外部
+  /// `git worktree add` 的目录名可含空格/元字符——未加引号拼进 shell 命令
+  /// 有多 token 误删（branch -D 多参逐个删）与命令替换风险，且非本端创建
+  /// 的 worktree 不属分支管理范围——不匹配返回 null，挂载/清理均跳过。
+  String? _worktreeBranchBase(String directory) {
+    final segs =
+        directory.split('/').where((s) => s.isNotEmpty).toList(growable: false);
+    if (segs.isEmpty) return null;
+    final base = segs.last;
+    return RegExp(r'^[a-z0-9][a-z0-9-]*$').hasMatch(base) ? base : null;
+  }
+
+  /// 挂载 `opencode/{worktree-name}` 分支（design-worktree-branch-sync §2.2）：
+  /// `git switch -c` 单命令（跨 shell 可移植），exit 0 即成。失败先以
+  /// show-ref 判撞名（历史残留同名分支）→ 换 `<name>-<rand>` 后缀重试 ≤2；
+  /// 非撞名或 shell 通道异常（旧 v2 无 /api/shell/网络）→ 放弃，保持
+  /// detached（server 默认态，日志留痕）——创建本身已成功，不回滚不报错。
+  Future<void> _mountWorktreeBranch(OpencodeClient c, String directory) async {
+    final base = _worktreeBranchBase(directory);
+    if (base == null) return;
+    final candidates = <String>['opencode/$base'];
+    for (var i = 0; i < 2; i++) {
+      final rand = Random().nextInt(1 << 24).toRadixString(36).padLeft(4, '0');
+      candidates.add('opencode/$base-${rand.substring(rand.length - 4)}');
+    }
+    for (final branch in candidates) {
+      try {
+        // 本地 server 的 git switch 是毫秒级——5s 超时已远超正常耗时
+        final created = await c.runShell('git switch -c $branch',
+            cwd: directory, timeoutMs: 5000);
+        if (created.exit == 0) return;
+        // 撞名才重试：分支已存在；其他 git 失败重试无意义
+        final probe = await c.runShell(
+            'git show-ref --verify --quiet refs/heads/$branch',
+            cwd: directory,
+            timeoutMs: 5000);
+        if (probe.exit != 0) break;
+      } catch (_) {
+        break; // shell 通道异常：降级 detached，不重试
+      }
+    }
+    AppLogger.I.w(_tag, 'worktree 分支挂载失败，保持 detached: $directory');
+  }
+
+  /// 删除后分支清理（design-worktree-branch-sync §2.3）：v2 DELETE 不清分支。
+  /// 在项目 canonical 下操作（worktree 目录已消失，不能 -C 进去）。
+  /// show-ref 探存在 → for-each-ref --contains（排除自身）判是否已并入其他
+  /// ref：已并入 → `branch -D` 清理返回 null；未并入 → 返回分支名（调用方
+  /// 提示保留）。shell 通道异常 → 返回 null（宁残留不误删，也不误报保留）。
+  /// 三个 shell 各 5s 超时（评审 WBS-1：清理串行在 deleting 态内，最坏
+  /// 15s 收口；超时同走「宁残留不误删」降级）。
+  Future<String?> _cleanupWorktreeBranch(
+    OpencodeClient c,
+    ProjectModel project,
+    String directory,
+  ) async {
+    final base = _worktreeBranchBase(directory);
+    if (base == null || project.canonical.isEmpty) return null;
+    final branch = 'opencode/$base';
+    try {
+      final exists = await c.runShell(
+          'git show-ref --verify --quiet refs/heads/$branch',
+          cwd: project.canonical,
+          timeoutMs: 5000);
+      if (exists.exit != 0) return null; // 无同名分支——无事可做
+      final contains = await c.runShell(
+        // --format 值必须单引号：fish 把裸括号 %(refname) 解析为命令替换，
+        // 单引号在 fish/POSIX shell 下均为字面量
+        "git for-each-ref --contains refs/heads/$branch "
+        "--format='%(refname)' refs/heads refs/remotes",
+        cwd: project.canonical,
+        timeoutMs: 5000,
+      );
+      // 竞态（show-ref 后分支被删）下 for-each-ref 报错——不误报「已保留」
+      if (contains.exit != 0) return null;
+      final mergedElsewhere = contains.output
+          .split('\n')
+          .map((line) => line.trim())
+          .any((ref) => ref.isNotEmpty && ref != 'refs/heads/$branch');
+      if (mergedElsewhere) {
+        final del = await c.runShell('git branch -D $branch',
+            cwd: project.canonical, timeoutMs: 5000);
+        // -D 失败（如同名分支恰被另一 worktree 检出）→ 走保留路径兜底
+        return del.exit == 0 ? null : branch;
+      }
+      return branch; // 未并入 → 保留（含未合并提交）
     } catch (_) {
       return null;
     }
