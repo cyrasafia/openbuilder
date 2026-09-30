@@ -323,6 +323,9 @@ class ServerStore extends ChangeNotifier {
   List<String> worktreeDirsOf(String projectId) =>
       _worktreeDirs[projectId] ?? const [];
 
+  static List<String> _oldestFirstDirs(List<WorktreeInfo> wts) =>
+      [for (final w in wts.reversed) w.directory];
+
   void setWorkspaceEnabled(String projectId, bool enabled) {
     if (projectId == 'global') return;
     if (_workspaceEnabled[projectId] == enabled) return;
@@ -422,7 +425,7 @@ class ServerStore extends ChangeNotifier {
       final wts = await c
           .worktrees(projectId)
           .timeout(const Duration(seconds: 3));
-      final dirs = wts.map((w) => w.directory).toList(growable: false);
+      final dirs = _oldestFirstDirs(wts);
       if (dirs.isEmpty) return;
       if (listEquals(_worktreeDirs[projectId], dirs)) return;
       _worktreeDirs[projectId] = dirs;
@@ -855,7 +858,7 @@ class ServerStore extends ChangeNotifier {
       }
       try {
         final wts = await c.worktrees(p.id);
-        final dirs = wts.map((w) => w.directory).toList(growable: false);
+        final dirs = _oldestFirstDirs(wts);
         if (dirs.isEmpty) return;
         _worktreeDirs[p.id] = dirs;
         map[p.canonical] = dirs;

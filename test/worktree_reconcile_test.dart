@@ -87,7 +87,7 @@ void main() {
   group('ServerStore._reconcileWorktrees', () {
     test('replaces the cached list with the remote worktree list', () async {
       final client = _WorktreesMockClient(byProject: {
-        'p1': ['/repo/p1', '/wt/real'],
+        'p1': ['/wt/real', '/repo/p1'],
       });
       final store = ServerStore()..client = client;
       store.setProjectsForTesting([_project('p1')]);
@@ -130,7 +130,7 @@ void main() {
     test('queries worktree list for workspace-enabled projects without '
         'cached worktrees', () async {
       final client = _WorktreesMockClient(byProject: {
-        'p1': ['/repo/p1', '/wt/remote'],
+        'p1': ['/wt/remote', '/repo/p1'],
       });
       final store = ServerStore()..client = client;
       store.setProjectsForTesting([_project('p1'), _project('p2')]);
@@ -147,7 +147,7 @@ void main() {
     test('queries worktree list for projects with sessions outside the '
         'canonical directory', () async {
       final client = _WorktreesMockClient(byProject: {
-        'p1': ['/repo/p1', '/wt/remote'],
+        'p1': ['/wt/remote', '/repo/p1'],
       });
       final store = ServerStore()..client = client;
       store.setProjectsForTesting([_project('p1')]);
@@ -160,7 +160,7 @@ void main() {
     test('injected sessions drive the predicate without store state',
         () async {
       final client = _WorktreesMockClient(byProject: {
-        'p1': ['/repo/p1', '/wt/remote'],
+        'p1': ['/wt/remote', '/repo/p1'],
       });
       final store = ServerStore()..client = client;
       await store.reconcileWorktreesForTesting(
@@ -173,7 +173,7 @@ void main() {
 
     test('adopts remote worktrees missing from the local cache', () async {
       final client = _WorktreesMockClient(byProject: {
-        'p1': ['/repo/p1', '/wt/a', '/wt/b', '/wt/calm'],
+        'p1': ['/wt/calm', '/wt/b', '/wt/a', '/repo/p1'],
       });
       final store = ServerStore()..client = client;
       store.setProjectsForTesting([_project('p1')]);
@@ -218,7 +218,7 @@ void main() {
   group('ServerStore.updateProject', () {
     test('reconciles cached worktrees after a PATCH response', () async {
       final client = _UpdateProjectMockClient(byProject: {
-        'p1': ['/repo/p1', '/wt/real'],
+        'p1': ['/wt/real', '/repo/p1'],
       });
       client.returned = ProjectModel(
         id: 'p1',
@@ -251,13 +251,25 @@ void main() {
   group('ServerStore.reconcileProjectWorktrees', () {
     test('merges fresh remote worktrees into the cache', () async {
       final client = _WorktreesMockClient(byProject: {
-        'p1': ['/repo/p1', '/wt/a', '/wt/calm'],
+        'p1': ['/wt/calm', '/wt/a', '/repo/p1'],
       });
       final store = ServerStore()..client = client;
       store.setProjectsForTesting([_project('p1')]);
       store.setWorktreeDirsForTesting('p1', ['/repo/p1', '/wt/calm']);
       await store.reconcileProjectWorktrees('p1');
       expect(store.worktreeDirsOf('p1'), ['/repo/p1', '/wt/a', '/wt/calm']);
+    });
+
+    test('stores remote worktrees oldest-first (server lists newest-first)',
+        () async {
+      final client = _WorktreesMockClient(byProject: {
+        'p1': ['/wt/newest', '/wt/mid', '/wt/oldest', '/repo/p1'],
+      });
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      await store.reconcileProjectWorktrees('p1');
+      expect(store.worktreeDirsOf('p1'),
+          ['/repo/p1', '/wt/oldest', '/wt/mid', '/wt/newest']);
     });
 
     test('keeps cached worktrees when the fetch fails', () async {

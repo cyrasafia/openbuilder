@@ -200,6 +200,7 @@ beta 期「worktree/workspace 端点与事件全部移除」的记录已失效�
 - worktree 编排端点回归且强于 v1 `/experimental/worktree`（策略化创建、父目录可选、setup 脚本、refresh 发现与 reconcile）；
 - 事件 `worktree.ready|failed`、`workspace.ready|failed|status` 均在；另有 durable 的 `worktree.resolved`（跨项目 adoption）；
 - `Project.sandboxes` 保留；`WorktreeTable` 成为独立持久层（带 strategy）；
+- **列表顺序契约（2026-09-30 实测补记，未写入 spec）**：`GET /api/worktree?projectID=` 响应**无任何时间戳**（仅 `{directory, strategy}`），顺序也未在 spec 声明——实测 2.0.18 为「链接 worktree 创建时间倒序（新在前）+ 主 checkout 最后」，以磁盘 birth time 与返回顺序吻合验证（openbuilder 4 项 / plan-travel 2 项两样本）。移动端据此在**入库口反转**（`ServerStore._oldestFirstDirs`，`reconcileProjectWorktrees` / `_reconcileWorktrees` 两个拉取点），使详情页 / 项目 Tab 的 worktree 分组按创建时间正序（主工作区仍由 `compareWorktreePaths` 钉首位，不依赖其在响应中的位置）。**耦合风险**：顺序纯靠实测，服务端未来改为其他序（如字母序）时客户端无法感知、会静默显示错误的「创建顺序」；升级服务端版本时应实测回归列表顺序。缓存兼容：旧缓存（倒序）在下次 reconcile 自动修正，无需迁移；
 - spec-overview §7 的 worktree UI 设计可以保留服务端编排路线，按新契约重写调用层。
 
 ### 官方 client 与适用性
