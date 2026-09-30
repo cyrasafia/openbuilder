@@ -309,5 +309,8 @@
   "@toolOutputTruncated": {"placeholders": {"count": {"type": "String"}}},
   "messageTruncated": "Content too long, truncated",
   "copyFailed": "Copy failed",
+    "syncingMessages": "Fetching new messages…",
+  "gapSyncing": "Syncing missed messages…",
+  "previewSyncing": "Syncing…",
   "errorPageTooLarge": "Session has too many messages to load in one page"
 }

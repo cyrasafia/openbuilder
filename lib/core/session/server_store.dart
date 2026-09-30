@@ -57,8 +57,15 @@ class ServerStore extends ChangeNotifier {
   DateTime? _lastFullRefreshAt;
 
   String? _activeSessionId;
-  bool _needsStaleMarking = false;
-  String? _resumeReloadedSessionId;
+  final Map<String, int> _contentWatermarks = {};
+  final Set<String> _staleSessionIds = {};
+  final Set<String> _livePreviewSids = {};
+  int _sseEpoch = 0;
+  int _lastDiffEpoch = -1;
+  static const _kProbeStaleMargin = Duration(seconds: 5);
+
+  bool isSessionStale(String sid) => _staleSessionIds.contains(sid);
+  bool hasLivePreview(String sid) => _livePreviewSids.contains(sid);
 
   final Map<String, Permission> _pendingPermissions = {};
 
@@ -722,6 +729,9 @@ class ServerStore extends ChangeNotifier {
         directory: directory, cacheStore: _cacheStore);
     conv.onQuestionResolved = _markFormResolved;
     conv.onPermissionResolved = _markPermissionResolved;
+    conv.onContentSynced = onContentSynced;
+    conv.isSessionStaleSession = isSessionStale;
+    conv.seedSyncedUpdated(_contentWatermarks[sid] ?? 0);
     _conversations[sid] = conv;
     final initStatus = statusOf(sid);
     conv.setStatus(initStatus.type, retryMessage: initStatus.message);
@@ -789,16 +799,13 @@ class ServerStore extends ChangeNotifier {
   ConversationStore? conversationForRead(String sessionId) =>
       _conversations[sessionId];
 
-  ConversationStore? conversationFor(String sessionId, {bool force = false}) {
+  ConversationStore? conversationFor(String sessionId) {
     final existing = _conversations[sessionId];
     if (existing != null) {
       _conversations.remove(sessionId);
       _conversations[sessionId] = existing;
       existing.sessionUpdated = sessionById(sessionId)?.updated;
-      if (force) {
-        unawaited(existing.reconcile()
-            .then((_) => _backfillPreview(sessionId, existing)));
-      } else if (!existing.loaded) {
+      if (!existing.loaded) {
         existing.setBackfillCallback(() => _backfillPreview(sessionId, existing));
         unawaited(existing.load()
             .then((_) => _backfillPreview(sessionId, existing)));
@@ -847,6 +854,11 @@ class ServerStore extends ChangeNotifier {
       _lastActivityByKey.clear();
       _workspaceEnabled.clear();
       _worktreeDirs.clear();
+      _contentWatermarks.clear();
+      _staleSessionIds.clear();
+      _livePreviewSids.clear();
+      _sseEpoch = 0;
+      _lastDiffEpoch = -1;
       _projectsFetched = false;
       commandsNotifier.value = const [];
       _commandsDegraded = false;
@@ -1028,12 +1040,13 @@ class ServerStore extends ChangeNotifier {
           _detectGhostSessionIds(_sessions, sessions, projects, worktreesByDir);
       _projects = projects;
       _projectsFetched = true;
+      _diffStaleSessions(sessions, full: true, busySids: _busySids());
       _sessions = _mergeFetchedSessions(sessions);
       _markGhostSessions(ghostIds);
       final active = await _fetchActiveStatuses();
       if (active != null) {
         _mergeStatus(fresh: active, sessions: sessions);
-        unawaited(_probeBusyMessageTimes());
+        unawaited(_probeBusyMessageTimes(allowStaleVerdict: true));
       }
       _inferWorkspaceForNewProjects();
       return true;
@@ -1070,6 +1083,111 @@ class ServerStore extends ChangeNotifier {
     final all = <String, SessionModel>{};
     _addSessions(all, list);
     return all.values.toList();
+  }
+
+  static int _effectiveFresh(SessionModel s) =>
+      s.updated > (s.idle ?? 0) ? s.updated : (s.idle ?? 0);
+
+  Set<String> _busySids({Map<String, SessionStatusValue>? active}) {
+    final out = <String>{
+      for (final e in _statusMap.entries)
+        if (e.value.type == 'busy' || e.value.type == 'retry') e.key,
+    };
+    if (active != null) out.addAll(active.keys);
+    return out;
+  }
+
+  void _diffStaleSessions(List<SessionModel> fresh,
+      {bool full = false, Set<String>? busySids}) {
+    final freshIds = fresh.map((s) => s.id).toSet();
+    for (final s in fresh) {
+      final known = _contentWatermarks[s.id] ?? 0;
+      if (_effectiveFresh(s) > known) {
+        if (_staleSessionIds.add(s.id)) {
+          _livePreviewSids.remove(s.id);
+        }
+      } else if (busySids == null || !busySids.contains(s.id)) {
+        _staleSessionIds.remove(s.id);
+      }
+    }
+    if (full) {
+      _staleSessionIds.removeWhere((sid) => !freshIds.contains(sid));
+      // 归档/删除/超出列表上限的会话：水位与预览标记兜底清理（_removeSession
+      // 只覆盖硬删除；归档走 _upsertSession 的移除分支，watermark/live 标记会
+      // 残留并随 server blob 持久化）。child 会话不在 fresh 列表中但仍在
+      // _childSessions 里活跃，跳过其水位清理以免无谓 churn。
+      for (final sid in _contentWatermarks.keys.toList()) {
+        if (freshIds.contains(sid) || _childSessions.containsKey(sid)) continue;
+        _contentWatermarks.remove(sid);
+        _livePreviewSids.remove(sid);
+      }
+      _lastDiffEpoch = _sseEpoch;
+    }
+  }
+
+  void onContentSynced(String sid, int updated, {required bool fromReconcile}) {
+    if (!fromReconcile) {
+      if (_staleSessionIds.contains(sid) || _lastDiffEpoch != _sseEpoch) {
+        return;
+      }
+    }
+    final cur = _contentWatermarks[sid] ?? 0;
+    if (updated > cur) {
+      _contentWatermarks[sid] = updated;
+      _scheduleCacheSave();
+    }
+    if (fromReconcile) {
+      final wasStale = _staleSessionIds.remove(sid);
+      if (wasStale) _notifyPreviewChanged();
+    }
+  }
+
+  Future<bool> ensureSessionFresh(String sid) async {
+    if (_lastDiffEpoch == _sseEpoch) return _staleSessionIds.contains(sid);
+    final c = client;
+    final dir = sessionById(sid)?.directory;
+    if (c == null || dir == null || dir.isEmpty) {
+      return _staleSessionIds.contains(sid);
+    }
+    final fresh = await c.sessionsForDirectory(dir);
+    for (final s in fresh) {
+      _upsertSession(s);
+    }
+    SessionModel? me;
+    for (final s in fresh) {
+      if (s.id == sid) {
+        me = s;
+        break;
+      }
+    }
+    _conversations[sid]?.sessionUpdated = me == null ? null : _effectiveFresh(me);
+    _diffStaleSessions(fresh, busySids: _busySids());
+    notifyListeners();
+    return _staleSessionIds.contains(sid);
+  }
+
+  Future<void> reconcileConversation(String sid) async {
+    final conv = _conversations[sid];
+    if (conv == null) return;
+    final s = sessionById(sid);
+    if (s != null) {
+      final target = _effectiveFresh(s);
+      if (target > (conv.sessionUpdated ?? 0)) conv.sessionUpdated = target;
+    }
+    await conv.reconcile();
+    await _backfillPreview(sid, conv);
+  }
+
+  Future<void> awaitReconcile(String sid) =>
+      _conversations[sid]?.reconcileDone ?? Future.value();
+
+  void _bumpSseEpochMarkBusy() {
+    _sseEpoch++;
+    for (final e in _statusMap.entries) {
+      if (e.value.type == 'busy' || e.value.type == 'retry') {
+        _staleSessionIds.add(e.key);
+      }
+    }
   }
 
   void _addSessions(Map<String, SessionModel> out, List<SessionModel> list) {
@@ -1124,11 +1242,14 @@ class ServerStore extends ChangeNotifier {
           _detectGhostSessionIds(_sessions, sessions, newProjects, worktreesByDir);
       final active = await _fetchActiveStatuses();
       _projects = newProjects;
+      _diffStaleSessions(sessions,
+          full: true, busySids: _busySids(active: active));
       _sessions = _mergeFetchedSessions(sessions);
       _markGhostSessions(ghostIds);
       if (active != null) {
         _mergeStatus(fresh: active, sessions: sessions);
-        unawaited(_probeBusyMessageTimes());
+        unawaited(_probeBusyMessageTimes(
+            allowStaleVerdict: _sseLive || force));
       }
       _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
@@ -1152,26 +1273,9 @@ class ServerStore extends ChangeNotifier {
     final activeId = _activeSessionId;
     final activeConv =
         activeId != null ? _conversations[activeId] : null;
-    if (activeConv != null) {
-      if (activeId == _resumeReloadedSessionId) {
-        _resumeReloadedSessionId = null;
-      } else if (activeConv.busy) {
-        activeConv.markStale();
-      } else if (!activeConv.loaded) {
-        unawaited(activeConv.load()
-            .then((_) => _backfillPreview(activeId!, activeConv)));
-      } else if (activeConv.isStale) {
-        unawaited(activeConv.reload()
-            .then((_) => _backfillPreview(activeId!, activeConv)));
-      }
-    }
-    if (_needsStaleMarking) {
-      for (final entry in _conversations.entries) {
-        if (entry.key != activeId) {
-          entry.value.markStale();
-        }
-      }
-      _needsStaleMarking = false;
+    if (activeConv != null && !activeConv.loaded) {
+      unawaited(activeConv.load()
+          .then((_) => _backfillPreview(activeId!, activeConv)));
     }
     unawaited(_backfillPermissions());
     PerfProbe.I.markEvent('refresh-done');
@@ -1321,12 +1425,10 @@ class ServerStore extends ChangeNotifier {
       _sseFailed = true;
     }
     if (s.reconnecting) {
+      _bumpSseEpochMarkBusy();
       _startHealthProbe();
     } else if (s.connected) {
       _stopHealthProbe();
-    }
-    if (s.reconnecting) {
-      _needsStaleMarking = true;
     }
     if (!s.reconnecting && s.connected && !wasLive) {
       _scheduleReconcile();
@@ -1479,6 +1581,36 @@ class ServerStore extends ChangeNotifier {
   @visibleForTesting
   Future<void> stopSseForTesting() => _stopSse(flushCache: false);
 
+  @visibleForTesting
+  void diffStaleForTesting(List<SessionModel> fresh,
+          {bool full = false, Set<String>? busySids}) =>
+      _diffStaleSessions(fresh, full: full, busySids: busySids);
+
+  @visibleForTesting
+  void onContentSyncedForTesting(String sid, int updated,
+          {required bool fromReconcile}) =>
+      onContentSynced(sid, updated, fromReconcile: fromReconcile);
+
+  @visibleForTesting
+  void bumpSseEpochForTesting() => _bumpSseEpochMarkBusy();
+
+  @visibleForTesting
+  void consumeEpochForTesting() {
+    _lastDiffEpoch = _sseEpoch;
+  }
+
+  @visibleForTesting
+  int? watermarkOf(String sid) => _contentWatermarks[sid];
+
+  @visibleForTesting
+  void probeBusyForTesting({bool allowStaleVerdict = false}) =>
+      _probeBusyMessageTimes(allowStaleVerdict: allowStaleVerdict);
+
+  @visibleForTesting
+  void injectConversationForTesting(String sid, ConversationStore conv) {
+    _conversations[sid] = conv;
+  }
+
   void _onGlobalEvent(GlobalOpencodeEvent gev) {
     final ev = gev.event;
     final directory = gev.directory;
@@ -1491,6 +1623,11 @@ class ServerStore extends ChangeNotifier {
         ev.type != 'server.connected' &&
         !_isKnownSession(sid)) {
       return;
+    }
+    if (sid != null &&
+        ev.created != null &&
+        ev.type.startsWith('session.')) {
+      onContentSynced(sid, ev.created!, fromReconcile: false);
     }
     _onEvent(ev);
   }
@@ -1759,6 +1896,7 @@ class ServerStore extends ChangeNotifier {
                     hideReasoning: !_reasoningVisibleInPreview, loc: _loc) ??
                 _lastMessage[sidB] ??
                 '';
+            _livePreviewSids.add(sidB);
             _notifyPreviewChanged();
             _scheduleCacheSave();
           }
@@ -1931,6 +2069,7 @@ class ServerStore extends ChangeNotifier {
         hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     if (pv != null) {
       _lastMessage[sid] = pv;
+      _livePreviewSids.add(sid);
       _notifyPreviewChanged();
     }
   }
@@ -1966,6 +2105,7 @@ class ServerStore extends ChangeNotifier {
         hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     if (preview != null) {
       _lastMessage[sid] = preview;
+      _livePreviewSids.add(sid);
       _bumpPreview();
     }
   }
@@ -1977,6 +2117,7 @@ class ServerStore extends ChangeNotifier {
         hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
     if (pv != null) {
       _lastMessage[sid] = pv;
+      _livePreviewSids.add(sid);
       _notifyPreviewChanged();
       _scheduleCacheSave();
     }
@@ -2026,7 +2167,7 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  Future<void> _probeBusyMessageTimes() async {
+  Future<void> _probeBusyMessageTimes({bool allowStaleVerdict = false}) async {
     final c = client;
     if (c == null || _busyProbeInFlight) return;
     final sids = _statusMap.entries
@@ -2040,11 +2181,30 @@ class ServerStore extends ChangeNotifier {
     try {
       for (final sid in sids) {
         try {
-          final at = await c.latestMessageAt(sid);
+          final summary = allowStaleVerdict
+              ? await c.latestMessageSummary(sid)
+              : LatestMessageSummary(at: await c.latestMessageAt(sid));
+          final at = summary.at;
           final s = sessionById(sid);
           if (at != null && s != null && at > s.updated) {
             _upsertSession(s.copyWith(updated: at));
             touched = true;
+          }
+          if (!allowStaleVerdict || summary.message == null) continue;
+          final wm = _contentWatermarks[sid] ?? 0;
+          if (at != null &&
+              at - wm > _kProbeStaleMargin.inMilliseconds &&
+              _staleSessionIds.add(sid)) {
+            AppLogger.I.d(_tag, 'probe marked stale $sid at=$at wm=$wm');
+          }
+          if (isSessionStale(sid)) {
+            final pv = sessionMessagePreviewText(summary.message!,
+                hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
+            if (pv != null && pv.isNotEmpty) {
+              _lastMessage[sid] = pv;
+              _livePreviewSids.add(sid);
+              touched = true;
+            }
           }
         } catch (_) {}
       }
@@ -2198,6 +2358,9 @@ class ServerStore extends ChangeNotifier {
     _lastMessage.remove(id);
     _statusMap.remove(id);
     _ghostSessionIds.remove(id);
+    _contentWatermarks.remove(id);
+    _livePreviewSids.remove(id);
+    _staleSessionIds.remove(id);
     final cs = _cacheStore;
     if (cs != null) unawaited(cs.remove('conv/$id'));
     _scheduleCacheSave();
@@ -2375,7 +2538,6 @@ class ServerStore extends ChangeNotifier {
     _foreground = false;
     AppLogger.I.i(_tag, 'pause');
     for (final conv in _conversations.values) {
-      conv.markStale();
       conv.cancelLoadRetry();
     }
     final activePause = _pauseOperation;
@@ -2429,6 +2591,9 @@ class ServerStore extends ChangeNotifier {
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
     _stopHealthProbe();
+    if (_sse != null) {
+      _bumpSseEpochMarkBusy();
+    }
     final eventSub = _sseSub;
     final stateSub = _sseStateSub;
     final client = _sse;
@@ -2472,6 +2637,7 @@ class ServerStore extends ChangeNotifier {
         'activity': _lastActivityByKey,
         'workspaceEnabled': _workspaceEnabled,
         'worktreeDirs': _worktreeDirs,
+        'syncWatermarks': _contentWatermarks,
       };
       await cs.write('server', jsonEncode(j));
     } catch (e) {
@@ -2510,6 +2676,20 @@ class ServerStore extends ChangeNotifier {
         final key = entry.key.toString();
         final cur = _lastActivityByKey[key] ?? 0;
         if (n > cur) _lastActivityByKey[key] = n;
+      }
+      final wmRaw = j['syncWatermarks'] as Map?;
+      if (wmRaw != null) {
+        for (final entry in wmRaw.entries) {
+          final v = entry.value;
+          final n = v is int ? v : (v is num ? v.toInt() : null);
+          if (n == null || n <= 0) continue;
+          _contentWatermarks[entry.key.toString()] = n;
+        }
+      } else {
+        for (final s in sessions) {
+          final seed = _effectiveFresh(s);
+          if (seed > 0) _contentWatermarks[s.id] = seed;
+        }
       }
       if (_projects.isEmpty) _projects = projects;
       if (_sessions.isEmpty) _sessions = sessions;

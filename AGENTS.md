@@ -151,6 +151,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design-self-healing.md` | 断网自愈整体设计（umbrella，含文档导航） |
 | `design-sse-reconnect-recovery.md` | 后台恢复 + 断网恢复的 SSE 重连加速（reconnectNow kick + health probe） |
 | `design-incremental-reconcile.md` | 增量对账 + 分段懒加载（取代全量 reconcile） |
+| `design-session-sync-gating.md` | 会话同步门控（stale 精确判定 + 对账门控展示：内容水位线 `syncWatermarks` 单一真相源、v2 双信号判定 max(updated,idle)+busy 探针、SSE 事件入口冻结守卫防断连缺口被洗、进页条件对账、GL-1 缺口闸门（实时尾部即时展示与列表同权 + 缺口分隔条）、列表双条件占位、GL-2..4 探针容差/断连不 polling/预览回写；v2.0.18 对齐 + 九轮评审记录） |
 | `design-message-accumulation.md` | SSE 消息累积 + reconcile 对账 |
 | `design-load-retry.md` | 首次加载退避重试 + 加载动效 |
 | `design-on-demand-sse.md` | 按需 SSE 连接池（**已被取代**，仅存历史；§1.3 误判记录见下条） |

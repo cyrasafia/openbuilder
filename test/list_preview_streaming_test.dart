@@ -137,7 +137,7 @@ void main() {
     expect(store.lastMessageOf(sid), '你: old msg');
     conv.onStepStarted('new');
     conv.onTextDelta('new', 0, 'new reply');
-    store.conversationFor(sid, force: true);
+    store.reconcileConversation(sid);
     for (var i = 0; i < 50 && store.lastMessageOf(sid) == '你: old msg'; i++) {
       await Future.delayed(const Duration(milliseconds: 10));
     }
@@ -163,7 +163,7 @@ void main() {
     conv.onUserMessageArrived(userMsg(id: 'old', text: 'stale', created: 500));
     store.reflectPreviewFrom(sid);
     expect(store.lastMessageOf(sid), '你: stale');
-    store.conversationFor(sid, force: true);
+    store.reconcileConversation(sid);
     for (var i = 0; i < 50 && store.lastMessageOf(sid) == '你: stale'; i++) {
       await Future.delayed(const Duration(milliseconds: 10));
     }

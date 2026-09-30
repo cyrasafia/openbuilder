@@ -309,5 +309,8 @@
   "@toolOutputTruncated": {"placeholders": {"count": {"type": "String"}}},
   "messageTruncated": "内容过长，已截断显示",
   "copyFailed": "复制失败",
+    "syncingMessages": "获取新消息中…",
+  "gapSyncing": "正在同步错过的消息…",
+  "previewSyncing": "同步中…",
   "errorPageTooLarge": "会话消息过多，超出单次加载上限"
 }

@@ -61,6 +61,8 @@ class _SessionsTabState extends State<SessionsTab> {
   _SessionTile _cachedTile(SessionModel s) {
     final projectLabel = serverStore.projectDisplayOf(s);
     final sseConnected = serverStore.isSessionSseConnected(s.id);
+    final stalePreview = serverStore.isSessionStale(s.id) &&
+        !serverStore.hasLivePreview(s.id);
     final tile = _tileCache[s.id];
     if (tile != null &&
         tile.session == s &&
@@ -70,6 +72,7 @@ class _SessionsTabState extends State<SessionsTab> {
         identical(tile.project, serverStore.projectOf(s.projectID)) &&
         tile.agentState == serverStore.agentIndicatorStateOf(s.id) &&
         tile.preview == serverStore.lastMessageOf(s.id) &&
+        tile.stalePreview == stalePreview &&
         tile.sseConnected == sseConnected &&
         tile.sseReconnecting == serverStore.sseReconnecting) {
       return tile;
@@ -82,6 +85,7 @@ class _SessionsTabState extends State<SessionsTab> {
       project: serverStore.projectOf(s.projectID),
       agentState: serverStore.agentIndicatorStateOf(s.id),
       preview: serverStore.lastMessageOf(s.id),
+      stalePreview: stalePreview,
       sseConnected: sseConnected,
       sseReconnecting: serverStore.sseReconnecting,
       onTap: () => context.push('/session/${s.id}'),
@@ -206,6 +210,7 @@ class _SessionTile extends StatelessWidget {
   final ProjectModel? project;
   final AgentIndicatorState agentState;
   final String? preview;
+  final bool stalePreview;
   final bool sseConnected;
   final bool sseReconnecting;
   final VoidCallback onTap;
@@ -218,6 +223,7 @@ class _SessionTile extends StatelessWidget {
     required this.project,
     required this.agentState,
     required this.preview,
+    required this.stalePreview,
     required this.sseConnected,
     required this.sseReconnecting,
     required this.onTap,
@@ -269,12 +275,22 @@ class _SessionTile extends StatelessWidget {
               AgentStatusIndicator(state: agentState),
               const SizedBox(width: 6),
               Expanded(
-                child: Text(
-                  preview ?? '—',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 13, color: muted),
-                ),
+                child: stalePreview
+                    ? Text(
+                        l(context).previewSyncing,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: muted,
+                            fontStyle: FontStyle.italic),
+                      )
+                    : Text(
+                        preview ?? '—',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 13, color: muted),
+                      ),
               ),
             ],
           ),

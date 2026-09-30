@@ -17,6 +17,12 @@ class MessagesPage {
   const MessagesPage(this.entries, this.olderCursor, this.newerCursor);
 }
 
+class LatestMessageSummary {
+  final int? at;
+  final SessionMessage? message;
+  const LatestMessageSummary({this.at, this.message});
+}
+
 class ShellRunResult {
   final int? exit;
   final String output;
@@ -431,6 +437,31 @@ class OpencodeClient {
       }
     }
     return latest;
+  }
+
+  Future<LatestMessageSummary> latestMessageSummary(String sessionId) async {
+    final r = await dio.get<dynamic>(
+      '/api/session/$sessionId/message',
+      queryParameters: const {'order': 'desc', 'limit': 1},
+    );
+    final data = _asMap(r.data)['data'];
+    if (data is! List || data.isEmpty) return const LatestMessageSummary();
+    final first = data.first;
+    if (first is! Map) return const LatestMessageSummary();
+    final time = first['time'];
+    int? latest;
+    if (time is Map) {
+      for (final key in const ['created', 'streamed', 'completed']) {
+        final v = time[key];
+        if (v is num && v.toInt() > 1e12) {
+          final ms = v.toInt();
+          if (latest == null || ms > latest) latest = ms;
+        }
+      }
+    }
+    return LatestMessageSummary(
+        at: latest,
+        message: SessionMessage.fromJson(first.cast<String, dynamic>()));
   }
 
   Future<List<Permission>> pendingPermissions(String directory) async {

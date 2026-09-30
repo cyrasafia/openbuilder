@@ -194,6 +194,9 @@ class ConversationStore extends ChangeNotifier {
 
   void Function(String formId)? onQuestionResolved;
   void Function(String permissionId)? onPermissionResolved;
+  void Function(String sid, int updated, {required bool fromReconcile})?
+      onContentSynced;
+  bool Function(String sid)? isSessionStaleSession;
 
   final CacheStore? cacheStore;
 
@@ -223,9 +226,23 @@ class ConversationStore extends ChangeNotifier {
 
   bool _stale = false;
   bool _reconciling = false;
+  bool _gated = false;
+  int _revealWatermark = 0;
+  int _gateBaseline = 0;
+  int _syncedUpdated = 0;
+  Future<void>? _reconcileFuture;
   DateTime? _lastReloadAt;
   static const _reloadBackoff = Duration(seconds: 10);
   static const _kWindow = 100;
+
+  bool get gated => _gated;
+  bool get reconciling => _reconciling;
+  int get gateBaseline => _gateBaseline;
+  Future<void> get reconcileDone => _reconcileFuture ?? Future.value();
+
+  void seedSyncedUpdated(int v) {
+    if (v > _syncedUpdated) _syncedUpdated = v;
+  }
 
   Timer? _loadRetryTimer;
   int _loadRetryAttempt = 0;
@@ -289,17 +306,27 @@ class ConversationStore extends ChangeNotifier {
 
   List<DisplayMessage> get renderableMessages {
     if (_renderableVersion == _messagesVersion) return _renderableCache;
+    final gated = _gated && _revealWatermark > 0;
     final List<DisplayMessage> result;
     if (_segments.isEmpty) {
       result = _messages.reversed
-          .where((m) => !_isEmptyUser(m) && !_hiddenKinds.contains(m.type))
+          .where((m) =>
+              !_isEmptyUser(m) &&
+              !_hiddenKinds.contains(m.type) &&
+              (!gated ||
+                  m.optimistic ||
+                  m.created <= _revealWatermark))
           .toList(growable: false);
     } else {
       final seg = _segments.first;
       final list = <DisplayMessage>[];
       for (var i = _messages.length - 1; i >= 0; i--) {
         final m = _messages[i];
-        if (!_isEmptyUser(m) && !_hiddenKinds.contains(m.type)) list.add(m);
+        if (!_isEmptyUser(m) &&
+            !_hiddenKinds.contains(m.type) &&
+            (!gated || m.optimistic || m.created <= _revealWatermark)) {
+          list.add(m);
+        }
         if (m.id == seg.oldestId) break;
       }
       result = list;
@@ -359,6 +386,53 @@ class ConversationStore extends ChangeNotifier {
 
   bool get isStale => _stale;
   void markStale() => _stale = true;
+
+  int _lastKnownCreated() {
+    var m = 0;
+    for (final msg in _messages) {
+      if (msg.optimistic) continue;
+      if (msg.created > m) m = msg.created;
+    }
+    return m;
+  }
+
+  void beginGate() {
+    if (_gated || _reconciling) return;
+    if (isSessionStaleSession?.call(sessionId) == false) return;
+    _gated = true;
+    _revealWatermark = _lastKnownCreated() > _syncedUpdated
+        ? _lastKnownCreated()
+        : _syncedUpdated;
+    _gateBaseline = _revealWatermark;
+    unawaited(_loadCacheForGate().then((_) {
+      if (!_gated || _disposed) return;
+      final recalced = _lastKnownCreated();
+      if (recalced > _revealWatermark) _revealWatermark = recalced;
+      _touchMessages(const <String>{});
+      notifyListeners();
+    }));
+    _touchMessages(const <String>{});
+    notifyListeners();
+  }
+
+  void _endGate() {
+    if (!_gated) return;
+    _gated = false;
+    _touchMessages(const <String>{});
+    notifyListeners();
+  }
+
+  void revealLiveMessage(int serverCreated) {
+    if (!_gated || serverCreated <= _revealWatermark) return;
+    _revealWatermark = serverCreated;
+    _touchMessages(const <String>{});
+    notifyListeners();
+  }
+
+  void _revealIfGated(DisplayMessage m) {
+    if (!_gated || m.optimistic) return;
+    if (m.created > _revealWatermark) revealLiveMessage(m.created);
+  }
 
   @override
   void dispose() {
@@ -535,6 +609,12 @@ class ConversationStore extends ChangeNotifier {
   Future<void> reconcile() async {
     if (_reconciling) return;
     _reconciling = true;
+    final future = _reconcileBody();
+    _reconcileFuture = future.then((_) {}, onError: (_) {});
+    await future;
+  }
+
+  Future<void> _reconcileBody() async {
     _lastReloadAt = DateTime.now();
     PerfProbe.I.markEvent('reconcile-start $sessionId');
     AppLogger.I.d(_tag, 'reconcile start $sessionId');
@@ -571,6 +651,10 @@ class ConversationStore extends ChangeNotifier {
       error = null;
       _stale = false;
       loading = false;
+      _endGate();
+      final target = sessionUpdated ?? 0;
+      if (target > _syncedUpdated) _syncedUpdated = target;
+      onContentSynced?.call(sessionId, target, fromReconcile: true);
       unawaited(_saveCache());
     } catch (e) {
       AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
@@ -581,6 +665,12 @@ class ConversationStore extends ChangeNotifier {
         // 用户手动刷新（pull-to-refresh → reconcile）仍可重试。
         cancelLoadRetry();
         _stale = false;
+        // 终态失败不是"仍在退避重试"，必须结门控并清会话级 stale——否则
+        // 「获取新消息中」永久驻留，且 active-stale listener 会在每次
+        // notify 上重新触发门控+对账（页面超限场景形成无意义重试环）。
+        // 目标传 0：不清水位（拉取并未成功，不得声张内容已同步）。
+        _endGate();
+        onContentSynced?.call(sessionId, 0, fromReconcile: true);
       } else {
         _stale = true;
       }
@@ -979,21 +1069,7 @@ class ConversationStore extends ChangeNotifier {
     _touchMessages();
     final msgs = j['messages'] as List? ?? [];
     _messages.clear();
-    for (final m in msgs) {
-      final m2 = m as Map<String, dynamic>;
-      if (m2['optimistic'] == true) continue;
-      var raw = m2;
-      if (terminal &&
-          m2['type'] == 'assistant' &&
-          (m2['finish'] == null || (m2['finish'] as String).isEmpty)) {
-        raw = Map<String, dynamic>.of(m2);
-        raw['finish'] = 'stop';
-      }
-      final sm = SessionMessage.fromJson(raw);
-      final d = _toDisplay(sm);
-      if (d == null) continue;
-      _messages.add(d);
-    }
+    _messages.addAll(_parseCacheMessages(msgs, terminal: terminal));
     final segs = j['segments'] as List? ?? [];
     _segments.clear();
     for (final s in segs) {
@@ -1006,6 +1082,53 @@ class ConversationStore extends ChangeNotifier {
     }
     _recomputeTodos();
     if (_messages.isNotEmpty) loaded = true;
+  }
+
+  List<DisplayMessage> _parseCacheMessages(List msgs,
+      {required bool terminal}) {
+    final out = <DisplayMessage>[];
+    for (final m in msgs) {
+      final m2 = m as Map<String, dynamic>;
+      if (m2['optimistic'] == true) continue;
+      var raw = m2;
+      if (terminal &&
+          m2['type'] == 'assistant' &&
+          (m2['finish'] == null || (m2['finish'] as String).isEmpty)) {
+        raw = Map<String, dynamic>.of(m2);
+        raw['finish'] = 'stop';
+      }
+      final sm = SessionMessage.fromJson(raw);
+      final d = _toDisplay(sm);
+      if (d != null) out.add(d);
+    }
+    return out;
+  }
+
+  Future<void> _loadCacheForGate() async {
+    final cs = cacheStore;
+    if (cs == null) return;
+    try {
+      final raw = await cs.read(_cacheKey);
+      if (raw == null || raw.isEmpty) return;
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      final v = j['v'];
+      if (v != null && v != 2) return;
+      final msgs =
+          _parseCacheMessages(j['messages'] as List? ?? const [], terminal: false);
+      if (msgs.isEmpty) return;
+      var added = false;
+      for (final d in msgs) {
+        if (_findMessage(d.id) != null) continue;
+        _messages.add(d);
+        added = true;
+      }
+      if (added && !_disposed) {
+        _sort(const <String>{});
+        _recomputeTodos();
+      }
+    } catch (e) {
+      AppLogger.I.w(_tag, 'loadCacheForGate failed: $e');
+    }
   }
 
   Future<void> _maybePreheatCache() async {
@@ -1490,6 +1613,7 @@ class ConversationStore extends ChangeNotifier {
       final d = _toDisplay(sm);
       if (d != null) {
         _messages.add(d);
+        _revealIfGated(d);
         _sort(<String>{mid});
       }
     } else {
@@ -1566,6 +1690,7 @@ class ConversationStore extends ChangeNotifier {
     if (d == null) return;
     if (bridge != null) _bridgeOptimisticParts(d, bridge);
     _messages.add(d);
+    _revealIfGated(d);
     _sort(<String>{user.id});
     unawaited(_saveCache());
     notifyListeners();
@@ -1747,6 +1872,7 @@ class ConversationStore extends ChangeNotifier {
       created: maxCreated + 1,
     );
     _messages.add(m);
+    _revealIfGated(m);
     _sort(const <String>{});
     return m;
   }
@@ -1770,4 +1896,73 @@ class ConversationStore extends ChangeNotifier {
 
   @visibleForTesting
   static bool isEmptyUserForTest(DisplayMessage m) => _isEmptyUser(m);
+
+  @visibleForTesting
+  void beginGateForTest() => beginGate();
+
+  @visibleForTesting
+  void endGateForTest() => _endGate();
+
+  @visibleForTesting
+  int get revealWatermarkForTest => _revealWatermark;
+
+  @visibleForTesting
+  Future<void> loadCacheForGateForTest() => _loadCacheForGate();
+
+  @visibleForTesting
+  void debugInsertForTest(SessionMessage sm) {
+    final d = _toDisplay(sm);
+    if (d == null) return;
+    _messages.add(d);
+    _sort(const <String>{});
+    notifyListeners();
+  }
+}
+
+String? sessionMessagePreviewText(SessionMessage m,
+    {bool hideReasoning = false, AppLocalizations? loc}) {
+  String pv = '';
+  if (m is UserMessage) {
+    if (m.text.trim().isNotEmpty) {
+      pv = m.text;
+    } else if (m.files.isNotEmpty) {
+      final name = m.files.first.name;
+      pv = (name != null && name.isNotEmpty) ? name : (loc?.attachmentFallback ?? '');
+    }
+    if (pv.isEmpty) return null;
+    return (loc?.previewYouPrefix ?? '') + pv.replaceAll('\n', ' ').trim();
+  }
+  if (m is AssistantMessage) {
+    for (var i = m.content.length - 1; i >= 0; i--) {
+      final c = m.content[i];
+      if (c is TextContent) {
+        pv = c.text;
+      } else if (c is ToolContent) {
+        Map<String, dynamic>? input;
+        final st = c.state;
+        if (st is RunningToolState) {
+          input = st.input;
+        } else if (st is CompletedToolState) {
+          input = st.input;
+        } else if (st is ErrorToolState) {
+          input = st.input;
+        }
+        pv = DisplayPart(id: '', type: 'tool', tool: c.name, toolInput: input)
+            .toolSummary;
+      } else if (c is ReasoningContent) {
+        if (hideReasoning) continue;
+        pv = c.text;
+      } else {
+        continue;
+      }
+      if (pv.trim().isNotEmpty) break;
+      pv = '';
+    }
+    if (pv.isEmpty) return null;
+    return pv.replaceAll('\n', ' ').trim();
+  }
+  if (m is ShellMessage) {
+    return m.command.replaceAll('\n', ' ').trim();
+  }
+  return null;
 }

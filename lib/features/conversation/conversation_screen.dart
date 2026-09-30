@@ -137,7 +137,6 @@ class _ConversationScreenState extends State<ConversationScreen>
   bool _shellMode = false;
   final List<_PendingItem> _pending = [];
   bool _cmdRefreshTriggered = false;
-  bool _didForceReload = false;
   bool _didRestoreDraft = false;
   int _lastMsgCount = 0;
   bool _wasBusy = false;
@@ -199,6 +198,9 @@ class _ConversationScreenState extends State<ConversationScreen>
   /// reconcile decode + message layout.
   final _transitionDone = ValueNotifier<bool>(false);
   Animation<double>? _routeAnimation;
+  bool _didEnterSync = false;
+  bool _enterSyncInFlight = false;
+  bool _enterSyncDirty = false;
 
   /// 距底基底 = 8(留白 sliver) + footer 动态行高 + 8(消息 SliverPadding 底侧)。
   double get _footerHeight => 16 + _footerRowHeight;
@@ -209,6 +211,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
     serverStore.commandsNotifier.addListener(_onCommandsChanged);
+    serverStore.addListener(_onServerStoreChanged);
     final conv = serverStore.conversationFor(widget.sessionId);
     if (conv != null) {
       conv.addListener(_onDraftChange);
@@ -222,6 +225,20 @@ class _ConversationScreenState extends State<ConversationScreen>
           if (mounted) PerfProbe.I.endWindow('enter-session:${widget.sessionId}');
         });
       });
+    }
+  }
+
+  void _onServerStoreChanged() {
+    if (!mounted || !_transitionDone.value) return;
+    final conv = serverStore.conversationForRead(widget.sessionId);
+    if (conv == null) return;
+    if (!conv.gated && !conv.reconciling && serverStore.isSessionStale(widget.sessionId)) {
+      if (_enterSyncInFlight) {
+        _enterSyncDirty = true;
+        return;
+      }
+      _didEnterSync = false;
+      _triggerEnterSync();
     }
   }
 
@@ -249,7 +266,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     final anim = ModalRoute.of(context)?.animation;
     if (anim == null || anim.status == AnimationStatus.completed) {
       _transitionDone.value = true;
-      _triggerForceReload();
+      _triggerEnterSync();
       return;
     }
     _routeAnimation = anim;
@@ -264,17 +281,48 @@ class _ConversationScreenState extends State<ConversationScreen>
     _routeAnimation?.removeStatusListener(_onRouteAnimationStatus);
     _routeAnimation = null;
     _transitionDone.value = true;
-    _triggerForceReload();
+    _triggerEnterSync();
   }
 
-  /// Deferred force-reload: fires the initial reconcile after the transition
-  /// animation completes. Lives here (not in build()) because _transitionDone
-  /// only rebuilds the nested ListenableBuilder, not the State's build().
-  void _triggerForceReload() {
-    if (_didForceReload) return;
-    _didForceReload = true;
-    serverStore.conversationFor(widget.sessionId, force: true);
-    PerfProbe.I.markEvent('conv-build force-reload ${widget.sessionId}');
+  Future<void> _triggerEnterSync() async {
+    if (_didEnterSync || _enterSyncInFlight) return;
+    _didEnterSync = true;
+    _enterSyncInFlight = true;
+    PerfProbe.I.markEvent('conv-build enter-sync ${widget.sessionId}');
+    try {
+      final conv0 = serverStore.conversationForRead(widget.sessionId);
+      if (conv0?.reconciling ?? false) {
+        await serverStore.awaitReconcile(widget.sessionId);
+      }
+      if (!mounted) return;
+      final stale = await serverStore.ensureSessionFresh(widget.sessionId);
+      final conv = mounted ? serverStore.conversationForRead(widget.sessionId) : null;
+      if (conv == null) return;
+      if (!stale) {
+        if (conv.gated && !conv.reconciling) {
+          unawaited(serverStore.reconcileConversation(widget.sessionId));
+        }
+        return;
+      }
+      conv.beginGate();
+      unawaited(serverStore.reconcileConversation(widget.sessionId));
+    } finally {
+      _enterSyncInFlight = false;
+      if (_enterSyncDirty && mounted) {
+        _enterSyncDirty = false;
+        // 仅当仍"可行动"才重跑：门控已开（本轮已处理）/正在对账 / 已非 stale
+        // 都无需再跑——否则本轮 ensureSessionFresh 自身的尾部 notify 会把
+        // dirty 置位，导致每次 stale 进页多跑一轮单查+对账。
+        final c = serverStore.conversationForRead(widget.sessionId);
+        if (c != null &&
+            !c.gated &&
+            !c.reconciling &&
+            serverStore.isSessionStale(widget.sessionId)) {
+          _didEnterSync = false;
+          _triggerEnterSync();
+        }
+      }
+    }
   }
 
   @override
@@ -287,6 +335,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       conv.persistDraft(); // unawaited，尽力而为（硬杀靠 pause flush 兜底）
     }
     serverStore.commandsNotifier.removeListener(_onCommandsChanged);
+    serverStore.removeListener(_onServerStoreChanged);
     serverStore.fileBrowsing.unregisterRefPicker(widget.sessionId);
     serverStore.setActiveConversation(null);
     WidgetsBinding.instance.removeObserver(this);
@@ -930,6 +979,8 @@ class _ConversationScreenState extends State<ConversationScreen>
     final Widget child;
     if (conv.workspaceMissing) {
       child = const _WorkspaceMissingBanner();
+    } else if (conv.gated) {
+      child = const _SyncingRow();
     } else if (conv.isRetry &&
         conv.retryMessage != null &&
         conv.retryMessage!.isNotEmpty) {
@@ -1172,6 +1223,16 @@ class _ConversationScreenState extends State<ConversationScreen>
             _wasBusy = conv.busy;
             _pruneMessageCaches(msgs);
             _scheduleFrameEval();
+            int? dividerIndex;
+            if (conv.gated) {
+              for (var i = 0; i < msgs.length; i++) {
+                if (msgs[i].created > conv.gateBaseline) continue;
+                dividerIndex = i;
+                break;
+              }
+              if (dividerIndex == 0 || dividerIndex == null) dividerIndex = null;
+            }
+            final effectiveDividerIndex = dividerIndex;
             final list = CustomScrollView(
               key: _listKey,
               reverse: true,
@@ -1185,8 +1246,24 @@ class _ConversationScreenState extends State<ConversationScreen>
                   sliver: SliverList(
                     key: _sliverKey,
                     delegate: SliverChildBuilderDelegate(
-                      (context, m) => _measuredMessage(msgs[m]),
-                      childCount: msgs.length,
+                      (context, m) {
+                        if (effectiveDividerIndex != null && m == effectiveDividerIndex) {
+                          // reverse 列表 index 越大越靠上：Column 内先消息后
+                          // 分隔条，屏幕上分隔条才落在实时尾部（下方）与缓存
+                          // 基底（上方）的边界，而非 cache 块内部。
+                          return Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _measuredMessage(msgs[m]),
+                              const _GapSyncDivider(),
+                            ],
+                          );
+                        }
+                        return _measuredMessage(
+                            msgs[effectiveDividerIndex != null && m > effectiveDividerIndex ? m - 1 : m]);
+                      },
+                      childCount:
+                          msgs.length + (effectiveDividerIndex != null ? 1 : 0),
                     ),
                   ),
                 ),
@@ -4257,6 +4334,77 @@ class _LoadingEarlierRow extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w400,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Footer hint shown while a stale session is gated: reconcile in flight,
+/// live SSE tail stays visible (GL-1 gap gate).
+class _SyncingRow extends StatelessWidget {
+  const _SyncingRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.5, color: color),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              l(context).syncingMessages,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w300,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// In-stream divider rendered at the gate baseline while gated: marks that
+/// messages between the cached base and the live tail may still be syncing
+/// (GL-1). Disappears in the same frame the gate ends.
+class _GapSyncDivider extends StatelessWidget {
+  const _GapSyncDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.outline;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.5, color: color),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              l(context).gapSyncing,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w300,
                 color: color,
               ),
             ),

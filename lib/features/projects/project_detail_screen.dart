@@ -499,6 +499,8 @@ class ProjectDetailScreen extends StatelessWidget {
             session: s,
             agentState: serverStore.agentIndicatorStateOf(s.id),
             preview: serverStore.lastMessageOf(s.id),
+            stalePreview: serverStore.isSessionStale(s.id) &&
+                !serverStore.hasLivePreview(s.id),
             onTap: () => context.push('/session/${s.id}'),
           ),
         ),
@@ -561,6 +563,8 @@ class ProjectDetailScreen extends StatelessWidget {
             session: s,
             agentState: serverStore.agentIndicatorStateOf(s.id),
             preview: serverStore.lastMessageOf(s.id),
+            stalePreview: serverStore.isSessionStale(s.id) &&
+                !serverStore.hasLivePreview(s.id),
             deleting: deleting,
             onTap: () => context.push('/session/${s.id}'),
           ),
@@ -867,12 +871,14 @@ class _SessionRow extends StatelessWidget {
   final SessionModel session;
   final AgentIndicatorState agentState;
   final String? preview;
+  final bool stalePreview;
   final VoidCallback onTap;
   final bool deleting;
   const _SessionRow({
     required this.session,
     required this.agentState,
     required this.preview,
+    required this.stalePreview,
     required this.onTap,
     this.deleting = false,
   });
@@ -880,6 +886,12 @@ class _SessionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.outline;
+    final String? shownPreview;
+    if (stalePreview) {
+      shownPreview = l(context).previewSyncing;
+    } else {
+      shownPreview = preview;
+    }
     final row = ListTile(
       onTap: onTap,
       dense: true,
@@ -902,15 +914,19 @@ class _SessionRow extends StatelessWidget {
           ),
         ],
       ),
-      subtitle: preview == null
+      subtitle: shownPreview == null
           ? null
           : Padding(
               padding: const EdgeInsets.only(left: 17, top: 2),
               child: Text(
-                preview!,
+                shownPreview,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: muted),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: muted,
+                  fontStyle: stalePreview ? FontStyle.italic : null,
+                ),
               ),
             ),
     );
