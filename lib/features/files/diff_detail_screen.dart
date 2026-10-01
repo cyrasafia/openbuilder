@@ -86,7 +86,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
         final diffs = await c.diff(
           widget.sessionId,
           directory: widget.directory,
-          mode: widget.mode == DiffMode.branch ? 'branch' : 'git',
+          mode: widget.mode == DiffMode.branch ? 'branch' : 'working',
           messageID: widget.mode == DiffMode.lastMessage ? widget.messageID : null,
         );
         for (final d in diffs) {

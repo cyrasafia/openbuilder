@@ -84,6 +84,12 @@
 
 修复后验收：`flutter analyze --fatal-infos` 零 issue；`flutter test` 651/651（+6 项新回归：状态失败保留 ×2、retry 双向、part 交错序、step 生命周期、skill payload）。
 
+## 迁移后修复（2026-10-01）
+
+| 项 | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| P-1 | 🔴 | diff 详情页「未提交」重拉仍用 v1 字面量 `mode=git`：v2 服务端只认 `working`/`branch`，返回 `Expected Vcs.Mode` → 列表页能列文件、点进去必报错（「上一轮」走 messageID 的 session diff、「分支」传 `branch`，均正常）。迁移时只改了 `diff_list` 与 client 默认值，漏改 `diff_detail` | `diff_detail_screen.dart` 与列表页对齐改传 `working` |
+
 ## 测试资产说明
 
 - `test/v2_test_fixtures.dart`：v2 wire 构造器（userMsg/assistantMsg/toolPart/PageMockClient/formInfo 等），供所有需要消息/form 夹具的测试复用。
