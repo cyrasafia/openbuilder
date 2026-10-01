@@ -417,7 +417,7 @@ Container(margin-top 6, surfaceContainerHighest, radius 8)
 
 ## 多语言 / i18n
 
-应用支持中文与英文两种语言（实现方案详见 `docs/design-i18n.md`）。i18n 不是逐字翻译,而是为不同语言重新表达 UI 文案。
+应用支持中文与英文两种语言（实现方案详见 `docs/design/design-i18n.md`）。i18n 不是逐字翻译,而是为不同语言重新表达 UI 文案。
 
 ### 原则
 

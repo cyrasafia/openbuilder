@@ -70,7 +70,7 @@ openBuilder ──②Bearer token──> 反向代理(Caddy/nginx) ──forward
 2. forward-auth 鉴权端点开启 Bearer scheme（`HeaderAuthorization` 策略的 `schemes` 含 `Bearer`）。
 3. `access_control` 规则放行授权用户访问 opencode 域名（支持 2FA）。
 
-完整配置样例与已实测的端到端流程见 [docs/todo-authelia-bearer-authz.md](docs/todo-authelia-bearer-authz.md)，客户端协议细节见 [docs/design-oauth-login.md](docs/design-oauth-login.md)。
+完整配置样例与已实测的端到端流程见 [docs/todo/todo-authelia-bearer-authz.md](docs/todo/todo-authelia-bearer-authz.md)，客户端协议细节见 [docs/design/design-oauth-login.md](docs/design/design-oauth-login.md)。
 
 > 也兼容其他标准 OIDC 提供方（Keycloak、Authentik、Zitadel 等）：只要支持 PKCE + loopback 重定向并在网关层校验 Bearer token 即可接入；Authelia 是当前文档化、经过完整实测的推荐方案。
 
@@ -191,7 +191,7 @@ openBuilder ──②Bearer token──> reverse proxy (Caddy/nginx) ──forwa
 2. Enable the Bearer scheme on the forward-auth authz endpoint (`HeaderAuthorization` strategy with `schemes` including `Bearer`).
 3. `access_control` rules granting authorized users (2FA supported) access to the opencode domain.
 
-See [docs/todo-authelia-bearer-authz.md](docs/todo-authelia-bearer-authz.md) for a full config sample and the end-to-end flow verified against a live deployment; client-side protocol details live in [docs/design-oauth-login.md](docs/design-oauth-login.md).
+See [docs/todo/todo-authelia-bearer-authz.md](docs/todo/todo-authelia-bearer-authz.md) for a full config sample and the end-to-end flow verified against a live deployment; client-side protocol details live in [docs/design/design-oauth-login.md](docs/design/design-oauth-login.md).
 
 > Other standard OIDC providers (Keycloak, Authentik, Zitadel, …) also work: any setup supporting PKCE + a loopback redirect with Bearer-token verification at the gateway can be used. Authelia is the documented, fully-tested recommended path.
 

@@ -33,7 +33,7 @@ openbuilder/
 │  │  ├─ settings/               # 服务器状态 / 管理
 │  │  └─ shell/                  # MainShell + 会话 Tab + 项目 Tab + 设置 Tab
 │  └─ ui/                        # 主题、共享 widgets（theme.dart / widgets.dart）
-├─ docs/                         # 设计文档、执行计划、评审（见下方命名约定）
+├─ docs/                         # 设计文档、执行计划、评审（按类型分子目录：spec/ design/ plan/ review/ todo/，见下方命名约定）
 ├─ scripts/
 │  └─ build.sh                   # release 构建（自动递增版本号）
 ├─ test/                         # 单元 + widget + smoke 测试
@@ -123,13 +123,15 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 ## 文档命名约定（docs/）
 
-| 前缀 | 用途 | 示例 |
-|------|------|------|
-| `spec-` | 整体设计规格 | `spec-overview.md` |
-| `design-` | 子系统设计文档 | `design-load-retry.md`、`design-message-accumulation.md` |
-| `plan-` | 执行计划（配套 design） | `plan-load-retry.md` |
-| `review-` | 代码评审报告（提交级或设计级） | `review-load-retry.md`、`review-04c8b07.md` |
-| `todo-` | 待办问题跟踪（已知缺陷/技术债，含现象、根因、修复方向、验收标准） | `todo-cache-write-race.md` |
+文档按类型分子目录存放，文件名保留类型前缀。
+
+| 前缀 | 目录 | 用途 | 示例 |
+|------|------|------|------|
+| `spec-` | `docs/spec/` | 整体设计规格 | `spec-overview.md` |
+| `design-` | `docs/design/` | 子系统设计文档 | `design-load-retry.md`、`design-message-accumulation.md` |
+| `plan-` | `docs/plan/` | 执行计划（配套 design） | `plan-load-retry.md` |
+| `review-` | `docs/review/` | 代码评审报告（提交级或设计级） | `review-load-retry.md`、`review-04c8b07.md` |
+| `todo-` | `docs/todo/` | 待办问题跟踪（已知缺陷/技术债，含现象、根因、修复方向、验收标准） | `todo-cache-write-race.md` |
 
 ### design 文档结构约定
 
@@ -145,42 +147,42 @@ export PATH="$JAVA_HOME/bin:$PATH"
 |------|------|
 | [`CONTEXT.md`](CONTEXT.md) | 领域术语表（FileView / Render Mode / Soft Wrap） |
 | [`DESIGN.md`](DESIGN.md) | 前端样式与字重系统（三档字重制、字体族、Do/Don't） |
-| `spec-overview.md` | 整体架构、技术栈、领域模型、端点映射 |
-| `design-frontend.md` | 前端页面、组件、交互设计 |
-| `plan-overview.md` | 分阶段执行计划（Phase 0-3） |
-| `design-self-healing.md` | 断网自愈整体设计（umbrella，含文档导航） |
-| `design-sse-reconnect-recovery.md` | 后台恢复 + 断网恢复的 SSE 重连加速（reconnectNow kick + health probe） |
-| `design-incremental-reconcile.md` | 增量对账 + 分段懒加载（取代全量 reconcile） |
-| `design-session-sync-gating.md` | 会话同步门控（stale 精确判定 + 对账门控展示：内容水位线 `syncWatermarks` 单一真相源、v2 双信号判定 max(updated,idle)+busy 探针、SSE 事件入口冻结守卫防断连缺口被洗、进页条件对账、GL-1 缺口闸门（实时尾部即时展示与列表同权 + 缺口分隔条）、列表双条件占位、GL-2..4 探针容差/断连不 polling/预览回写；v2.0.18 对齐 + 九轮评审记录） |
-| `design-message-accumulation.md` | SSE 消息累积 + reconcile 对账 |
-| `design-load-retry.md` | 首次加载退避重试 + 加载动效 |
-| `design-on-demand-sse.md` | 按需 SSE 连接池（**已被取代**，仅存历史；§1.3 误判记录见下条） |
-| `design-sse-global-event.md` | SSE 单全局流 `/global/event` 替代按需多连接池（已定稿待实施；含 2026-07 裸 `/event` 实测误判复盘——过滤端点被泛化为"单流不可用"、Last-Event-ID 从未生效） |
-| `design-local-cache.md` | 离线缓存兜底 |
-| `design-optimistic-messages.md` | 乐观消息插入 |
-| `design-session-status.md` | 会话状态同步 |
-| `design-agent-model-switch.md` | Agent/Model 切换 |
-| `design-slash-command-refresh.md` | 斜杠命令列表刷新缓存（单源 `GET /command` 全量注册表 + 可疑空保留 + 连击，含桌面端对比、1.18.18 双栈根因调研与服务端展开验证） |
-| `design-slash-command-echo.md` | 斜杠命令回显（subtask prompt 展开、乐观消息→SSE 确认） |
-| `design-file-view.md` | FileView 重构（渲染路由、语法高亮、Markdown 预览、图片预览、二进制下载） |
-| `design-file-view-deferred-render.md` | 文件详情页延迟渲染门控（动画期间仅后台任务；占位符动画判定修复既有门控失效、容器根路由双门控、Markdown HTML 预构建 + 签名比较去双跑；二期：WebView 首绘门控覆盖层 + 代码高亮预构建 + 测宽估算 top-K 瘦身挂载帧） |
-| `design-file-streaming.md` | 文件内容下载层修订（零下载路由 + 统一进度 + 内容驱动渲染，修订 design-file-view 的下载模型） |
-| `design-file-cache.md` | 文件内容缓存可行性调研（**结论：不可行，暂不做**；实测服务端无 ETag/Last-Modified/size/mtime/hash、无 conditional/Range；头部探测三元素仅概率验证且小文件场景自相矛盾；上游加 ETag 或 FileNode 元数据后重启） |
-| `design-v2-migration.md` | OpenCode V2 迁移（**已落地**：v2-only 切换按 2.0.18 契约完成；含 form/permission 事件族实测修正、todo=todowrite 推导、归档无 API 等落地结论；配套 `plan-v2-migration.md` 执行计划与 `review-v2-migration.md` 核对报告） |
-| `design-migrate-flutter-markdown-plus.md` | 迁移 flutter_markdown → flutter_markdown_plus（已停用包替换，drop-in） |
-| `design-scroll-to-turn-top.md` | 回到轮次顶部悬浮按钮（几何判定、run 合并、reversed 坐标偏移） |
-| `design-conversation-scroll-perf.md` | 会话列表滚动卡顿优化（根因记录：包 2 屏 cacheExtent × 重条目 × 每帧 O(N)，keep-alive/降频/控件收口三层方案；§7.5 键盘掉帧两连修：有界 keep-alive + 消息 widget 实例记忆化） |
-| `design-run-assembly.md` | 会话列表按 run 组装重构（最终方案：弃 scrollable_positioned_list，原生 SliverList + run 渐进预组装 + 几何回顶；run=一轮即 user+其全部回复，回顶锚定 user 消息顶；含方案演化史、备选对比、八轮评审） |
-| `design-user-message-collapse.md` | 高用户消息折叠/展开（自然高度 > 整屏×0.4 默认折叠，门槛键盘无关；自然/渲染高度分账防振荡、判定挂既有测高事件非每帧、OverflowBox+ClipRect 壳在实例缓存外；含 onNotification 读高 debug 断言修复） |
-| `design-image-attachment-thumbnail.md` | 图片附件缩略图统一渲染（乐观↔权威一致：判定改由 fileMime 驱动、ImageDataCache 异步解码 + native 缩放、复用 ImageView 放大、限最大高度；化解 CR-2 内存/掉帧顾虑） |
-| `design-bump-minsdk-34.md` | 提升 minSdk 至 34 + 清理冗余兼容代码（移除 core library desugaring、`Build.VERSION` 死分支、`-v21` 资源限定符；解锁通知运行时权限 / 暗色 uiMode / 预测性返回 / HCPP；不含 Markdown→WebView） |
-| `design-markdown-webview.md` | 文件详情页 Markdown 预览 Flutter Markdown → WebView（mar→HTML + CSS 复刻三档字重 + JS 桥 + 预热池；依赖 HCPP，前提为 minSdk 34；含原生缓解/分块/换渲染器/WebView 四方向选型否决理由） |
-| `design-html-preview.md` | HTML 文件预览（默认预览 + 手动切源码；原始文档 CSP/viewport meta 注入，WebView 复用 markdown 预览基础设施，`MarkdownWebView` 泛化为 `PreviewWebView`） |
-| `design-message-autolink.md` | 会话消息链接自动识别（URI + 项目内文件路径：围栏感知纯文本改写 + content-keyed memoize；`ob-file:` 自定义 scheme 分流；peek 快照进文件容器；行内代码仅纯目标转链；URI 主体 ASCII-only 修复全角标点吞字；`_trimTrailing` 追加 `*` 剥离修复强调标记吞入链接；含十轮评审记录） |
-| `design-frame-drop.md` | 掉帧专项优化（umbrella，含问题清单 + 度量/排查方法论）；JANK-1 浮层展开掉帧已修：首帧布局+文本排版为根因、模型浮层 Column 整组急布局为放大器，拍平模型列表 build max 54.6→19.8ms，门控方案预留；JANK-2 键盘展开/收起掉帧已修：Android 键盘弹起时 view.padding 随 viewInsets 联动变化，后台 MainShell/ProjectDetailScreen 整片重建，`_ViewInsetsFreezer` 同时冻结 viewInsets+padding+viewPadding（=viewPadding），build median 33.8→15.7ms，SessionsTab/ProjectsTab/ProjectDetailScreen 重建归零 |
-| `design-oauth-login.md` | OAuth 登录（authorization_code + PKCE + PAR + loopback，双端统一应用内 WebView）+ 服务器添加/登录分离（Authelia 单组件网关：IdP+forward-auth 二合一；WebView 保前台根治 iOS 挂起击碎 loopback 回调的 v2 死结；AppBar 域名常驻+cookie 隔离+导航白名单缓解 WebView 安全代价；AuthProbe 探测 oauth/basic/none 含网关 302→auth 主机元数据发现；dio AuthInterceptor token 刷新/401 重放；服务端全链路实测通过：PAR/loopback 接码（实测为 query 模式）/换 token/Bearer 穿网关/SSE/refresh/旧 token 即时撤销，双端 WebView 平台项留实现期；含四版方案演化 ADR：device flow 被 Client Restrictions 排除、gw(IdP+oauth2-proxy) 部署重配置摩擦、回归单组件） |
-| `design-passkey-login.md` | OAuth 登录 passkey 支持（双端 WebView 的 WebAuthn 开启：Android `WebSettingsCompat` FOR_APP + Credential Manager + 视图树遍历桥接；iOS webcredentials 关联域 entitlements；Android origin 变形为 `android:apk-key-hash:` 与 Authelia `RPOrigins` 硬编码的冲突——决策：等上游 v4.40 提供额外 origin 配置面（#11432 related origins 排期，#12495/#12496 佐证），不打本地补丁；服务端三项前置入配套 todo） |
-| `design-subagent-status.md` | subagent 工作状态显示（task 工具专用面板：收起 chip + 展开子会话消息流；childSessionId 双来源 metadata.sessionId / findChildSession 启发式；子会话仅存 `_childSessions` 不进 `_sessions`；LRU 驱逐豁免；§D6 权限/问题卡上浮父会话——ask 事件携子会话 id，按 `_cardHostSessionId` 路由到父 conv 显示/回复/摘卡，防运行卡死） |
-| `design-session-activity-time.md` | 会话活动时间不回退（根因：服务端 `time.updated` 仅会话级操作 touch、run 期间冻结在 prompt 提交，实测+源码定位；方案：SSE 事件 `created` 单调叠加 + `max(updated, idle, 本地)` 防回退合并 + busy 会话 `message?limit=1&order=desc` 兜底探针；含「最新消息时间」字段盘点——spec 无专用字段，消息行 `time.streamed` 是唯一持久化实时源） |
-| `design-archive-metadata.md` | 归档会话识别对齐（双源 `time.archived` + `metadata.archivedAt` 桌面端私约，任一非空即归档；`isArchived` 收敛判定；SSE `session.metadata.updated` 四象限：已知会话快照直更零回源、未知未归档回源 GET 恢复（取消归档实时重现）、未知已归档忽略；缓存 round-trip；归档写路径已落地——菜单项回归，GET 整包合并→PATCH REPLACE + 本地快照即时移除、SSE 回声幂等，取消归档仍桌面端；官方归档 API 回归后双端同迁） |
-| `design-worktree-branch-sync.md` | worktree 创建后分支挂载（v2 一律 detached HEAD 的客户端自救：创建后 `git switch -c opencode/<name>` 挂同名分支、slug 守卫防注入、撞名 rand 后缀重试；删除后在 canonical 下清理同名分支——已并入才 `-D`，未并入保留 + 10s SnackBar 提示；经 `POST /api/shell` 纯 API 通道与 desktop 同构，权威设计见 openbuilder-desktop 同名文档） |
+| `spec/spec-overview.md` | 整体架构、技术栈、领域模型、端点映射 |
+| `design/design-frontend.md` | 前端页面、组件、交互设计 |
+| `plan/plan-overview.md` | 分阶段执行计划（Phase 0-3） |
+| `design/design-self-healing.md` | 断网自愈整体设计（umbrella，含文档导航） |
+| `design/design-sse-reconnect-recovery.md` | 后台恢复 + 断网恢复的 SSE 重连加速（reconnectNow kick + health probe） |
+| `design/design-incremental-reconcile.md` | 增量对账 + 分段懒加载（取代全量 reconcile） |
+| `design/design-session-sync-gating.md` | 会话同步门控（stale 精确判定 + 对账门控展示：内容水位线 `syncWatermarks` 单一真相源、v2 双信号判定 max(updated,idle)+busy 探针、SSE 事件入口冻结守卫防断连缺口被洗、进页条件对账、GL-1 缺口闸门（实时尾部即时展示与列表同权 + 缺口分隔条）、列表双条件占位、GL-2..4 探针容差/断连不 polling/预览回写；v2.0.18 对齐 + 九轮评审记录） |
+| `design/design-message-accumulation.md` | SSE 消息累积 + reconcile 对账 |
+| `design/design-load-retry.md` | 首次加载退避重试 + 加载动效 |
+| `design/design-on-demand-sse.md` | 按需 SSE 连接池（**已被取代**，仅存历史；§1.3 误判记录见下条） |
+| `design/design-sse-global-event.md` | SSE 单全局流 `/global/event` 替代按需多连接池（已定稿待实施；含 2026-07 裸 `/event` 实测误判复盘——过滤端点被泛化为"单流不可用"、Last-Event-ID 从未生效） |
+| `design/design-local-cache.md` | 离线缓存兜底 |
+| `design/design-optimistic-messages.md` | 乐观消息插入 |
+| `design/design-session-status.md` | 会话状态同步 |
+| `design/design-agent-model-switch.md` | Agent/Model 切换 |
+| `design/design-slash-command-refresh.md` | 斜杠命令列表刷新缓存（单源 `GET /command` 全量注册表 + 可疑空保留 + 连击，含桌面端对比、1.18.18 双栈根因调研与服务端展开验证） |
+| `design/design-slash-command-echo.md` | 斜杠命令回显（subtask prompt 展开、乐观消息→SSE 确认） |
+| `design/design-file-view.md` | FileView 重构（渲染路由、语法高亮、Markdown 预览、图片预览、二进制下载） |
+| `design/design-file-view-deferred-render.md` | 文件详情页延迟渲染门控（动画期间仅后台任务；占位符动画判定修复既有门控失效、容器根路由双门控、Markdown HTML 预构建 + 签名比较去双跑；二期：WebView 首绘门控覆盖层 + 代码高亮预构建 + 测宽估算 top-K 瘦身挂载帧） |
+| `design/design-file-streaming.md` | 文件内容下载层修订（零下载路由 + 统一进度 + 内容驱动渲染，修订 design-file-view 的下载模型） |
+| `design/design-file-cache.md` | 文件内容缓存可行性调研（**结论：不可行，暂不做**；实测服务端无 ETag/Last-Modified/size/mtime/hash、无 conditional/Range；头部探测三元素仅概率验证且小文件场景自相矛盾；上游加 ETag 或 FileNode 元数据后重启） |
+| `design/design-v2-migration.md` | OpenCode V2 迁移（**已落地**：v2-only 切换按 2.0.18 契约完成；含 form/permission 事件族实测修正、todo=todowrite 推导、归档无 API 等落地结论；配套 `plan-v2-migration.md` 执行计划与 `review-v2-migration.md` 核对报告） |
+| `design/design-migrate-flutter-markdown-plus.md` | 迁移 flutter_markdown → flutter_markdown_plus（已停用包替换，drop-in） |
+| `design/design-scroll-to-turn-top.md` | 回到轮次顶部悬浮按钮（几何判定、run 合并、reversed 坐标偏移） |
+| `design/design-conversation-scroll-perf.md` | 会话列表滚动卡顿优化（根因记录：包 2 屏 cacheExtent × 重条目 × 每帧 O(N)，keep-alive/降频/控件收口三层方案；§7.5 键盘掉帧两连修：有界 keep-alive + 消息 widget 实例记忆化） |
+| `design/design-run-assembly.md` | 会话列表按 run 组装重构（最终方案：弃 scrollable_positioned_list，原生 SliverList + run 渐进预组装 + 几何回顶；run=一轮即 user+其全部回复，回顶锚定 user 消息顶；含方案演化史、备选对比、八轮评审） |
+| `design/design-user-message-collapse.md` | 高用户消息折叠/展开（自然高度 > 整屏×0.4 默认折叠，门槛键盘无关；自然/渲染高度分账防振荡、判定挂既有测高事件非每帧、OverflowBox+ClipRect 壳在实例缓存外；含 onNotification 读高 debug 断言修复） |
+| `design/design-image-attachment-thumbnail.md` | 图片附件缩略图统一渲染（乐观↔权威一致：判定改由 fileMime 驱动、ImageDataCache 异步解码 + native 缩放、复用 ImageView 放大、限最大高度；化解 CR-2 内存/掉帧顾虑） |
+| `design/design-bump-minsdk-34.md` | 提升 minSdk 至 34 + 清理冗余兼容代码（移除 core library desugaring、`Build.VERSION` 死分支、`-v21` 资源限定符；解锁通知运行时权限 / 暗色 uiMode / 预测性返回 / HCPP；不含 Markdown→WebView） |
+| `design/design-markdown-webview.md` | 文件详情页 Markdown 预览 Flutter Markdown → WebView（mar→HTML + CSS 复刻三档字重 + JS 桥 + 预热池；依赖 HCPP，前提为 minSdk 34；含原生缓解/分块/换渲染器/WebView 四方向选型否决理由） |
+| `design/design-html-preview.md` | HTML 文件预览（默认预览 + 手动切源码；原始文档 CSP/viewport meta 注入，WebView 复用 markdown 预览基础设施，`MarkdownWebView` 泛化为 `PreviewWebView`） |
+| `design/design-message-autolink.md` | 会话消息链接自动识别（URI + 项目内文件路径：围栏感知纯文本改写 + content-keyed memoize；`ob-file:` 自定义 scheme 分流；peek 快照进文件容器；行内代码仅纯目标转链；URI 主体 ASCII-only 修复全角标点吞字；`_trimTrailing` 追加 `*` 剥离修复强调标记吞入链接；含十轮评审记录） |
+| `design/design-frame-drop.md` | 掉帧专项优化（umbrella，含问题清单 + 度量/排查方法论）；JANK-1 浮层展开掉帧已修：首帧布局+文本排版为根因、模型浮层 Column 整组急布局为放大器，拍平模型列表 build max 54.6→19.8ms，门控方案预留；JANK-2 键盘展开/收起掉帧已修：Android 键盘弹起时 view.padding 随 viewInsets 联动变化，后台 MainShell/ProjectDetailScreen 整片重建，`_ViewInsetsFreezer` 同时冻结 viewInsets+padding+viewPadding（=viewPadding），build median 33.8→15.7ms，SessionsTab/ProjectsTab/ProjectDetailScreen 重建归零 |
+| `design/design-oauth-login.md` | OAuth 登录（authorization_code + PKCE + PAR + loopback，双端统一应用内 WebView）+ 服务器添加/登录分离（Authelia 单组件网关：IdP+forward-auth 二合一；WebView 保前台根治 iOS 挂起击碎 loopback 回调的 v2 死结；AppBar 域名常驻+cookie 隔离+导航白名单缓解 WebView 安全代价；AuthProbe 探测 oauth/basic/none 含网关 302→auth 主机元数据发现；dio AuthInterceptor token 刷新/401 重放；服务端全链路实测通过：PAR/loopback 接码（实测为 query 模式）/换 token/Bearer 穿网关/SSE/refresh/旧 token 即时撤销，双端 WebView 平台项留实现期；含四版方案演化 ADR：device flow 被 Client Restrictions 排除、gw(IdP+oauth2-proxy) 部署重配置摩擦、回归单组件） |
+| `design/design-passkey-login.md` | OAuth 登录 passkey 支持（双端 WebView 的 WebAuthn 开启：Android `WebSettingsCompat` FOR_APP + Credential Manager + 视图树遍历桥接；iOS webcredentials 关联域 entitlements；Android origin 变形为 `android:apk-key-hash:` 与 Authelia `RPOrigins` 硬编码的冲突——决策：等上游 v4.40 提供额外 origin 配置面（#11432 related origins 排期，#12495/#12496 佐证），不打本地补丁；服务端三项前置入配套 todo） |
+| `design/design-subagent-status.md` | subagent 工作状态显示（task 工具专用面板：收起 chip + 展开子会话消息流；childSessionId 双来源 metadata.sessionId / findChildSession 启发式；子会话仅存 `_childSessions` 不进 `_sessions`；LRU 驱逐豁免；§D6 权限/问题卡上浮父会话——ask 事件携子会话 id，按 `_cardHostSessionId` 路由到父 conv 显示/回复/摘卡，防运行卡死） |
+| `design/design-session-activity-time.md` | 会话活动时间不回退（根因：服务端 `time.updated` 仅会话级操作 touch、run 期间冻结在 prompt 提交，实测+源码定位；方案：SSE 事件 `created` 单调叠加 + `max(updated, idle, 本地)` 防回退合并 + busy 会话 `message?limit=1&order=desc` 兜底探针；含「最新消息时间」字段盘点——spec 无专用字段，消息行 `time.streamed` 是唯一持久化实时源） |
+| `design/design-archive-metadata.md` | 归档会话识别对齐（双源 `time.archived` + `metadata.archivedAt` 桌面端私约，任一非空即归档；`isArchived` 收敛判定；SSE `session.metadata.updated` 四象限：已知会话快照直更零回源、未知未归档回源 GET 恢复（取消归档实时重现）、未知已归档忽略；缓存 round-trip；归档写路径已落地——菜单项回归，GET 整包合并→PATCH REPLACE + 本地快照即时移除、SSE 回声幂等，取消归档仍桌面端；官方归档 API 回归后双端同迁） |
+| `design/design-worktree-branch-sync.md` | worktree 创建后分支挂载（v2 一律 detached HEAD 的客户端自救：创建后 `git switch -c opencode/<name>` 挂同名分支、slug 守卫防注入、撞名 rand 后缀重试；删除后在 canonical 下清理同名分支——已并入才 `-D`，未并入保留 + 10s SnackBar 提示；经 `POST /api/shell` 纯 API 通道与 desktop 同构，权威设计见 openbuilder-desktop 同名文档） |

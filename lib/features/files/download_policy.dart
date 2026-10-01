@@ -26,7 +26,7 @@
 /// browser owns decompression and reports decoded bytes — either way the
 /// guard bounds the real cost of previewing.
 ///
-/// See `docs/design-file-streaming.md`.
+/// See `docs/design/design-file-streaming.md`.
 enum DownloadPolicy {
   /// Content is fetched on entry — recognised image/text extensions.
   immediate,
