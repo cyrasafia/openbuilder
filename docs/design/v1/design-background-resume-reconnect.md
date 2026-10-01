@@ -220,7 +220,7 @@ Android 上无法让后台定时器准时（无 wake-lock 是正确省电行为�
 | `lib/core/sse/sse_client.dart` | `_kickReconnect` 字段；`_scheduleReconnect` 改 200ms 可中断轮询；新增 `reconnectNow()` |
 | `lib/core/session/server_store.dart` | `resume()` 开头 kick 所有 client；`_startSse` 对已存在 client kick |
 | `test/sse_smoke_test.dart` | 新增「reconnectNow wakes from backoff and reconnects quickly」 |
-| `docs/design/design-background-resume-reconnect.md` | 本文档 |
+| `docs/design/v1/design-background-resume-reconnect.md` | 本文档 |
 
 ---
 

@@ -1,7 +1,7 @@
 # 按需 SSE 连接池 — 实现代码评审
 
 > 评审对象：commit `1dd76df feat: on-demand SSE connection pool — REST-first list, LRU idle SSE`。
-> 设计文档：`docs/design/design-on-demand-sse.md`（OD-1~OD-14 全部闭合）。
+> 设计文档：`docs/design/v1/design-on-demand-sse.md`（OD-1~OD-14 全部闭合）。
 > 本评审核对代码实现与设计文档的对齐度，并记录实现引入的问题。
 
 ## 评审基线

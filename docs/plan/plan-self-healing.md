@@ -1,6 +1,6 @@
 # 详情页断网自愈 — 执行计划
 
-> 配套 [design-self-healing.md](../design/design-self-healing.md)（设计文档）。本文为逐步实现清单。
+> 配套 [design-self-healing.md](../design/v1/design-self-healing.md)（设计文档）。本文为逐步实现清单。
 
 ## 改动总览
 

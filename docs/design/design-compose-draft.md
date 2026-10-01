@@ -23,7 +23,7 @@
 | 生命周期 | POST 发出 → SSE 确认即替换 / 失败即撤回 | 输入 → 离开暂存 → 重进恢复 → 发送清除 |
 | 是否持久 | 否（瞬态，下条真实消息即清除） | 是（跨离开/重进，可选跨重启） |
 
-参考 `docs/design/design-optimistic-messages.md`。本设计**不复用**乐观消息机制，二者正交。
+参考 `docs/design/v1/design-optimistic-messages.md`。本设计**不复用**乐观消息机制，二者正交。
 
 ## 2. 目标 / 非目标
 

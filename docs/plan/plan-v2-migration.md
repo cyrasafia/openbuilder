@@ -1,6 +1,6 @@
 # OpenCode V2 迁移执行计划
 
-> 配套设计：`docs/design/design-v2-migration.md`（umbrella）。本文档是**执行计划**：记录已定案的迁移决策、按 2.0.18 实测核定的契约基线（`opencode_openapi_v2.json`，源 `GET /openapi.json`）、子系统拆分与落地顺序。核对锚点：本机常驻 v2 服务 `http://localhost:15120`（密码 `1234321`）；隔离实验实例 `127.0.0.1:15131`（密码 `v2test123`，`OPENCODE_DB=/tmp/opencode/v2-test.db`）。
+> 配套设计：`docs/design/v2/design-v2-migration.md`（umbrella）。本文档是**执行计划**：记录已定案的迁移决策、按 2.0.18 实测核定的契约基线（`opencode_openapi_v2.json`，源 `GET /openapi.json`）、子系统拆分与落地顺序。核对锚点：本机常驻 v2 服务 `http://localhost:15120`（密码 `1234321`）；隔离实验实例 `127.0.0.1:15131`（密码 `v2test123`，`OPENCODE_DB=/tmp/opencode/v2-test.db`）。
 
 ## 已定案决策（2026-09-28，用户确认）
 

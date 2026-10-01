@@ -2,7 +2,7 @@
 
 > 目标：不论会话是否在详情页打开，凡经 SSE 收到的 `message.*` 事件都累积；进详情页直接展示已累积内容，REST 从「权威全量拉取 + 清空替换」降级为「对账合并」；消息完成即异步落盘，构成「内存 → 磁盘 → REST」三层兜底。
 >
-> 配套：[plan-message-accumulation.md](../plan/plan-message-accumulation.md)（执行计划）。相关设计：[design-on-demand-sse.md](design-on-demand-sse.md)（按需 SSE 连接池，保证 busy 会话有 SSE）、[design-optimistic-messages.md](design-optimistic-messages.md)、[design-self-healing.md](design-self-healing.md)。
+> 配套：[plan-message-accumulation.md](../../plan/plan-message-accumulation.md)（执行计划）。相关设计：[design-on-demand-sse.md](design-on-demand-sse.md)（按需 SSE 连接池，保证 busy 会话有 SSE）、[design-optimistic-messages.md](design-optimistic-messages.md)、[design-self-healing.md](design-self-healing.md)。
 
 ---
 

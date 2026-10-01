@@ -437,7 +437,7 @@ children: [
 ]
 ```
 
-- `_LoadingEarlierRow`：`Center(CircularProgressIndicator(strokeWidth: 2) + Text('加载中', w400))`，遵循 [DESIGN.md](../../DESIGN.md) 三档字重。拉取中持续显示；完成后该行消失或被新内容推到新顶部（若仍有 hasMore）。
+- `_LoadingEarlierRow`：`Center(CircularProgressIndicator(strokeWidth: 2) + Text('加载中', w400))`，遵循 [DESIGN.md](../../../DESIGN.md) 三档字重。拉取中持续显示；完成后该行消失或被新内容推到新顶部（若仍有 hasMore）。
 - `_LoadEarlierErrorRow`（IR-R4）：`loadOnePage` 失败时 `ConversationStore` 置 `loadEarlierError = true`（成功/新尝试开始时清零）。显示条件 `!loadingEarlier && loadEarlierError && hasMore`——失败且仍有可加载内容时提示「加载失败，点按或上滑重试」（`onSurfaceVariant` + w400）。**重试机制**：点按（`GestureDetector(onTap: onRetry)`）或继续上滑（`_onScroll` → `_maybeLoadEarlier`）都会触发 `loadOnePage`，其开头将 `loadEarlierError` 清零。
 - `loadEarlierError` getter：`ConversationStore` 暴露，供 UI 读取（与 `loadingEarlier` 互斥显示——加载中显示 spinner，失败显示提示）。
 
@@ -575,8 +575,8 @@ children: [
 | `lib/core/session/server_store.dart` | `ensureConversation` / sessions 刷新时写 `conv.sessionUpdated = sessionById(sid)?.updated` |
 | `lib/features/conversation/conversation_screen.dart` | ListView 用 `renderableMessages`；`_onScroll` listener 触顶触发 `loadOnePage` + 链式；`_LoadingRow` widget；auto-scroll 计数改 `renderableMessages.length` |
 | `test/`（扩展 `_MockClient` 加 `messagesPage`） | 用例见 §11 |
-| `docs/design/design-incremental-reconcile.md` | 本文档 |
-| `docs/design/design-message-accumulation.md` | §4.3 加 ⚠️ 修订横幅指向本文档 |
+| `docs/design/v1/design-incremental-reconcile.md` | 本文档 |
+| `docs/design/v1/design-message-accumulation.md` | §4.3 加 ⚠️ 修订横幅指向本文档 |
 
 ---
 

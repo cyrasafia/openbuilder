@@ -2,7 +2,7 @@
 
 > 日期：2026-08-05
 > 状态：设计中
-> 关联：修订 [`design-local-cache.md`](design-local-cache.md)（其 §10「SharedPreferences 而非 SQLite」决策、§12「不做缓存清理」与 LC-6/LC-8 的容量假设被实战证伪）；修订 [`design-message-accumulation.md`](design-message-accumulation.md) 的缓存落地方式。
+> 关联：修订 [`design-local-cache.md`](design-local-cache.md)（其 §10「SharedPreferences 而非 SQLite」决策、§12「不做缓存清理」与 LC-6/LC-8 的容量假设被实战证伪）；修订 [`design-message-accumulation.md`](v1/design-message-accumulation.md) 的缓存落地方式。
 
 ## 0. TL;DR
 

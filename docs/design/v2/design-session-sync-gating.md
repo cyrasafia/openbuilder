@@ -1,6 +1,6 @@
 # 会话同步门控（stale 精确判定 + 对账门控展示） — 设计文档
 
-> 前置文档：[design-message-accumulation.md](design-message-accumulation.md)（SSE 累积 + reconcile 对账）、[design-incremental-reconcile.md](design-incremental-reconcile.md)（窗口对账 + 分段懒加载）、[design-sse-global-event.md](design-sse-global-event.md)（全局 SSE 流）、[design-load-retry.md](design-load-retry.md)（加载退避重试）。
+> 前置文档：[design-message-accumulation.md](../v1/design-message-accumulation.md)（SSE 累积 + reconcile 对账）、[design-incremental-reconcile.md](../v1/design-incremental-reconcile.md)（窗口对账 + 分段懒加载）、[design-sse-global-event.md](design-sse-global-event.md)（全局 SSE 流）、[design-load-retry.md](../design-load-retry.md)（加载退避重试）。
 > 本文档修订上述设计中的 **stale 判定来源**与**详情页对账触发/展示策略**，SSE 连接逻辑与 REST 双轨保持不变。
 >
 > **修订记录**：初稿与一至八轮评审基于 v1.18.x 契约；**2026-09-30 全面对齐 v2.0.18**（代码库已 v2-only 切换，见 design-v2-migration 落地记录）——`time.updated` 窄语义、`time.idle` 参与、SSE `session.*` 事件族、批量拉取单请求化、行号全量刷新。v2 对齐要点见文末「v2 对齐修订」章；八轮评审记录保留原文（其机制结论在 v2 下重新验证后标注适用性）。

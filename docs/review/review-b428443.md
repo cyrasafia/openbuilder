@@ -8,7 +8,7 @@
 - **commit**：`b428443`
 - **改动文件**：`lib/core/sse/sse_client.dart`（+19）
 - **内容**：`SseClient` 新增 60s 心跳定时器——每收到一帧 `_onData` 重置；60s 无数据 → `_onHeartbeatTimeout` 取消 `_sub` + `_onDrop()` 重连。`stop()`/`_connect()`/`_onData`/重连均管理该 timer。
-- **背景**：`docs/design/design-on-demand-sse.md` §1.2（line 35）将「无 idle 检测 / SSE 无应用层心跳，死连接感知慢」列为既有 tradeoff；本提交补之。
+- **背景**：`docs/design/v1/design-on-demand-sse.md` §1.2（line 35）将「无 idle 检测 / SSE 无应用层心跳，死连接感知慢」列为既有 tradeoff；本提交补之。
 
 ## ✅ 实现对齐
 

@@ -1,7 +1,7 @@
 # 详情页断网自愈 — 代码评审
 
 > 评审对象：self-healing 功能的代码实现（`conversation_store.dart` / `server_store.dart` / `conversation_screen.dart`）。
-> 配套 [design-self-healing.md](../design/design-self-healing.md)、[plan-self-healing.md](../plan/plan-self-healing.md)。
+> 配套 [design-self-healing.md](../design/v1/design-self-healing.md)、[plan-self-healing.md](../plan/plan-self-healing.md)。
 > 本文记录实机测试与代码评审中发现的问题，按优先级分级。
 
 ## 评审基线

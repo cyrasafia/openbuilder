@@ -1,6 +1,6 @@
 # OpenCode V2 迁移 — 代码评审报告
 
-> 配套：`docs/design/design-v2-migration.md`（设计基线）、`docs/plan/plan-v2-migration.md`（执行计划）。本文档为迁移落地后的最终核对报告（评审流程约定：设计文档评审迭代追加，代码实现后写 `review-<feature>.md` 收口）。
+> 配套：`docs/design/v2/design-v2-migration.md`（设计基线）、`docs/plan/plan-v2-migration.md`（执行计划）。本文档为迁移落地后的最终核对报告（评审流程约定：设计文档评审迭代追加，代码实现后写 `review-<feature>.md` 收口）。
 
 ## 范围与结论
 

@@ -11,7 +11,7 @@
 |------|------|--------|
 | `ab1ce68` | feat: agent switcher uses capsule toggle for 2 agents, popup menu for 3+ (AM-CAP-1~5) | 2 |
 
-改动文件：`lib/features/conversation/conversation_screen.dart`（+83/-8）、`docs/design/design-agent-model-switch.md`（+49/-1）。
+改动文件：`lib/features/conversation/conversation_screen.dart`（+83/-8）、`docs/design/v2/design-agent-model-switch.md`（+49/-1）。
 
 ---
 

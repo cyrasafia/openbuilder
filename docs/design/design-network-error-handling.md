@@ -1,8 +1,8 @@
 # 网络异常处理统一设计 — 设计文档
 
-> 前置文档：[design-self-healing.md](design-self-healing.md)（断网自愈五层机制）、
+> 前置文档：[design-self-healing.md](v1/design-self-healing.md)（断网自愈五层机制）、
 > [design-load-retry.md](design-load-retry.md)（首次加载退避重试）、
-> [design-sse-reconnect-recovery.md](design-sse-reconnect-recovery.md)（SSE 重连加速）。
+> [design-sse-reconnect-recovery.md](v1/design-sse-reconnect-recovery.md)（SSE 重连加速）。
 
 ## 问题
 

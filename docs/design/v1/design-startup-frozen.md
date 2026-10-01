@@ -1,6 +1,6 @@
 # 启动假死：REST 失败 + Watchdog SSE 成功 — 设计文档
 
-> 配套 [plan-startup-frozen.md](../plan/plan-startup-frozen.md)（执行计划）。
+> 配套 [plan-startup-frozen.md](../../plan/plan-startup-frozen.md)（执行计划）。
 > 关联文档：[design-self-healing.md](design-self-healing.md)（断网自愈）、[design-on-demand-sse.md](design-on-demand-sse.md)（按需 SSE）。
 
 ## 问题

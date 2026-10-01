@@ -12,7 +12,7 @@
 |------|------|
 | [design-sse-reconnect-recovery.md](design-sse-reconnect-recovery.md) | **后台恢复 + 断网恢复**的传输层加速（reconnectNow kick + health probe + lost-kick 修复） |
 | [design-incremental-reconcile.md](design-incremental-reconcile.md) | **数据对账**的效率优化（增量窗口 + 分段懒加载，取代全量 reconcile） |
-| [design-load-retry.md](design-load-retry.md) | **首次加载**的退避重试（独立于 SSE 重连） |
+| [design-load-retry.md](../design-load-retry.md) | **首次加载**的退避重试（独立于 SSE 重连） |
 
 **底层机制**：
 
@@ -20,7 +20,7 @@
 |------|------|
 | [design-on-demand-sse.md](design-on-demand-sse.md) | 按需 **SSE 连接池**（watchdog + 目录 + LRU），重连的基础设施 |
 | [design-message-accumulation.md](design-message-accumulation.md) | **消息累积**：SSE 事件落地为 DisplayMessage，对账的输入 |
-| [design-local-cache.md](design-local-cache.md) | 离线**缓存**兜底（杀进程 / 断网时的最后防线） |
+| [design-local-cache.md](../design-local-cache.md) | 离线**缓存**兜底（杀进程 / 断网时的最后防线） |
 
 ---
 

@@ -1,7 +1,7 @@
 # 首次加载退避重试 + 加载动效 — 设计文档
 
 > 配套 [plan-load-retry.md](../plan/plan-load-retry.md)（执行计划）。
-> 前置文档：[design-self-healing.md](design-self-healing.md)（断网自愈五层机制）。
+> 前置文档：[design-self-healing.md](v1/design-self-healing.md)（断网自愈五层机制）。
 
 ## 问题
 

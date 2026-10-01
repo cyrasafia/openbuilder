@@ -1,6 +1,6 @@
 # 乐观消息插入 — 代码评审
 
-> 评审对象：设计 `docs/design/design-optimistic-messages.md`（commit `bdb1fca`）+ 实现 commit `4287f39`。
+> 评审对象：设计 `docs/design/v1/design-optimistic-messages.md`（commit `bdb1fca`）+ 实现 commit `4287f39`。
 > 命名对齐既有 `design-/plan-/spec-/review-` 风格。本文记录设计与代码的评审结论。
 
 ## 评审基线

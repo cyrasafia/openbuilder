@@ -1,7 +1,7 @@
 # 列表预览流式实时更新 — 代码评审
 
 > 评审对象：commit `9179d4e fix: list preview tracks streaming assistant text (LPS-1~7)`。
-> 对应设计：[design-list-preview-streaming.md](../design/design-list-preview-streaming.md)（评审已通过）。
+> 对应设计：[design-list-preview-streaming.md](../design/v1/design-list-preview-streaming.md)（评审已通过）。
 > `dart analyze --fatal-infos` → No issues found；`flutter test` → 6/6 通过（含 SSE smoke）。
 
 ## 评审基线

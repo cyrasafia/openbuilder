@@ -225,7 +225,7 @@ Android 上无法让后台定时器准时（无 wake-lock 是正确省电行为�
 | `lib/core/session/server_store.dart` | `resume()` 开头 kick 所有 client；`_startSse` 对已存在 client kick；`_onSseState` 挂接 health probe（§10）；`_startHealthProbe`/`_stopHealthProbe`/`_probeOnce` |
 | `test/sse_smoke_test.dart` | 新增「reconnectNow wakes from backoff and reconnects quickly」 |
 | `test/health_probe_test.dart` | 新增 health probe 起停两条用例（§10） |
-| `docs/design/design-sse-reconnect-recovery.md` | 本文档 |
+| `docs/design/v1/design-sse-reconnect-recovery.md` | 本文档 |
 
 ---
 

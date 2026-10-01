@@ -1,6 +1,6 @@
 # SSE 消息累积与对账 — 执行计划
 
-> 配套 [design-message-accumulation.md](../design/design-message-accumulation.md)（设计文档）。本文为逐步实现清单。
+> 配套 [design-message-accumulation.md](../design/v1/design-message-accumulation.md)（设计文档）。本文为逐步实现清单。
 >
 > 前置依赖（已实现）：`lastMessagePreview()`（conversation_store）、`_notifyPreviewChanged()` 120ms 节流（server_store）、`message.part.updated` 已转 `_conversations[sid]?.onPartUpdated`（未打开会话为 no-op）。
 

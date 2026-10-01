@@ -1,6 +1,6 @@
 # SSE 消息累积与对账 — 设计评审 + 实现评审
 
-> 评审对象：`docs/design/design-message-accumulation.md`。
+> 评审对象：`docs/design/v1/design-message-accumulation.md`。
 > 核对对象：当前代码 `conversation_store.dart` / `server_store.dart`。
 
 ## 评审基线

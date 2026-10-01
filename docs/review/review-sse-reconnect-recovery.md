@@ -1,6 +1,6 @@
 # 后台恢复 SSE 重连加速 + 断网恢复快速探测 — 设计评审 + 实现评审
 
-> 评审对象：`docs/design/design-sse-reconnect-recovery.md`（§1-9 SSE resume kick + §10 health probe）。
+> 评审对象：`docs/design/v1/design-sse-reconnect-recovery.md`（§1-9 SSE resume kick + §10 health probe）。
 > 核对对象：当前分支代码 `lib/core/sse/sse_client.dart` / `lib/core/session/server_store.dart` / `test/sse_smoke_test.dart` / `test/health_probe_test.dart`。
 > 评审基准：commit `924d87b`（fix: wake SSE clients from backoff on app resume）+ `4b400ab`（feat: health probe for fast network-recovery detection）。
 

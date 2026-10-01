@@ -1,6 +1,6 @@
 # 增量对账 + 分段懒加载 — 设计评审 + 实现评审
 
-> 评审对象：`docs/design/design-incremental-reconcile.md`（561 行，12 节）。
+> 评审对象：`docs/design/v1/design-incremental-reconcile.md`（561 行，12 节）。
 > 核对对象：当前分支代码 `conversation_store.dart` / `server_store.dart` / `opencode_client.dart` / `conversation_screen.dart`。
 > 评审基准：commit `421bb34`（feat）+ `d14b9ba`（design），基于 `eecc742`。
 

@@ -1,6 +1,6 @@
 # 启动假死修复 — 执行计划
 
-> 配套 [design-startup-frozen.md](../design/design-startup-frozen.md)（设计文档）。
+> 配套 [design-startup-frozen.md](../design/v1/design-startup-frozen.md)（设计文档）。
 
 ## 改动总览
 

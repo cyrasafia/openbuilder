@@ -227,4 +227,4 @@ opencode server 全源码（`/event` 与 `/global/event` 两侧 handler）对该
 | `lib/core/session/server_store.dart` | 删按需池全套（`_sseByDir`/`_sseRequired`/`_trimSse`/`_startRequiredSse`/`_stopSseForDirectory`/watchdog 哨兵/`_kMaxIdleSseConnections`）；单 `_sse`；`_onGlobalEvent` 入口按 `_isGatedDirectory` 前置闸门（`'global'` 帧绕过）；`_eventDirectories` 扩 sandboxes 转闸门/回填同源；`_onSseState` 单流化、`_sseLive`/`_sseFailed` 更名；`setActiveConversation`/`ensureSseForSession`/resume/probe 等调用点清理 |
 | `test/sse_global_event_test.dart`（新增）+ `sse_smoke_test.dart`、`health_probe_test.dart`、`background_resume_race_test.dart` | 信封/闸门用例；smoke 改 `/global/event`；健康探测/拆除竞态用例改单流签名 |
 | `docs/spec/spec-overview.md` | §5 与端点表同步（本次设计定稿时已完成） |
-| `docs/design/design-on-demand-sse.md` | 顶部标注被取代 + §1.3 误判更正（本次设计定稿时已完成） |
+| `docs/design/v1/design-on-demand-sse.md` | 顶部标注被取代 + §1.3 误判更正（本次设计定稿时已完成） |

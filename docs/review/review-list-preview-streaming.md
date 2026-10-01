@@ -2,7 +2,7 @@
 
 > 评审对象：commits `7ef9bb1`（D 路径 §1.6）+ `de48eae`（E 路径 §6.6）+ `1fdaccf`（LPS-16续/17/19）+ `0cd40f5`（LPS-18/20）。
 > `dart analyze`（server_store/conversation_store/test）0 issue；`flutter test test/list_preview_streaming_test.dart` 9/9 通过。
-> 配套设计：[`design-list-preview-streaming.md`](../design/design-list-preview-streaming.md)（A–E 路径，经十一轮评审 + 多轮修复复审）。
+> 配套设计：[`design-list-preview-streaming.md`](../design/v1/design-list-preview-streaming.md)（A–E 路径，经十一轮评审 + 多轮修复复审）。
 
 ## 评审基线
 

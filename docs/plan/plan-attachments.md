@@ -1,7 +1,7 @@
 # 附加文件随消息发送 — 执行计划
 
 > 配套 [design-attachments.md](../design/design-attachments.md)（设计文档）。
-> 前置文档：[design-optimistic-messages.md](../design/design-optimistic-messages.md)（乐观消息插入，已实施）。
+> 前置文档：[design-optimistic-messages.md](../design/v1/design-optimistic-messages.md)（乐观消息插入，已实施）。
 >
 > **前提**：`design-optimistic-messages` 已实施。`_send()`(conversation_screen.dart:227) 发送前调 `conv.addOptimisticUserMessage(text)` 插入乐观消息，失败调 `removeOptimisticMessages()` 回滚。本计划在此基础上扩展附件支持。
 > **已对齐一次评审意见**（AT-1~AT-12，详见设计文档修复复审表）。
