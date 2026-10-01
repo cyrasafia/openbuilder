@@ -2348,11 +2348,24 @@ Future<void> copyToolPartContent(BuildContext context, DisplayPart part) async {
 
 void _syncReversedScroll(BuildContext context, GlobalKey key, double dv) {
   if (dv == 0) return;
-  final h = (key.currentContext?.findRenderObject() as RenderBox?)?.size.height;
-  if (h == null || h <= 0) return;
+  final content = key.currentContext?.findRenderObject();
+  if (content is! RenderBox || !content.attached) return;
+  final h = content.size.height;
+  if (h <= 0) return;
   final pos = context.findAncestorStateOfType<ScrollableState>()?.position;
   if (pos == null || !pos.hasContentDimensions) return;
-  pos.correctPixels(pos.pixels + h * dv);
+  final item = context.findRenderObject();
+  final vp = RenderAbstractViewport.maybeOf(content);
+  if (item is! RenderBox || vp is! RenderBox || !item.attached) return;
+  final top = item.localToGlobal(Offset.zero, ancestor: vp).dy;
+  final growth = h * dv;
+  final corr = dv > 0
+      ? math.max(0.0, growth - math.max(0.0, top))
+      : math.min(0.0, growth + math.max(0.0, -top));
+  if (corr == 0) return;
+  final target = math.max(pos.pixels + corr, pos.minScrollExtent);
+  if (target == pos.pixels) return;
+  pos.correctPixels(target);
 }
 
 class _CollapsibleReveal extends StatelessWidget {

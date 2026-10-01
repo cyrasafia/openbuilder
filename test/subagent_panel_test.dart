@@ -161,4 +161,72 @@ void main() {
     await _settle(tester, () => find.text('子会话未就绪').evaluate().isNotEmpty);
     expect(find.text('子会话未就绪'), findsOneWidget);
   });
+
+  testWidgets(
+      'short transcript: expanding the panel keeps the child list scrollable',
+      (tester) async {
+    // A transcript shorter than the viewport (outer list maxScrollExtent == 0)
+    // must not let the expand animation's reversed-scroll sync push the outer
+    // pixels out of range, which would shove the panel off screen and make the
+    // child stream unreachable.
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    const kid = 'sp4-kid';
+    final childMsgs = <SessionMessage>[
+      for (var i = 0; i < 20; i++)
+        assistantMsg(
+          id: 'cm$i',
+          created: i,
+          finish: 'stop',
+          content: [textPart('子会话产出 $i ${'x' * 200}')],
+        ),
+    ];
+    await _pumpConversation(
+      tester,
+      sessionId: 'sp4',
+      entriesBySession: {
+        'sp4': [
+          _taskMessage('sp4', 'm1', 1,
+              status: 'completed', childSessionId: kid),
+        ],
+        kid: childMsgs,
+      },
+    );
+    await _settle(tester, () => find.text('Explore').evaluate().isNotEmpty);
+    await tester.tap(find.text('Explore'));
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      if (find.byType(ListView).evaluate().isNotEmpty) break;
+    }
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final outer = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(CustomScrollView).first,
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(outer.position.maxScrollExtent, 0,
+        reason: 'transcript is shorter than the viewport');
+    expect(outer.position.pixels, 0,
+        reason: 'no phantom overscroll pushing the panel off screen');
+
+    final listView = find.byType(ListView);
+    final innerPos = tester
+        .state<ScrollableState>(
+          find.descendant(of: listView, matching: find.byType(Scrollable)),
+        )
+        .position;
+    expect(innerPos.maxScrollExtent, greaterThan(0),
+        reason: 'child stream overflows the 400px window');
+
+    await tester.drag(listView, const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(innerPos.pixels, greaterThan(0),
+        reason: 'short transcript must not disable child-list scrolling');
+  });
 }
