@@ -251,6 +251,7 @@
   "reject": "Reject",
   "submit": "Submit",
   "nextStep": "Next",
+  "formCustomAnswer": "Other (custom answer)",
   "retryingMessage": "Retrying: {message}",
   "@retryingMessage": {"placeholders": {"message": {"type": "String"}}},
   "workspaceMissing": "This session's workspace no longer exists; messages can no longer be sent",

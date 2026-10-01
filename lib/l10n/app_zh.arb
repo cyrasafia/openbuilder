@@ -251,6 +251,7 @@
   "reject": "拒绝",
   "submit": "提交",
   "nextStep": "下一步",
+  "formCustomAnswer": "其他（自定义答案）",
   "retryingMessage": "重试中：{message}",
   "@retryingMessage": {"placeholders": {"message": {"type": "String"}}},
   "workspaceMissing": "该会话所在的工作区已不存在，无法继续发送消息",

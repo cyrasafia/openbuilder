@@ -49,6 +49,8 @@ import 'message_autolink.dart';
 /// [SingleChildScrollView].
 const double _kFooterCardContentHeightFactor = 0.3;
 
+const String _kCustomOptionValue = '\u0000custom';
+
 /// 用户消息折叠门槛：自然高度超过「整屏高度 × 该比例」即可折叠（默认折叠，
 /// 折叠后 clamp 到该高度）。用整屏高度（MediaQuery.size，键盘无关）而非列表
 /// 视口高，保证门槛固定、不随键盘弹起/收起变化。
@@ -3826,14 +3828,33 @@ class _FormCardState extends State<_FormCard> {
   TextEditingController _ctlFor(String key) =>
       _textCtl.putIfAbsent(key, TextEditingController.new);
 
+  TextEditingController _customCtlFor(String key) =>
+      _textCtl.putIfAbsent('$key\u0000custom', TextEditingController.new);
+
+  bool _hasOptions(FormFieldSpec f) =>
+      (f.type == 'string' || f.type == 'multiselect') && f.options.isNotEmpty;
+
+  String _customText(FormFieldSpec f) =>
+      f.custom && _hasOptions(f) ? _customCtlFor(f.key).text.trim() : '';
+
   Map<String, dynamic> _buildAnswer() {
     final answer = <String, dynamic>{};
     for (final f in _fields) {
-      if (f.type == 'string' && f.options.isNotEmpty) {
-        final sel = (_selected[f.key] ?? const <String>{}).toList();
-        answer[f.key] = f.isMultiselect ? sel : (sel.isEmpty ? '' : sel.first);
+      final sel = _selected[f.key] ?? const <String>{};
+      final useCustom = sel.contains(_kCustomOptionValue);
+      if (f.type == 'multiselect') {
+        final values = sel.where((v) => v != _kCustomOptionValue).toList();
+        final custom = useCustom ? _customText(f) : '';
+        answer[f.key] = custom.isEmpty ? values : [...values, custom];
+      } else if (f.type == 'string' && f.options.isNotEmpty) {
+        if (useCustom) {
+          answer[f.key] = _customText(f);
+        } else {
+          final values = sel.where((v) => v != _kCustomOptionValue).toList();
+          answer[f.key] = values.isEmpty ? '' : values.first;
+        }
       } else if (f.type == 'boolean') {
-        answer[f.key] = (_selected[f.key]?.isNotEmpty ?? false);
+        answer[f.key] = sel.isNotEmpty;
       } else if (f.type == 'integer' || f.type == 'number') {
         final t = _ctlFor(f.key).text.trim();
         answer[f.key] =
@@ -3885,8 +3906,11 @@ class _FormCardState extends State<_FormCard> {
 
   bool get _stepAnswered {
     final f = _field;
-    if (f.type == 'string' && f.options.isNotEmpty) {
-      return (_selected[f.key] ?? const {}).isNotEmpty;
+    final sel = _selected[f.key] ?? const <String>{};
+    if (f.type == 'multiselect' || (f.type == 'string' && f.options.isNotEmpty)) {
+      if (sel.isEmpty) return false;
+      if (sel.contains(_kCustomOptionValue)) return _customText(f).isNotEmpty;
+      return true;
     }
     if (f.type == 'boolean') {
       return _selected.containsKey(f.key);
@@ -4050,72 +4074,27 @@ class _FormCardState extends State<_FormCard> {
             ),
           ),
         const SizedBox(height: 8),
-        if (f.type == 'string' && f.options.isNotEmpty)
+        if (_hasOptions(f)) ...[
           for (final opt in f.options)
-            InkWell(
-              onTap: _replying
-                  ? null
-                  : () => _toggle(f.key, opt.value, f.isMultiselect),
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 4),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  color: sel.contains(opt.value)
-                      ? scheme.tertiary.withAlpha(60)
-                      : scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: sel.contains(opt.value)
-                        ? scheme.tertiary
-                        : Colors.transparent,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      sel.contains(opt.value)
-                          ? (f.isMultiselect
-                                ? Icons.check_box
-                                : Icons.radio_button_checked)
-                          : (f.isMultiselect
-                                ? Icons.check_box_outline_blank
-                                : Icons.radio_button_unchecked),
-                      size: 18,
-                      color: scheme.tertiary,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            opt.label,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w400,
-                            ),
-                          ),
-                          if ((opt.description ?? '').isNotEmpty)
-                            Text(
-                              opt.description!,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: scheme.outline,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+            _optionTile(
+              f: f,
+              value: opt.value,
+              label: opt.label,
+              description: opt.description,
+            ),
+          if (f.custom) ...[
+            _optionTile(
+              f: f,
+              value: _kCustomOptionValue,
+              label: l(context).formCustomAnswer,
+            ),
+            if (sel.contains(_kCustomOptionValue))
+              Padding(
+                padding: const EdgeInsets.only(left: 26, bottom: 4),
+                child: _customAnswerField(f),
               ),
-            )
-        else if (f.type == 'boolean')
+          ],
+        ] else if (f.type == 'boolean')
           InkWell(
             onTap: _replying ? null : () => _toggle(f.key, 'true', true),
             borderRadius: BorderRadius.circular(8),
@@ -4160,6 +4139,7 @@ class _FormCardState extends State<_FormCard> {
           TextField(
             controller: _ctlFor(f.key),
             enabled: !_replying,
+            onChanged: (_) => setState(() {}),
             keyboardType: f.type == 'integer' || f.type == 'number'
                 ? TextInputType.number
                 : TextInputType.text,
@@ -4171,6 +4151,88 @@ class _FormCardState extends State<_FormCard> {
             ),
           ),
       ],
+    );
+  }
+
+  Widget _optionTile({
+    required FormFieldSpec f,
+    required String value,
+    required String label,
+    String? description,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final active = (_selected[f.key] ?? const <String>{}).contains(value);
+    return InkWell(
+      onTap: _replying ? null : () => _toggle(f.key, value, f.isMultiselect),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(bottom: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: active
+              ? scheme.tertiary.withAlpha(60)
+              : scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: active ? scheme.tertiary : Colors.transparent,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              active
+                  ? (f.isMultiselect
+                        ? Icons.check_box
+                        : Icons.radio_button_checked)
+                  : (f.isMultiselect
+                        ? Icons.check_box_outline_blank
+                        : Icons.radio_button_unchecked),
+              size: 18,
+              color: scheme.tertiary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  if ((description ?? '').isNotEmpty)
+                    Text(
+                      description!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: scheme.outline,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _customAnswerField(FormFieldSpec f) {
+    return TextField(
+      controller: _customCtlFor(f.key),
+      enabled: !_replying,
+      onChanged: (_) => setState(() {}),
+      maxLines: 1,
+      decoration: InputDecoration(
+        hintText: f.placeholder ?? '',
+        isDense: true,
+        border: const OutlineInputBorder(),
+      ),
     );
   }
 }
