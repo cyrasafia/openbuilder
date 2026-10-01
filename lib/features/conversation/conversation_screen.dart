@@ -1741,6 +1741,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       if (user && p.type != 'text' && p.type != 'file' && p.type != 'subtask') {
         continue;
       }
+      if (p.type == 'text' && p.text.trim().isEmpty) continue;
       visible.add(p);
     }
     final children = <Widget>[];
