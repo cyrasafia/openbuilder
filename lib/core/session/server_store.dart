@@ -83,6 +83,9 @@ class ServerStore extends ChangeNotifier {
   List<ProjectModel> _projects = [];
   List<SessionModel> _sessions = [];
   final Map<String, SessionModel> _childSessions = {};
+  // childrenByParent 索引（design-subagent-background）：`sessionActivity` 与
+  // 家族遍历（sessionActivity / childSessionsOf）据此避免每次线性扫描 `_childSessions`。
+  final Map<String, List<String>> _childrenByParent = {};
   static const _kMaxChildSessions = 64;
   final Map<String, SessionStatusValue> _statusMap = {};
   final Set<String> _ghostSessionIds = {};
@@ -210,6 +213,31 @@ class ServerStore extends ChangeNotifier {
   SessionStatusValue statusOf(String id) =>
       _statusMap[id] ?? const SessionStatusValue('idle');
 
+  /// 家族（family）聚合状态：自身 + 全部后代子会话。
+  /// 子会话进行中时父会话据此展示为进行中；`retry` 优先于 `busy`。
+  /// 仅在需要「家族进行中」语义的展示口径使用（design-subagent-background）。
+  SessionStatusValue sessionActivity(String id) {
+    var retry = false;
+    var busy = false;
+    final visited = <String>{};
+    final stack = <String>[id];
+    while (stack.isNotEmpty) {
+      final sid = stack.removeLast();
+      if (!visited.add(sid)) continue;
+      final type = _statusMap[sid]?.type;
+      if (type == 'retry') {
+        retry = true;
+      } else if (type == 'busy') {
+        busy = true;
+      }
+      final children = _childrenByParent[sid];
+      if (children != null) stack.addAll(children);
+    }
+    if (retry) return const SessionStatusValue('retry');
+    if (busy) return const SessionStatusValue('busy');
+    return const SessionStatusValue('idle');
+  }
+
   String? lastMessageOf(String id) => _lastMessage[id];
 
   AppLocalizations? _loc;
@@ -302,7 +330,7 @@ class ServerStore extends ChangeNotifier {
               : AgentPauseReason.choice,
           pendingCount: pendingCount);
     }
-    return switch (statusOf(sessionId).type) {
+    return switch (sessionActivity(sessionId).type) {
       'busy' => const AgentIndicatorState(AgentRunState.working),
       'retry' => const AgentIndicatorState(AgentRunState.retrying),
       _ => const AgentIndicatorState(AgentRunState.idle),
@@ -848,6 +876,7 @@ class ServerStore extends ChangeNotifier {
       _projects = [];
       _sessions = [];
       _childSessions.clear();
+      _childrenByParent.clear();
       _statusMap.clear();
       _ghostSessionIds.clear();
       _lastMessage.clear();
@@ -1522,6 +1551,23 @@ class ServerStore extends ChangeNotifier {
   void clearSessionsForTesting() => _sessions = [];
 
   @visibleForTesting
+  void resetForTesting() {
+    _conversations.clear();
+    _sessions = [];
+    _childSessions.clear();
+    _childrenByParent.clear();
+    _statusMap.clear();
+    _pendingPermissions.clear();
+    _pendingForms.clear();
+    _lastMessage.clear();
+    _lastActivityByKey.clear();
+    _contentWatermarks.clear();
+    _staleSessionIds.clear();
+    _ghostSessionIds.clear();
+    _livePreviewSids.clear();
+  }
+
+  @visibleForTesting
   Future<void> reconcileWorktreesForTesting(
     List<ProjectModel> projects, {
     Iterable<SessionModel>? sessions,
@@ -1703,6 +1749,9 @@ class ServerStore extends ChangeNotifier {
           if (_statusMap[sid1]?.type == 'busy') return;
           _statusMap[sid1] = const SessionStatusValue('busy');
           _conversations[sid1]?.setStatus('busy');
+          // 子会话不在 _sessions，_touchActivity 会早退——显式通知列表/Tab
+          // 指示器，使父会话的「家族进行中」聚合即时生效。
+          if (isChildSession(sid1)) _notifyActivityThrottled();
           _scheduleCacheSave();
         }
         break;
@@ -1716,6 +1765,7 @@ class ServerStore extends ChangeNotifier {
               _statusMap[sid2]?.type == 'retry';
           final wasRetry = _statusMap[sid2]?.type == 'retry';
           _statusMap[sid2] = const SessionStatusValue('idle');
+          if (isChildSession(sid2)) _notifyActivityThrottled();
           _scheduleCacheSave();
           if (wasRetry) {
             _conversations[sid2]?.setStatus('idle');
@@ -1741,6 +1791,8 @@ class ServerStore extends ChangeNotifier {
           final message = error is Map ? error['message']?.toString() : null;
           if (_statusMap[sid3]?.type != 'retry') {
             _statusMap[sid3] = SessionStatusValue('retry', message: message);
+            // 子会话直接进入 retry 时也刷新父会话列表/Tab 的「家族进行中」聚合。
+            if (isChildSession(sid3)) _notifyActivityThrottled();
             _scheduleCacheSave();
           }
           _conversations[sid3]?.onRetryScheduled(
@@ -1912,6 +1964,21 @@ class ServerStore extends ChangeNotifier {
       case 'session.inbox.cancelled':
       case 'session.inbox.delivery.changed':
         return;
+      case 'session.synthetic':
+        final sidSyn = ev.properties['sessionID']?.toString();
+        final evId = ev.id ?? '';
+        if (sidSyn != null && evId.isNotEmpty) {
+          final metaSyn = ev.properties['metadata'];
+          ensureConversation(sidSyn)?.onSynthetic(SyntheticMessage(
+            id: evId.replaceFirst(RegExp(r'^evt_'), 'msg_'),
+            raw: ev.properties,
+            metadata: metaSyn is Map ? metaSyn.cast<String, dynamic>() : null,
+            created: ev.created ?? DateTime.now().millisecondsSinceEpoch,
+            text: ev.properties['text']?.toString() ?? '',
+            description: ev.properties['description']?.toString(),
+          ));
+        }
+        return;
       case 'session.compaction.started':
       case 'session.compaction.delta':
       case 'session.compaction.ended':
@@ -1919,7 +1986,6 @@ class ServerStore extends ChangeNotifier {
       case 'session.compacted':
       case 'session.shell.started':
       case 'session.shell.ended':
-      case 'session.synthetic':
       case 'session.skill.activated':
         return;
       case 'session.revert.staged':
@@ -2233,6 +2299,7 @@ class ServerStore extends ChangeNotifier {
       _sessions.removeWhere((x) => x.id == s.id);
       if (s.isArchived) {
         final host = _cardHostSessionId(s.id);
+        _unindexChild(s.id, s.parentID);
         _childSessions.remove(s.id);
         _dropChildCards(s.id, host);
       } else {
@@ -2243,6 +2310,7 @@ class ServerStore extends ChangeNotifier {
     }
     if (s.isArchived) {
       _sessions.removeWhere((x) => x.id == s.id);
+      _unindexChild(s.id, s.parentID);
       _childSessions.remove(s.id);
       _scheduleCacheSave();
       return;
@@ -2256,15 +2324,38 @@ class ServerStore extends ChangeNotifier {
     _backfillConversationDirectory(s.id, s.directory);
   }
 
+  void _indexChild(String id, String? parentID) {
+    if (parentID == null) return;
+    final list = _childrenByParent.putIfAbsent(parentID, () => []);
+    if (!list.contains(id)) list.add(id);
+  }
+
+  void _unindexChild(String id, String? parentID) {
+    if (parentID == null) return;
+    final list = _childrenByParent[parentID];
+    if (list == null) return;
+    list.remove(id);
+    if (list.isEmpty) _childrenByParent.remove(parentID);
+  }
+
   void _upsertChildSession(SessionModel s) {
     final newlyRegistered = !_childSessions.containsKey(s.id);
-    _childSessions.remove(s.id);
+    final previous = _childSessions.remove(s.id);
+    if (previous != null && previous.parentID != s.parentID) {
+      _unindexChild(s.id, previous.parentID);
+    }
     _childSessions[s.id] = s;
+    _indexChild(s.id, s.parentID);
     while (_childSessions.length > _kMaxChildSessions) {
-      _childSessions.remove(_childSessions.keys.first);
+      final evictedId = _childSessions.keys.first;
+      final evicted = _childSessions.remove(evictedId);
+      _unindexChild(evictedId, evicted?.parentID);
     }
     _backfillConversationDirectory(s.id, s.directory);
-    if (newlyRegistered) _adoptChildCards(s);
+    if (newlyRegistered) {
+      _adoptChildCards(s);
+      _conversations[s.parentID]?.onChildSessionRegistered(s);
+    }
   }
 
   void _dropChildCards(String childId, String parentId) {
@@ -2338,6 +2429,26 @@ class ServerStore extends ChangeNotifier {
   bool isChildSession(String sessionId) =>
       _childSessions.containsKey(sessionId);
 
+  /// 某会话的直接子会话，按创建时间升序（后台任务条 / 详情用）。
+  List<SessionModel> childSessionsOf(String parentId) {
+    final out = <SessionModel>[];
+    for (final childId in _childrenByParent[parentId] ?? const <String>[]) {
+      final child = _childSessions[childId];
+      if (child != null) out.add(child);
+    }
+    out.sort((a, b) => a.created.compareTo(b.created));
+    return out;
+  }
+
+  /// 某会话正在运行的直系子会话（`_statusMap` busy/retry）。
+  List<SessionModel> runningChildSessionsOf(String parentId) =>
+      childSessionsOf(parentId)
+          .where((c) {
+            final t = _statusMap[c.id]?.type;
+            return t == 'busy' || t == 'retry';
+          })
+          .toList(growable: false);
+
   String _cardHostSessionId(String sessionId) {
     var sid = sessionId;
     for (var depth = 0; depth < _kMaxChildSessions; depth++) {
@@ -2352,6 +2463,7 @@ class ServerStore extends ChangeNotifier {
     final childHost =
         _childSessions.containsKey(id) ? _cardHostSessionId(id) : null;
     _sessions.removeWhere((s) => s.id == id);
+    _unindexChild(id, _childSessions[id]?.parentID);
     _childSessions.remove(id);
     if (childHost != null) _dropChildCards(id, childHost);
     _conversations.remove(id);
@@ -2388,6 +2500,7 @@ class ServerStore extends ChangeNotifier {
     _projects = [];
     _sessions = [];
     _childSessions.clear();
+    _childrenByParent.clear();
     _statusMap.clear();
     _ghostSessionIds.clear();
     _lastMessage.clear();

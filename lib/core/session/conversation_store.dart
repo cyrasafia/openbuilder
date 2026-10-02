@@ -150,6 +150,7 @@ class DisplayMessage {
   String? compactionStatus;
   String? previousLabel;
   String? currentLabel;
+  Map<String, dynamic>? metadata;
 
   DisplayMessage({
     required this.id,
@@ -173,6 +174,7 @@ class DisplayMessage {
     this.compactionStatus,
     this.previousLabel,
     this.currentLabel,
+    this.metadata,
   });
 
   bool get isUser => type == 'user';
@@ -336,6 +338,110 @@ class ConversationStore extends ChangeNotifier {
     return result;
   }
 
+  /// `session.synthetic` SSE 增量 upsert（id 由 eventId `evt_`→`msg_` 映射）。
+  void onSynthetic(SessionMessage message) {
+    _upsertEntries([message]);
+    if (_gated && message.created > _revealWatermark) {
+      revealLiveMessage(message.created);
+    }
+    _sort(const <String>{});
+    unawaited(_saveCache());
+    if (!_disposed) notifyListeners();
+  }
+
+  /// 子会话启动：若是**用户后台任务**（非工具型 tool part 承载），向流内插入
+  /// 一条系统提示「已启动后台任务」。工具型保持 tool part 面板形态，不插。
+  void onChildSessionRegistered(SessionModel child) {
+    if (isToolFormChild(child)) return;
+    // 已有终态 outcome 的子会话是历史（例如列表/他端后出现）——不补历史启动提示。
+    if (child.outcome != null) return;
+    final id = 'bg-start:${child.id}';
+    if (_findMessage(id) != null) return;
+    final label = child.title.isNotEmpty ? child.title : child.id;
+    _upsertEntries([
+      SystemMessage(
+        id: id,
+        raw: {'id': id, 'type': 'system'},
+        metadata: {
+          'kind': 'background-started',
+          'childID': child.id,
+          'label': label,
+        },
+        created: child.created,
+        text: '',
+        description: label,
+      ),
+    ]);
+    _sort(const <String>{});
+    if (!_disposed) notifyListeners();
+  }
+
+  /// 该子会话是否由工具型 `task`/`subagent` tool part 承载。
+  /// 是 → 属于工具型（前台面板），不进后台任务条 / 不发启动提示。
+  bool isToolFormChild(SessionModel child) {
+    for (final m in _messages) {
+      for (final p in m.parts) {
+        if (p.type != 'tool') continue;
+        if (p.tool != 'task' && p.tool != 'subagent') continue;
+        final sid = p.toolMetadata?['sessionID']?.toString() ??
+            p.toolMetadata?['sessionId']?.toString();
+        if (sid != null && sid == child.id) return true;
+        final desc = p.toolInput?['description']?.toString();
+        if (desc != null &&
+            desc.isNotEmpty &&
+            child.title.isNotEmpty &&
+            child.title.startsWith(desc) &&
+            (p.toolStatus == 'streaming' || p.toolStatus == 'running')) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// 撤回误插的「已启动后台任务」提示：子会话注册可能早于其工具型 tool part
+  /// 入流（SSE 竞态），一旦该 tool part 出现（`metadata.sessionID` 或
+  /// description 兜底命中），把对应启动提示移除。
+  int _startNoticeVersion = -1;
+  bool _hasStartNoticeCache = false;
+
+  /// 「是否存在后台启动提示」的廉价缓存（按 `_messagesVersion`）：绝大多数
+  /// 会话没有启动提示，借此让高频 tool 事件短路，不做全量扫描。
+  bool get _hasStartNotice {
+    if (_startNoticeVersion == _messagesVersion) return _hasStartNoticeCache;
+    _hasStartNoticeCache =
+        _messages.any((m) => m.metadata?['kind'] == 'background-started');
+    _startNoticeVersion = _messagesVersion;
+    return _hasStartNoticeCache;
+  }
+
+  void _reconcileStartNotices() {
+    if (!_hasStartNotice) return;
+    // 仅用权威的 `metadata.sessionID` 认领（description 启发式会误删措辞相近
+    // 的并发后台任务提示，故此处不采用——metadata 到达后自然收敛）。
+    final claimedIds = <String>{};
+    for (final m in _messages) {
+      for (final p in m.parts) {
+        if (p.type != 'tool') continue;
+        if (p.tool != 'task' && p.tool != 'subagent') continue;
+        final sid = p.toolMetadata?['sessionID']?.toString() ??
+            p.toolMetadata?['sessionId']?.toString();
+        if (sid != null && sid.isNotEmpty) claimedIds.add(sid);
+      }
+    }
+    if (claimedIds.isEmpty) return;
+    final remove = <String>[];
+    for (final m in _messages) {
+      if (m.metadata?['kind'] != 'background-started') continue;
+      final cid = m.metadata?['childID']?.toString();
+      if (cid != null && claimedIds.contains(cid)) remove.add(m.id);
+    }
+    if (remove.isEmpty) return;
+    _messages.removeWhere((m) => remove.contains(m.id));
+    _sort(const <String>{});
+    notifyListeners();
+  }
+
   bool get hasMore => _segments.firstOrNull?.cursor != null;
 
   bool get loadingEarlier => _loadingEarlier;
@@ -349,6 +455,9 @@ class ConversationStore extends ChangeNotifier {
       final m = _messages[i];
       if (_hiddenKinds.contains(m.type)) continue;
       if (m.type == 'idle') continue;
+      // synthetic 文本是 `<subagent …>` 原始标记，不能作为列表预览
+      // （对齐 sessionMessagePreviewText 对 synthetic 返回 null）。
+      if (m.type == 'synthetic') continue;
       last = m;
       break;
     }
@@ -1007,6 +1116,7 @@ class ConversationStore extends ChangeNotifier {
       default:
         if (m.text != null) raw['text'] = m.text;
         if (m.description != null) raw['description'] = m.description;
+        if (m.metadata != null) raw['metadata'] = m.metadata;
         if (m.type == 'idle' && m.outcome != null) {
           raw['outcome'] = m.outcome;
         }
@@ -1274,6 +1384,7 @@ class ConversationStore extends ChangeNotifier {
           created: e.created,
           text: e.text,
           description: e.description,
+          metadata: e.metadata,
         );
       case SystemMessage():
         return DisplayMessage(
@@ -1282,6 +1393,7 @@ class ConversationStore extends ChangeNotifier {
           created: e.created,
           text: e.text,
           description: e.description,
+          metadata: e.metadata,
         );
       case SkillMessage():
         return DisplayMessage(
@@ -1521,6 +1633,7 @@ class ConversationStore extends ChangeNotifier {
     dp.toolStatus = 'running';
     if (dp.tool == 'todowrite') _recomputeTodos();
     notifyListeners();
+    _reconcileStartNotices();
   }
 
   void onToolProgress(String mid, String callId, Map<String, dynamic>? metadata) {
@@ -1533,6 +1646,7 @@ class ConversationStore extends ChangeNotifier {
       msg.parts[idx].toolMetadata = metadata;
     }
     notifyListeners();
+    _reconcileStartNotices();
   }
 
   void onToolSuccess(String mid, String callId, List<ToolContentItem> content) {
@@ -1652,9 +1766,33 @@ class ConversationStore extends ChangeNotifier {
 
   void onInboxEnqueued(String inboxId, Map<String, dynamic> item,
       {int? created}) {
-    if (item['type'] != 'user') return;
+    final type = item['type'];
+    if (type != 'user' && type != 'synthetic') return;
     final payload =
         (item['payload'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final time0 = created ?? DateTime.now().millisecondsSinceEpoch;
+    // v2.0.18 上子会话完成通知经 `session.inbox.enqueued`（inboxID 即消息 id、
+    // payload 带 metadata）落地；`session.synthetic` 在该路径下不出现。就地
+    // 物化为 SyntheticMessage，交给 `_toDisplay` 保留 metadata 供 chip 渲染。
+    if (type == 'synthetic') {
+      onSynthetic(SyntheticMessage(
+        id: inboxId,
+        raw: {
+          'id': inboxId,
+          'type': 'synthetic',
+          'time': {'created': time0},
+          if (payload['text'] != null) 'text': payload['text'],
+          if (payload['description'] != null)
+            'description': payload['description'],
+          if (payload['metadata'] != null) 'metadata': payload['metadata'],
+        },
+        metadata: (payload['metadata'] as Map?)?.cast<String, dynamic>(),
+        created: time0,
+        text: payload['text']?.toString() ?? '',
+        description: payload['description']?.toString(),
+      ));
+      return;
+    }
     final text = payload['text']?.toString() ?? '';
     final files = (payload['files'] as List? ?? [])
         .whereType<Map>()

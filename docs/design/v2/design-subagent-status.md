@@ -2,6 +2,11 @@
 
 > 参考 openbuilder-desktop `docs/design-subagent-status.md`（同源设计），
 > 本文档记录移动端 Flutter 实现与桌面端的差异点。
+>
+> **范围注**：本文只描述**工具型** `task`/`subagent` tool part 的面板行为，且**保持不变**。
+> 用户后台任务（命令型 `subagent: true` 的异步子会话）另见
+> [`design-subagent-background.md`](design-subagent-background.md)（常驻任务条 + 系统提示），
+> 其中的 D3「工具型完全不动」与本文件一致。
 
 ## 背景
 

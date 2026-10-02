@@ -632,7 +632,7 @@ v1 的 `session.updated` SSE 事件取值与服务端 `time.updated` 间存在�
 | `lib/features/shell/sessions_tab.dart` | tile（:61-84）stale + livePreview 双键 + 占位渲染 |
 | `lib/features/projects/project_detail_screen.dart` | 同上两处 tile（:490/:552） |
 | `lib/l10n/app_zh.arb` / `app_en.arb` | `previewSyncing` / syncing 文案 |
-| `AGENTS.md` | 关键设计文档索引补本文件条目（六轮 #8） |
+| `AGENTS.md` | 关键文档索引补本文件条目（六轮 #8） |
 | `test/` | 回归测试（§12 验证点） |
 
 ---

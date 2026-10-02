@@ -28,8 +28,8 @@ import '../../core/attachments/image_data_cache.dart';
 import '../../core/net/net_error.dart';
 import '../../core/logging/perf_probe.dart';
 import '../../core/session/conversation_store.dart';
-import '../../core/session/file_browsing_store.dart';
 import '../../domain/models.dart';
+import '../../core/session/file_browsing_store.dart';
 import '../../ui/l10n_ext.dart';
 import '../../l10n/gen/app_localizations.dart';
 import '../files/file_browsing_container.dart';
@@ -570,7 +570,7 @@ class _ConversationScreenState extends State<ConversationScreen>
       while (lo > 0 && !msgs[lo - 1].isUser) {
         lo--;
       }
-      // runTop = msgs[hi] 的 trailing 边，相对 lastTop 锚。
+      // runTop = child hi 的 trailing 边，相对 lastTop 锚。
       var gap = false;
       var runTop = lastTop;
       if (hi >= lastIdx) {
@@ -759,40 +759,105 @@ class _ConversationScreenState extends State<ConversationScreen>
     return text;
   }
 
+  String _subagentSyntheticLabel(DisplayMessage m) {
+    final desc = m.description;
+    if (desc != null && desc.trim().isNotEmpty) return desc.trim();
+    final fromText =
+        RegExp(r'description="([^"]*)"').firstMatch(m.text ?? '')?.group(1);
+    if (fromText != null && fromText.trim().isNotEmpty) return fromText.trim();
+    return 'subagent';
+  }
+
+  /// 统一系统提示样式（design-subagent-background §D5）：低强调行式，承载
+  /// 后台任务启停 / 切换模型 / 切换 Agent / 系统与技能通知。
   Widget _noticeMessage(DisplayMessage m) {
     final scheme = Theme.of(context).colorScheme;
-    final label = switch (m.type) {
-      'system' => m.description ?? m.text ?? '',
-      'synthetic' => _syntheticLabel(m.text ?? ''),
-      'skill' => m.description ?? m.text ?? '',
-      'shell' => '\$ ${m.shellCommand ?? ''}',
-      'agent-switched' => '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}',
-      'model-switched' => '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}',
-      'compaction' => 'context compaction',
-      _ => m.text ?? '',
-    };
+    final loc = l(context);
+    final IconData icon;
+    Color color = scheme.outline;
+    final String label;
+    VoidCallback? onTap;
+    switch (m.type) {
+      case 'synthetic' when m.metadata?['source'] == 'subagent':
+        final childId = m.metadata?['childID']?.toString();
+        final name = _subagentSyntheticLabel(m);
+        switch (m.metadata?['state']?.toString()) {
+          case 'completed':
+            icon = Icons.check_circle_outline;
+            label = loc.bgTaskCompleted(name);
+          case 'failed':
+          case 'error':
+            icon = Icons.error_outline;
+            color = const Color(0xFFF85149);
+            label = loc.bgTaskFailed(name);
+          case 'cancelled':
+          case 'interrupted':
+            icon = Icons.stop_circle_outlined;
+            label = loc.bgTaskCancelled(name);
+          default:
+            icon = Icons.circle_outlined;
+            label = loc.bgTaskDone;
+        }
+        if (childId != null && childId.isNotEmpty) {
+          onTap = () => _showTaskDetail(childId, name);
+        }
+      case 'system' when m.metadata?['kind'] == 'background-started':
+        final childId = m.metadata?['childID']?.toString();
+        final name = (m.metadata?['label'] ?? m.description ?? '').toString();
+        icon = Icons.rocket_launch_outlined;
+        label = loc.bgTaskStarted(name);
+        if (childId != null && childId.isNotEmpty) {
+          onTap = () => _showTaskDetail(childId, name);
+        }
+      case 'model-switched':
+        icon = Icons.swap_horiz;
+        label = '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}';
+      case 'agent-switched':
+        icon = Icons.smart_toy_outlined;
+        label = '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}';
+      case 'shell':
+        icon = Icons.terminal;
+        label = '\$ ${m.shellCommand ?? ''}';
+      case 'skill':
+        icon = Icons.bolt_outlined;
+        label = m.description ?? m.text ?? '';
+      default:
+        icon = Icons.info_outline;
+        label = m.type == 'synthetic'
+            ? _syntheticLabel(m.text ?? '')
+            : (m.description ?? m.text ?? '');
+    }
     if (label.trim().isEmpty) return const SizedBox.shrink();
     return Padding(
       key: ValueKey(m.id),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
-      child: Row(
-        children: [
-          Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest.withAlpha(120),
-                borderRadius: BorderRadius.circular(10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 15, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurfaceVariant,
+                    height: 1.4,
+                  ),
+                ),
               ),
-              child: Text(
-                label,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: scheme.outline),
-              ),
-            ),
+              if (onTap != null) ...[
+                const SizedBox(width: 4),
+                Icon(Icons.chevron_right, size: 16, color: scheme.outline),
+              ],
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1261,8 +1326,10 @@ class _ConversationScreenState extends State<ConversationScreen>
                             ],
                           );
                         }
-                        return _measuredMessage(
-                            msgs[effectiveDividerIndex != null && m > effectiveDividerIndex ? m - 1 : m]);
+                        return _measuredMessage(msgs[
+                            effectiveDividerIndex != null && m > effectiveDividerIndex
+                                ? m - 1
+                                : m]);
                       },
                       childCount:
                           msgs.length + (effectiveDividerIndex != null ? 1 : 0),
@@ -1316,6 +1383,10 @@ class _ConversationScreenState extends State<ConversationScreen>
                         serverStore.commandsNotifier.value.isEmpty,
                     onPick: _pickCommand,
                   ),
+                _BackgroundTasksStrip(
+                  parentSessionId: widget.sessionId,
+                  onOpen: _showBackgroundTasks,
+                ),
                 RepaintBoundary(
                   child: _BottomBar(
                     sessionId: widget.sessionId,
@@ -1622,6 +1693,125 @@ class _ConversationScreenState extends State<ConversationScreen>
     _scheduleAutoScroll();
   }
 
+  /// 当前会话的「用户后台任务」= running 直系子会话中、非工具型 tool part 承载者
+  /// （design-subagent-background §识别）。
+  List<SessionModel> _runningBackgroundTasks() {
+    final conv = serverStore.conversationForRead(widget.sessionId);
+    if (conv == null) return const [];
+    return serverStore
+        .runningChildSessionsOf(widget.sessionId)
+        .where((c) => !conv.isToolFormChild(c))
+        .toList(growable: false);
+  }
+
+  Future<void> _showBackgroundTasks() async {
+    if (_runningBackgroundTasks().isEmpty) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ListenableBuilder(
+          listenable: serverStore,
+          builder: (ctx, _) {
+            final live = _runningBackgroundTasks();
+            if (live.isEmpty) {
+              return Padding(
+                padding: const EdgeInsets.all(20),
+                child: Text(l(ctx).bgTaskDone),
+              );
+            }
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final t in live)
+                  ListTile(
+                    dense: true,
+                    leading:
+                        const Icon(Icons.rocket_launch_outlined, size: 18),
+                    title: Text(
+                      t.title.isNotEmpty ? t.title : t.id,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: (t.agent ?? '').isEmpty
+                        ? null
+                        : Text(t.agent!, style: const TextStyle(fontSize: 11)),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.visibility_outlined, size: 18),
+                          tooltip: l(ctx).bgTaskView,
+                          onPressed: () {
+                            Navigator.of(ctx).pop();
+                            _showTaskDetail(t.id, t.title);
+                          },
+                        ),
+                        IconButton(
+                          icon:
+                              const Icon(Icons.stop_circle_outlined, size: 18),
+                          tooltip: l(ctx).bgTaskStop,
+                          onPressed: () => _stopBackgroundTask(t.id),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _stopBackgroundTask(String childId) async {
+    final client = serverStore.client;
+    if (client == null) return;
+    try {
+      await client.interrupt(childId);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text(l(context).abortFailed(friendlyMessage(l(context), e))),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showTaskDetail(String childId, String label) async {
+    serverStore.loadChildSessionMessages(childId);
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.sizeOf(ctx).height * 0.6,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                label.isNotEmpty ? label : childId,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+            Expanded(
+              child: _SubagentBody(
+                childSessionId: childId,
+                parentSessionId: widget.sessionId,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<bool> _abort(String directory) async {
     final client = serverStore.client;
     if (client == null) return false;
@@ -1811,7 +2001,9 @@ class _ConversationScreenState extends State<ConversationScreen>
           partId: p.id,
         );
       case 'tool':
-        if (p.tool == 'task') {
+        // 工具型 subagent 保留 tool part 面板形态（design-subagent-status）：
+        // 前台阻塞调用、停在流尾、composer 停止可取消，不进后台任务条。
+        if (p.tool == 'task' || p.tool == 'subagent') {
           return _SubagentPanel(
             key: PageStorageKey(p.id),
             part: p,
@@ -2989,6 +3181,74 @@ class _SubagentPanelState extends State<_SubagentPanel>
 /// SubagentPanel 展开态的子会话消息流。独立滚动（贴底跟随、滚动条隐藏），
 /// 复用 _ToolChip 渲染子会话内的工具 part；text 走稳定 Markdown 路径
 /// （子会话不进 _messageChildCache 实例缓存——面板高度有界、条目少）。
+/// 常驻后台任务条（design-subagent-background §D1）：仅当存在 running 的
+/// 用户后台任务时显示，全部完成即消失；点击进入任务列表（查看 / 停止）。
+class _BackgroundTasksStrip extends StatelessWidget {
+  final String parentSessionId;
+  final VoidCallback onOpen;
+  const _BackgroundTasksStrip({
+    required this.parentSessionId,
+    required this.onOpen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final conv = serverStore.conversationForRead(parentSessionId);
+    final listenable = conv == null
+        ? serverStore
+        : Listenable.merge([serverStore, conv]);
+    return ListenableBuilder(
+      listenable: listenable,
+      builder: (context, _) {
+        final count = serverStore
+            .runningChildSessionsOf(parentSessionId)
+            .where((c) => conv == null || !conv.isToolFormChild(c))
+            .length;
+        if (count == 0) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+          child: Material(
+            color: theme.colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: onOpen,
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.rocket_launch_outlined, size: 15),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${l(context).bgTaskRunning} ($count)',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    Icon(
+                      Icons.chevron_right,
+                      size: 18,
+                      color: theme.colorScheme.outline,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _SubagentBody extends StatelessWidget {
   final String? childSessionId;
   final String parentSessionId;
@@ -3045,10 +3305,11 @@ class _SubagentBody extends StatelessWidget {
                 builder: (context, _) {
                   final msgs = conv.renderableMessages;
                   if (msgs.isEmpty) {
+                    // 已加载但无消息 = 子会话无输出；未加载才是「加载中」。
                     return Padding(
                       padding: const EdgeInsets.all(12),
                       child: Text(
-                        loc.subagentLoading,
+                        conv.loaded ? loc.subagentNoOutput : loc.subagentLoading,
                         style: TextStyle(
                             fontSize: 12, color: theme.colorScheme.outline),
                       ),

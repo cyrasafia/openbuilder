@@ -33,7 +33,7 @@ openbuilder/
 │  │  ├─ settings/               # 服务器状态 / 管理
 │  │  └─ shell/                  # MainShell + 会话 Tab + 项目 Tab + 设置 Tab
 │  └─ ui/                        # 主题、共享 widgets（theme.dart / widgets.dart）
-├─ docs/                         # 设计文档、执行计划、评审（按类型分子目录：spec/ design/ plan/ review/ todo/；design 下再分 v1/ v2/）
+├─ docs/                         # 设计文档、执行计划、评审、参考（按类型分子目录：spec/ design/ plan/ review/ todo/ ref/；design 下再分 v1/ v2/）
 ├─ scripts/
 │  └─ build.sh                   # release 构建（自动递增版本号）
 ├─ test/                         # 单元 + widget + smoke 测试
@@ -121,6 +121,13 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 权威参考：根目录 [`DESIGN.md`](DESIGN.md)，改 UI / 文字样式前必读。核心约束：字重只允许 `w300` / `w400` / `w600` 三档，禁止 `normal`、`w500`、`bold`、`w700`。
 
+## 术语与文案约定
+
+适用于文档、UI 文案、prompt / 配置等一切文字：
+
+- 英文已有约定俗成名词、中文无对应词的，直接使用英文：`bug`、`PR`、`nit`、`commit`、`hash`、`diff`、`O(n²)`、`N+1`、`off-by-one`。
+- 中英都有的术语，中文后加括号备注英文，以降低歧义：`只读（read-only）`、`严重度（severity）`、`阻塞（blocking）`、`非阻塞（non-blocking）`、`上下文（context）`、`子会话（child session）`、`约定（conventions）`。
+
 ## 文档命名约定（docs/）
 
 文档按类型分子目录存放，文件名保留类型前缀。`docs/design/` 内再按所面向的 OpenCode 协议契约版分 `v1/`（面向 v1 契约、已被 v2 取代的历史设计）与 `v2/`（面向 v2 契约的设计）；与协议无关的 UI/渲染/性能设计留在 `docs/design/` 根。
@@ -132,6 +139,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `plan-` | `docs/plan/` | 执行计划（配套 design） | `plan-load-retry.md` |
 | `review-` | `docs/review/` | 代码评审报告（提交级或设计级） | `review-load-retry.md`、`review-04c8b07.md` |
 | `todo-` | `docs/todo/` | 待办问题跟踪（已知缺陷/技术债，含现象、根因、修复方向、验收标准） | `todo-cache-write-race.md` |
+| `ref-` | `docs/ref/` | 参考资料（外部行为调研、结论与证据、可复用配置等，非本项目设计） | `ref-opencode-review-subagent.md` |
 
 ### design 文档结构约定
 
@@ -141,7 +149,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 设计文档评审采用**迭代追加**方式：每轮评审在文档末尾追加 `## N次评审意见`，标注问题编号（如 LR-1、LR-R1）、优先级（🔴 阻塞 / 🟡 中 / 🟢 低）、修复建议。修复后追加 `### 修复复审` 表格逐条核对。代码实现后写 `review-<feature>.md` 做最终核对。
 
-## 关键设计文档索引
+## 关键文档索引
 
 | 文档 | 主题 |
 |------|------|
@@ -182,7 +190,9 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design/design-frame-drop.md` | 掉帧专项优化（umbrella，含问题清单 + 度量/排查方法论）；JANK-1 浮层展开掉帧已修：首帧布局+文本排版为根因、模型浮层 Column 整组急布局为放大器，拍平模型列表 build max 54.6→19.8ms，门控方案预留；JANK-2 键盘展开/收起掉帧已修：Android 键盘弹起时 view.padding 随 viewInsets 联动变化，后台 MainShell/ProjectDetailScreen 整片重建，`_ViewInsetsFreezer` 同时冻结 viewInsets+padding+viewPadding（=viewPadding），build median 33.8→15.7ms，SessionsTab/ProjectsTab/ProjectDetailScreen 重建归零 |
 | `design/design-oauth-login.md` | OAuth 登录（authorization_code + PKCE + PAR + loopback，双端统一应用内 WebView）+ 服务器添加/登录分离（Authelia 单组件网关：IdP+forward-auth 二合一；WebView 保前台根治 iOS 挂起击碎 loopback 回调的 v2 死结；AppBar 域名常驻+cookie 隔离+导航白名单缓解 WebView 安全代价；AuthProbe 探测 oauth/basic/none 含网关 302→auth 主机元数据发现；dio AuthInterceptor token 刷新/401 重放；服务端全链路实测通过：PAR/loopback 接码（实测为 query 模式）/换 token/Bearer 穿网关/SSE/refresh/旧 token 即时撤销，双端 WebView 平台项留实现期；含四版方案演化 ADR：device flow 被 Client Restrictions 排除、gw(IdP+oauth2-proxy) 部署重配置摩擦、回归单组件） |
 | `design/design-passkey-login.md` | OAuth 登录 passkey 支持（双端 WebView 的 WebAuthn 开启：Android `WebSettingsCompat` FOR_APP + Credential Manager + 视图树遍历桥接；iOS webcredentials 关联域 entitlements；Android origin 变形为 `android:apk-key-hash:` 与 Authelia `RPOrigins` 硬编码的冲突——决策：等上游 v4.40 提供额外 origin 配置面（#11432 related origins 排期，#12495/#12496 佐证），不打本地补丁；服务端三项前置入配套 todo） |
-| `design/v2/design-subagent-status.md` | subagent 工作状态显示（task 工具专用面板：收起 chip + 展开子会话消息流；childSessionId 双来源 metadata.sessionId / findChildSession 启发式；子会话仅存 `_childSessions` 不进 `_sessions`；LRU 驱逐豁免；§D6 权限/问题卡上浮父会话——ask 事件携子会话 id，按 `_cardHostSessionId` 路由到父 conv 显示/回复/摘卡，防运行卡死） |
+| `design/v2/design-subagent-status.md` | subagent 工作状态显示（**工具型** task/subagent tool part 专用面板：收起 chip + 展开子会话消息流；childSessionId 双来源 metadata.sessionId / findChildSession 启发式；子会话仅存 `_childSessions` 不进 `_sessions`；LRU 驱逐豁免；§D6 权限/问题卡上浮父会话——ask 事件携子会话 id，按 `_cardHostSessionId` 路由到父 conv 显示/回复/摘卡，防运行卡死；**工具型面板行为不变**，用户后台任务另见下条） |
+| `design/v2/design-subagent-background.md` | 用户后台任务条 + 系统提示（命令型 `subagent: true` 异步子会话：常驻任务条仅显示 running 后台任务、全部完成即消失；点击进任务列表浮层——嵌入查看子会话流 + 停止 `interrupt(childSessionId)`；启动提示客户端在子会话启动时合成、完成走 synthetic；统一系统提示样式承载后台启停/切换模型/切换 Agent；含「有无引用它的 tool part」区分工具型与后台任务的判据；取代 design-subagent-chip） |
 | `design/v2/design-session-activity-time.md` | 会话活动时间不回退（根因：服务端 `time.updated` 仅会话级操作 touch、run 期间冻结在 prompt 提交，实测+源码定位；方案：SSE 事件 `created` 单调叠加 + `max(updated, idle, 本地)` 防回退合并 + busy 会话 `message?limit=1&order=desc` 兜底探针；含「最新消息时间」字段盘点——spec 无专用字段，消息行 `time.streamed` 是唯一持久化实时源） |
 | `design/v2/design-archive-metadata.md` | 归档会话识别对齐（双源 `time.archived` + `metadata.archivedAt` 桌面端私约，任一非空即归档；`isArchived` 收敛判定；SSE `session.metadata.updated` 四象限：已知会话快照直更零回源、未知未归档回源 GET 恢复（取消归档实时重现）、未知已归档忽略；缓存 round-trip；归档写路径已落地——菜单项回归，GET 整包合并→PATCH REPLACE + 本地快照即时移除、SSE 回声幂等，取消归档仍桌面端；官方归档 API 回归后双端同迁） |
 | `design/v2/design-worktree-branch-sync.md` | worktree 创建后分支挂载（v2 一律 detached HEAD 的客户端自救：创建后 `git switch -c opencode/<name>` 挂同名分支、slug 守卫防注入、撞名 rand 后缀重试；删除后在 canonical 下清理同名分支——已并入才 `-D`，未并入保留 + 10s SnackBar 提示；经 `POST /api/shell` 纯 API 通道与 desktop 同构，权威设计见 openbuilder-desktop 同名文档） |
+| `ref/ref-opencode-review-subagent.md` | OpenCode v2 `/review` 与 subagent 行为参考（内置 `/review` 不再开子会话的结论与证据、同名命令覆盖机制、subagent 触发条件、全局 reviewer agent + command 配置、术语约定、验证方法与踩坑） |
