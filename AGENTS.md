@@ -35,7 +35,8 @@ openbuilder/
 │  └─ ui/                        # 主题、共享 widgets（theme.dart / widgets.dart）
 ├─ docs/                         # 设计文档、执行计划、评审、参考（按类型分子目录：spec/ design/ plan/ review/ todo/ ref/；design 下再分 v1/ v2/）
 ├─ scripts/
-│  └─ build.sh                   # release 构建（自动递增版本号）
+│  ├─ build.sh                   # release 构建（自动递增版本号）
+│  └─ analyze.sh                 # 静态分析（先 pub get 重建 l10n，再 analyze --fatal-infos）
 ├─ test/                         # 单元 + widget + smoke 测试
 ├─ tool/
 │  └─ gen_client.sh              # 刷新 pin 住的 OpenAPI spec（--generate 仅产 .gen_ref/ 参考）
@@ -72,11 +73,15 @@ openbuilder/
 
 将 A.B 设为给定值、patch 重置为 0、versionCode 继续递增（如 `0.3.2+51` → `0.2.0+52`）。
 
-### 静态分析
+### 静态分析（必须用脚本）
 
 ```bash
-flutter analyze --fatal-infos    # CI 门槛，任何 issue 都 fail
+./scripts/analyze.sh
 ```
+
+脚本会先跑 `flutter pub get`，再跑 `flutter analyze --fatal-infos`（CI 门槛，任何 issue 都 fail）。
+
+> **不要直接 `flutter analyze`** — l10n 生成物 `lib/l10n/gen/` 是 gitignored 产物。`flutter analyze` **不会**生成它，只有 `flutter pub get` 会（`pubspec.yaml` 的 `flutter: generate: true`）。新 clone / worktree 直接 analyze 会因缺 l10n 报 `undefined_identifier` / `uri_does_not_exist`（约 123 个错）。
 
 ### 测试
 

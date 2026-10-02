@@ -109,8 +109,8 @@ flutter build ios --release
 #### 代码质量
 
 ```bash
-# 静态分析（CI 以 --fatal-infos 严格门禁）
-flutter analyze --fatal-infos
+# 静态分析（脚本先 pub get 重建 l10n 生成物，再跑 CI 严格门禁）
+./scripts/analyze.sh
 
 # 运行测试
 flutter test
@@ -230,8 +230,8 @@ flutter build ios --release
 #### Code quality
 
 ```bash
-# Static analysis (CI gate is strict with --fatal-infos)
-flutter analyze --fatal-infos
+# Static analysis (script runs pub get to regenerate l10n, then the strict CI gate)
+./scripts/analyze.sh
 
 # Run tests
 flutter test
