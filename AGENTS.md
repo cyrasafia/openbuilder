@@ -128,6 +128,10 @@ export PATH="$JAVA_HOME/bin:$PATH"
 - 英文已有约定俗成名词、中文无对应词的，直接使用英文：`bug`、`PR`、`nit`、`commit`、`hash`、`diff`、`O(n²)`、`N+1`、`off-by-one`。
 - 中英都有的术语，中文后加括号备注英文，以降低歧义：`只读（read-only）`、`严重度（severity）`、`阻塞（blocking）`、`非阻塞（non-blocking）`、`上下文（context）`、`子会话（child session）`、`约定（conventions）`。
 
+## 回复约定
+
+- 回复遵守 **ASD-STE100**（Simplified Technical English，简化技术英语）：用短句、主动语态、每句一个意思、一词一义；不用长难句、被动语态与同义反复。
+
 ## 文档命名约定（docs/）
 
 文档按类型分子目录存放，文件名保留类型前缀。`docs/design/` 内再按所面向的 OpenCode 协议契约版分 `v1/`（面向 v1 契约、已被 v2 取代的历史设计）与 `v2/`（面向 v2 契约的设计）；与协议无关的 UI/渲染/性能设计留在 `docs/design/` 根。
