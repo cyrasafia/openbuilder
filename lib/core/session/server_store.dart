@@ -2346,15 +2346,48 @@ class ServerStore extends ChangeNotifier {
     }
     _childSessions[s.id] = s;
     _indexChild(s.id, s.parentID);
-    while (_childSessions.length > _kMaxChildSessions) {
-      final evictedId = _childSessions.keys.first;
-      final evicted = _childSessions.remove(evictedId);
-      _unindexChild(evictedId, evicted?.parentID);
-    }
+    _evictExcessChildSessions(keepId: s.id);
     _backfillConversationDirectory(s.id, s.directory);
     if (newlyRegistered) {
       _adoptChildCards(s);
       _conversations[s.parentID]?.onChildSessionRegistered(s);
+    }
+  }
+
+  /// 子会话 LRU 上限淘汰。历史上限之外还须满足：**不淘汰刚插入的会话**、
+  /// **不淘汰正在运行（busy/retry）的会话**——否则正在进行中的后台任务会
+  /// 被一次 reconcile 淘汰出索引，任务条随即消失（design-subagent-background
+  /// D1）。优先淘汰已有终态 outcome 的旧会话，其次才是无 outcome 的闲置会话。
+  void _evictExcessChildSessions({required String keepId}) {
+    var guard = 0;
+    while (_childSessions.length > _kMaxChildSessions &&
+        guard++ < _kMaxChildSessions) {
+      String? victimId;
+      var victimSettled = false;
+      var victimUpdated = 0;
+      var victimCreated = 0;
+      for (final e in _childSessions.entries) {
+        if (e.key == keepId) continue;
+        final t = _statusMap[e.key]?.type;
+        if (t == 'busy' || t == 'retry') continue;
+        final settled = e.value.outcome != null;
+        final better = victimId == null ||
+            (settled && !victimSettled) ||
+            (settled == victimSettled &&
+                (e.value.updated < victimUpdated ||
+                    (e.value.updated == victimUpdated &&
+                        e.value.created < victimCreated)));
+        if (better) {
+          victimId = e.key;
+          victimSettled = settled;
+          victimUpdated = e.value.updated;
+          victimCreated = e.value.created;
+        }
+      }
+      if (victimId == null) break;
+      final evicted = _childSessions.remove(victimId);
+      _unindexChild(victimId, evicted?.parentID);
+      _statusMap.remove(victimId);
     }
   }
 

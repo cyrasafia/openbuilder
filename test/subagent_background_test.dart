@@ -2,8 +2,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
+import 'package:open_builder/core/session/server_store.dart';
+import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
+
+import 'v2_test_fixtures.dart';
 
 /// design-subagent-background：
 /// - 后台任务启动提示在「子会话注册先于工具型 tool part 入流」的竞态下会被
@@ -17,15 +21,17 @@ OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
       password: '',
     )));
 
-SessionModel _child(String id, String parentID) => SessionModel(
+SessionModel _child(String id, String parentID, {int created = 5, String? outcome}) =>
+    SessionModel(
       id: id,
       projectID: 'p',
       directory: '/repo',
       title: '调研仓库结构',
-      created: 5,
-      updated: 5,
+      created: created,
+      updated: created,
       parentID: parentID,
       agent: 'explore',
+      outcome: outcome,
     );
 
 bool _hasStartNotice(ConversationStore s) =>
@@ -60,6 +66,49 @@ void main() {
     final store = ConversationStore('p', _fakeClient());
     store.onChildSessionRegistered(_child('kid', 'p'));
     expect(_hasStartNotice(store), isTrue);
+  });
+
+  test('start notice survives a reconcile window deletion', () async {
+    final entries = [
+      userMsg(id: 'msg_u1', text: 'hi', created: 100),
+      assistantMsg(
+          id: 'msg_a1',
+          created: 1000,
+          content: [textPart('ok')],
+          finish: 'stop'),
+    ];
+    final store = ConversationStore('p', PageMockClient(entries));
+    // child.created（500）落在对账窗口 [100, 1000] 内：窗口删除不得移除本地
+    // 合成的启动提示，否则提示会在对账后消失（design-subagent-background D3）。
+    store.onChildSessionRegistered(_child('kid', 'p', created: 500));
+    expect(_hasStartNotice(store), isTrue);
+
+    await store.reconcile();
+
+    expect(_hasStartNotice(store), isTrue,
+        reason: 'locally synthesized start notice must survive reconcile');
+  });
+
+  test('running background child is not evicted by the child-session LRU', () {
+    final store = ServerStore();
+    final running = _child('run', 'par', created: 1);
+    store.upsertSessionForTesting(running);
+    store.onEventForTesting(OpencodeEvent(
+      type: 'session.execution.started',
+      properties: {'sessionID': 'run'},
+    ));
+    expect(store.runningChildSessionsOf('par').map((e) => e.id), contains('run'));
+
+    // Far more historical children than the LRU cap. Settled children are the
+    // eviction candidates; the running one must stay indexed.
+    for (var i = 0; i < 80; i++) {
+      store.upsertSessionForTesting(
+          _child('old$i', 'par', created: 1000 + i, outcome: 'succeeded'));
+    }
+
+    expect(store.runningChildSessionsOf('par').map((e) => e.id), contains('run'),
+        reason: 'a running background task must never be evicted');
+    store.dispose();
   });
 
   test('synthetic completion does not leak into the list preview', () {

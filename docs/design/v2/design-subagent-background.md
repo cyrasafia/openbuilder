@@ -42,6 +42,9 @@
 - 形态：单行 pill「N 个后台任务运行中」+ 展开箭头。
 - 可见性：**仅当后台任务集合非空时显示；全部完成后自动消失**。
 - 点击 → 打开任务列表（D2）。
+- **实现约束（子会话 LRU）**：`ServerStore` 的子会话索引有 64 条上限。淘汰时**不得淘汰正在
+  运行（busy/retry）的后台子会话**，也不得淘汰刚 upsert 的会话；否则一次对账就会把运行中的
+  任务踢出索引，任务条一闪即消。优先淘汰已有终态 `outcome` 的旧会话。
 
 ### D2 任务列表（嵌入查看 + 停止）
 
@@ -63,6 +66,8 @@
   （完成提示经 REST/inbox 仍在，任务条也不受影响）。
 - **竞态收敛**：子会话注册可能早于其工具型 tool part 入流而误插启动提示；一旦 tool part 带上
   `metadata.sessionID` 命中，`_reconcileStartNotices` 撤回该提示（仅用权威 id，不用 description 启发式，避免误删措辞相近的并发任务）。
+- **对账持久性**：启动提示不来自服务端，`reconcile` 的窗口删除（`_applyWindowDeletion`）须显式
+  保留 `metadata.kind == 'background-started'` 的消息，否则提示会在对账后消失。
 
 ### D4 完成系统提示（synthetic）
 

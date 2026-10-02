@@ -900,6 +900,7 @@ class ConversationStore extends ChangeNotifier {
     _touchMessages(const <String>{});
     _messages.removeWhere((m) =>
         !m.optimistic &&
+        m.metadata?['kind'] != 'background-started' &&
         m.created > lo &&
         m.created < hi &&
         !ids.contains(m.id));
