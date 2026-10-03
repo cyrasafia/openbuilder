@@ -325,6 +325,5 @@
   "copyFailed": "Copy failed",
     "syncingMessages": "Fetching new messages…",
   "gapSyncing": "Syncing missed messages…",
-  "previewSyncing": "Syncing…",
   "errorPageTooLarge": "Session has too many messages to load in one page"
 }

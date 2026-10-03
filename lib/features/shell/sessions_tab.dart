@@ -275,22 +275,12 @@ class _SessionTile extends StatelessWidget {
               AgentStatusIndicator(state: agentState),
               const SizedBox(width: 6),
               Expanded(
-                child: stalePreview
-                    ? Text(
-                        l(context).previewSyncing,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 13,
-                            color: muted,
-                            fontStyle: FontStyle.italic),
-                      )
-                    : Text(
-                        preview ?? '—',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 13, color: muted),
-                      ),
+                child: Text(
+                  stalePreview ? '—' : (preview ?? '—'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: muted),
+                ),
               ),
             ],
           ),
