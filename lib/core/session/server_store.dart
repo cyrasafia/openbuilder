@@ -1763,13 +1763,10 @@ class ServerStore extends ChangeNotifier {
           _touchActivity(sid2, ev.created);
           final wasBusy = _statusMap[sid2]?.type == 'busy' ||
               _statusMap[sid2]?.type == 'retry';
-          final wasRetry = _statusMap[sid2]?.type == 'retry';
           _statusMap[sid2] = const SessionStatusValue('idle');
+          _conversations[sid2]?.setStatus('idle');
           if (isChildSession(sid2)) _notifyActivityThrottled();
           _scheduleCacheSave();
-          if (wasRetry) {
-            _conversations[sid2]?.setStatus('idle');
-          }
           if (wasBusy) {
             AppLogger.I.i(_tag, 'execution settled ${ev.type} $sid2');
             if (!isChildSession(sid2)) {
