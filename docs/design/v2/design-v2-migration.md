@@ -286,3 +286,47 @@ v2 的 TS 生态为 `packages/protocol`（Effect HttpApi 定义）+ `packages/sd
 - **实测修正本文档两处判断**：① form/permission **存在**到达事件族（`permission.asked/replied` 同名保留、`form.created/replied/cancelled`）——「无到达事件需轮询」结论错误，console 轮询仅为 backfill；② 分页游标方向：desc 首页经 **`cursor.next`** 向更老翻页（本文 §分页契约表「双向」描述需按此理解），`cursor.previous` 指向更新方向。
 - **基线换锚落地**：`opencode_openapi_v2.json` pin 为 2.0.18 实测 spec（115 路径/247 schema，源 `GET /openapi.json`），`tool/gen_client.sh` 改指 v2 服务器。
 - 验收：`flutter analyze --fatal-infos` 零 issue；`flutter test` 645/645（含 15120 真实 v2 smoke）。
+
+## 未实现与待服务端支持清单（2026-10-06 盘点）
+
+> 合并 `docs/todo/`、`docs/ref/` 与本文档落地记录中的未完成项。已修复的 todo（下载认证失败、缓存写竞争）不含在内。
+>
+> 2026-10-06 增补：对照 openbuilder-desktop 同名文档的遗留清单（其附录核对覆盖上游 v2.0.19–v2.0.24），更新既有项事实、纳入桌面端已实战的参照项。
+
+### 1. 客户端待实现（v2 契约内）
+
+| 项 | 优先级 | 说明 | 跟踪 |
+|----|--------|------|------|
+| 配对认证 | 🟡 | `POST /api/pair` + `GET /auth/connect/:code` 免密配对流未实现，当前仅 Basic / OAuth；**服务端已就绪**（v2.0.23 起进契约，桌面端附录 A2）——可排期 | 本文档 §认证 |
+| form 卡 `hidden` 字段过滤（T2） | 🟡 | `FormFieldSpec.hidden` 已解析未使用，隐藏字段仍被渲染 | `docs/todo/todo-form-card-v2-parity.md` |
+| form 卡 `external` 字段（T3） | 🟢 | MCP 授权流字段被误渲染为文本框；需决策剔除或提供「打开浏览器授权」入口 | 同上 |
+| form 卡 `required` 语义（T4） | 🟢 | `_stepAnswered` 对所有输入式字段强制非空，未按 `required` 区分 | 同上 |
+| v2 新端点接入 | 🟢 | 已接入：worktree 组、form 体系、shell 一次性命令、skill 列表、revert stage/commit。未接入：persistent-pty、websearch、rpc/plugin/mcp 组、`fs/write`、session `fork`/`move`/`stats`/`import`/`export`/`generate`/`environment`/`view`/`wait`/`log`/`instructions`/`entries`、`worktree/refresh`、`location/reload` 等——按需单独设计 | 本文档「不做的事」#5 |
+| OAuth 双端 WebView 回调投递验证 | 🟡 | Android cleartext / iOS ATS 下的回调投递（验收 #1，其余 6/7 已过），留客户端实现期验证 | `docs/todo/todo-authelia-bearer-authz.md` |
+| `session.created` 字段级合并 | 🔴 | 已核实本仓存在与桌面端同构的竞态：`_onEvent` 的 `session.created` 分支用事件骨架构出完整 `SessionModel`（title 缺省 `'Untitled'`），`_upsertSession` 对已有条目**整体替换**、无字段级合并，且该事件路径不回源刷新——POST 响应（完整 SessionInfo）先落地、SSE 回声后到时 agent/model/title 被顶掉。参照桌面端修法：事件缺失字段从本地回填、事件显式字段优先（零 REST 往返；桌面端点名否决了回源刷新方案） | openbuilder-desktop 同名文档 §SSE 与对账重设计 |
+| active 对账在途竞态守卫 | 🟡 | 对照桌面端 D7 review #1 修订自查：清 idle 看 `statusSetAt` 置位时刻 vs 快照发起时刻、补 busy 看本地消息终局证据、60s 周期对账钳制残余漂移——本仓已用 `/api/session/active` 双向 diff，守卫与周期对账两处未核对 | 同上 §增补决策记录 D7 |
+| 死目录会话跳过归档私约 | 🟢 | 桌面端用户裁定「死目录不执行私约」；本仓归档写路径（design-archive-metadata）可对齐：ghost 会话跳过 PATCH。错误分类随版本改善：目录缺失 PATCH 由 500 转 404（≥2.0.23，#52668） | openbuilder-desktop `docs/ref/ref-pseudo-project-cleanup.md` §6 |
+| prompt 回执驱动乐观消息 | 🟢 | v2 prompt 返回 200 + `SessionInbox.User` 准入回执（含 `delivery`/`resume`）；本仓乐观消息仍是 v1 式盲发 + SSE 回显，可参照升级为回执驱动 | openbuilder-desktop 同名文档 §消息模型与渲染管线 |
+
+> form 卡 T1（桌面端 `custom` 对齐）属 openbuilder-desktop 另一仓，不在本仓清单。
+
+### 2. 待服务端 / 上游支持
+
+| 项 | 优先级 | 阻塞点 | 跟踪 |
+|----|--------|--------|------|
+| 大文件下载中途截断 | 🔴 | Bun `keepAliveTimeout=5s` 掐断整包 body（>~20MB 慢链路 100% 失败）；等 opencode #50507 合并发版后升级服务端；`/api/fs/read` 无 `Range`（不返回 206），客户端明确不做断点续传绕过。2026-10-06 桌面端核对：#50507 至 v2.0.24 仍 open（源码 grep 零命中） | `docs/todo/todo-large-file-download-bun-keepalive.md` |
+| 幽灵 worktree project | 🟡 | v1 迁移带入的目录级 project 行无删除路径（v2 只 upsert）；`/api/worktree` 登记清单不校验存在性；根治需向 opencode 提 issue（未提；桌面端核对 v2.0.18..24 project 层无回收机制）。**一次性清理已由桌面端在同 DB 代执行**（2026-09-29/30 两轮删 116+34 行，终态 50 行全部 canonical 磁盘存在）——todo 的「暂不清理」分支视为已完成；客户端过滤防的是**再生**（worktree 功能测试、server 重启解析 cwd 均为新燃料源）。过滤路线简化（替代原「登记清单白名单」设计）：canonical 命中 worktree 根即剔除，活 worktree 由宿主项目二级展示不误伤，零额外请求 | `docs/todo/todo-ghost-worktree-projects.md`；openbuilder-desktop `docs/ref/ref-pseudo-project-cleanup.md` |
+| 归档官方 API | 🟡 | v2.0.18 无端点、console 亦为 stub；现以 `time.archived` + `metadata.archivedAt` 私约识别、PATCH metadata 写路径模拟；官方 API 回归后双端同迁。2026-10-06 桌面端核对：v2.0.24 PATCH payload 仍只有 title/metadata/permissions、零 archive 提交、#47848（unarchive）open——复核节奏可放宽至跟随 minor 版本 | `docs/design/v2/design-archive-metadata.md` |
+| Android passkey 断言 origin | 🟡 | Authelia `RPOrigins` 硬编码为请求 origin，`android:apk-key-hash:` 断言必被拒，等 v4.40（#11432）；配套项 A（assetlinks.json）/ 项 C（AASA）为部署侧配置，也未做 | `docs/todo/todo-authelia-passkey-origin.md` |
+
+> 版本面（桌面端 2026-10-06 按 openapi 逐 tag diff 核对）：v2.0.19–24 为**纯增量、向后兼容**——2.0.19–20 与 2.0.18 契约一致；2.0.21 仅 form 取消携带 message（#52137）；其余增量集中在 v2.0.23 首见（credential 组 #52139、pair、`POST /api/vcs/init` #51455、目录缺失 500→404 #52668）；2.0.24 零变化。本机 server 升级 ≥2.0.23 无需改通信层，`tool/gen_client.sh` 的 spec pin 可顺势刷新。
+
+### 3. 已适配的服务端 quirk（无需动作，升级时回归）
+
+- `session.synthetic` durable 事件 schema 存在但 synthetic 投递路径不发，客户端按 `session.inbox.*` 物化（`docs/ref/ref-opencode-review-subagent.md` §7）；
+- `GET /api/worktree` 响应无时间戳、顺序无 spec 契约（实测创建时间倒序），客户端入库口反转为正序；服务端改序客户端无法感知，升级服务端版本时需实测回归（本文档 §Workspace）；
+- worktree 创建恒 detached（上游 `git worktree add --detach` 硬编码，#26931 至 v2.0.24 未合）——本端 shell 挂同名分支方案（design-worktree-branch-sync）继续必要，上游合并后可撤。
+
+### 4. 范围外（非 v2 契约，另行跟踪）
+
+- HCPP 退出闪退：Flutter 引擎 bug（flutter#190609），修复已合 master（#190612），等下一个 stable 后 upgrade 重出 release（`docs/todo/todo-hcpp-exit-crash.md`）。
