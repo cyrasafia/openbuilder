@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
-import '../../core/connection/connection_profile.dart';
 import '../../core/connection/connection_store.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -33,8 +32,6 @@ class ServersScreen extends StatelessWidget {
                   brokenScope == AuthBrokenScope.opencode;
               final needsLogin = !authBroken && s.needsLogin;
               final showStatusChip = authBroken || needsLogin;
-              final insecure =
-                  !showStatusChip && s.authMethod == AuthMethod.basic;
               return ListTile(
                 leading: Icon(
                   Icons.dns_outlined,
@@ -96,25 +93,6 @@ class ServersScreen extends StatelessWidget {
                             color: authBroken && !passwordBroken
                                 ? Colors.red
                                 : Colors.orange,
-                          ),
-                        ),
-                      ),
-                    if (insecure)
-                      Container(
-                        margin: const EdgeInsets.only(left: 8),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.withAlpha(20),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          loc.basicInsecureBadge,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: Colors.orange.shade800,
                           ),
                         ),
                       ),

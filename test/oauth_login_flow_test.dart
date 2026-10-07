@@ -158,7 +158,12 @@ ConnectionProfile _profile(String id) => ConnectionProfile(
 // imperatively-pushed login page (go_router refresh re-keys imperative
 // matches), aborting the success navigation — on device the fresh screen
 // restarted the whole OAuth flow (authz page reappeared).
-Future<void> _runFlow(WidgetTester tester, {required bool firstServer}) async {
+Future<void> _runFlow(
+  WidgetTester tester, {
+  required bool firstServer,
+  bool newlyAdded = true,
+  bool viaInfoScreen = true,
+}) async {
   final fakePlatform = _FakeWebViewPlatform();
   WebViewPlatform.instance = fakePlatform;
   final client = _FakeAuthCodeClient();
@@ -180,22 +185,30 @@ Future<void> _runFlow(WidgetTester tester, {required bool firstServer}) async {
   await tester.pump();
   // Mirror the add flow: first server came from welcome (go), subsequent
   // adds from server management (pushed above the shell's settings tab).
-  if (firstServer) {
-    router.go('/servers/new');
+  // Re-login flows push the login route directly (no info screen below).
+  if (viaInfoScreen) {
+    if (firstServer) {
+      router.go('/servers/new');
+      await tester.pumpAndSettle();
+    } else {
+      router.push('/servers');
+      await tester.pumpAndSettle();
+      router.push('/servers/new');
+      await tester.pumpAndSettle();
+    }
     await tester.pumpAndSettle();
   } else {
-    router.push('/servers');
-    await tester.pumpAndSettle();
-    router.push('/servers/new');
-    await tester.pumpAndSettle();
+    // The shell tabs host repeating animations (loading spinners) — a bare
+    // pumpAndSettle on them times out; one frame is enough to mount the base.
+    await tester.pump();
   }
-  await tester.pumpAndSettle();
+  final passwordBefore = connectionStore.byId('p1')!.password;
   router.push(
     '/servers/p1/login',
     extra: ServerLoginArgs(
       profile: connectionStore.byId('p1')!,
       metadata: _meta,
-      newlyAdded: true,
+      newlyAdded: newlyAdded,
       controller: controller,
     ),
   );
@@ -246,7 +259,7 @@ Future<void> _runFlow(WidgetTester tester, {required bool firstServer}) async {
   expect(matches.last.matchedLocation, '/servers/p1/credential');
   expect(connectionStore.byId('p1')!.accessToken, 'at-1',
       reason: 'gateway tokens persisted');
-  expect(connectionStore.byId('p1')!.password, isEmpty,
+  expect(connectionStore.byId('p1')!.password, passwordBefore,
       reason: 'the opencode credential is still pending');
 }
 
@@ -273,5 +286,31 @@ void main() {
     await connectionStore.add(_profile('p0'));
     await connectionStore.add(_profile('p1'));
     await _runFlow(tester, firstServer: false);
+  });
+
+  // Regression: editing an oauth server with a stored password used to pop
+  // straight back to the server list after the gateway OAuth succeeded
+  // (password non-empty skipped the credential hand-over), leaving no way to
+  // view or update the opencode password. Step 2 must always follow step 1;
+  // the credential page pre-fills the stored password.
+  testWidgets(
+      'oauth success with a stored password still hands over to the '
+      'credential step (edit re-login)', (tester) async {
+    await connectionStore.add(_profile('p1').copyWith(
+      password: 'secret-pw',
+      accessToken: 'old-token',
+      refreshToken: 'old-refresh',
+    ));
+    await _runFlow(
+      tester,
+      firstServer: false,
+      viaInfoScreen: false,
+      newlyAdded: false,
+    );
+    expect(
+      find.text('secret-pw'),
+      findsOneWidget,
+      reason: 'credential page must pre-fill the stored password',
+    );
   });
 }

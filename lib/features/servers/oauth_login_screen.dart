@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-import '../../app_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/auth_probe.dart';
 import '../../core/connection/connection_profile.dart';
@@ -201,28 +200,19 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
       tokenEndpoint: meta.tokenEndpoint,
     );
     await connectionStore.update(updated);
-    // Step 2 of the two-step oauth login: the gateway token is useless
-    // without the opencode credential (v2 enforces its own auth behind the
-    // gateway) — hand over to the credential step instead of finishing.
-    if (updated.password.isEmpty) {
-      router.push(
-        '/servers/${updated.id}/credential',
-        extra: ServerLoginArgs(
-          profile: connectionStore.byId(updated.id) ?? updated,
-          metadata: null,
-          newlyAdded: widget.newlyAdded,
-        ),
-      );
-      return;
-    }
-    final firstServer =
-        widget.newlyAdded && connectionStore.servers.length == 1;
-    await connectionStore.setActive(updated.id);
-    if (firstServer) {
-      router.go('/sessions');
-    } else {
-      popToServerManagement(router);
-    }
+    // Step 2 of the two-step oauth login ALWAYS follows step 1: the gateway
+    // token alone cannot pass the opencode server (v2 enforces its own auth
+    // behind the gateway), and a stored password may be stale — the
+    // credential page pre-fills it and verifies the full two-layer
+    // composition before finishing.
+    router.push(
+      '/servers/${updated.id}/credential',
+      extra: ServerLoginArgs(
+        profile: connectionStore.byId(updated.id) ?? updated,
+        metadata: null,
+        newlyAdded: widget.newlyAdded,
+      ),
+    );
   }
 
   @override

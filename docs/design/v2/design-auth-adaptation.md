@@ -192,3 +192,15 @@ ServerInfoScreen（名称+地址）→ 探测
 | R3-1 | 🟡 | **SSE 通道 `auth_token` 编码与 REST 不一致的风险**：`Uri.replace(queryParameters:)` 的转义是 SDK 实现细节（sdk#56643 历史变更），若 `+` 原样上线，服务端 form 语义解码（`+`→空格）损坏 base64 → SSE 恒 401 重连风暴 | **双重实证 + 加固**：① 本机 SDK 实测 `replace-map` 与 `encodeQueryComponent` 输出逐字节一致（当前无 bug）；② 活体实证服务端语义——v2.0.23 新起实例（密码含 `>` 的中文串，b64 含 `+`）：字面 `+` → **401**、`%2B` → **200**；③ 不依赖 SDK 字符表：抽出 `sseRequestUri()` 显式 `Uri.encodeQueryComponent` 构建（与 dio REST 路径同函数，逐字节对齐），附 2 条回归测试钉住线上格式。**副产品：V1 前置验证就此完成**（见上表） |
 | R3-n1 | 🟢 | `webBasicAuthBody` 文案过时（「空密码本地测试」工作流已死；oauth 模式也会弹但标题只提 basic） | ✅ 中英重写：标题「Web 端实时更新限制」，正文覆盖两种形态（Authorization 头都发不出） |
 | R3-n2 | 🟢 | `/credential` 与 `/login` 的 S4 分诊逻辑重叠（两条路径维护同一分诊） | 保留显式路由：语义清晰、redirect 白名单一并处理；重叠处仅一个条件表达式，接受 |
+
+### 变更记录（2026-10-07）：「不安全」标注收口到凭证页
+
+产品决策：安全定位不变（纯 basic 仍视为不安全、仅内网），但常驻界面的反复劝退降噪——设置 Tab 状态卡说明行（N1 补的第三处）与服务器列表行「不安全 · 仅内网」角标移除，标注仅在添加/编辑服务器的密码输入页（`basic_auth_screen.dart`）保留一处。随代码清理：`basicInsecureBadge` 文案键删除（`basicInsecureNote` 保留）、两屏 `connection_profile.dart` 冗余 import 移除。§88「三处落点」与 §S1「列表带角标」以本记录为准。
+
+### 变更记录（2026-10-07）：oauth 编辑重登后强制补第二步
+
+缺陷：编辑已有 oauth 服务器（同目标，存有密码）→ 网关 OAuth 验证成功后 `_persistAndContinue` 因 `password` 非空跳过凭证页、直接 `popToServerManagement` 回列表——用户无法查看/更新 opencode 密码（密码已轮换时尤其卡死：未触发 401 诊断前无任何入口）。修复：**第二步无条件跟随第一步**——网关 OAuth 成功后一律 push `/credential`（凭证页预填存量密码，test&save 验证双层组合后才激活返回）；`firstServer/setActive/pop` 收尾逻辑随之下放凭证页（原本 add 流程即如此）。回归测试 `oauth_login_flow_test` 新增「stored password 仍交棒凭证页」用例（钉死旧 bug 的 pop-to-list 路径）。
+
+### 变更记录（2026-10-07）：凭证页提示移除「30 天配对令牌」一句
+
+产品决策：`gatewayCredentialHint` 不再提示可填 pair token（中英同步删句）。理由：动态 token 完整体验（<7 天自签 re-pair 静默轮换）本期暂缓（见 D-决策），密码位填 pair token 虽首次鉴权可过，但 30 天整过期、无 refresh，配套轮换未做——提示等于诱导用户走入必然过期锁死的路径。D3 的机制事实不变：密码位仍**接受** token（语义兼容、零成本），只是 UI 不再主动宣传（「不做专门入口」的延伸）。一轮评审 L1 曾为对齐补 en 句，本记录取代之。

@@ -9,7 +9,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../app_state.dart';
-import '../../core/connection/connection_profile.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
 import '../../core/net/net_error.dart';
@@ -129,15 +128,6 @@ class _SettingsTabState extends State<SettingsTab> {
                             (_error != null
                                 ? loc.settingsConnectionFailed
                                 : '—')),
-                    if (server?.authMethod == AuthMethod.basic)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          loc.basicInsecureNote,
-                          style: TextStyle(
-                              fontSize: 11, color: scheme.outline),
-                        ),
-                      ),
                     if (_error != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
