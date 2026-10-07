@@ -35,6 +35,7 @@ class ServerStore extends ChangeNotifier {
   StreamSubscription<GlobalOpencodeEvent>? _sseSub;
   StreamSubscription<SseState>? _sseStateSub;
   final Map<String, String> _sseHeaders = {};
+  final Map<String, String> _sseQuery = {};
   Timer? _reconcileTimer;
   Timer? _previewNotifyTimer;
   Timer? _cacheSaveTimer;
@@ -966,7 +967,11 @@ class ServerStore extends ChangeNotifier {
       existing.reconnectNow();
       return;
     }
-    final c = SseClient(baseUrl: _profile!.baseUrl, headers: _sseHeaders);
+    final c = SseClient(
+      baseUrl: _profile!.baseUrl,
+      headers: _sseHeaders,
+      query: _sseQuery,
+    );
     _sse = c;
     _sseSub = c.events
         .listen(_onGlobalEvent);
@@ -985,6 +990,9 @@ class ServerStore extends ChangeNotifier {
     _sseHeaders
       ..clear()
       ..addAll(authHeadersFor(profile));
+    _sseQuery
+      ..clear()
+      ..addAll(authQueryFor(profile));
   }
 
   Future<void> _reconcileWorktrees(

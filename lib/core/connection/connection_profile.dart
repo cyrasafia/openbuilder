@@ -1,5 +1,6 @@
-/// How a server connection authenticates.
-enum AuthMethod { none, basic, oauth }
+/// How a server connection authenticates. v2 servers always enforce auth —
+/// `none` no longer exists (see design/v2/design-auth-adaptation.md).
+enum AuthMethod { basic, oauth }
 
 /// A configured opencode server connection.
 class ConnectionProfile {
@@ -24,7 +25,7 @@ class ConnectionProfile {
     required this.address,
     this.username = 'opencode',
     this.password = '',
-    this.authMethod = AuthMethod.none,
+    this.authMethod = AuthMethod.basic,
     this.oidcIssuer = '',
     this.clientId = defaultClientId,
     this.accessToken = '',
@@ -44,9 +45,10 @@ class ConnectionProfile {
   String get hostDisplay => address.trim();
 
   bool get needsLogin {
-    if (authMethod == AuthMethod.oauth) return accessToken.isEmpty;
-    if (authMethod == AuthMethod.basic) return password.isEmpty;
-    return false;
+    if (authMethod == AuthMethod.oauth) {
+      return accessToken.isEmpty || password.isEmpty;
+    }
+    return password.isEmpty;
   }
 
   Map<String, dynamic> toJson() => {
@@ -65,17 +67,12 @@ class ConnectionProfile {
       };
 
   factory ConnectionProfile.fromJson(Map<String, dynamic> j) {
+    // Pre-v2 profiles may carry 'none' (no-auth servers, removed — v2 always
+    // enforces a password) or no method at all: both migrate to `basic`,
+    // with an empty password keeping the profile in the needs-login state.
     final rawMethod = (j['authMethod'] ?? '').toString();
-    AuthMethod method;
-    if (rawMethod == 'basic' || rawMethod == 'oauth' || rawMethod == 'none') {
-      method = AuthMethod.values
-          .firstWhere((m) => m.name == rawMethod, orElse: () => AuthMethod.none);
-    } else {
-      // Legacy profiles (pre-oauth) carried only basic credentials.
-      method = (j['password'] ?? '').toString().isNotEmpty
-          ? AuthMethod.basic
-          : AuthMethod.none;
-    }
+    final method =
+        rawMethod == 'oauth' ? AuthMethod.oauth : AuthMethod.basic;
     final clientId = (j['clientId'] ?? '').toString();
     return ConnectionProfile(
       id: (j['id'] ?? '').toString(),

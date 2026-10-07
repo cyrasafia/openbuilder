@@ -15,14 +15,26 @@ void main() {
       expect(p.clientId, ConnectionProfile.defaultClientId);
     });
 
-    test('empty password → none', () {
+    test('empty password → basic (needs login; none no longer exists)', () {
       final p = ConnectionProfile.fromJson({
         'id': '1',
         'name': 'n',
         'address': 'http://a',
         'password': '',
       });
-      expect(p.authMethod, AuthMethod.none);
+      expect(p.authMethod, AuthMethod.basic);
+      expect(p.needsLogin, isTrue);
+    });
+
+    test("stored 'none' migrates to basic (v2 always enforces auth)", () {
+      final p = ConnectionProfile.fromJson({
+        'id': '1',
+        'name': 'n',
+        'address': 'http://a',
+        'authMethod': 'none',
+      });
+      expect(p.authMethod, AuthMethod.basic);
+      expect(p.needsLogin, isTrue);
     });
   });
 
@@ -75,7 +87,7 @@ void main() {
   });
 
   group('needsLogin', () {
-    test('oauth without token → needs login; with token → ok', () {
+    test('oauth needs BOTH the gateway token and the opencode password', () {
       expect(
         ConnectionProfile(
                 id: 'a',
@@ -93,11 +105,25 @@ void main() {
                 authMethod: AuthMethod.oauth,
                 accessToken: 't')
             .needsLogin,
+        isTrue,
+        reason: 'the gateway token alone cannot pass opencode behind the '
+            'gateway (v2 enforces its own password)',
+      );
+      expect(
+        ConnectionProfile(
+                id: 'a',
+                name: 'n',
+                address: 'a',
+                authMethod: AuthMethod.oauth,
+                accessToken: 't',
+                password: 'pw')
+            .needsLogin,
         isFalse,
       );
     });
 
-    test('basic without password → needs login; none → never', () {
+    test('basic without password → needs login; oauth needs password too',
+        () {
       expect(
         ConnectionProfile(
                 id: 'a', name: 'n', address: 'a', authMethod: AuthMethod.basic)
@@ -106,7 +132,24 @@ void main() {
       );
       expect(
         ConnectionProfile(
-                id: 'a', name: 'n', address: 'a', authMethod: AuthMethod.none)
+                id: 'a',
+                name: 'n',
+                address: 'a',
+                authMethod: AuthMethod.oauth,
+                accessToken: 'at')
+            .needsLogin,
+        isTrue,
+        reason: 'gateway token alone is useless — v2 enforces its own '
+            'password behind the gateway',
+      );
+      expect(
+        ConnectionProfile(
+                id: 'a',
+                name: 'n',
+                address: 'a',
+                authMethod: AuthMethod.oauth,
+                accessToken: 'at',
+                password: 'pw')
             .needsLogin,
         isFalse,
       );

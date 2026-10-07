@@ -1,7 +1,7 @@
 # OAuth 登录 passkey 支持（应用内 WebView 的 WebAuthn 开启）— 设计文档
 
 > 关联代码：`lib/features/servers/oauth_login_screen.dart`（登录 WebView）、`android/app/src/main/kotlin/com/openbuilder/app/MainActivity.kt`（新增 passkey 通道）、`ios/Runner/Runner.entitlements`（新增）。
-> 前置文档：[design-oauth-login.md](design-oauth-login.md)（v4：双端统一应用内 WebView + loopback）。
+> 前置文档：[design-oauth-login.md](v1/design-oauth-login.md)（v4：双端统一应用内 WebView + loopback；已归档 v1，认证前提勘误见 [v2/design-server-auth.md](v2/design-server-auth.md)）。
 > 配套待办：[todo-authelia-passkey-origin.md](../todo/todo-authelia-passkey-origin.md)（服务端前置：assetlinks / AASA / Authelia opaque origin）。
 > 协议依据：W3C WebAuthn Level 3 §13.4.9（origin 校验）、Google Digital Asset Links、Apple Associated Domains（`webcredentials`）。
 

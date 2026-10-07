@@ -17,7 +17,7 @@ class OidcMetadata {
   });
 }
 
-enum AuthProbeOutcome { oauth, basic, none, unknown, unreachable }
+enum AuthProbeOutcome { oauth, basic, unknown, unreachable }
 
 class AuthProbeResult {
   final AuthProbeOutcome outcome;
@@ -32,7 +32,9 @@ class AuthProbeResult {
 }
 
 /// Detects how a server authenticates: OIDC (oauth) via RFC 8414 metadata,
-/// basic via a 401 challenge on health, or none. See design-oauth-login.md.
+/// basic via a 401 challenge on an API endpoint, or unknown (a bare 200 —
+/// v2 always enforces auth, so anything answering without credentials is
+/// not a stock v2 server). See design/v2/design-auth-adaptation.md.
 class AuthProbe {
   final Dio dio;
 
@@ -66,13 +68,7 @@ class AuthProbe {
         version: health.version,
       );
     }
-    if (health.ok) {
-      return AuthProbeResult(
-        outcome: AuthProbeOutcome.none,
-        version: health.version,
-      );
-    }
-    return const AuthProbeResult(outcome: AuthProbeOutcome.unknown);
+    return AuthProbeResult(outcome: AuthProbeOutcome.unknown);
   }
 
   /// Fetch metadata for a manually supplied issuer (probe fallback).
@@ -80,13 +76,24 @@ class AuthProbe {
       _metadataFromWellKnown(issuer);
 
   Future<_HealthProbe?> _health(String baseUrl) async {
+    var sawResponse = false;
     for (final path in const ['/api/info', '/global/health', '/api/health']) {
       try {
         final resp = await _getText('$baseUrl$path');
-        if (resp.statusCode == 404) continue;
+        sawResponse = true;
+        final contentType =
+            resp.headers.value('content-type')?.toLowerCase() ?? '';
+        // 404 or a 200 SPA shell (text/html catch-all): no auth signal on
+        // this path — keep probing. A bare 200 with a JSON body is a live
+        // server that answers without credentials: reported as reachable
+        // (unknown outcome upstream), never as `none` — v2 always enforces
+        // auth, so this is not a stock v2 server.
+        if (resp.statusCode == 404 ||
+            (resp.statusCode == 200 && contentType.contains('text/html'))) {
+          continue;
+        }
         final body = _jsonMap(resp.data);
         return _HealthProbe(
-          ok: resp.statusCode == 200,
           unauthorized: resp.statusCode == 401,
           version: body?['version']?.toString(),
         );
@@ -94,6 +101,8 @@ class AuthProbe {
         continue;
       }
     }
+    // Some path answered (server reachable) but nothing yielded a signal.
+    if (sawResponse) return const _HealthProbe(unauthorized: false);
     return null;
   }
 
@@ -171,12 +180,10 @@ class AuthProbe {
 }
 
 class _HealthProbe {
-  final bool ok;
   final bool unauthorized;
   final String? version;
 
   const _HealthProbe({
-    required this.ok,
     required this.unauthorized,
     this.version,
   });

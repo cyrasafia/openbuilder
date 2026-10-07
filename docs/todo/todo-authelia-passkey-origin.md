@@ -1,6 +1,6 @@
 # Authelia passkey origin / assetlinks / AASA 服务端配置清单 — 待办
 
-> 关联设计：[design-passkey-login.md](../design/design-passkey-login.md)、[design-oauth-login.md](../design/design-oauth-login.md)。
+> 关联设计：[design-passkey-login.md](../design/design-passkey-login.md)、[design-oauth-login.md](../design/v1/design-oauth-login.md)（已归档 v1，认证前提勘误见 [design-server-auth.md](../design/v2/design-server-auth.md)）。
 > 状态：客户端已合入（开关 + entitlements）；项 A/C 随时可配，项 B **等待上游 v4.40**（#11432）。三项未配置前 Android passkey 不可用、iOS passkey 不可用；不配置不影响现有登录路径。
 > 部署参照：Authelia v4.39（`auth.cyrasafia.party:4433` / `oc.cyrasafia.party:4433`，Caddy forward-auth 拓扑）。
 

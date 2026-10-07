@@ -63,9 +63,31 @@ class SseState {
   const SseState({this.connected = false, this.reconnecting = false, this.attempt = 0});
 }
 
+/// Builds the event-request URI with the auth query percent-encoded EXACTLY
+/// like the REST path (dio → `Uri.encodeQueryComponent`). The server decodes
+/// the query in form style — a literal `+` means space and corrupts the
+/// base64 credential (live-verified: literal `+` → 401, `%2B` → 200) — and
+/// `Uri.replace(queryParameters:)` escaping is an SDK implementation detail
+/// that has changed across Dart releases (sdk#56643), so the string is
+/// built here instead.
+@visibleForTesting
+Uri sseRequestUri(Uri base, Map<String, String> query) {
+  if (query.isEmpty) return base;
+  final pairs = query.entries
+      .map((e) =>
+          '${Uri.encodeQueryComponent(e.key)}='
+          '${Uri.encodeQueryComponent(e.value)}')
+      .join('&');
+  return base.replace(query: base.query.isEmpty ? pairs : '${base.query}&$pairs');
+}
+
 class SseClient {
   final Uri uri;
   final Map<String, String> headers;
+
+  /// Query parameters for the event request (e.g. the oauth profile's
+  /// `auth_token` bypass — a live map, re-read on every connect).
+  final Map<String, String> query;
   final String label;
 
   StreamSubscription<String>? _sub;
@@ -84,8 +106,12 @@ class SseClient {
   @visibleForTesting
   static Duration overallTimeout = const Duration(seconds: 15);
 
-  SseClient({required String baseUrl, this.headers = const {}, String? label})
-      : uri = Uri.parse('$baseUrl/api/event'),
+  SseClient({
+    required String baseUrl,
+    this.headers = const {},
+    this.query = const {},
+    String? label,
+  })  : uri = Uri.parse('$baseUrl/api/event'),
         label = label ?? '/api/event';
 
   Stream<GlobalOpencodeEvent> get events => _controller.stream;
@@ -120,6 +146,7 @@ class SseClient {
       ...headers,
       'Accept': 'text/event-stream',
     };
+    var target = sseRequestUri(uri, query);
     _startHeartbeatTimer();
     _connectTimer?.cancel();
     _connectTimer = Timer(overallTimeout, _onConnectTimeout);
@@ -127,7 +154,7 @@ class SseClient {
     _sub = null;
     AppLogger.I.d(_tag, 'connect start $label');
     _sub = transport
-        .eventDataStream(uri, h, overallTimeout: overallTimeout)
+        .eventDataStream(target, h, overallTimeout: overallTimeout)
         .listen(
           _onData,
           onError: (Object e) => _onDrop('error: ${e.runtimeType}'),

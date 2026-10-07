@@ -8,8 +8,12 @@ class _Resp {
   final int status;
   final String body;
   final Map<String, String> headers;
+  final String contentType;
 
-  const _Resp(this.status, {this.body = '', this.headers = const {}});
+  const _Resp(this.status,
+      {this.body = '',
+      this.headers = const {},
+      this.contentType = 'application/json'});
 }
 
 class _Router implements HttpClientAdapter {
@@ -39,7 +43,7 @@ class _Router implements HttpClientAdapter {
     }
     return ResponseBody.fromString(resp.body, resp.status,
         headers: {
-          Headers.contentTypeHeader: ['application/json'],
+          Headers.contentTypeHeader: [resp.contentType],
           if (resp.headers.isNotEmpty)
             'location': [resp.headers['location']!],
         });
@@ -117,14 +121,14 @@ void main() {
       expect(r.oidc, isNotNull);
     });
 
-    test('none: health 200, no metadata', () async {
+    test('bare 200 JSON (no auth) → unknown — v2 always enforces auth',
+        () async {
       final probe = AuthProbe(dio: _dio({
         'http://oc.test/global/health':
             const _Resp(200, body: '{"healthy":true,"version":"1.2.3"}'),
       }));
       final r = await probe.probe('http://oc.test');
-      expect(r.outcome, AuthProbeOutcome.none);
-      expect(r.version, '1.2.3');
+      expect(r.outcome, AuthProbeOutcome.unknown);
     });
 
     test('basic: health 401', () async {
@@ -150,7 +154,20 @@ void main() {
             const _Resp(200, body: '{"healthy":true}'),
       }));
       expect((await probe.probe('http://oc.test')).outcome,
-          AuthProbeOutcome.none);
+          AuthProbeOutcome.unknown);
+    });
+
+    test('SPA shell: 200 text/html is not an auth signal → unknown',
+        () async {
+      // /api/info unmatched → 404; /global/health serves the SPA shell as
+      // HTML → skipped; /api/health unmatched → 404. Reachable but no
+      // signal: unknown — never unreachable, never "no auth".
+      final probe = AuthProbe(dio: _dio({
+        'http://oc.test/global/health':
+            const _Resp(200, body: '<html>', contentType: 'text/html'),
+      }));
+      expect((await probe.probe('http://oc.test')).outcome,
+          AuthProbeOutcome.unknown);
     });
 
     test('metadata without token_endpoint is ignored → falls to health',

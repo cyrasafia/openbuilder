@@ -6,6 +6,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../cache/cache_store.dart';
 import 'connection_profile.dart';
 
+/// Which auth layer of an oauth profile broke. `gateway`: the OAuth token
+/// itself is unrecoverable (refresh rejected/absent) — full re-login.
+/// `opencode`: the gateway token is fine, the opencode password was
+/// rejected — only the password needs re-entry (design-auth-adaptation.md).
+enum AuthBrokenScope { gateway, opencode }
+
 /// Persisted list of configured opencode servers + the active one.
 class ConnectionStore extends ChangeNotifier {
   static const _key = 'opencode.servers.v1';
@@ -14,21 +20,27 @@ class ConnectionStore extends ChangeNotifier {
   List<ConnectionProfile> _servers = [];
   String? _activeId;
   bool _loaded = false;
-  final Set<String> _authBrokenIds = {};
+  final Map<String, AuthBrokenScope> _authBroken = {};
 
   List<ConnectionProfile> get servers => List.unmodifiable(_servers);
   String? get activeId => _activeId;
   bool get loaded => _loaded;
   bool get isEmpty => _servers.isEmpty;
 
-  bool isAuthBroken(String id) => _authBrokenIds.contains(id);
+  bool isAuthBroken(String id) => _authBroken.containsKey(id);
 
-  void markAuthBroken(String id) {
-    if (_authBrokenIds.add(id)) notifyListeners();
+  AuthBrokenScope? authBrokenScope(String id) => _authBroken[id];
+
+  void markAuthBroken(String id,
+      {AuthBrokenScope scope = AuthBrokenScope.gateway}) {
+    final existing = _authBroken[id];
+    if (existing == scope) return;
+    _authBroken[id] = scope;
+    notifyListeners();
   }
 
   void clearAuthBroken(String id) {
-    if (_authBrokenIds.remove(id)) notifyListeners();
+    if (_authBroken.remove(id) != null) notifyListeners();
   }
 
   ConnectionProfile? byId(String id) {

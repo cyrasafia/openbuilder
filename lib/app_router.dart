@@ -90,7 +90,8 @@ GoRouter buildRouter(ConnectionStore store) {
       final isPublic = loc == '/welcome' ||
           loc == '/servers/new' ||
           loc.endsWith('/edit') ||
-          loc.endsWith('/login');
+          loc.endsWith('/login') ||
+          loc.endsWith('/credential');
       if (store.isEmpty && !isPublic) return '/welcome';
       if (!store.isEmpty && loc == '/welcome') return '/sessions';
       return null;
@@ -117,6 +118,19 @@ GoRouter buildRouter(ConnectionStore store) {
           if (profile == null) return const ServersScreen();
           switch (profile.authMethod) {
             case AuthMethod.oauth:
+              // Skip the gateway OAuth step whenever it is not the thing
+              // that broke: (a) two-layer 401 diagnosis says only the
+              // opencode password was rejected, or (b) a gateway-only
+              // leftover — valid token, password never collected (S4).
+              if (profile.accessToken.isNotEmpty &&
+                  (store.authBrokenScope(profile.id) ==
+                          AuthBrokenScope.opencode ||
+                      profile.password.isEmpty)) {
+                return BasicAuthScreen(
+                  profile: profile,
+                  newlyAdded: args?.newlyAdded ?? false,
+                );
+              }
               return OAuthLoginScreen(
                 profile: profile,
                 metadata: args?.metadata,
@@ -128,9 +142,22 @@ GoRouter buildRouter(ConnectionStore store) {
                 profile: profile,
                 newlyAdded: args?.newlyAdded ?? false,
               );
-            case AuthMethod.none:
-              return const ServersScreen();
           }
+        },
+      ),
+      GoRoute(
+        path: '/servers/:id/credential',
+        builder: (_, s) {
+          final args = s.extra is ServerLoginArgs
+              ? s.extra as ServerLoginArgs
+              : null;
+          final profile =
+              args?.profile ?? store.byId(s.pathParameters['id']!);
+          if (profile == null) return const ServersScreen();
+          return BasicAuthScreen(
+            profile: profile,
+            newlyAdded: args?.newlyAdded ?? false,
+          );
         },
       ),
       GoRoute(

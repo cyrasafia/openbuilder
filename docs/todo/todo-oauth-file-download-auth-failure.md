@@ -33,7 +33,7 @@
 
 ## 相关设计文档
 
-- `design-oauth-login.md` — OAuth 登录整体设计
+- `v1/design-oauth-login.md` — OAuth 登录整体设计（已归档 v1）
 - `lib/core/net/dio_factory.dart` — AuthInterceptor + copyInterceptors
 - `lib/data/api/opencode_client.dart` `readFileStream` — 下载入口
 - `test/raw_download_auth_test.dart` — 回归测试

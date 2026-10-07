@@ -11,6 +11,7 @@ import '../../core/connection/connection_profile.dart';
 import '../../core/connection/oauth_login_controller.dart';
 import '../../core/connection/webview_passkey.dart';
 import '../../ui/l10n_ext.dart';
+import 'server_info_screen.dart' show ServerLoginArgs;
 
 /// In-app WebView login: keeps the app foregrounded so the loopback receiver
 /// never misses the single-shot redirect (the v2 system-browser dead-end —
@@ -116,7 +117,7 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
       _web!.loadRequest(Uri.parse(_controller.authorizationUrl!));
     }
     if (phase == OAuthLoginPhase.success) {
-      _persistAndLeave();
+      _persistAndContinue();
       return;
     }
     if (_isErrorPhase(phase) && !_dialogShown && mounted) {
@@ -186,15 +187,13 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
     );
   }
 
-  Future<void> _persistAndLeave() async {
+  Future<void> _persistAndContinue() async {
     final tokens = _controller.tokenResult;
     final meta = _meta;
     if (tokens == null || meta == null) return;
     // Capture the router before any await: store writes notify listeners and
     // must never leave navigation on a possibly-unmounted context.
     final router = GoRouter.of(context);
-    final firstServer =
-        widget.newlyAdded && connectionStore.servers.length == 1;
     final updated = widget.profile.copyWith(
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -202,6 +201,22 @@ class _OAuthLoginScreenState extends State<OAuthLoginScreen> {
       tokenEndpoint: meta.tokenEndpoint,
     );
     await connectionStore.update(updated);
+    // Step 2 of the two-step oauth login: the gateway token is useless
+    // without the opencode credential (v2 enforces its own auth behind the
+    // gateway) — hand over to the credential step instead of finishing.
+    if (updated.password.isEmpty) {
+      router.push(
+        '/servers/${updated.id}/credential',
+        extra: ServerLoginArgs(
+          profile: connectionStore.byId(updated.id) ?? updated,
+          metadata: null,
+          newlyAdded: widget.newlyAdded,
+        ),
+      );
+      return;
+    }
+    final firstServer =
+        widget.newlyAdded && connectionStore.servers.length == 1;
     await connectionStore.setActive(updated.id);
     if (firstServer) {
       router.go('/sessions');

@@ -6,13 +6,38 @@ import 'package:go_router/go_router.dart';
 import '../../app_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/connection_profile.dart';
+import '../../core/connection/connection_store.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
 import '../../data/api/opencode_client.dart';
 import '../../ui/l10n_ext.dart';
 
-/// Basic credential step: username + password, test against the live server,
-/// persist on success. Reached from the info probe (basic) or re-login.
+/// Verification dio for the credential step. The query interceptor is
+/// PINNED to [draft] — the password under test lives only in the input box,
+/// so a live-store read would replay the stale one and fail forever. The
+/// gateway token still refreshes through the store (AuthInterceptor touches
+/// tokens only, never the password).
+Dio credentialVerificationDio(
+  ConnectionProfile draft, {
+  required ConnectionStore store,
+}) {
+  final dio = Dio(BaseOptions(
+    baseUrl: draft.baseUrl,
+    connectTimeout: const Duration(seconds: 8),
+    receiveTimeout: const Duration(seconds: 20),
+    headers: {'Accept': 'application/json', ...authHeadersFor(draft)},
+  ));
+  dio.interceptors.add(AuthInterceptor(dio, draft, store: store));
+  dio.interceptors.add(AuthTokenQueryInterceptor(draft));
+  return dio;
+}
+
+/// opencode credential step: password only (the username is fixed to
+/// `opencode` — v2 rejects anything else). Two modes share this screen:
+///  - basic profile: password alone on the wire (flagged insecure).
+///  - oauth profile: the password rides `?auth_token=` behind the gateway
+///    Bearer token (step 2 of the two-step oauth login).
+/// Tests against the live server, persists on success.
 class BasicAuthScreen extends StatefulWidget {
   final ConnectionProfile profile;
   final bool newlyAdded;
@@ -30,22 +55,21 @@ class BasicAuthScreen extends StatefulWidget {
 class _BasicAuthScreenState extends State<BasicAuthScreen> {
   static const _tag = 'BasicAuth';
   final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _username;
   late final TextEditingController _password;
 
   bool _testing = false;
   String? _error;
 
+  bool get _behindGateway => widget.profile.authMethod == AuthMethod.oauth;
+
   @override
   void initState() {
     super.initState();
-    _username = TextEditingController(text: widget.profile.username);
     _password = TextEditingController(text: widget.profile.password);
   }
 
   @override
   void dispose() {
-    _username.dispose();
     _password.dispose();
     super.dispose();
   }
@@ -55,9 +79,10 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
     final loc = l(context);
     final router = GoRouter.of(context);
     // Known platform limit (ported from the old form screen): web's
-    // EventSource can't send auth headers, so a non-empty basic password
-    // breaks SSE live updates there. Mobile (IO transport) is unaffected.
-    if (kIsWeb && _password.text.isNotEmpty) {
+    // EventSource can't send the Authorization header — basic auth loses
+    // its credential, oauth loses the gateway Bearer — so SSE live updates
+    // break there in BOTH modes. Mobile (IO transport) is unaffected.
+    if (kIsWeb) {
       final proceed = await _warnWebBasicAuth();
       if (!proceed) return;
     }
@@ -66,25 +91,27 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
       _error = null;
     });
     final draft = widget.profile.copyWith(
-      username: _username.text.trim().isEmpty
-          ? 'opencode'
-          : _username.text.trim(),
+      username: 'opencode',
       password: _password.text,
-      // A server that accepts an empty password has no auth configured
-      // (opencode treats an unset OPENCODE_SERVER_PASSWORD as no auth) —
-      // persisting `basic` with an empty password would flag the profile
-      // "not logged in" forever.
-      authMethod:
-          _password.text.isEmpty ? AuthMethod.none : AuthMethod.basic,
     );
     try {
-      await OpencodeClient(dioFor(draft)).health();
+      // behindGateway: verify the FULL two-layer composition with the
+      // password from the input box (see credentialVerificationDio).
+      final dio = _behindGateway
+          ? credentialVerificationDio(draft, store: connectionStore)
+          : dioFor(draft);
+      await OpencodeClient(dio).health();
     } on DioException catch (e) {
       if (!mounted) return;
       setState(() {
         _testing = false;
+        // A gateway-layer rejection (refresh refused during verification)
+        // must not masquerade as a wrong password.
         _error = e.response?.statusCode == 401
-            ? loc.basicWrongCredentials
+            ? (connectionStore.authBrokenScope(draft.id) ==
+                    AuthBrokenScope.gateway
+                ? loc.serverAuthBroken
+                : loc.basicWrongCredentials)
             : '✗ ${e.response?.statusCode ?? e.type.name} ${e.message ?? ''}';
       });
       return;
@@ -99,7 +126,8 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
     final firstServer =
         widget.newlyAdded && connectionStore.servers.length == 1;
     AppLogger.I.i(_tag, 'test&save ok: id=${draft.id} '
-        'newlyAdded=${widget.newlyAdded} firstServer=$firstServer');
+        'newlyAdded=${widget.newlyAdded} firstServer=$firstServer '
+        'behindGateway=$_behindGateway');
     try {
       await connectionStore.update(draft);
       AppLogger.I.i(_tag, 'profile persisted');
@@ -157,8 +185,13 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
   @override
   Widget build(BuildContext context) {
     final loc = l(context);
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: Text(loc.basicTitle)),
+      appBar: AppBar(
+        title: Text(
+          _behindGateway ? loc.gatewayCredentialTitle : loc.basicTitle,
+        ),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
@@ -166,19 +199,46 @@ class _BasicAuthScreenState extends State<BasicAuthScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextFormField(
-                controller: _username,
-                decoration: InputDecoration(
-                  labelText: loc.serverFormFieldUsername,
-                  hintText: loc.serverFormUsernameHint,
-                  prefixIcon: const Icon(Icons.person_outline),
-                  border: const OutlineInputBorder(),
+              if (_behindGateway) ...[
+                Text(loc.gatewayCredentialHint,
+                    style: const TextStyle(fontSize: 13)),
+                const SizedBox(height: 12),
+              ] else ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withAlpha(20),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.withAlpha(70)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.gpp_maybe_outlined,
+                          size: 18, color: Colors.orange.shade700),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          loc.basicInsecureNote,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: scheme.onSurface.withAlpha(180),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
+                const SizedBox(height: 12),
+              ],
               TextFormField(
                 controller: _password,
                 obscureText: true,
+                validator: (v) =>
+                    (v == null || v.isEmpty) ? loc.serverFormRequired : null,
                 decoration: InputDecoration(
                   labelText: loc.serverFormFieldPassword,
                   hintText: loc.serverFormPasswordHint,

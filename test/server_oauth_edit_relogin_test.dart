@@ -10,6 +10,7 @@ import 'package:webview_flutter_platform_interface/webview_flutter_platform_inte
 import 'package:open_builder/app_router.dart';
 import 'package:open_builder/app_state.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
+import 'package:open_builder/features/servers/basic_auth_screen.dart';
 import 'package:open_builder/features/servers/oauth_login_screen.dart';
 import 'package:open_builder/features/servers/server_info_screen.dart';
 import 'package:open_builder/l10n/gen/app_localizations.dart';
@@ -278,7 +279,9 @@ void main() {
     HttpOverrides.global = null;
   });
 
-  testWidgets('editing an oauth server re-runs the login flow', (tester) async {
+  testWidgets(
+      'editing a gateway-only oauth server goes straight to the credential step',
+      (tester) async {
     HttpOverrides.global = _ProbeHttpOverrides('https://auth.example.com');
     await connectionStore.add(_profile());
     final router = buildRouter(connectionStore);
@@ -296,22 +299,24 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.travel_explore));
     for (var i = 0;
-        i < 40 && find.byType(OAuthLoginScreen).evaluate().isEmpty;
+        i < 40 && find.byType(BasicAuthScreen).evaluate().isEmpty;
         i++) {
       await tester.pump(const Duration(milliseconds: 50));
     }
 
-    expect(find.byType(OAuthLoginScreen), findsOneWidget,
-        reason: 'edit must push the oauth login screen, not pop');
+    // Unchanged address/issuer + a valid-looking gateway token + no stored
+    // password: the gateway step is not what's missing — the opencode
+    // credential is (S4, design-auth-adaptation.md). Step 2 only.
+    expect(find.byType(BasicAuthScreen), findsOneWidget,
+        reason: 'gateway-only leftover must skip the redundant OAuth re-run');
     final saved = connectionStore.byId('p1')!;
     expect(saved.authMethod, AuthMethod.oauth);
     expect(saved.accessToken, 'old-token',
         reason: 'existing token stays until the new flow replaces it');
-    final loc = AppLocalizations.of(
-        tester.element(find.byType(OAuthLoginScreen)))!;
+    final loc =
+        AppLocalizations.of(tester.element(find.byType(BasicAuthScreen)))!;
     expect(find.text(loc.authMethodChanged), findsNothing,
         reason: 'unchanged config must not claim credentials were cleared');
-    await _releaseLoopback(tester);
   });
 
   // The probe returning a different issuer (server-side IdP reconfiguration)

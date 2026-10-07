@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -9,7 +10,7 @@ import 'package:open_builder/core/net/dio_factory.dart';
 
 class _FakeStore extends ConnectionStore {
   final Map<String, ConnectionProfile> db = {};
-  final Set<String> broken = {};
+  final Map<String, AuthBrokenScope> broken = {};
 
   @override
   ConnectionProfile? byId(String id) => db[id];
@@ -18,10 +19,15 @@ class _FakeStore extends ConnectionStore {
   Future<void> update(ConnectionProfile p) async => db[p.id] = p;
 
   @override
-  bool isAuthBroken(String id) => broken.contains(id);
+  bool isAuthBroken(String id) => broken.containsKey(id);
 
   @override
-  void markAuthBroken(String id) => broken.add(id);
+  AuthBrokenScope? authBrokenScope(String id) => broken[id];
+
+  @override
+  void markAuthBroken(String id,
+          {AuthBrokenScope scope = AuthBrokenScope.gateway}) =>
+      broken[id] = scope;
 
   @override
   void clearAuthBroken(String id) => broken.remove(id);
@@ -31,6 +37,7 @@ class _AuthAdapter implements HttpClientAdapter {
   int apiCalls = 0;
   int refreshCalls = 0;
   final List<String> authHeaders = [];
+  final List<String> apiUris = [];
   int failFirstWith401;
   bool refreshFailsTransiently = false;
 
@@ -63,6 +70,7 @@ class _AuthAdapter implements HttpClientAdapter {
     }
     apiCalls++;
     authHeaders.add(auth);
+    apiUris.add(options.uri.toString());
     if (apiCalls <= failFirstWith401) {
       return ResponseBody.fromString('{"error":"unauthorized"}', 401);
     }
@@ -96,12 +104,15 @@ class _RejectingTokenAdapter implements HttpClientAdapter {
 ConnectionProfile _profile({
   int? expiresInMs,
   String refreshToken = 'rt-old',
+  String password = '',
 }) {
   return ConnectionProfile(
     id: 'p1',
     name: 'n',
     address: 'http://api.test',
     authMethod: AuthMethod.oauth,
+    username: 'opencode',
+    password: password,
     accessToken: 'at-old',
     refreshToken: refreshToken,
     tokenExpiresAt: expiresInMs == null
@@ -242,10 +253,117 @@ void main() {
     );
   });
 
-  test('none profile: no auth header at all', () {
+  test('retry after refresh still 401 → opencode scope, tokens kept',
+      () async {
+    final store = _FakeStore();
+    store.db['p1'] = _profile(expiresInMs: 3600000, password: 'oc-pw');
+    final adapter = _AuthAdapter(failFirstWith401: 5);
+    final dio = _apiDio(adapter, store.db['p1']!, store);
+
+    await expectLater(dio.get<Object>('/data'), throwsA(isA<DioException>()));
+    expect(adapter.refreshCalls, 1, reason: 'gateway refresh succeeded');
+    expect(adapter.apiCalls, 2, reason: 'one replay with the fresh token');
+    expect(store.broken['p1'], AuthBrokenScope.opencode,
+        reason: 'fresh gateway token + still 401 = opencode password '
+            'rejected; the gateway login must NOT be redone');
+    expect(store.db['p1']!.accessToken, 'at-new',
+        reason: 'gateway tokens stay persisted');
+  });
+
+  test('401 with no refresh token → gateway scope', () async {
+    final store = _FakeStore();
+    store.db['p1'] = _profile(expiresInMs: 3600000, refreshToken: '');
+    final adapter = _AuthAdapter(failFirstWith401: 5);
+    final dio = _apiDio(adapter, store.db['p1']!, store);
+
+    await expectLater(dio.get<Object>('/data'), throwsA(isA<DioException>()));
+    expect(adapter.apiCalls, 1, reason: 'no retry without refresh token');
+    expect(store.broken['p1'], AuthBrokenScope.gateway);
+  });
+
+  test('basic profile without a password: no header, no interceptors', () {
     final dio = dioFor(ConnectionProfile(
-        id: 'x', name: 'n', address: 'http://a', authMethod: AuthMethod.none));
+      id: 'x',
+      name: 'n',
+      address: 'http://a',
+      authMethod: AuthMethod.basic,
+    ));
     expect(dio.options.headers.containsKey('Authorization'), isFalse);
     expect(dio.interceptors.whereType<AuthInterceptor>(), isEmpty);
+  });
+
+  test('basic auth always sends the fixed opencode username', () {
+    final p = ConnectionProfile(
+      id: 'b',
+      name: 'n',
+      address: 'http://a',
+      authMethod: AuthMethod.basic,
+      username: 'legacy-custom-user',
+      password: 'pw',
+    );
+    expect(
+      authHeadersFor(p)['Authorization'],
+      'Basic ${base64Encode(utf8.encode('opencode:pw'))}',
+      reason: 'v2 rejects any username other than opencode — stored legacy '
+          'usernames must never reach the wire',
+    );
+    expect(authQueryFor(p), isEmpty,
+        reason: 'the auth_token bypass is oauth-only');
+  });
+
+  test('authQueryFor: oauth carries the opencode credential in the query',
+      () {
+    final p = _profile(password: 'oc-pw');
+    expect(authQueryFor(p), {
+      'auth_token': base64Encode(utf8.encode('opencode:oc-pw')),
+    });
+    expect(authQueryFor(_profile(password: '')), isEmpty,
+        reason: 'no opencode credential collected yet');
+  });
+
+  test('AuthTokenQueryInterceptor preserves business query parameters',
+      () async {
+    final store = _FakeStore();
+    store.db['p1'] = _profile(expiresInMs: 3600000, password: 'oc-pw');
+    final adapter = _AuthAdapter();
+    final dio = Dio(BaseOptions(baseUrl: 'http://api.test'))
+      ..httpClientAdapter = adapter;
+    dio.interceptors
+        .add(AuthTokenQueryInterceptor(store.db['p1']!, store: store));
+
+    await dio.get<Object>('/data',
+        queryParameters: {'limit': '5', 'directory': '/repo/x'});
+
+    final q = Uri.parse(adapter.apiUris.single).queryParameters;
+    expect(q['limit'], '5',
+        reason: 'regression (review B1): business params were wiped by the '
+            'auth_token merge');
+    expect(q['directory'], '/repo/x');
+    expect(q['auth_token'], base64Encode(utf8.encode('opencode:oc-pw')));
+  });
+
+  test('oauth requests carry Bearer header AND auth_token query', () async {
+    final store = _FakeStore();
+    store.db['p1'] = _profile(expiresInMs: 3600000, password: 'oc-pw');
+    final adapter = _AuthAdapter();
+    final dio = Dio(BaseOptions(baseUrl: 'http://api.test'))
+      ..httpClientAdapter = adapter;
+    dio.interceptors
+        .add(AuthTokenQueryInterceptor(store.db['p1']!, store: store));
+    dio.interceptors.add(AuthInterceptor(dio, store.db['p1']!,
+        store: store,
+        tokenClient: AuthCodeClient(
+            dio: Dio(BaseOptions(baseUrl: 'http://authstub.test'))
+              ..httpClientAdapter = adapter)));
+
+    final resp = await dio.get<Object>('/data');
+    expect(resp.statusCode, 200);
+    expect(adapter.authHeaders.single, 'Bearer at-old');
+    expect(
+      Uri.parse(adapter.apiUris.single).queryParameters['auth_token'],
+      base64Encode(utf8.encode('opencode:oc-pw')),
+      reason: 'the opencode credential rides the query alongside the '
+          'gateway Bearer header (two-channel composition)',
+    );
   });
 }

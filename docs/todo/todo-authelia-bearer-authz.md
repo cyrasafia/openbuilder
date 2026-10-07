@@ -1,7 +1,7 @@
 # TODO: Authelia 侧 OAuth Bearer 授权配置（authorization_code + PKCE + PAR client）
 
 > 状态：**已验证（2026-08-20，服务端全链路 6/7 通过；#1 双端 WebView 平台项留客户端实现期）** ｜ 来源：2026-08-19 实测 + 方案演化至 v4
-> 关联设计：[design-oauth-login.md](../design/design-oauth-login.md)（ADR：auth-code + PKCE + PAR + loopback + 双端统一应用内 WebView）
+> 关联设计：[design-oauth-login.md](../design/v1/design-oauth-login.md)（ADR：auth-code + PKCE + PAR + loopback + 双端统一应用内 WebView；已归档 v1，认证前提勘误见 [design-server-auth.md](../design/v2/design-server-auth.md)）
 > 最终集成参数：client_id `openbuilder-app`；redirect_uri `http://127.0.0.1:8901/callback`；scope `offline_access authelia.bearer.authz`；audience `https://oc.cyrasafia.party:4433`；PAR 强制；PKCE S256 强制。
 
 ## 背景（方案演化浓缩）

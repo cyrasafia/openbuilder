@@ -9,7 +9,12 @@ import '../connection/connection_store.dart';
 
 /// Bearer lifecycle for oauth profiles: proactive refresh near expiry
 /// (single-flight shared across dio instances via a static map) and one 401
-/// retry after refresh. basic/none pass through untouched.
+/// retry after refresh. basic pass through untouched.
+///
+/// Two-layer 401 diagnosis (oauth = gateway Bearer + opencode credential):
+/// a definitive refresh rejection breaks the GATEWAY layer (full re-login);
+/// a retry that carries a fresh gateway token yet still 401s breaks the
+/// OPENCODE layer (only the opencode password needs re-entry).
 class AuthInterceptor extends Interceptor {
   final Dio dio;
   final ConnectionProfile profile;
@@ -61,8 +66,16 @@ class AuthInterceptor extends Interceptor {
       handler.next(err);
       return;
     }
-    if (err.requestOptions.extra[_retriedKey] == true ||
-        p.refreshToken.isEmpty) {
+    if (err.requestOptions.extra[_retriedKey] == true) {
+      // The post-refresh replay with a fresh gateway token was still
+      // rejected: the gateway layer is fine — the opencode credential is
+      // what failed. Keep the gateway tokens; only the password needs
+      // re-entry (see design/v2/design-auth-adaptation.md §401 诊断).
+      store?.markAuthBroken(p.id, scope: AuthBrokenScope.opencode);
+      handler.next(err);
+      return;
+    }
+    if (p.refreshToken.isEmpty) {
       store?.markAuthBroken(p.id);
       handler.next(err);
       return;
@@ -126,7 +139,11 @@ class AuthInterceptor extends Interceptor {
         clientId: p.clientId,
         refreshToken: p.refreshToken,
       );
-      final updated = p.copyWith(
+      // Re-read before persisting: the live entry may have gained a new
+      // opencode password while the refresh was in flight — writing the
+      // stale snapshot would roll it back.
+      final latest = store?.byId(p.id) ?? p;
+      final updated = latest.copyWith(
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
         tokenExpiresAt: tokens.expiresAtMs,
@@ -163,20 +180,56 @@ void copyInterceptors(Dio base, Dio copy) {
 
 /// Authorization headers for a profile — the single source shared by the dio
 /// factory and the SSE transports. Returned map content must be copied into a
-/// long-lived map by the caller (see ServerStore._sseHeaders).
+/// long-lived map by the caller (see ServerStore._sseHeaders). The Basic
+/// username is fixed to `opencode`: v2 servers reject any other value (see
+/// design/v2/design-server-auth.md §用户名语义).
 Map<String, String> authHeadersFor(ConnectionProfile p) {
   switch (p.authMethod) {
-    case AuthMethod.none:
-      return const {};
     case AuthMethod.basic:
-      if (p.username.isEmpty) return const {};
+      if (p.password.isEmpty) return const {};
       return {
         'Authorization':
-            'Basic ${base64Encode(utf8.encode('${p.username}:${p.password}'))}',
+            'Basic ${base64Encode(utf8.encode('opencode:${p.password}'))}',
       };
     case AuthMethod.oauth:
       if (p.accessToken.isEmpty) return const {};
       return {'Authorization': 'Bearer ${p.accessToken}'};
+  }
+}
+
+/// Query parameters carrying the opencode credential past a gateway. The
+/// Authorization header is already taken by the gateway's Bearer token, so
+/// the opencode credential rides the server's native `?auth_token=` bypass
+/// (it rewrites the value into a Basic header server-side).
+Map<String, String> authQueryFor(ConnectionProfile p) {
+  if (p.authMethod != AuthMethod.oauth || p.password.isEmpty) {
+    return const {};
+  }
+  return {
+    'auth_token': base64Encode(utf8.encode('opencode:${p.password}')),
+  };
+}
+
+/// Appends [authQueryFor] to every request (REST and SSE share this). Reads
+/// the live profile from the store so password updates reach long-lived dio
+/// instances built from an older snapshot.
+class AuthTokenQueryInterceptor extends Interceptor {
+  final ConnectionProfile profile;
+  final ConnectionStore? store;
+
+  AuthTokenQueryInterceptor(this.profile, {this.store});
+
+  ConnectionProfile get _current => store?.byId(profile.id) ?? profile;
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    // Merge, never replace: business query parameters (limit, directory,
+    // search…) must survive. Only `auth_token` is ours to manage — drop a
+    // stale one (password cleared / retry re-entry) before re-adding.
+    options.queryParameters
+      ..removeWhere((k, v) => k == 'auth_token')
+      ..addAll(authQueryFor(_current));
+    handler.next(options);
   }
 }
 
@@ -204,16 +257,15 @@ Dio dioFor(ConnectionProfile p, {ConnectionStore? store}) {
     headers: {'Accept': 'application/json'},
   ));
   switch (p.authMethod) {
-    case AuthMethod.none:
-      break;
     case AuthMethod.basic:
-      if (p.username.isNotEmpty) {
+      if (p.password.isNotEmpty) {
         dio.options.headers['Authorization'] =
-            'Basic ${base64Encode(utf8.encode('${p.username}:${p.password}'))}';
+            'Basic ${base64Encode(utf8.encode('opencode:${p.password}'))}';
       }
       break;
     case AuthMethod.oauth:
       dio.interceptors.add(AuthInterceptor(dio, p, store: store));
+      dio.interceptors.add(AuthTokenQueryInterceptor(p, store: store));
       break;
   }
   return dio;

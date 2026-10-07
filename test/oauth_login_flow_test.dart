@@ -13,6 +13,7 @@ import 'package:open_builder/core/connection/auth_probe.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/connection/loopback_callback_server.dart';
 import 'package:open_builder/core/connection/oauth_login_controller.dart';
+import 'package:open_builder/features/servers/basic_auth_screen.dart';
 import 'package:open_builder/features/servers/oauth_login_screen.dart';
 import 'package:open_builder/features/servers/server_info_screen.dart';
 import 'package:open_builder/l10n/gen/app_localizations.dart';
@@ -231,12 +232,22 @@ Future<void> _runFlow(WidgetTester tester, {required bool firstServer}) async {
 
   expect(fakePlatform.controller.loadedUrls.length, 1,
       reason: 'authz url reloaded: ${fakePlatform.controller.loadedUrls}');
-  final loc = router.routerDelegate.currentConfiguration.uri.path;
+  // currentConfiguration.uri does NOT reflect pushed (imperative) matches
+  // (see popToServerManagement) — assert on the match stack instead.
+  final matches = router.routerDelegate.currentConfiguration.matches;
   expect(find.byType(OAuthLoginScreen), findsNothing,
-      reason: 'login screen still visible; location=$loc');
-  expect(loc, firstServer ? '/sessions' : '/servers');
-  expect(connectionStore.byId('p1')!.accessToken, 'at-1');
-  expect(connectionStore.activeId, 'p1');
+      reason: 'login screen still visible; '
+          'top=${matches.last.matchedLocation}');
+  // Two-step oauth: the gateway token alone cannot pass the opencode server
+  // (v2 enforces its own password behind the gateway), so success hands
+  // over to the credential step instead of entering the app.
+  expect(find.byType(BasicAuthScreen), findsOneWidget,
+      reason: 'step 2 (opencode credential) must follow the gateway login');
+  expect(matches.last.matchedLocation, '/servers/p1/credential');
+  expect(connectionStore.byId('p1')!.accessToken, 'at-1',
+      reason: 'gateway tokens persisted');
+  expect(connectionStore.byId('p1')!.password, isEmpty,
+      reason: 'the opencode credential is still pending');
 }
 
 void main() {
@@ -249,14 +260,15 @@ void main() {
     }
   });
 
-  testWidgets('first-server oauth success enters /sessions, no authz reload',
+  testWidgets(
+      'first-server oauth success hands over to the credential step',
       (tester) async {
     await connectionStore.add(_profile('p1'));
     await _runFlow(tester, firstServer: true);
   });
 
   testWidgets(
-      'non-first oauth success returns to /servers with the server active',
+      'non-first oauth success hands over to the credential step',
       (tester) async {
     await connectionStore.add(_profile('p0'));
     await connectionStore.add(_profile('p1'));

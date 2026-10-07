@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../app_router.dart';
 import '../../app_state.dart';
 import '../../core/connection/auth_probe.dart';
 import '../../core/connection/connection_profile.dart';
@@ -27,7 +26,7 @@ class ServerLoginArgs {
 }
 
 /// Step 1 of server setup: name + address, then probe the auth method and
-/// route to the matching login screen (see design-oauth-login.md).
+/// route to the matching login screen (see design/v2/design-auth-adaptation.md).
 class ServerInfoScreen extends StatefulWidget {
   final String? id;
   const ServerInfoScreen({super.key, this.id});
@@ -126,8 +125,6 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
         await _proceed(AuthMethod.oauth);
       case AuthProbeOutcome.basic:
         await _proceed(AuthMethod.basic);
-      case AuthProbeOutcome.none:
-        await _proceed(AuthMethod.none);
       case AuthProbeOutcome.unknown:
       case AuthProbeOutcome.unreachable:
         break;
@@ -143,9 +140,9 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
       id: old?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       name: _name.text.trim(),
       address: _address.text.trim(),
-      username: sameTarget ? old.username : 'opencode',
+      username: 'opencode',
       password: sameTarget ? old.password : '',
-      authMethod: method ?? AuthMethod.none,
+      authMethod: method ?? AuthMethod.basic,
       oidcIssuer: _issuer.text.trim(),
       clientId: _clientId.text.trim().isEmpty
           ? ConnectionProfile.defaultClientId
@@ -212,24 +209,6 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
         ));
         return;
       }
-      if (method == AuthMethod.none) {
-        await _saveProfile(profile);
-        if (!mounted) return;
-        if (widget.id == null) {
-          final router = GoRouter.of(context);
-          final firstServer = connectionStore.servers.length == 1;
-          await connectionStore.setActive(profile.id);
-          if (!mounted) return;
-          if (firstServer) {
-            router.go('/sessions');
-          } else {
-            popToServerManagement(router);
-          }
-        } else {
-          context.pop();
-        }
-        return;
-      }
       await _saveProfile(profile);
       if (!mounted) return;
       context.push('/servers/${profile.id}/login',
@@ -266,10 +245,6 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
             child: Text(loc.probeMethodBasic),
           ),
           SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, AuthMethod.none),
-            child: Text(loc.probeMethodNone),
-          ),
-          SimpleDialogOption(
             onPressed: () => Navigator.pop(ctx, AuthMethod.oauth),
             child: Text(loc.probeMethodOauth),
           ),
@@ -279,11 +254,10 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
     if (method == null) return;
     setState(() {
       _manualMethod = method;
-      _probe = AuthProbeResult(outcome: method == AuthMethod.oauth
-          ? AuthProbeOutcome.unknown
-          : method == AuthMethod.basic
-              ? AuthProbeOutcome.basic
-              : AuthProbeOutcome.none);
+      _probe = AuthProbeResult(
+          outcome: method == AuthMethod.oauth
+              ? AuthProbeOutcome.unknown
+              : AuthProbeOutcome.basic);
     });
     if (method == AuthMethod.oauth) {
       // OAuth needs the issuer filled in first — stay on the form (the
@@ -432,10 +406,9 @@ class _ServerInfoScreenState extends State<ServerInfoScreen> {
             ),
           ],
         ];
-      // oauth / basic / none route away immediately after the probe.
+      // oauth / basic route away immediately after the probe.
       case AuthProbeOutcome.oauth:
       case AuthProbeOutcome.basic:
-      case AuthProbeOutcome.none:
         return const [];
     }
   }

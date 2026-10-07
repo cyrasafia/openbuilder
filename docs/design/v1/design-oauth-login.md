@@ -1,8 +1,10 @@
 # OAuth 登录（authorization_code + PKCE + PAR + loopback，双端统一应用内 WebView）— 设计文档
 
+> **状态：已归档（v1 历史设计）**。本文的服务端调研前提「未设密码则不鉴权」已被 2026-10-07 实测勘误：v2.0.5+ 起 `opencode serve` **强制** Basic Auth（基本认证），未设/空密码一律自动生成随机密码打进启动日志，`none` 形态消亡——网关后裸跑 opencode、由网关独占把关的部署前提不再成立。勘误调研与影响分析见 [v2/design-server-auth.md](../v2/design-server-auth.md)。客户端实现（`lib/features/servers/*`、`lib/core/connection/*`）仍在库中，OAuth 网关路线本身未被推翻，重启用前需按勘误文档重估网关注入 Basic 等前提。
+
 > 关联代码：`lib/core/connection/`（ConnectionProfile / ConnectionStore）、`lib/core/net/dio_factory.dart`、`lib/features/servers/`、`lib/core/sse/sse_client.dart`、`lib/features/files/markdown_web_view.dart`（webview_flutter 既有用例）。
-> 前置文档：[spec-overview.md](../spec/spec-overview.md)、[design-network-error-handling.md](design-network-error-handling.md)。
-> 配套待办：[todo-authelia-bearer-authz.md](../todo/todo-authelia-bearer-authz.md)（Authelia 侧配置清单）。
+> 前置文档：[spec-overview.md](../../spec/spec-overview.md)、[design-network-error-handling.md](../design-network-error-handling.md)。
+> 配套待办：[todo-authelia-bearer-authz.md](../../todo/todo-authelia-bearer-authz.md)（Authelia 侧配置清单）。
 > 协议依据：RFC 6749 §4.1（authorization_code）、RFC 7636（PKCE）、RFC 9126（PAR）、RFC 8414（AS 元数据）、RFC 6750（Bearer）、RFC 8252（原生应用 OAuth，loopback 回调）。
 > 实测参照：Authelia v4.39（`auth.cyrasafia.party:4433` / `oc.cyrasafia.party:4433`，Caddy forward-auth 拓扑）。
 
@@ -146,7 +148,7 @@ class OidcMetadata {
 ### 协议契约（对服务端的要求）
 
 1. `GET /.well-known/oauth-authorization-server` 返回 RFC 8414 元数据子集（`issuer` / `authorization_endpoint` / `token_endpoint` / `pushed_authorization_request_endpoint` / `code_challenge_methods_supported`）。网关拓扑下该请求可 302 到 auth 主机，客户端按 P2b 取 origin 重试。
-2. 预注册公共 client `openbuilder-app`（client_id 约定值，服务器表单可覆盖），严格按 8 条 Client Restrictions 配置——完整 YAML 见 [todo-authelia-bearer-authz.md](../todo/todo-authelia-bearer-authz.md)。
+2. 预注册公共 client `openbuilder-app`（client_id 约定值，服务器表单可覆盖），严格按 8 条 Client Restrictions 配置——完整 YAML 见 [todo-authelia-bearer-authz.md](../../todo/todo-authelia-bearer-authz.md)。
 3. authz 端点开启 Bearer scheme（`HeaderAuthorization` 策略 `schemes:[Basic,Bearer]`），access_control 覆盖目标域。
 4. 服务端 API/SSE 接受 `Authorization: Bearer <access_token>`。
 
@@ -354,7 +356,7 @@ oauth 分支承担 token 生命周期：
 - **不用系统浏览器 / 平台 auth session**（ASWebAuthenticationSession 等）：scheme 回调与 form_post 不兼容，且 iOS 挂起会击碎 loopback（v2 教训）；统一 WebView 是有意决策。
 - **不做 client_credentials**：丢按用户 2FA。
 - **不回 gw 方案（IdP + oauth2-proxy）**：部署重、配置摩擦（v3 实测教训）。
-- **不实现服务端**：Authelia client / authz / access_control 配置属服务器侧，见 [todo-authelia-bearer-authz.md](../todo/todo-authelia-bearer-authz.md)。
+- **不实现服务端**：Authelia client / authz / access_control 配置属服务器侧，见 [todo-authelia-bearer-authz.md](../../todo/todo-authelia-bearer-authz.md)。
 - **不做 web 平台 oauth SSE 适配**：EventSource 无法带 Authorization 头（同现状 basic-on-web，`server_form_screen.dart:98-105` 已有告警模式）；目标平台移动端。web 上 oauth 登录 REST 可用但 SSE 会 401，登录页给一次性提示。
 - **不做多账号/多 token 并存、token 跨 profile 共享**：一 profile 一套凭证；换账号 = 重新登录覆盖。
 - **不改 mDNS 发现逻辑**：信息页保留现有入口。
@@ -367,7 +369,7 @@ oauth 分支承担 token 生命周期：
 - `ConnectionProfile` 迁移：旧 JSON → basic/none 推断；新字段 round-trip。
 - `AuthInterceptor`：过期前刷新 single-flight、401 重放一次、刷新失败置 authBroken。
 - widget：信息页探测分流（client_id 输入项出现时机）；OAuth 登录页各终态文案与按钮；AppBar 域名常驻显示。
-- **端到端**：服务端链路已于 2026-08-20 实测通过（PAR → 浏览器授权 → loopback 接码（query 模式，state ✓）→ 换 token → Bearer 访问 health/业务/SSE 全 200 → refresh ✓ → 刷新后旧 token 即时 401），明细见 [todo-authelia-bearer-authz.md](../todo/todo-authelia-bearer-authz.md) 验证记录。**客户端实现期剩测**：
+- **端到端**：服务端链路已于 2026-08-20 实测通过（PAR → 浏览器授权 → loopback 接码（query 模式，state ✓）→ 换 token → Bearer 访问 health/业务/SSE 全 200 → refresh ✓ → 刷新后旧 token 即时 401），明细见 [todo-authelia-bearer-authz.md](../../todo/todo-authelia-bearer-authz.md) 验证记录。**客户端实现期剩测**：
   1. Android：WebView 跳转 `http://127.0.0.1:8901/callback` 成功（network_security_config 放行回环 cleartext）。
   2. iOS：同上（ATS 回环策略，必要时 `NSAllowsLocalNetworking`）。
   3. 动态端口可行性（Authelia 是否支持 RFC 8252 loopback 端口归一化；当前按固定 8901 实现即可）。

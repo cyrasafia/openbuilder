@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
+import '../../core/connection/connection_profile.dart';
+import '../../core/connection/connection_store.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
 
@@ -25,8 +27,14 @@ class ServersScreen extends StatelessWidget {
             itemBuilder: (context, i) {
               final s = servers[i];
               final active = s.id == activeId;
-              final authBroken = connectionStore.isAuthBroken(s.id);
+              final brokenScope = connectionStore.authBrokenScope(s.id);
+              final authBroken = brokenScope != null;
+              final passwordBroken =
+                  brokenScope == AuthBrokenScope.opencode;
               final needsLogin = !authBroken && s.needsLogin;
+              final showStatusChip = authBroken || needsLogin;
+              final insecure =
+                  !showStatusChip && s.authMethod == AuthMethod.basic;
               return ListTile(
                 leading: Icon(
                   Icons.dns_outlined,
@@ -63,7 +71,7 @@ class ServersScreen extends StatelessWidget {
                           ),
                         ),
                       ),
-                    if (authBroken || needsLogin)
+                    if (showStatusChip)
                       Container(
                         margin: const EdgeInsets.only(left: 8),
                         padding: const EdgeInsets.symmetric(
@@ -71,19 +79,42 @@ class ServersScreen extends StatelessWidget {
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: authBroken
+                          color: authBroken && !passwordBroken
                               ? Colors.red.withAlpha(25)
                               : Colors.orange.withAlpha(25),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
                           authBroken
-                              ? loc.serverAuthBroken
+                              ? (passwordBroken
+                                  ? loc.serverPasswordBroken
+                                  : loc.serverAuthBroken)
                               : loc.serverNotLoggedIn,
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w600,
-                            color: authBroken ? Colors.red : Colors.orange,
+                            color: authBroken && !passwordBroken
+                                ? Colors.red
+                                : Colors.orange,
+                          ),
+                        ),
+                      ),
+                    if (insecure)
+                      Container(
+                        margin: const EdgeInsets.only(left: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withAlpha(20),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          loc.basicInsecureBadge,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.orange.shade800,
                           ),
                         ),
                       ),
