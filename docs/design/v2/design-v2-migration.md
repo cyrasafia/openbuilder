@@ -186,6 +186,8 @@ system | skill | shell | assistant | compaction | idle
 
 **volatile 契约（对重连恢复设计影响重大）**：`GET /api/event` 的官方语义是 *Volatile by contract: a slow consumer overflows and fails the stream, and events during disconnection are missed*——**无回放、无断点续传，慢消费者直接被断流**。客户端 SSE 重连恢复不能依赖任何 server 侧补偿，必须重连后全量对账（快照 + 事件闸门窗口），移动端已有的 design-incremental-reconcile 思路在 v2 下是唯一正确路线且要求更严格。
 
+> **事件面消费审计（2026-10-07 补记）**：上表全集是**契约记录**，≠ 客户端消费核对。桌面端同日以「回滚暂存后发新消息不显示」活体 bug 为触发，完成 v2.0.18 事件 × 发布者 × 客户端消费三列全量审计；本项目按同基线对照的缺口清单与逐事件裁定见 [`design-sse-event-surface.md`](design-sse-event-surface.md)——4 项缺口（GAP-1 `session.inbox.cancelled` 未处理致排队消息悬挂 🔴、GAP-2 `session.revert.committed` 仅 reload 的批删竞态 🟡、GAP-3 命令缓存失效触发不全 🟡、GAP-4 `vcs.branch.updated` 静默丢弃 🟢），**已于 2026-10-08 修复**（该文档 §6 实施记录）。另本文 §Workspace 记载的 `worktree.ready|failed|resolved` 与桌面端「无发布者」结论冲突，以该文档 §2.4 裁定为准（采纳桌面端，升 pin 复核）。
+
 ### 认证（v2 新增设计项，初稿完全缺失）
 
 - v2 server 默认**强制密码**（CLI service 模式随机生成，`service.json` 管理；`OPENCODE_PASSWORD`/`OPENCODE_SERVER_PASSWORD` 注入）；

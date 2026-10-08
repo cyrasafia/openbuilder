@@ -175,6 +175,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design/design-load-retry.md` | 首次加载退避重试 + 加载动效 |
 | `design/v1/design-on-demand-sse.md` | 按需 SSE 连接池（**已被取代**，仅存历史；§1.3 误判记录见下条） |
 | `design/v2/design-sse-global-event.md` | SSE 单全局流 `/global/event` 替代按需多连接池（已定稿待实施；含 2026-07 裸 `/event` 实测误判复盘——过滤端点被泛化为"单流不可用"、Last-Event-ID 从未生效） |
+| `design/v2/design-sse-event-surface.md` | v2 SSE 事件面消费基线（桌面端 2026-10-07 审计矩阵对照 + 本项目逐事件裁定；4 缺口已修复 2026-10-08：GAP-1 `session.inbox.cancelled` 按 inboxID 精确移除 / GAP-2 `revert.committed` 按 `to` 边界确定性清除（id 空间限定排除乐观与 synthetic）/ GAP-3 命令失效补 `config.updated`·`models-dev.refreshed` / GAP-4 `vcs.branch.updated` 入对账触发组；升 pin 三步审计流程 + `worktree.ready/failed/resolved` 记载冲突裁定） |
 | `design/design-local-cache.md` | 离线缓存兜底 |
 | `design/v1/design-optimistic-messages.md` | 乐观消息插入 |
 | `design/v1/design-session-status.md` | 会话状态同步 |

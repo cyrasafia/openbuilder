@@ -1835,6 +1835,44 @@ class ConversationStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// `session.inbox.cancelled`：排队项被他端取消——按 inboxID 精确移除
+  /// （`onInboxEnqueued` 物化时 id 即 inboxID）。乐观气泡不在其中
+  /// （`optimistic_*` 前缀，由 enqueue 到达时替换）。
+  bool removeInboxMessage(String inboxId) {
+    final hit = _messages.any((m) => m.id == inboxId && !m.optimistic);
+    if (!hit) return false;
+    _touchMessages(const <String>{});
+    _messages.removeWhere((m) => m.id == inboxId && !m.optimistic);
+    unawaited(_saveCache());
+    if (!_disposed) notifyListeners();
+    return true;
+  }
+
+  /// `session.revert.committed`：按边界 `to` 确定性清除本地已知会被 projector
+  /// 删除的消息（v2 提交回滚无逐条 message.removed，reload 可能早于批删落地）。
+  /// 仅清服务端签发的 `msg_*` id；乐观（`optimistic_*`）与 synthetic
+  /// （`evt_`→`msg_` 伪造 id，同空间单调无证据）排除；`created <` 事件时刻
+  /// 排除事件后到达的新轮次消息。`to`/事件时刻缺失跳过清除，reload 兜底。
+  /// 见 design/v2/design-sse-event-surface.md GAP-2。
+  int onRevertCommitted(String? to, int? eventTime) {
+    if (to == null || to.isEmpty || eventTime == null) return 0;
+    if (!to.startsWith('msg_')) return 0;
+    final doomed = _messages
+        .where((m) =>
+            !m.optimistic &&
+            m.type != 'synthetic' &&
+            m.id.startsWith('msg_') &&
+            m.id.compareTo(to) >= 0 &&
+            m.created < eventTime)
+        .toList();
+    if (doomed.isEmpty) return 0;
+    _touchMessages(const <String>{});
+    _messages.removeWhere(doomed.contains);
+    unawaited(_saveCache());
+    if (!_disposed) notifyListeners();
+    return doomed.length;
+  }
+
   void onRetryScheduled(String? mid, int attempt, Map<String, dynamic> error) {
     final message = error['message']?.toString();
     setStatus('retry', retryMessage: message);

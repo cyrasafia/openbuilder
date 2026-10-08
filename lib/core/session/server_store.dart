@@ -1967,6 +1967,22 @@ class ServerStore extends ChangeNotifier {
         }
         return;
       case 'session.inbox.cancelled':
+        final sidCancel = ev.properties['sessionID']?.toString();
+        final inboxCancel = ev.properties['inboxID']?.toString();
+        if (sidCancel != null && inboxCancel != null) {
+          final conv = _conversations[sidCancel];
+          if (conv != null && conv.removeInboxMessage(inboxCancel)) {
+            _lastMessage[sidCancel] = conv.lastMessagePreview(
+                    hideReasoning: !_reasoningVisibleInPreview, loc: _loc) ??
+                _lastMessage[sidCancel] ??
+                '';
+            _livePreviewSids.add(sidCancel);
+            _notifyPreviewChanged();
+            _scheduleCacheSave();
+          }
+          _touchActivity(sidCancel, ev.created);
+        }
+        return;
       case 'session.inbox.delivery.changed':
         return;
       case 'session.synthetic':
@@ -1995,12 +2011,41 @@ class ServerStore extends ChangeNotifier {
         return;
       case 'session.revert.staged':
       case 'session.revert.cleared':
-      case 'session.revert.committed':
         final sidC = ev.properties['sessionID']?.toString();
         if (sidC != null) {
           final conv = _conversations[sidC];
           if (conv != null) {
             unawaited(conv.reload());
+          }
+        }
+        break;
+      case 'session.revert.committed':
+        final sidR = ev.properties['sessionID']?.toString();
+        if (sidR != null) {
+          final conv = _conversations[sidR];
+          if (conv != null) {
+            final toR = ev.properties['to']?.toString();
+            conv.onRevertCommitted(toR, ev.created);
+            // reload 响应可能早于 projector 批删落地（upsert 会带回已清消息），
+            // 完成后幂等重跑同一确定性清除收口该窗口。
+            unawaited(conv.reload().then((_) {
+              if (conv.onRevertCommitted(toR, ev.created) > 0) {
+                _lastMessage[sidR] = conv.lastMessagePreview(
+                        hideReasoning: !_reasoningVisibleInPreview, loc: _loc) ??
+                    _lastMessage[sidR] ??
+                    '';
+                _livePreviewSids.add(sidR);
+                _notifyPreviewChanged();
+                _scheduleCacheSave();
+              }
+            }));
+            _lastMessage[sidR] = conv.lastMessagePreview(
+                    hideReasoning: !_reasoningVisibleInPreview, loc: _loc) ??
+                _lastMessage[sidR] ??
+                '';
+            _livePreviewSids.add(sidR);
+            _notifyPreviewChanged();
+            _scheduleCacheSave();
           }
         }
         break;
@@ -2069,6 +2114,7 @@ class ServerStore extends ChangeNotifier {
       case 'worktree.updated':
       case 'worktree.ready':
       case 'worktree.failed':
+      case 'vcs.branch.updated':
         _scheduleReconcile();
         break;
       case 'command.updated':
@@ -2082,6 +2128,8 @@ class ServerStore extends ChangeNotifier {
       case 'mcp.status.changed':
       case 'mcp.resources.changed':
       case 'websearch.updated':
+      case 'config.updated':
+      case 'models-dev.refreshed':
       case 'catalog.updated':
         final activeId = _activeSessionId;
         if (activeId != null) {
