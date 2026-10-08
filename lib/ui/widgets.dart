@@ -120,49 +120,27 @@ class AgentStatusIndicator extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context)!;
     final paused = state.state == AgentRunState.paused;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final workingColor = dark
-        ? const Color(0xFF4ADE80)
-        : const Color(0xFF15803D);
-    final retryColor = dark
-        ? const Color(0xFFFB923C)
-        : const Color(0xFFC2410C);
-    final pausedColor = dark
-        ? const Color(0xFFFBBF24)
-        : const Color(0xFF92400E);
-    final (color, background, label, icon) = switch (state.state) {
-      AgentRunState.working => (
-          workingColor,
-          workingColor.withAlpha(31),
-          l.agentRunning,
-          _WorkingGlyph(key: const ValueKey('working'), color: workingColor),
-        ),
-      AgentRunState.retrying => (
-          retryColor,
-          retryColor.withAlpha(31),
-          l.agentRetrying,
-          const _RetryGlyph(key: ValueKey('retrying')),
-        ),
-      AgentRunState.idle => (
-          Theme.of(context).colorScheme.outline,
-          Theme.of(context).colorScheme.surfaceContainerHighest,
-          l.agentIdle,
-          const Icon(Icons.circle, key: ValueKey('idle'), size: 8),
-        ),
-      AgentRunState.paused => (
-          pausedColor,
-          pausedColor.withAlpha(31),
-          state.pauseReason == AgentPauseReason.permission
-              ? l.agentNeedAuth
-              : l.agentNeedChoice,
-          Icon(
-            state.pauseReason == AgentPauseReason.permission
-                ? Icons.warning_amber_rounded
-                : Icons.help_outline,
-            key: ValueKey(state.pauseReason),
-            size: 13,
-          ),
-        ),
+    final color = _agentAccentColor(state.state, context);
+    final background = state.state == AgentRunState.idle
+        ? Theme.of(context).colorScheme.surfaceContainerHighest
+        : color.withAlpha(31);
+    final label = switch (state.state) {
+      AgentRunState.working => l.agentRunning,
+      AgentRunState.retrying => l.agentRetrying,
+      AgentRunState.idle => l.agentIdle,
+      AgentRunState.paused => state.pauseReason == AgentPauseReason.permission
+          ? l.agentNeedAuth
+          : l.agentNeedChoice,
+    };
+    final dot = switch (state.state) {
+      AgentRunState.working => _HaloDot(
+          key: const ValueKey('working'), color: color),
+      AgentRunState.retrying => _HaloDot(
+          key: const ValueKey('retrying'), color: color),
+      AgentRunState.idle => _StaticDot(
+          key: const ValueKey('idle'), color: color, alpha: 140),
+      AgentRunState.paused => _StaticDot(
+          key: const ValueKey('paused'), color: color),
     };
     final text = state.pendingCount > 1 ? '$label · ${state.pendingCount}' : label;
     return Semantics(
@@ -182,12 +160,9 @@ class AgentStatusIndicator extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              IconTheme(
-                data: IconThemeData(color: color, size: 13),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 120),
-                  child: icon,
-                ),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 120),
+                child: dot,
               ),
               const SizedBox(width: 5),
               AnimatedSwitcher(
@@ -219,24 +194,25 @@ String _agentStatusLabel(AgentIndicatorState state, AppLocalizations l) =>
             : l.agentNeedChoice,
     };
 
-/// Foreground accent color for an agent status, mirroring the palette used by
-/// [AgentStatusIndicator]. Single source of truth for the compact indicators.
+/// Four-color dot palette aligned with the openbuilder-desktop session status
+/// dots (tokens.css --status-running / --status-error / --status-waiting).
+/// Single source of truth for the pill and the compact indicators: working =
+/// green (breathing), retrying = red (breathing, red only flags the error
+/// cause), paused/waiting = amber (static), idle = outline gray (static).
 Color _agentAccentColor(AgentRunState state, BuildContext context) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   return switch (state) {
-    AgentRunState.working =>
-      dark ? const Color(0xFF4ADE80) : const Color(0xFF15803D),
-    AgentRunState.retrying =>
-      dark ? const Color(0xFFFB923C) : const Color(0xFFC2410C),
+    AgentRunState.working => const Color(0xFF1DAE4E),
+    AgentRunState.retrying => const Color(0xFFE5484D),
     AgentRunState.paused =>
-      dark ? const Color(0xFFFBBF24) : const Color(0xFF92400E),
+      dark ? const Color(0xFFFBBF24) : const Color(0xFFB8860B),
     AgentRunState.idle => Theme.of(context).colorScheme.outline,
   };
 }
 
-/// Compact, icon-only agent status indicator: the same glyph used by
+/// Compact, dot-only agent status indicator: the same dot used by
 /// [AgentStatusIndicator] but without the pill or label. A [Tooltip] carries
-/// the status name. Used where horizontal space is limited (e.g. one glyph per
+/// the status name. Used where horizontal space is limited (e.g. one dot per
 /// session in the project list).
 class AgentStatusGlyph extends StatelessWidget {
   final AgentIndicatorState state;
@@ -247,24 +223,17 @@ class AgentStatusGlyph extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = _agentAccentColor(state.state, context);
     final glyph = switch (state.state) {
-      AgentRunState.working => _WorkingGlyph(color: color),
-      AgentRunState.retrying => const _RetryGlyph(),
-      AgentRunState.paused => Icon(
-          state.pauseReason == AgentPauseReason.permission
-              ? Icons.warning_amber_rounded
-              : Icons.help_outline,
-          size: 13),
-      AgentRunState.idle => const Icon(Icons.circle, size: 8),
+      AgentRunState.working ||
+      AgentRunState.retrying => _HaloDot(color: color),
+      AgentRunState.paused => _StaticDot(color: color),
+      AgentRunState.idle => _StaticDot(color: color, alpha: 140),
     };
     return Tooltip(
       message: _agentStatusLabel(state, AppLocalizations.of(context)!),
       child: SizedBox(
         width: size,
         height: size,
-        child: IconTheme(
-          data: IconThemeData(color: color, size: 13),
-          child: Center(child: glyph),
-        ),
+        child: Center(child: glyph),
       ),
     );
   }
@@ -310,15 +279,15 @@ class AgentStatusCountChip extends StatelessWidget {
   }
 }
 
-class _WorkingGlyph extends StatefulWidget {
+class _HaloDot extends StatefulWidget {
   final Color color;
-  const _WorkingGlyph({super.key, required this.color});
+  const _HaloDot({super.key, required this.color});
 
   @override
-  State<_WorkingGlyph> createState() => _WorkingGlyphState();
+  State<_HaloDot> createState() => _HaloDotState();
 }
 
-class _WorkingGlyphState extends State<_WorkingGlyph>
+class _HaloDotState extends State<_HaloDot>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
@@ -387,47 +356,25 @@ class _WorkingGlyphState extends State<_WorkingGlyph>
   }
 }
 
-class _RetryGlyph extends StatefulWidget {
-  const _RetryGlyph({super.key});
-
-  @override
-  State<_RetryGlyph> createState() => _RetryGlyphState();
-}
-
-class _RetryGlyphState extends State<_RetryGlyph>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1000),
-    );
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _controller.stop();
-    } else if (!_controller.isAnimating) {
-      _controller.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+class _StaticDot extends StatelessWidget {
+  final Color color;
+  final int alpha;
+  const _StaticDot({super.key, required this.color, this.alpha = 255});
 
   @override
   Widget build(BuildContext context) {
-    return RotationTransition(
-      turns: _controller,
-      child: const Icon(Icons.autorenew, size: 13),
+    return SizedBox.square(
+      dimension: 13,
+      child: Center(
+        child: Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(
+            color: color.withAlpha(alpha),
+            shape: BoxShape.circle,
+          ),
+        ),
+      ),
     );
   }
 }
