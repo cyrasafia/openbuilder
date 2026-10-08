@@ -886,7 +886,7 @@ class _SessionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.outline;
-    final String? shownPreview = stalePreview ? '—' : preview;
+    final String? shownPreview = stalePreview ? '' : preview;
     final row = ListTile(
       onTap: onTap,
       dense: true,

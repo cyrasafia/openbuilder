@@ -34,7 +34,7 @@
 ### 1.2 目标
 
 1. **精确 stale**：三个场景（干净启动/后台恢复/断网恢复）统一用 `session.time.updated` 比对判定哪些会话真的有新内容待同步，替代盲标。判 stale 走 REST 数据（批量或单查），SSE 覆盖的会话自动豁免。
-2. **列表/项目页门控**：stale 会话不显示缓存的"最新消息"预览（展示「—」占位），但正常接收 SSE；SSE 收到新消息即刻展示（预览与详情同权）。
+2. **列表/项目页门控**：stale 会话不显示缓存的"最新消息"预览（展示空白占位，2026-10-08 修订），但正常接收 SSE；SSE 收到新消息即刻展示（预览与详情同权）。
 3. **详情页门控**（GL-1 修订）：stale 会话进入详情页先对账；门控为**缺口闸门**——实时 SSE 内容即时展示（与列表预览同权），仅隐藏"未到达本地"的缺口（分隔条显式化），对账成功一次性补齐。检查状态 + 对账全程显示"获取新消息中"提示。
 4. **SSE / REST 双轨不变**：SSE 连接、事件路由、累积逻辑不动；REST 批量刷新节奏不变。
 
@@ -140,7 +140,7 @@ stale ⇔ max(fresh.updated, fresh.idle ?? 0) > known   // 严格大于：相等
 
 ### 3.3 列表/项目页：预览门控（SG-R1 修订：双条件恢复）
 
-- stale 会话的 tile 显示占位（`—`）当且仅当 `isSessionStale(sid) && !_livePreviewSids.contains(sid)`（§3.1 预览来源集合）：
+- stale 会话的 tile 显示占位（空白，2026-10-08 修订）当且仅当 `isSessionStale(sid) && !_livePreviewSids.contains(sid)`（§3.1 预览来源集合）：
   - stale 且无实时来源 → 占位（缓存旧预览不可信——缺口中可能有更新的消息）；
   - stale 但 SSE 已推新消息（`_livePreviewSids` 含 sid）→ **展示 SSE 实时预览**（V12；stale 位继续保留至 reconcile，但展示不受阻）；
   - 非 stale → 现有预览渲染不变。
@@ -446,7 +446,7 @@ void _endGate() {                              // reconcile 成功路径调用
 | 场景 | 显示 |
 |------|------|
 | 非 stale 会话 | 现有预览 |
-| stale 会话，无实时来源 | 「—」占位（不显示旧预览） |
+| stale 会话，无实时来源 | 空白占位（不显示旧预览） |
 | stale 会话收到 SSE 新消息（SG-R1：stale 位保留，展示层揭示） | `_livePreviewSids` 加 sid → 立即显示 SSE 实时预览；stale 待进页/对账清 |
 | stale 会话被探针命中（GL-4：bootstrap/重连时刻，busy 会话） | 探针消息行回写预览 + 加 sid → 立即显示最新消息快照；stale 待对账清（缺口仍在） |
 | stale 会话对账完成（在详情页对完） | 现有预览（`reconcileConversation` 链上的 `_backfillPreview` + 加 sid） |
@@ -515,7 +515,7 @@ Future<void> _triggerEnterSync() async {
 
 ### 6.5 列表 tile（sessions_tab.dart:61-84 / project_detail_screen.dart:490,552）
 
-`_cachedTile` 缓存键加入 `stale: serverStore.isSessionStale(s.id)` 与 `livePreview: serverStore.hasLivePreview(s.id)`（`_livePreviewSids` 含 sid）；`_SessionTile` 增两个字段；渲染分支：`stale && !livePreview → 占位`（SG-R1 双条件，§3.3）。占位为固定字符「—」（与无预览兜底同字形，不新增 i18n 条目）。
+`_cachedTile` 缓存键加入 `stale: serverStore.isSessionStale(s.id)` 与 `livePreview: serverStore.hasLivePreview(s.id)`（`_livePreviewSids` 含 sid）；`_SessionTile` 增两个字段；渲染分支：`stale && !livePreview → 占位`（SG-R1 双条件，§3.3）。占位为空字符串（2026-10-08 修订，原「—」；空串保留预览行行高，stale 翻转时 tile 高度不跳，不新增 i18n 条目）。
 
 ### 6.6 SSE 水位推进 + 清 stale（v2 重构：事件入口单一 choke point）
 
@@ -532,7 +532,7 @@ Future<void> _triggerEnterSync() async {
 - **`_SyncingRow`**（新 widget）：footer 行内提示「获取新消息中…」，左侧 12px 小 spinner（`SizedBox(width:12,height:12,child:CircularProgressIndicator(strokeWidth:1.5))`）+ 文字。样式对齐 `_LoadingEarlierRow`（同字号色阶，w300）。
 - **`_GapSyncDivider`**（GL-1 新 widget）：门控期缺口分隔条「正在同步错过的消息…」，居中单行浅色文本 + 12px 小 spinner，样式对齐 `_SyncingRow`。**定位**：reversed 列表中插在"开门基线边界"处——`conv.gated` 时，`renderableMessages` 头部连续的 `created > conv.gateBaseline` 消息（实时尾部）之后、首条 `<= 基线` 消息（缓存内容）之前；两侧任一侧为空（纯缓存 / 纯尾部）则**不渲染**（纯缓存由 footer 提示覆盖，纯尾部无缺口显示需求）。**消失**：`_endGate()` 同帧（`gated` 翻转驱动）。**保守诚实性**：分隔条表示"此处可能有缺口"——对账完成后若实际无缺口，它随 gate 关闭直接消失，无需先出现再撤销（分隔条在开门时就存在，无论缺口真伪，因为它标记的是"未验证"状态）。i18n：`gapSyncing`。
 - **全屏态**：`gated && 无可显示内容` → 现有全屏 spinner 分支复用，文案不变。
-- **列表占位**：一行浅色文本（`outline` 色）「—」；不闪烁、不动画（避免列表页动画噪音）。
+- **列表占位**：空白（空字符串，2026-10-08 修订——保留预览行结构，行高不跳）；不闪烁、不动画（避免列表页动画噪音）。
 - **DESIGN.md 合规**：字重 w300/w400/w600 三档内；占位与分隔条不新增字重档。
 
 ---
@@ -629,8 +629,8 @@ v1 的 `session.updated` SSE 事件取值与服务端 `time.updated` 间存在�
 | `lib/data/api/opencode_client.dart` | `latestMessageAt` 扩展为 `latestMessageSummary`（同一 `order=desc&limit=1` 请求，返回 at + SessionMessage 行——GL-4 零新增请求）；新增共享单消息→预览格式化助手（复用 conv 预览语义：隐藏型/idle 标记行跳过、tool 摘要、user 前缀） |
 | `lib/core/session/conversation_store.dart` | `gated`/`_revealWatermark`（gated 前提过滤）/`_gateBaseline`（GL-1 分隔条定位）/`revealLiveMessage()`（GL-1 实时到达即时展示，覆盖 DG-1）/`_syncedUpdated`/`_lastKnownCreated()`（跳过 optimistic）/`reconciling` getter/`onContentSynced` 回调；`beginGate()`/`_endGate()`（含 `_touchMessages` bump）；`_loadCacheForGate()` 合并加载（抽出 `_parseCacheMessages`，不读 `cachedSessionUpdated` 键 :837，完成后重算揭示水位）；reconcile 成功（:565-569）推进水位 + `_endGate`；`renderableMessages` gated 条件过滤。conv `_saveCache`（:821）/`persistDraft` **零改动**；SSE 辅助推进链**删除**（v2 收敛到事件入口） |
 | `lib/features/conversation/conversation_screen.dart` | `_triggerEnterSync` 替换 `_triggerForceReload`（:271-273；SG-7 互锁 + TR-6 补发 + in-flight/dirty 防重入）；active-stale 翻转 listener（SG-3/LOW-3/六轮 #4）；footer（:927）`_SyncingRow`；消息列表插入 `_GapSyncDivider`（GL-1，§7 定位规则） |
-| `lib/features/shell/sessions_tab.dart` | tile（:61-84）stale + livePreview 双键 + 占位渲染（「—」） |
-| `lib/features/projects/project_detail_screen.dart` | 同上两处 tile（:490/:552）（「—」） |
+| `lib/features/shell/sessions_tab.dart` | tile（:61-84）stale + livePreview 双键 + 占位渲染（空白） |
+| `lib/features/projects/project_detail_screen.dart` | 同上两处 tile（:490/:552）（空白） |
 | `AGENTS.md` | 关键文档索引补本文件条目（六轮 #8） |
 | `test/` | 回归测试（§12 验证点） |
 
@@ -1275,3 +1275,20 @@ preheat :1108-1124 / pause :2397 / `_needsStaleMarking` :1631,:1442-1448 / force
 ### 效果
 
 stale 会话在列表页显示「—」直到 SSE 实时推送（`_livePreviewSids` 揭示）或进详情页对账回填；不再出现误导性的「同步中」。
+
+---
+
+## 列表占位文案修订（2026-10-08：显示空替代「—」）
+
+> 触发：用户指出 stale 会话的最后一条消息不应显示「—」，改为显示空。「—」与"无预览兜底"（`preview == null`）同字形，两种语义在列表上不可区分；横杠本身不携带额外信息。
+
+### 修订内容
+
+- **列表/项目页 stale 占位**：`stale && !livePreview` 分支的文案由固定字符「—」改为空字符串。占位条件与缓存键不变（仍隐藏缓存旧预览），只改显示字符。
+- **行高稳定**：空字符串保留预览行结构（sessions_tab 的 indicator 行 / project_detail 的 subtitle 行），stale 翻转时 tile 高度不跳。
+- **非 stale 无预览兜底不变**：`preview == null` 仍显示「—」（sessions_tab）/ 无 subtitle（project_detail）——本次只动 stale 分支。
+- **代码**：`sessions_tab.dart` `_SessionTile` 与 `project_detail_screen.dart` `_SessionRow` 两处。
+
+### 效果
+
+stale 会话在列表页预览位置显示空直到 SSE 实时推送（`_livePreviewSids` 揭示）或进详情页对账回填；不再显示「—」。「—」从此只代表"该会话没有可显示的消息"。

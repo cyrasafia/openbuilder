@@ -276,7 +276,7 @@ class _SessionTile extends StatelessWidget {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  stalePreview ? '—' : (preview ?? '—'),
+                  stalePreview ? '' : (preview ?? '—'),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 13, color: muted),
