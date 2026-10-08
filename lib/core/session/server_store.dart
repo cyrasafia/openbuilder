@@ -405,8 +405,9 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// 删除 worktree + 定向本地清理；返回被保留的分支名（含未合并提交，
-  /// 调用方提示用户），null = 无保留或不在管理范围。
+  /// 删除 worktree + 定向本地清理；返回 `branch -D` 失败被保留的分支名
+  /// （调用方提示用户），null = 已删除、不在管理范围，或清理通道异常
+  /// （分支可能残留，不提示）。
   Future<String?> removeWorktree(
     String projectWorktree, {
     required String worktreeDir,
@@ -444,9 +445,10 @@ class ServerStore extends ChangeNotifier {
         _statusMap.remove(sid);
       }
       _scheduleCacheSave();
-      // 分支清理（design-worktree-branch-sync §2.3）：v2 DELETE 不清分支。
-      // 必须在 worktree DELETE 之后（cleanup 在项目 canonical 下操作）。
-      // 已并入其他 ref → -D；未并入 → 保留 + 返回分支名（零静默丢失）。
+      // 分支清理（design-worktree-branch-sync §2.2 / §8 修订）：v2 DELETE
+      // 不清分支，客户端总是 -D 同名分支（squash merge 下已并入判断失效，
+      // 不再判）。必须在 worktree DELETE 之后（cleanup 在项目 canonical
+      // 下操作）。
       return await _cleanupWorktreeBranch(c, project, worktreeDir);
     } catch (e) {
       throw OperationException('删除工作区', cause: e);
@@ -658,13 +660,13 @@ class ServerStore extends ChangeNotifier {
     AppLogger.I.w(_tag, 'worktree 分支挂载失败，保持 detached: $directory');
   }
 
-  /// 删除后分支清理（design-worktree-branch-sync §2.3）：v2 DELETE 不清分支。
-  /// 在项目 canonical 下操作（worktree 目录已消失，不能 -C 进去）。
-  /// show-ref 探存在 → for-each-ref --contains（排除自身）判是否已并入其他
-  /// ref：已并入 → `branch -D` 清理返回 null；未并入 → 返回分支名（调用方
-  /// 提示保留）。shell 通道异常 → 返回 null（宁残留不误删，也不误报保留）。
-  /// 三个 shell 各 5s 超时（评审 WBS-1：清理串行在 deleting 态内，最坏
-  /// 15s 收口；超时同走「宁残留不误删」降级）。
+  /// 删除后分支清理（design-worktree-branch-sync §2.2 / §8 修订）：v2 DELETE
+  /// 不清分支。在项目 canonical 下操作（worktree 目录已消失，不能 -C 进去）。
+  /// show-ref 探存在 → `branch -D` 总是删除——不判已并入：squash merge 把
+  /// 分支提交压成新 hash，`--contains` 恒判未并入，检测失效。-D 失败（如
+  /// 同名分支恰被另一 worktree 检出）→ 返回分支名（调用方提示保留）。
+  /// shell 通道异常 → 返回 null（不误报保留）。两个 shell 各 5s 超时
+  /// （清理串行在 deleting 态内，最坏 10s 收口；超时走「宁残留不提示」降级）。
   Future<String?> _cleanupWorktreeBranch(
     OpencodeClient c,
     ProjectModel project,
@@ -679,27 +681,10 @@ class ServerStore extends ChangeNotifier {
           cwd: project.canonical,
           timeoutMs: 5000);
       if (exists.exit != 0) return null; // 无同名分支——无事可做
-      final contains = await c.runShell(
-        // --format 值必须单引号：fish 把裸括号 %(refname) 解析为命令替换，
-        // 单引号在 fish/POSIX shell 下均为字面量
-        "git for-each-ref --contains refs/heads/$branch "
-        "--format='%(refname)' refs/heads refs/remotes",
-        cwd: project.canonical,
-        timeoutMs: 5000,
-      );
-      // 竞态（show-ref 后分支被删）下 for-each-ref 报错——不误报「已保留」
-      if (contains.exit != 0) return null;
-      final mergedElsewhere = contains.output
-          .split('\n')
-          .map((line) => line.trim())
-          .any((ref) => ref.isNotEmpty && ref != 'refs/heads/$branch');
-      if (mergedElsewhere) {
-        final del = await c.runShell('git branch -D $branch',
-            cwd: project.canonical, timeoutMs: 5000);
-        // -D 失败（如同名分支恰被另一 worktree 检出）→ 走保留路径兜底
-        return del.exit == 0 ? null : branch;
-      }
-      return branch; // 未并入 → 保留（含未合并提交）
+      final del = await c.runShell('git branch -D $branch',
+          cwd: project.canonical, timeoutMs: 5000);
+      // -D 失败（如同名分支恰被另一 worktree 检出）→ 走保留路径兜底
+      return del.exit == 0 ? null : branch;
     } catch (_) {
       return null;
     }

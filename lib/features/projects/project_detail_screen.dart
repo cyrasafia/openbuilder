@@ -443,8 +443,8 @@ class ProjectDetailScreen extends StatelessWidget {
                       ),
                     );
                     if (keptBranch == null) return;
-                    // design-worktree-branch-sync §2.3：未并入其他 ref 的
-                    // 同名分支保留（零静默丢失），10s 提示对齐 desktop。
+                    // design-worktree-branch-sync §2.2 / §8 修订：`branch -D`
+                    // 失败的分支保留提示（10s，对齐 desktop branchNotice）。
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         duration: const Duration(seconds: 10),

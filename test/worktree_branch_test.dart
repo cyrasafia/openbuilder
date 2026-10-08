@@ -200,18 +200,10 @@ void main() {
   });
 
   group('ServerStore worktree branch cleanup (remove)', () {
-    test('merged branch is deleted from project canonical after worktree '
-        'removal', () async {
+    test('same-named branch is always deleted after worktree removal '
+        '(squash merge safe)', () async {
       const worktreeDir = '/repo/.worktrees/feature';
-      final client = _BranchMockClient()
-        ..onShell = (command, _) {
-          if (command.contains('show-ref')) return const ShellRunResult(0, '');
-          if (command.contains('for-each-ref')) {
-            return const ShellRunResult(
-                0, 'refs/heads/opencode/feature\nrefs/heads/main\n');
-          }
-          return const ShellRunResult(0, '');
-        };
+      final client = _BranchMockClient();
       final store = ServerStore()..client = client;
       store.setProjectsForTesting([_project()]);
       store.setWorktreeDirsForTesting(_projectId, [worktreeDir]);
@@ -224,38 +216,19 @@ void main() {
         contains(const _ShellCall('git branch -D opencode/feature', _mainDir,
             timeoutMs: 5000)),
       );
-      // WBS-1：清理链全部 shell 显式 5s 超时（deleting 态内最坏 15s 收口）。
+      // §8 修订：不判已并入——squash merge 下 --contains 恒空、判定失效。
+      expect(
+        client.shellCalls.where((c) => c.command.contains('for-each-ref')),
+        isEmpty,
+      );
+      // WBS-1：清理链全部 shell 显式 5s 超时（deleting 态内最坏 10s 收口）。
       expect(
         client.shellCalls.every((c) => c.timeoutMs == 5000),
         isTrue,
       );
-      // Branch cleanup runs after the worktree DELETE (§2.3: canonical cwd).
+      // Branch cleanup runs after the worktree DELETE (§2.2: canonical cwd).
       expect(client.callOrder.indexOf('shell:git branch -D opencode/feature'),
           greaterThan(client.callOrder.indexOf('remove')));
-    });
-
-    test('unmerged branch is kept and returned for the UI notice', () async {
-      const worktreeDir = '/repo/.worktrees/feature';
-      final client = _BranchMockClient()
-        ..onShell = (command, _) {
-          if (command.contains('show-ref')) return const ShellRunResult(0, '');
-          if (command.contains('for-each-ref')) {
-            return const ShellRunResult(0, 'refs/heads/opencode/feature\n');
-          }
-          return const ShellRunResult(0, '');
-        };
-      final store = ServerStore()..client = client;
-      store.setProjectsForTesting([_project()]);
-      store.setWorktreeDirsForTesting(_projectId, [worktreeDir]);
-
-      final kept = await store.removeWorktree(_mainDir, worktreeDir: worktreeDir);
-
-      expect(kept, 'opencode/feature');
-      expect(
-        client.shellCalls
-            .where((c) => c.command.contains('branch -D')),
-        isEmpty,
-      );
     });
 
     test('no same-named branch: single existence probe only', () async {
@@ -277,10 +250,6 @@ void main() {
       const worktreeDir = '/repo/.worktrees/feature';
       final client = _BranchMockClient()
         ..onShell = (command, _) {
-          if (command.contains('show-ref')) return const ShellRunResult(0, '');
-          if (command.contains('for-each-ref')) {
-            return const ShellRunResult(0, 'refs/heads/opencode/feature\nrefs/heads/main\n');
-          }
           if (command.contains('branch -D')) return const ShellRunResult(1, '');
           return const ShellRunResult(0, '');
         };
