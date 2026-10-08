@@ -84,17 +84,54 @@ void main() {
 
     await show(const AgentIndicatorState(AgentRunState.retrying));
     expect(find.text('Retrying'), findsOneWidget);
+    expect(find.byIcon(Icons.autorenew), findsNothing);
 
     await show(const AgentIndicatorState(AgentRunState.idle));
     expect(find.text('Idle'), findsOneWidget);
+    expect(find.byIcon(Icons.circle), findsNothing);
 
     await show(const AgentIndicatorState(AgentRunState.paused,
         pauseReason: AgentPauseReason.permission, pendingCount: 2));
     expect(find.text('Authorization needed · 2'), findsOneWidget);
+    expect(find.byIcon(Icons.warning_amber_rounded), findsNothing);
 
     await show(const AgentIndicatorState(AgentRunState.paused,
         pauseReason: AgentPauseReason.choice, pendingCount: 1));
     expect(find.text('Selection needed'), findsOneWidget);
+    expect(find.byIcon(Icons.help_outline), findsNothing);
+  });
+
+  testWidgets('dots carry the desktop four-color palette', (tester) async {
+    List<BoxDecoration> circleDecorations() => tester
+        .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+        .map((b) => b.decoration)
+        .whereType<BoxDecoration>()
+        .where((d) => d.shape == BoxShape.circle)
+        .toList();
+
+    Future<void> show(AgentIndicatorState state) async {
+      await tester.pumpWidget(_wrap(AgentStatusGlyph(state: state)));
+      await tester.pump();
+    }
+
+    // Halo states: center dot renders the accent at full opacity (the halo
+    // layer is alpha-animated).
+    await show(const AgentIndicatorState(AgentRunState.working));
+    expect(circleDecorations().map((d) => d.color),
+        contains(const Color(0xFF1DAE4E)));
+
+    await show(const AgentIndicatorState(AgentRunState.retrying));
+    expect(circleDecorations().map((d) => d.color),
+        contains(const Color(0xFFE5484D)));
+
+    // Static states: exactly one dot. Light theme (test default) renders the
+    // desktop light waiting amber; idle is dimmed to 0.55 alpha.
+    await show(const AgentIndicatorState(AgentRunState.paused,
+        pauseReason: AgentPauseReason.permission, pendingCount: 1));
+    expect(circleDecorations().single.color, const Color(0xFFB8860B));
+
+    await show(const AgentIndicatorState(AgentRunState.idle));
+    expect((circleDecorations().single.color!.a * 255).round(), 140);
   });
 
   testWidgets('indicator exposes one combined semantics label', (tester) async {
