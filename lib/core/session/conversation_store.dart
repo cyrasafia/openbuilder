@@ -200,6 +200,9 @@ class ConversationStore extends ChangeNotifier {
       onContentSynced;
   bool Function(String sid)? isSessionStaleSession;
 
+  ({List<SessionModel> children, List<SessionModel> runningChildren}) Function(
+      String parentSessionId)? backgroundChildrenSource;
+
   final CacheStore? cacheStore;
 
   ConversationStore(this.sessionId, this.client,
@@ -338,8 +341,17 @@ class ConversationStore extends ChangeNotifier {
     return result;
   }
 
+  static bool _isHiddenConversionSynthetic(
+          String? text, Map<String, dynamic>? metadata) =>
+      metadata?['source'] == null &&
+      (text ?? '').startsWith('User requested that active blocking work');
+
   /// `session.synthetic` SSE 增量 upsert（id 由 eventId `evt_`→`msg_` 映射）。
   void onSynthetic(SessionMessage message) {
+    if (message is SyntheticMessage &&
+        _isHiddenConversionSynthetic(message.text, message.metadata)) {
+      return;
+    }
     _upsertEntries([message]);
     if (_gated && message.created > _revealWatermark) {
       revealLiveMessage(message.created);
@@ -349,10 +361,8 @@ class ConversationStore extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  /// 子会话启动：若是**用户后台任务**（非工具型 tool part 承载），向流内插入
-  /// 一条系统提示「已启动后台任务」。工具型保持 tool part 面板形态，不插。
   void onChildSessionRegistered(SessionModel child) {
-    if (isToolFormChild(child)) return;
+    if (isForegroundClaimedChild(child.id, childTitle: child.title)) return;
     // 已有终态 outcome 的子会话是历史（例如列表/他端后出现）——不补历史启动提示。
     if (child.outcome != null) return;
     final id = 'bg-start:${child.id}';
@@ -373,31 +383,57 @@ class ConversationStore extends ChangeNotifier {
       ),
     ]);
     _sort(const <String>{});
+    unawaited(_saveCache());
     if (!_disposed) notifyListeners();
   }
 
-  /// 该子会话是否由工具型 `task`/`subagent` tool part 承载。
-  /// 是 → 属于工具型（前台面板），不进后台任务条 / 不发启动提示。
-  bool isToolFormChild(SessionModel child) {
-    for (final m in _messages) {
-      for (final p in m.parts) {
-        if (p.type != 'tool') continue;
-        if (p.tool != 'task' && p.tool != 'subagent') continue;
-        final sid = p.toolMetadata?['sessionID']?.toString() ??
-            p.toolMetadata?['sessionId']?.toString();
-        if (sid != null && sid == child.id) return true;
-        final desc = p.toolInput?['description']?.toString();
-        if (desc != null &&
-            desc.isNotEmpty &&
-            child.title.isNotEmpty &&
-            child.title.startsWith(desc) &&
-            (p.toolStatus == 'streaming' || p.toolStatus == 'running')) {
-          return true;
-        }
+  bool _partClaimsChild(DisplayPart p, String childId, String? childTitle) {
+    final sid = p.toolMetadata?['sessionID']?.toString() ??
+        p.toolMetadata?['sessionId']?.toString();
+    if (sid == childId) return true;
+    final inputSid = p.toolInput?['sessionID']?.toString();
+    if (inputSid == childId) return true;
+    if (p.toolStatus == 'streaming' || p.toolStatus == 'running') {
+      final desc = p.toolInput?['description']?.toString();
+      if (desc != null &&
+          desc.isNotEmpty &&
+          childTitle != null &&
+          childTitle.isNotEmpty &&
+          childTitle.startsWith(desc)) {
+        return true;
       }
     }
     return false;
   }
+
+  bool _claimedBy(String childId, String? childTitle,
+      bool Function(DisplayPart p) qualify) {
+    for (final m in _messages) {
+      for (final p in m.parts) {
+        if (p.type != 'tool') continue;
+        if (p.tool != 'task' && p.tool != 'subagent') continue;
+        if (_partClaimsChild(p, childId, childTitle) && qualify(p)) return true;
+      }
+    }
+    return false;
+  }
+
+  bool isForegroundClaimedChild(String childId, {String? childTitle}) =>
+      _claimedBy(
+          childId, childTitle, (p) => p.toolInput?['background'] != true);
+
+  bool isActiveClaimedChild(String childId, {String? childTitle}) => _claimedBy(
+      childId,
+      childTitle,
+      (p) => p.toolStatus == 'streaming' || p.toolStatus == 'running');
+
+  bool isConvertedClaimedChild(String childId, {String? childTitle}) =>
+      _claimedBy(
+          childId,
+          childTitle,
+          (p) =>
+              p.toolStatus == 'completed' &&
+              p.toolInput?['background'] != true);
 
   /// 撤回误插的「已启动后台任务」提示：子会话注册可能早于其工具型 tool part
   /// 入流（SSE 竞态），一旦该 tool part 出现（`metadata.sessionID` 或
@@ -417,29 +453,105 @@ class ConversationStore extends ChangeNotifier {
 
   void _reconcileStartNotices() {
     if (!_hasStartNotice) return;
-    // 仅用权威的 `metadata.sessionID` 认领（description 启发式会误删措辞相近
-    // 的并发后台任务提示，故此处不采用——metadata 到达后自然收敛）。
-    final claimedIds = <String>{};
-    for (final m in _messages) {
-      for (final p in m.parts) {
-        if (p.type != 'tool') continue;
-        if (p.tool != 'task' && p.tool != 'subagent') continue;
-        final sid = p.toolMetadata?['sessionID']?.toString() ??
-            p.toolMetadata?['sessionId']?.toString();
-        if (sid != null && sid.isNotEmpty) claimedIds.add(sid);
-      }
-    }
-    if (claimedIds.isEmpty) return;
     final remove = <String>[];
     for (final m in _messages) {
       if (m.metadata?['kind'] != 'background-started') continue;
       final cid = m.metadata?['childID']?.toString();
-      if (cid != null && claimedIds.contains(cid)) remove.add(m.id);
+      if (cid == null || cid.isEmpty) continue;
+      if (isForegroundClaimedChild(cid,
+          childTitle: m.metadata?['label']?.toString())) {
+        remove.add(m.id);
+      }
     }
     if (remove.isEmpty) return;
     _messages.removeWhere((m) => remove.contains(m.id));
     _sort(const <String>{});
-    notifyListeners();
+    unawaited(_saveCache());
+    if (!_disposed) notifyListeners();
+  }
+
+  void rebuildStartNotices(List<SessionModel> children) {
+    if (_messages.isEmpty || children.isEmpty) return;
+    final lowerBound = _messages.first.created;
+    var changed = false;
+    for (final child in children) {
+      if (child.created < lowerBound) continue;
+      if (isForegroundClaimedChild(child.id, childTitle: child.title)) continue;
+      final id = 'bg-start:${child.id}';
+      final label = child.title.isNotEmpty ? child.title : child.id;
+      final existing = _findMessage(id);
+      if (existing == null) {
+        _upsertEntries([
+          SystemMessage(
+            id: id,
+            raw: {'id': id, 'type': 'system'},
+            metadata: {
+              'kind': 'background-started',
+              'childID': child.id,
+              'label': label,
+            },
+            created: child.created,
+            text: '',
+            description: label,
+          ),
+        ]);
+        changed = true;
+      } else if (existing.created != child.created ||
+          existing.description != label) {
+        existing
+          ..created = child.created
+          ..description = label
+          ..metadata = {...?existing.metadata, 'label': label};
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    _sort(const <String>{});
+    unawaited(_saveCache());
+    if (!_disposed) notifyListeners();
+  }
+
+  void reconcileConvertedNotices(List<SessionModel> runningChildren) {
+    if (runningChildren.isEmpty) return;
+    var now = DateTime.now().millisecondsSinceEpoch;
+    final lastCreated = _messages.isEmpty ? 0 : _messages.last.created;
+    if (now <= lastCreated) now = lastCreated + 1;
+    var changed = false;
+    for (final child in runningChildren) {
+      final id = 'bg-convert:${child.id}';
+      if (_findMessage(id) != null) continue;
+      if (!isConvertedClaimedChild(child.id, childTitle: child.title)) {
+        continue;
+      }
+      final label = child.title.isNotEmpty ? child.title : child.id;
+      _upsertEntries([
+        SystemMessage(
+          id: id,
+          raw: {'id': id, 'type': 'system'},
+          metadata: {
+            'kind': 'background-converted',
+            'childID': child.id,
+            'label': label,
+          },
+          created: now,
+          text: '',
+          description: label,
+        ),
+      ]);
+      changed = true;
+    }
+    if (!changed) return;
+    _sort(const <String>{});
+    unawaited(_saveCache());
+    if (!_disposed) notifyListeners();
+  }
+
+  void reconcileBackgroundNotices(
+      {required List<SessionModel> children,
+      required List<SessionModel> runningChildren}) {
+    _reconcileStartNotices();
+    rebuildStartNotices(children);
+    reconcileConvertedNotices(runningChildren);
   }
 
   bool get hasMore => _segments.firstOrNull?.cursor != null;
@@ -715,6 +827,13 @@ class ConversationStore extends ChangeNotifier {
     });
   }
 
+  void _reconcileBackgroundNoticesFromSource() {
+    final src = backgroundChildrenSource?.call(sessionId);
+    if (src == null) return;
+    reconcileBackgroundNotices(
+        children: src.children, runningChildren: src.runningChildren);
+  }
+
   Future<void> reconcile() async {
     if (_reconciling) return;
     _reconciling = true;
@@ -765,6 +884,7 @@ class ConversationStore extends ChangeNotifier {
       if (target > _syncedUpdated) _syncedUpdated = target;
       onContentSynced?.call(sessionId, target, fromReconcile: true);
       unawaited(_saveCache());
+      _reconcileBackgroundNoticesFromSource();
     } catch (e) {
       AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
       error = e;
@@ -843,6 +963,7 @@ class ConversationStore extends ChangeNotifier {
       }
       _sort(const <String>{});
       unawaited(_saveCache());
+      _reconcileBackgroundNoticesFromSource();
       return true;
     } catch (e) {
       AppLogger.I.e(_tag, 'loadOnePage failed $sessionId: $e');
@@ -900,7 +1021,7 @@ class ConversationStore extends ChangeNotifier {
     _touchMessages(const <String>{});
     _messages.removeWhere((m) =>
         !m.optimistic &&
-        m.metadata?['kind'] != 'background-started' &&
+        !(m.metadata?['kind']?.toString() ?? '').startsWith('background-') &&
         m.created > lo &&
         m.created < hi &&
         !ids.contains(m.id));
@@ -1379,6 +1500,7 @@ class ConversationStore extends ChangeNotifier {
           shellOutput: e.output,
         );
       case SyntheticMessage():
+        if (_isHiddenConversionSynthetic(e.text, e.metadata)) return null;
         return DisplayMessage(
           id: e.id,
           type: 'synthetic',
@@ -1655,7 +1777,12 @@ class ConversationStore extends ChangeNotifier {
   }
 
   void onToolFailed(String mid, String callId, Map<String, dynamic> error,
-      {List<ToolContentItem>? content}) {
+      {List<ToolContentItem>? content, Map<String, dynamic>? metadata}) {
+    if (metadata != null && metadata.isNotEmpty) {
+      final msg = _findMessage(mid);
+      final idx = msg?.parts.indexWhere((x) => x.id == '${mid}_tool_$callId') ?? -1;
+      if (idx >= 0) msg!.parts[idx].toolMetadata = metadata;
+    }
     final msg = error['message']?.toString() ?? error.toString();
     _setToolCompleted(mid, callId, 'error',
         output: content == null ? null : _toolContentText(content),
@@ -2042,9 +2169,24 @@ class ConversationStore extends ChangeNotifier {
     return m;
   }
 
+  static int _noticeRank(DisplayMessage m) {
+    if (m.optimistic) return 2;
+    if (m.type == 'synthetic' ||
+        (m.metadata?['kind']?.toString() ?? '').startsWith('background-')) {
+      return 1;
+    }
+    return 0;
+  }
+
   void _sort([Set<String>? changedIds]) {
     _touchMessages(changedIds);
-    _messages.sort((a, b) => a.created.compareTo(b.created));
+    _messages.sort((a, b) {
+      final byCreated = a.created.compareTo(b.created);
+      if (byCreated != 0) return byCreated;
+      final byRank = _noticeRank(a).compareTo(_noticeRank(b));
+      if (byRank != 0) return byRank;
+      return a.id.compareTo(b.id);
+    });
   }
 
   @visibleForTesting

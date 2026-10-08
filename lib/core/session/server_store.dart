@@ -760,6 +760,10 @@ class ServerStore extends ChangeNotifier {
     conv.onPermissionResolved = _markPermissionResolved;
     conv.onContentSynced = onContentSynced;
     conv.isSessionStaleSession = isSessionStale;
+    conv.backgroundChildrenSource = (parentSessionId) => (
+          children: childSessionsOf(parentSessionId),
+          runningChildren: runningChildSessionsOf(parentSessionId),
+        );
     conv.seedSyncedUpdated(_contentWatermarks[sid] ?? 0);
     _conversations[sid] = conv;
     final initStatus = statusOf(sid);
@@ -2177,6 +2181,10 @@ class ServerStore extends ChangeNotifier {
             mid, callId, meta is Map ? meta.cast<String, dynamic>() : null);
       case 'session.tool.success':
         conv.onToolSuccess(mid, callId, _parseToolContent(ev.properties['content']));
+        final runningChildren = runningChildSessionsOf(sid);
+        if (runningChildren.isNotEmpty) {
+          conv.reconcileConvertedNotices(runningChildren);
+        }
       case 'session.tool.failed':
         final err = ev.properties['error'];
         conv.onToolFailed(
@@ -2184,6 +2192,9 @@ class ServerStore extends ChangeNotifier {
           callId,
           err is Map ? err.cast<String, dynamic>() : const {},
           content: _parseToolContent(ev.properties['content']),
+          metadata: ev.properties['metadata'] is Map
+              ? (ev.properties['metadata'] as Map).cast<String, dynamic>()
+              : null,
         );
     }
     _updateStreamingPreview(sid, conv);

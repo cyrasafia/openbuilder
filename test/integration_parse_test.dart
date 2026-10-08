@@ -61,9 +61,20 @@ void main() {
     expect(msgs, isA<List>());
     if (msgs.isNotEmpty) {
       expect(
-          msgs.first.kind,
-          anyOf(equals('user'), equals('assistant'), equals('idle'),
-              equals('synthetic')));
+          const [
+            'user',
+            'assistant',
+            'idle',
+            'synthetic',
+            'system',
+            'skill',
+            'shell',
+            'compaction',
+            'agent-switched',
+            'model-switched',
+            'location-switched',
+          ],
+          contains(msgs.first.kind));
     }
   }, timeout: const Timeout(Duration(seconds: 20)));
 }

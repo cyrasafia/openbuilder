@@ -806,6 +806,10 @@ class _ConversationScreenState extends State<ConversationScreen>
     final fromText =
         RegExp(r'description="([^"]*)"').firstMatch(m.text ?? '')?.group(1);
     if (fromText != null && fromText.trim().isNotEmpty) return fromText.trim();
+    final agent = m.metadata?['agent']?.toString();
+    if (agent != null && agent.trim().isNotEmpty) return agent.trim();
+    final childId = m.metadata?['childID']?.toString();
+    if (childId != null && childId.trim().isNotEmpty) return childId.trim();
     return 'subagent';
   }
 
@@ -850,6 +854,14 @@ class _ConversationScreenState extends State<ConversationScreen>
         if (childId != null && childId.isNotEmpty) {
           onTap = () => _showTaskDetail(childId, name);
         }
+      case 'system' when m.metadata?['kind'] == 'background-converted':
+        final childId = m.metadata?['childID']?.toString();
+        final name = (m.metadata?['label'] ?? m.description ?? '').toString();
+        icon = Icons.north_east;
+        label = loc.bgTaskConverted(name);
+        if (childId != null && childId.isNotEmpty) {
+          onTap = () => _showTaskDetail(childId, name);
+        }
       case 'model-switched':
         icon = Icons.swap_horiz;
         label = '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}';
@@ -871,12 +883,12 @@ class _ConversationScreenState extends State<ConversationScreen>
     if (label.trim().isEmpty) return const SizedBox.shrink();
     return Padding(
       key: ValueKey(m.id),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.only(right: 12, top: 4, bottom: 4),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          padding: const EdgeInsets.only(right: 8, top: 6, bottom: 6),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1385,10 +1397,6 @@ class _ConversationScreenState extends State<ConversationScreen>
               _lastMsgCount = msgCount;
               _scheduleAutoScroll();
             }
-            final showFooter =
-                conv.permissions.isNotEmpty ||
-                conv.forms.isNotEmpty ||
-                conv.todos.any((t) => !t.done);
             return Column(
               children: [
                 Expanded(
@@ -1406,15 +1414,17 @@ class _ConversationScreenState extends State<ConversationScreen>
                     ],
                   ),
                 ),
-                if (showFooter)
-                  RepaintBoundary(
-                    child: _FooterPanel(
-                      todos: conv.todos,
-                      permissions: conv.permissions,
-                      questions: conv.forms,
-                      store: conv,
-                    ),
+                RepaintBoundary(
+                  child: _FooterPanel(
+                    parentSessionId: widget.sessionId,
+                    todos: conv.todos,
+                    permissions: conv.permissions,
+                    questions: conv.forms,
+                    store: conv,
+                    onViewTask: _showTaskDetail,
+                    onStopTask: _stopBackgroundTask,
                   ),
+                ),
                 if (_cmdMode)
                   _CommandHints(
                     query: _ctl.text,
@@ -1424,10 +1434,6 @@ class _ConversationScreenState extends State<ConversationScreen>
                         serverStore.commandsNotifier.value.isEmpty,
                     onPick: _pickCommand,
                   ),
-                _BackgroundTasksStrip(
-                  parentSessionId: widget.sessionId,
-                  onOpen: _showBackgroundTasks,
-                ),
                 RepaintBoundary(
                   child: _BottomBar(
                     sessionId: widget.sessionId,
@@ -1732,77 +1738,6 @@ class _ConversationScreenState extends State<ConversationScreen>
       }
     }
     _scheduleAutoScroll();
-  }
-
-  /// 当前会话的「用户后台任务」= running 直系子会话中、非工具型 tool part 承载者
-  /// （design-subagent-background §识别）。
-  List<SessionModel> _runningBackgroundTasks() {
-    final conv = serverStore.conversationForRead(widget.sessionId);
-    if (conv == null) return const [];
-    return serverStore
-        .runningChildSessionsOf(widget.sessionId)
-        .where((c) => !conv.isToolFormChild(c))
-        .toList(growable: false);
-  }
-
-  Future<void> _showBackgroundTasks() async {
-    if (_runningBackgroundTasks().isEmpty) return;
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: ListenableBuilder(
-          listenable: serverStore,
-          builder: (ctx, _) {
-            final live = _runningBackgroundTasks();
-            if (live.isEmpty) {
-              return Padding(
-                padding: const EdgeInsets.all(20),
-                child: Text(l(ctx).bgTaskDone),
-              );
-            }
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final t in live)
-                  ListTile(
-                    dense: true,
-                    leading:
-                        const Icon(Icons.rocket_launch_outlined, size: 18),
-                    title: Text(
-                      t.title.isNotEmpty ? t.title : t.id,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: (t.agent ?? '').isEmpty
-                        ? null
-                        : Text(t.agent!, style: const TextStyle(fontSize: 11)),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.visibility_outlined, size: 18),
-                          tooltip: l(ctx).bgTaskView,
-                          onPressed: () {
-                            Navigator.of(ctx).pop();
-                            _showTaskDetail(t.id, t.title);
-                          },
-                        ),
-                        IconButton(
-                          icon:
-                              const Icon(Icons.stop_circle_outlined, size: 18),
-                          tooltip: l(ctx).bgTaskStop,
-                          onPressed: () => _stopBackgroundTask(t.id),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
   }
 
   Future<void> _stopBackgroundTask(String childId) async {
@@ -2335,15 +2270,21 @@ class _TodoCard extends StatelessWidget {
 }
 
 class _FooterPanel extends StatefulWidget {
+  final String parentSessionId;
   final List<Todo> todos;
   final List<Permission> permissions;
   final List<FormInfo> questions;
   final ConversationStore store;
+  final void Function(String childId, String label) onViewTask;
+  final Future<void> Function(String childId) onStopTask;
   const _FooterPanel({
+    required this.parentSessionId,
     required this.todos,
     required this.permissions,
     required this.questions,
     required this.store,
+    required this.onViewTask,
+    required this.onStopTask,
   });
 
   @override
@@ -2355,45 +2296,65 @@ class _FooterPanelState extends State<_FooterPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final totalPending = widget.permissions.length + widget.questions.length;
-    final children = <Widget>[];
-    if (widget.permissions.isNotEmpty) {
-      children.add(
-        _PermissionCard(
-          key: ValueKey(widget.permissions.first.id),
-          permission: widget.permissions.first,
-          store: widget.store,
-          queueTotal: totalPending,
-        ),
-      );
-    } else if (widget.questions.isNotEmpty) {
-      children.add(
-        _FormCard(
-          key: ValueKey(widget.questions.first.id),
-          form: widget.questions.first,
-          store: widget.store,
-          queueTotal: totalPending,
-        ),
-      );
-    }
-    if (widget.todos.isNotEmpty && totalPending == 0) {
-      children.add(
-        _TodoCard(
-          todos: widget.todos,
-          collapsed: !_todoExpanded,
-          onToggle: () => setState(() => _todoExpanded = !_todoExpanded),
-        ),
-      );
-    }
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(mainAxisSize: MainAxisSize.min, children: children),
-      ),
+    return ListenableBuilder(
+      listenable: Listenable.merge([widget.store, serverStore]),
+      builder: (context, _) {
+        final totalPending =
+            widget.permissions.length + widget.questions.length;
+        final children = <Widget>[];
+        final tasks = serverStore
+            .runningChildSessionsOf(widget.parentSessionId)
+            .where((c) =>
+                !widget.store.isActiveClaimedChild(c.id, childTitle: c.title))
+            .toList(growable: false);
+        if (tasks.isNotEmpty) {
+          children.add(_BackgroundTaskCard(
+            tasks: tasks,
+            onView: widget.onViewTask,
+            onStop: widget.onStopTask,
+          ));
+        }
+        if (widget.permissions.isNotEmpty) {
+          children.add(
+            _PermissionCard(
+              key: ValueKey(widget.permissions.first.id),
+              permission: widget.permissions.first,
+              store: widget.store,
+              queueTotal: totalPending,
+            ),
+          );
+        } else if (widget.questions.isNotEmpty) {
+          children.add(
+            _FormCard(
+              key: ValueKey(widget.questions.first.id),
+              form: widget.questions.first,
+              store: widget.store,
+              queueTotal: totalPending,
+            ),
+          );
+        }
+        if (widget.todos.any((t) => !t.done) && totalPending == 0) {
+          children.add(
+            _TodoCard(
+              todos: widget.todos,
+              collapsed: !_todoExpanded,
+              onToggle: () => setState(() => _todoExpanded = !_todoExpanded),
+            ),
+          );
+        }
+        if (children.isEmpty) return const SizedBox.shrink();
+        return Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border:
+                Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(mainAxisSize: MainAxisSize.min, children: children),
+          ),
+        );
+      },
     );
   }
 }
@@ -3185,70 +3146,191 @@ class _SubagentPanelState extends State<_SubagentPanel>
 /// SubagentPanel 展开态的子会话消息流。独立滚动（贴底跟随、滚动条隐藏），
 /// 复用 _ToolChip 渲染子会话内的工具 part；text 走稳定 Markdown 路径
 /// （子会话不进 _messageChildCache 实例缓存——面板高度有界、条目少）。
-/// 常驻后台任务条（design-subagent-background §D1）：仅当存在 running 的
-/// 用户后台任务时显示，全部完成即消失；点击进入任务列表（查看 / 停止）。
-class _BackgroundTasksStrip extends StatelessWidget {
-  final String parentSessionId;
-  final VoidCallback onOpen;
-  const _BackgroundTasksStrip({
-    required this.parentSessionId,
-    required this.onOpen,
+/// 常驻后台任务卡（design-subagent-background §D1）：与授权/问题卡同款折叠卡，
+/// 默认收起；展开体逐项整行点击查看、行尾停止。
+class _BackgroundTaskCard extends StatefulWidget {
+  final List<SessionModel> tasks;
+  final void Function(String childId, String label) onView;
+  final Future<void> Function(String childId) onStop;
+  const _BackgroundTaskCard({
+    required this.tasks,
+    required this.onView,
+    required this.onStop,
   });
 
   @override
+  State<_BackgroundTaskCard> createState() => _BackgroundTaskCardState();
+}
+
+class _BackgroundTaskCardState extends State<_BackgroundTaskCard> {
+  bool _expanded = false;
+  final Set<String> _stopping = {};
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(_BackgroundTaskCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.tasks.isEmpty) _expanded = false;
+    _syncTicker();
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  void _syncTicker() {
+    final need = _expanded && widget.tasks.isNotEmpty;
+    if (need && _ticker == null) {
+      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!need && _ticker != null) {
+      _ticker?.cancel();
+      _ticker = null;
+    }
+  }
+
+  String _elapsed(int from) {
+    var s = (DateTime.now().millisecondsSinceEpoch - from) ~/ 1000;
+    if (s < 0) s = 0;
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    final sec = s % 60;
+    if (h > 0) return '${h}h ${m}m';
+    if (m > 0) return '${m}m ${sec}s';
+    return '${sec}s';
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final conv = serverStore.conversationForRead(parentSessionId);
-    final listenable = conv == null
-        ? serverStore
-        : Listenable.merge([serverStore, conv]);
-    return ListenableBuilder(
-      listenable: listenable,
-      builder: (context, _) {
-        final count = serverStore
-            .runningChildSessionsOf(parentSessionId)
-            .where((c) => conv == null || !conv.isToolFormChild(c))
-            .length;
-        if (count == 0) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-          child: Material(
-            color: theme.colorScheme.surfaceContainerHighest,
+    final scheme = Theme.of(context).colorScheme;
+    final loc = l(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh.withAlpha(120),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outline.withAlpha(100)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
             borderRadius: BorderRadius.circular(8),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: onOpen,
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                child: Row(
+            onTap: () {
+              setState(() => _expanded = !_expanded);
+              _syncTicker();
+            },
+            child: Row(
+              children: [
+                Icon(Icons.rocket_launch_outlined,
+                    size: 16, color: scheme.primary),
+                const SizedBox(width: 6),
+                Text(
+                  loc.bgTaskCardTitle,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  loc.bgTaskCardCount(widget.tasks.length),
+                  style: TextStyle(fontSize: 11.5, color: scheme.outline),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: scheme.outline,
+                ),
+              ],
+            ),
+          ),
+          if (_expanded)
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height *
+                    _kFooterCardContentHeightFactor,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.rocket_launch_outlined, size: 15),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${l(context).bgTaskRunning} ($count)',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: theme.colorScheme.onSurface,
+                    for (final t in widget.tasks)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: () => widget.onView(
+                            t.id, t.title.isNotEmpty ? t.title : t.id),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      t.title.isNotEmpty ? t.title : t.id,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      [
+                                        if ((t.agent ?? '').isNotEmpty) t.agent!,
+                                        _elapsed(t.created),
+                                      ].join(' · '),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        color: scheme.outline,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.stop_circle_outlined,
+                                    size: 18),
+                                tooltip: loc.bgTaskStop,
+                                onPressed: _stopping.contains(t.id)
+                                    ? null
+                                    : () async {
+                                        setState(() => _stopping.add(t.id));
+                                        try {
+                                          await widget.onStop(t.id);
+                                        } finally {
+                                          if (mounted) {
+                                            setState(
+                                                () => _stopping.remove(t.id));
+                                          }
+                                        }
+                                      },
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    Icon(
-                      Icons.chevron_right,
-                      size: 18,
-                      color: theme.colorScheme.outline,
-                    ),
                   ],
                 ),
               ),
             ),
-          ),
-        );
-      },
+        ],
+      ),
     );
   }
 }
