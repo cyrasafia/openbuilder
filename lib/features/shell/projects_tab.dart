@@ -202,10 +202,10 @@ List<_ProjItem> _buildItems(BuildContext context, String query) {
         final dir = entry.key;
         final name = dir.isEmpty ? 'global' : dir.split('/').last;
         if (!_matchesQuery(name, dir, query)) continue;
-        // Sort key comes from the monotonic activity map (includes archived
-        // sessions) so archiving the last session in this directory doesn't
-        // sink the row.
-        final last = serverStore.lastActivityForGlobalDir(dir);
+        // Sort key: latest `time.updated` among the directory's unarchived
+        // sessions; falls back to the activity watermark (includes archived)
+        // only when no unarchived sessions remain.
+        final last = serverStore.globalDirOrderKey(dir);
         items.add(_ProjItem(
           name: name,
           subtitle: dir.isEmpty ? 'global' : dir,
@@ -224,8 +224,8 @@ List<_ProjItem> _buildItems(BuildContext context, String query) {
     if (!_matchesQuery(p.displayName, p.canonical, query)) continue;
     final sess = serverStore.sessions.where((s) => s.projectID == p.id);
     final worktreeDirs = serverStore.worktreeDirsOf(p.id);
-    // See note above: monotonic activity (includes archived) for sort.
-    final last = serverStore.lastActivityForProject(p.id);
+    // See note above: unarchived `time.updated` max, watermark fallback.
+    final last = serverStore.projectOrderKey(p.id);
     items.add(_ProjItem(
       name: p.displayName,
       subtitle: p.canonical,

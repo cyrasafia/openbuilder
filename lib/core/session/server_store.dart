@@ -47,9 +47,6 @@ class ServerStore extends ChangeNotifier {
   static Duration healthProbeInterval = const Duration(seconds: 5);
   DateTime? _lastPreviewNotifyAt;
   static const _previewNotifyInterval = Duration(milliseconds: 120);
-  DateTime? _lastActivityNotifyAt;
-  Timer? _activityNotifyTimer;
-  static const _activityTouchInterval = Duration(milliseconds: 2500);
   bool _busyProbeInFlight = false;
   ConnectionProfile? _profile;
   CacheStore? _cacheStore;
@@ -273,11 +270,28 @@ class ServerStore extends ChangeNotifier {
     _scheduleCacheSave();
   }
 
-  int lastActivityForProject(String projectID) =>
-      _lastActivityByKey[projectID] ?? 0;
+  /// 项目列表排序键：未归档会话中最晚的 `time.updated`；一个都没有时
+  /// 退回 `_lastActivityByKey` 水位线（含已归档会话的历史最晚时间），
+  /// 避免刚归档全部会话的项目瞬间沉底。
+  int projectOrderKey(String projectID) {
+    var latest = 0;
+    for (final s in _sessions) {
+      if (s.projectID == projectID && s.updated > latest) latest = s.updated;
+    }
+    return latest > 0 ? latest : (_lastActivityByKey[projectID] ?? 0);
+  }
 
-  int lastActivityForGlobalDir(String directory) =>
-      _lastActivityByKey['global\u0000$directory'] ?? 0;
+  int globalDirOrderKey(String directory) {
+    var latest = 0;
+    for (final s in _sessions) {
+      if (s.projectID == 'global' &&
+          s.directory == directory &&
+          s.updated > latest) {
+        latest = s.updated;
+      }
+    }
+    return latest > 0 ? latest : (_lastActivityByKey['global\u0000$directory'] ?? 0);
+  }
 
   void _bumpLastActivity(SessionModel s) {
     if (s.updated <= 0) return;
@@ -753,7 +767,9 @@ class ServerStore extends ChangeNotifier {
     _conversations[sid] = conv;
     final initStatus = statusOf(sid);
     conv.setStatus(initStatus.type, retryMessage: initStatus.message);
-    conv.sessionUpdated = sessionById(sid)?.updated;
+    final initSession = sessionById(sid);
+    conv.sessionUpdated =
+        initSession == null ? null : _effectiveFresh(initSession);
     if (_ghostSessionIds.contains(sid)) conv.markWorkspaceMissing();
     for (final p in _pendingPermissions.values) {
       if (_cardHostSessionId(p.sessionID) == sid) conv.onPermission(p);
@@ -822,7 +838,9 @@ class ServerStore extends ChangeNotifier {
     if (existing != null) {
       _conversations.remove(sessionId);
       _conversations[sessionId] = existing;
-      existing.sessionUpdated = sessionById(sessionId)?.updated;
+      final touch = sessionById(sessionId);
+      existing.sessionUpdated =
+          touch == null ? null : _effectiveFresh(touch);
       if (!existing.loaded) {
         existing.setBackfillCallback(() => _backfillPreview(sessionId, existing));
         unawaited(existing.load()
@@ -1067,12 +1085,12 @@ class ServerStore extends ChangeNotifier {
       _projects = projects;
       _projectsFetched = true;
       _diffStaleSessions(sessions, full: true, busySids: _busySids());
-      _sessions = _mergeFetchedSessions(sessions);
+      _sessions = sessions;
       _markGhostSessions(ghostIds);
       final active = await _fetchActiveStatuses();
       if (active != null) {
         _mergeStatus(fresh: active, sessions: sessions);
-        unawaited(_probeBusyMessageTimes(allowStaleVerdict: true));
+        unawaited(_probeBusyMessageTimes());
       }
       _inferWorkspaceForNewProjects();
       return true;
@@ -1270,19 +1288,19 @@ class ServerStore extends ChangeNotifier {
       _projects = newProjects;
       _diffStaleSessions(sessions,
           full: true, busySids: _busySids(active: active));
-      _sessions = _mergeFetchedSessions(sessions);
+      _sessions = sessions;
       _markGhostSessions(ghostIds);
       if (active != null) {
         _mergeStatus(fresh: active, sessions: sessions);
-        unawaited(_probeBusyMessageTimes(
-            allowStaleVerdict: _sseLive || force));
+        if (_sseLive || force) unawaited(_probeBusyMessageTimes());
       }
       _inferWorkspaceForNewProjects();
       for (final conv in _conversations.values) {
         final s = statusOf(conv.sessionId);
         conv.setStatus(s.type, retryMessage: s.message);
         final fresh = sessionById(conv.sessionId);
-        conv.sessionUpdated = fresh?.updated;
+        conv.sessionUpdated =
+            fresh == null ? null : _effectiveFresh(fresh);
         if (fresh != null) conv.clearWorkspaceMissing();
       }
       _lastFullRefreshAt = DateTime.now();
@@ -1534,10 +1552,6 @@ class ServerStore extends ChangeNotifier {
   void upsertSessionForTesting(SessionModel s) => _upsertSession(s);
 
   @visibleForTesting
-  List<SessionModel> mergeFetchedSessionsForTesting(List<SessionModel> fetched) =>
-      _mergeFetchedSessions(fetched);
-
-  @visibleForTesting
   Future<void> probeBusyMessageTimesForTesting() => _probeBusyMessageTimes();
 
   @visibleForTesting
@@ -1646,10 +1660,6 @@ class ServerStore extends ChangeNotifier {
   int? watermarkOf(String sid) => _contentWatermarks[sid];
 
   @visibleForTesting
-  void probeBusyForTesting({bool allowStaleVerdict = false}) =>
-      _probeBusyMessageTimes(allowStaleVerdict: allowStaleVerdict);
-
-  @visibleForTesting
   void injectConversationForTesting(String sid, ConversationStore conv) {
     _conversations[sid] = conv;
   }
@@ -1742,13 +1752,9 @@ class ServerStore extends ChangeNotifier {
       case 'session.execution.started':
         final sid1 = ev.properties['sessionID']?.toString();
         if (sid1 != null) {
-          _touchActivity(sid1, ev.created);
           if (_statusMap[sid1]?.type == 'busy') return;
           _statusMap[sid1] = const SessionStatusValue('busy');
           _conversations[sid1]?.setStatus('busy');
-          // 子会话不在 _sessions，_touchActivity 会早退——显式通知列表/Tab
-          // 指示器，使父会话的「家族进行中」聚合即时生效。
-          if (isChildSession(sid1)) _notifyActivityThrottled();
           _scheduleCacheSave();
         }
         break;
@@ -1757,12 +1763,10 @@ class ServerStore extends ChangeNotifier {
       case 'session.execution.interrupted':
         final sid2 = ev.properties['sessionID']?.toString();
         if (sid2 != null) {
-          _touchActivity(sid2, ev.created);
           final wasBusy = _statusMap[sid2]?.type == 'busy' ||
               _statusMap[sid2]?.type == 'retry';
           _statusMap[sid2] = const SessionStatusValue('idle');
           _conversations[sid2]?.setStatus('idle');
-          if (isChildSession(sid2)) _notifyActivityThrottled();
           _scheduleCacheSave();
           if (wasBusy) {
             AppLogger.I.i(_tag, 'execution settled ${ev.type} $sid2');
@@ -1785,8 +1789,6 @@ class ServerStore extends ChangeNotifier {
           final message = error is Map ? error['message']?.toString() : null;
           if (_statusMap[sid3]?.type != 'retry') {
             _statusMap[sid3] = SessionStatusValue('retry', message: message);
-            // 子会话直接进入 retry 时也刷新父会话列表/Tab 的「家族进行中」聚合。
-            if (isChildSession(sid3)) _notifyActivityThrottled();
             _scheduleCacheSave();
           }
           _conversations[sid3]?.onRetryScheduled(
@@ -1804,7 +1806,6 @@ class ServerStore extends ChangeNotifier {
           final s = sessionById(sid4);
           if (s != null) {
             _upsertSession(s.copyWith(cost: _d(ev.properties['cost'])));
-            _touchActivity(sid4, ev.created);
           }
         }
         break;
@@ -1814,7 +1815,9 @@ class ServerStore extends ChangeNotifier {
         if (sid5 != null && _statusMap[sid5]?.type == 'retry') {
           _statusMap[sid5] = const SessionStatusValue('busy');
           _conversations[sid5]?.setStatus('busy');
-          if (isChildSession(sid5)) _notifyActivityThrottled();
+          // return 路径不走 switch 尾部统一 notify——显式刷新列表/Tab 指示器，
+          // 使父会话的「家族进行中」聚合即时生效。
+          notifyListeners();
           _scheduleCacheSave();
         }
         if (sid5 != null && mid5 != null) {
@@ -1829,7 +1832,6 @@ class ServerStore extends ChangeNotifier {
           );
           if (conv != null) _scheduleCacheSave();
         }
-        if (sid5 != null) _touchActivity(sid5, ev.created);
         return;
       case 'session.text.delta':
       case 'session.reasoning.delta':
@@ -1848,7 +1850,6 @@ class ServerStore extends ChangeNotifier {
             _updateStreamingPreview(sid6, conv);
           }
         }
-        if (sid6 != null) _touchActivity(sid6, ev.created, throttled: true);
         return;
       case 'session.text.started':
       case 'session.text.ended':
@@ -1874,7 +1875,6 @@ class ServerStore extends ChangeNotifier {
             _updateStreamingPreview(sid7, conv);
           }
         }
-        if (sid7 != null) _touchActivity(sid7, ev.created);
         return;
       case 'session.tool.input.started':
       case 'session.tool.input.delta':
@@ -1886,8 +1886,6 @@ class ServerStore extends ChangeNotifier {
         _onToolEvent(ev);
         return;
       case 'session.step.streamed':
-        final sidS = ev.properties['sessionID']?.toString();
-        if (sidS != null) _touchActivity(sidS, ev.created);
         return;
       case 'session.step.ended':
         final sid8 = ev.properties['sessionID']?.toString();
@@ -1905,7 +1903,6 @@ class ServerStore extends ChangeNotifier {
                 : null,
           );
         }
-        if (sid8 != null) _touchActivity(sid8, ev.created);
         return;
       case 'session.step.failed':
         final sid9 = ev.properties['sessionID']?.toString();
@@ -1921,7 +1918,6 @@ class ServerStore extends ChangeNotifier {
             finish: ev.properties['finish']?.toString(),
           );
         }
-        if (sid9 != null) _touchActivity(sid9, ev.created);
         return;
       case 'session.message.content.updated':
         final sidA = ev.properties['sessionID']?.toString();
@@ -1933,7 +1929,6 @@ class ServerStore extends ChangeNotifier {
             _updateStreamingPreview(sidA, conv);
           }
         }
-        if (sidA != null) _touchActivity(sidA, ev.created);
         return;
       case 'session.inbox.enqueued':
         final sidB = ev.properties['sessionID']?.toString();
@@ -1952,14 +1947,9 @@ class ServerStore extends ChangeNotifier {
             _notifyPreviewChanged();
             _scheduleCacheSave();
           }
-          _touchActivity(sidB, ev.created);
         }
         return;
       case 'session.inbox.delivered':
-        final sidDelivered = ev.properties['sessionID']?.toString();
-        if (sidDelivered != null) {
-          _touchActivity(sidDelivered, ev.created);
-        }
         return;
       case 'session.inbox.cancelled':
         final sidCancel = ev.properties['sessionID']?.toString();
@@ -1975,7 +1965,6 @@ class ServerStore extends ChangeNotifier {
             _notifyPreviewChanged();
             _scheduleCacheSave();
           }
-          _touchActivity(sidCancel, ev.created);
         }
         return;
       case 'session.inbox.delivery.changed':
@@ -2244,51 +2233,7 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  SessionModel _withEffectiveActivity(SessionModel s, SessionModel? local) {
-    var effective = s.updated;
-    final idle = s.idle;
-    if (idle != null && idle > effective) effective = idle;
-    if (local != null && local.updated > effective) effective = local.updated;
-    return effective == s.updated ? s : s.copyWith(updated: effective);
-  }
-
-  List<SessionModel> _mergeFetchedSessions(List<SessionModel> fetched) {
-    final oldById = {for (final s in _sessions) s.id: s};
-    return [
-      for (final s in fetched) _withEffectiveActivity(s, oldById[s.id]),
-    ];
-  }
-
-  void _touchActivity(String sid, int? at, {bool throttled = false}) {
-    if (at == null) return;
-    final s = sessionById(sid);
-    if (s == null || at <= s.updated) return;
-    if (throttled &&
-        at - s.updated < _activityTouchInterval.inMilliseconds) {
-      return;
-    }
-    _upsertSession(s.copyWith(updated: at));
-    _notifyActivityThrottled();
-  }
-
-  void _notifyActivityThrottled() {
-    final now = DateTime.now();
-    if (_lastActivityNotifyAt == null ||
-        now.difference(_lastActivityNotifyAt!) >= _activityTouchInterval) {
-      _lastActivityNotifyAt = now;
-      _activityNotifyTimer?.cancel();
-      _activityNotifyTimer = null;
-      notifyListeners();
-    } else {
-      _activityNotifyTimer ??= Timer(_activityTouchInterval, () {
-        _lastActivityNotifyAt = DateTime.now();
-        _activityNotifyTimer = null;
-        notifyListeners();
-      });
-    }
-  }
-
-  Future<void> _probeBusyMessageTimes({bool allowStaleVerdict = false}) async {
+  Future<void> _probeBusyMessageTimes() async {
     final c = client;
     if (c == null || _busyProbeInFlight) return;
     final sids = _statusMap.entries
@@ -2302,16 +2247,10 @@ class ServerStore extends ChangeNotifier {
     try {
       for (final sid in sids) {
         try {
-          final summary = allowStaleVerdict
-              ? await c.latestMessageSummary(sid)
-              : LatestMessageSummary(at: await c.latestMessageAt(sid));
+          final summary = await c.latestMessageSummary(sid);
           final at = summary.at;
-          final s = sessionById(sid);
-          if (at != null && s != null && at > s.updated) {
-            _upsertSession(s.copyWith(updated: at));
-            touched = true;
-          }
-          if (!allowStaleVerdict || summary.message == null) continue;
+          final message = summary.message;
+          if (message == null) continue;
           final wm = _contentWatermarks[sid] ?? 0;
           if (at != null &&
               at - wm > _kProbeStaleMargin.inMilliseconds &&
@@ -2319,7 +2258,7 @@ class ServerStore extends ChangeNotifier {
             AppLogger.I.d(_tag, 'probe marked stale $sid at=$at wm=$wm');
           }
           if (isSessionStale(sid)) {
-            final pv = sessionMessagePreviewText(summary.message!,
+            final pv = sessionMessagePreviewText(message,
                 hideReasoning: !_reasoningVisibleInPreview, loc: _loc);
             if (pv != null && pv.isNotEmpty) {
               _lastMessage[sid] = pv;
@@ -2332,7 +2271,7 @@ class ServerStore extends ChangeNotifier {
     } finally {
       _busyProbeInFlight = false;
     }
-    if (touched) _notifyActivityThrottled();
+    if (touched) _notifyPreviewChanged();
   }
 
   void _applyMetadataSnapshot(String sid, Map meta) {
@@ -2345,10 +2284,8 @@ class ServerStore extends ChangeNotifier {
     _upsertSession(s.withMetadataArchivedAt(v is num ? v.toInt() : null));
   }
 
-  void _upsertSession(SessionModel raw) {
-    final idx = _sessions.indexWhere((x) => x.id == raw.id);
-    final s = _withEffectiveActivity(
-        raw, idx == -1 ? null : _sessions[idx]);
+  void _upsertSession(SessionModel s) {
+    final idx = _sessions.indexWhere((x) => x.id == s.id);
     _bumpLastActivity(s);
     if (s.parentID != null) {
       _sessions.removeWhere((x) => x.id == s.id);
@@ -2620,8 +2557,6 @@ class ServerStore extends ChangeNotifier {
     _stopHealthProbe();
     _previewNotifyTimer?.cancel();
     _previewNotifyTimer = null;
-    _activityNotifyTimer?.cancel();
-    _activityNotifyTimer = null;
     _cacheSaveTimer?.cancel();
     _cacheSaveTimer = null;
     commandsNotifier.dispose();

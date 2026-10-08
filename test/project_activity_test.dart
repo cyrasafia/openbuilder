@@ -10,7 +10,7 @@ import 'package:open_builder/domain/models.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
 
-// A non-null [OpencodeClient] pointing at a discard port. The activity logic
+// A non-null [OpencodeClient] pointing at a discard port. The order-key logic
 // under test is purely local (no network calls), so this only satisfies the
 // non-null client guard in [ServerStore.ensureConversation].
 OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
@@ -32,7 +32,7 @@ const _profile = ConnectionProfile(
 // Direct SessionModel constructor — for tests that need to drive REST-path
 // code (e.g. _addSessions) without going through SSE event parsing.
 // time map shape matches `_sessionEvent` (only `updated` + optional
-// `archived`; `created` is irrelevant to activity logic and omitted for
+// `archived`; `created` is irrelevant to order-key logic and omitted for
 // symmetry — `SessionModel.fromJson` defaults it to 0).
 SessionModel _session({
   required String id,
@@ -63,33 +63,27 @@ void main() {
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
-  // PA-1: archiving the last active session in a project must NOT reset the
-  // project's sort position. Before the fix, `_upsertSession` removed the
-  // archived session from `_sessions` and `lastActivityForProject` returned 0
-  // (computed live from the now-empty `_sessions`), sinking the project to
-  // the bottom of the projects tab.
-  test('archiving last session keeps project activity (PA-1)', () {
+  // Order key = latest `time.updated` among the project's unarchived
+  // sessions. When none remain it falls back to the `_lastActivityByKey`
+  // watermark (includes archived sessions' history) so a freshly-emptied
+  // project doesn't instantly sink to the bottom.
+  test('order key follows unarchived sessions, watermark fallback (PA-1)', () {
     final store = ServerStore()..client = _fakeClient();
-    // Seed two unarchived sessions for project 'p1', updated=1000 and 2000.
     store.upsertSessionForTesting(
         _session(id: 's1', projectID: 'p1', directory: '/repo', updated: 1000));
     store.upsertSessionForTesting(
         _session(id: 's2', projectID: 'p1', directory: '/repo', updated: 2000));
-    expect(store.lastActivityForProject('p1'), 2000);
-    // Archive the most-recent session. setArchived leaves `time.updated`
-    // unchanged (verified in opencode source), so we send updated=2000 with
-    // archived set.
+    expect(store.projectOrderKey('p1'), 2000);
+    // Archive the most-recent session: the key now mirrors the remaining
+    // unarchived session (1000), NOT the higher watermark.
     store.upsertSessionForTesting(
         _session(id: 's2',
         projectID: 'p1',
         directory: '/repo',
         updated: 2000,
         archived: 9999));
-    // Session is gone from the active list...
-    expect(store.sessions.where((s) => s.id == 's2'), isEmpty);
-    // ...but the project's activity is preserved → no sink-to-bottom.
-    expect(store.lastActivityForProject('p1'), 2000);
-    // Archive the remaining session too — activity still preserves the max.
+    expect(store.projectOrderKey('p1'), 1000);
+    // Archive the remaining session too — watermark fallback kicks in.
     store.upsertSessionForTesting(
         _session(id: 's1',
         projectID: 'p1',
@@ -97,14 +91,31 @@ void main() {
         updated: 1000,
         archived: 9999));
     expect(store.sessions, isEmpty);
-    expect(store.lastActivityForProject('p1'), 2000);
+    expect(store.projectOrderKey('p1'), 2000);
+    store.dispose();
+  });
+
+  // Archived history must never LIFT a project above its unarchived max —
+  // the watermark is a fallback only, not a max() over both sources.
+  test('archived watermark does not lift order key (PA-1b)', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(
+        _session(id: 's1',
+        projectID: 'p1',
+        directory: '/repo',
+        updated: 9000,
+        archived: 9999));
+    store.upsertSessionForTesting(
+        _session(id: 's2', projectID: 'p1', directory: '/repo', updated: 1000));
+    expect(store.projectOrderKey('p1'), 1000);
     store.dispose();
   });
 
   // PA-2: global project is expanded per-directory in the projects tab, so
-  // activity must be keyed by directory under the global project — not lumped
-  // under projectID='global'. Verifies the keying scheme `global\0$directory`.
-  test('global project activity is keyed per-directory (PA-2)', () {
+  // the order key must be keyed by directory under the global project — not
+  // lumped under projectID='global'. Verifies the keying scheme
+  // `global\0$directory` (watermark) plus per-directory unarchived max.
+  test('global project order key is keyed per-directory (PA-2)', () {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(
         _session(id: 'g1',
@@ -116,8 +127,8 @@ void main() {
         projectID: 'global',
         directory: '/dirB',
         updated: 3000));
-    expect(store.lastActivityForGlobalDir('/dirA'), 1500);
-    expect(store.lastActivityForGlobalDir('/dirB'), 3000);
+    expect(store.globalDirOrderKey('/dirA'), 1500);
+    expect(store.globalDirOrderKey('/dirB'), 3000);
     // Cross-talk check: archiving in /dirA must not affect /dirB.
     store.upsertSessionForTesting(
         _session(id: 'g1',
@@ -125,37 +136,42 @@ void main() {
         directory: '/dirA',
         updated: 1500,
         archived: 9999));
-    expect(store.lastActivityForGlobalDir('/dirA'), 1500);
-    expect(store.lastActivityForGlobalDir('/dirB'), 3000);
+    expect(store.globalDirOrderKey('/dirA'), 1500);
+    expect(store.globalDirOrderKey('/dirB'), 3000);
     store.dispose();
   });
 
-  // PA-3: activity is monotonic — an out-of-order or stale SSE event with an
-  // older `updated` must not regress the project's activity. This guards the
-  // `_bumpLastActivity` `if (s.updated > current)` condition.
-  test('activity is monotonic against older updates (PA-3)', () {
+  // PA-3: the primary key mirrors the server — an out-of-order snapshot with
+  // an older `updated` regresses the key (server is authoritative). The
+  // watermark behind the fallback stays monotonic.
+  test('order key mirrors server; watermark stays monotonic (PA-3)', () {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(
         _session(id: 's1', projectID: 'p1', directory: '/r', updated: 2000));
-    expect(store.lastActivityForProject('p1'), 2000);
-    // An older update arrives (e.g. reordered SSE event) — must not regress.
+    expect(store.projectOrderKey('p1'), 2000);
+    // An older snapshot arrives (e.g. reordered SSE replay) — key follows.
     store.upsertSessionForTesting(
         _session(id: 's1', projectID: 'p1', directory: '/r', updated: 500));
-    expect(store.lastActivityForProject('p1'), 2000);
-    // A newer update bumps it forward.
+    expect(store.projectOrderKey('p1'), 500);
+    // But the watermark kept 2000: archiving all sessions falls back to it,
+    // not to the regressed snapshot.
     store.upsertSessionForTesting(
-        _session(id: 's1', projectID: 'p1', directory: '/r', updated: 5000));
-    expect(store.lastActivityForProject('p1'), 5000);
+        _session(id: 's1',
+        projectID: 'p1',
+        directory: '/r',
+        updated: 500,
+        archived: 9999));
+    expect(store.projectOrderKey('p1'), 2000);
     store.dispose();
   });
 
   // PA-4: archived sessions arriving via REST bulk fetch (if the API ever
-  // exposes them) also count toward the project's activity. Today `/session`
+  // exposes them) also count toward the watermark fallback. Today `/session`
   // filters archived server-side, so this mainly locks the `_addSessions`
   // ordering invariant: bump happens BEFORE the archived/parent filter — not
   // after. Drives the REST path directly via `addSessionsForTesting`, not the
   // SSE `_upsertSession` path (which PA-1 already covers).
-  test('_addSessions bumps activity before archived filter (PA-4)', () {
+  test('_addSessions bumps watermark before archived filter (PA-4)', () {
     final store = ServerStore()..client = _fakeClient();
     final out = <String, SessionModel>{};
     store.addSessionsForTesting(out, [
@@ -171,30 +187,42 @@ void main() {
     expect(out.length, 1);
     expect(out['s1'], isNull);
     expect(out['s2'], isNotNull);
-    // ...but its activity was recorded before the filter dropped it.
-    expect(store.lastActivityForProject('p1'), 7777);
+    // ...its activity was recorded before the filter dropped it: with no
+    // unarchived sessions in the store the key falls back to the watermark.
+    expect(store.projectOrderKey('p1'), 7777);
+    // An unarchived session (REST path upserts it) overrides the watermark.
+    store.upsertSessionForTesting(
+        _session(id: 's2', projectID: 'p1', directory: '/r', updated: 1000));
+    expect(store.projectOrderKey('p1'), 1000);
+    // ...and archiving s2 exposes the recorded watermark (7777) again.
+    store.upsertSessionForTesting(
+        _session(id: 's2',
+        projectID: 'p1',
+        directory: '/r',
+        updated: 1000,
+        archived: 9999));
+    expect(store.projectOrderKey('p1'), 7777);
     store.dispose();
   });
 
   // PA-5: hard-deleting a session (SSE session.deleted → _removeSession) must
-  // NOT reset the project's activity. `_removeSession` intentionally keeps
-  // `_lastActivityByKey` — monotonicity holds across deletes too, so deleting
-  // the last observed session in a project doesn't sink the project. Locks
-  // the comment in `_removeSession` against a future regression that adds a
+  // NOT reset the project's order key — the watermark survives deletes, so
+  // deleting the last observed session doesn't sink the project. Locks the
+  // comment in `_removeSession` against a future regression that adds a
   // `_lastActivityByKey.remove(...)` line.
-  test('hard delete keeps project activity (PA-5)', () {
+  test('hard delete keeps project order key (PA-5)', () {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(
         _session(id: 's1', projectID: 'p1', directory: '/r', updated: 4321));
-    expect(store.lastActivityForProject('p1'), 4321);
+    expect(store.projectOrderKey('p1'), 4321);
     // Drive a session.deleted event → _removeSession.
     store.onEventForTesting(const OpencodeEvent(
       type: 'session.deleted',
       properties: <String, dynamic>{'sessionID': 's1'},
     ));
     expect(store.sessions, isEmpty);
-    // Activity is preserved even though the session is gone.
-    expect(store.lastActivityForProject('p1'), 4321);
+    // Order key is preserved even though the session is gone.
+    expect(store.projectOrderKey('p1'), 4321);
     store.dispose();
   });
 
@@ -241,7 +269,7 @@ void main() {
   // PA-R2a: cache round-trip — an `activity` blob written to SharedPreferences
   // by `_saveCache` is restored by `_loadCache`. Locks the JSON shape (NUL-
   // escaped key encoding, int value) and the v1 schema field name `activity`.
-  test('cache round-trip restores activity map (PA-R2a)', () async {
+  test('cache round-trip restores watermark (PA-R2a)', () async {
     await FileCacheStore(_profile.id).write('server', jsonEncode({
       'v': 1,
       'projects': <Map<String, dynamic>>[],
@@ -255,8 +283,8 @@ void main() {
     }));
     final store = ServerStore()..client = _fakeClient();
     await store.loadCacheForTesting(_profile);
-    expect(store.lastActivityForProject('p1'), 5000);
-    expect(store.lastActivityForGlobalDir('/dirA'), 7000);
+    expect(store.projectOrderKey('p1'), 5000);
+    expect(store.globalDirOrderKey('/dirA'), 7000);
     store.dispose();
   });
 
@@ -266,28 +294,35 @@ void main() {
   // equivalent to a straight fill; this test guards the defensive branch for
   // future call paths that might load cache after SSE starts.
   test('cache load uses monotonic-max merge (PA-R2b)', () async {
-    // In-memory value 9000 (fresher, set by SSE).
+    // In-memory watermark 9000 (fresher, set by SSE).
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(
         _session(id: 's1', projectID: 'p1', directory: '/r', updated: 9000));
-    expect(store.lastActivityForProject('p1'), 9000);
+    expect(store.projectOrderKey('p1'), 9000);
     // Cache has an older value 5000 — must NOT overwrite.
     await FileCacheStore(_profile.id).write('server', jsonEncode({
       'v': 1,
       'activity': {'p1': 5000},
     }));
     await store.loadCacheForTesting(_profile);
-    expect(store.lastActivityForProject('p1'), 9000);
+    expect(store.projectOrderKey('p1'), 9000);
+    // Drop the unarchived session so the key reads the watermark: the stale
+    // cached 5000 must not have overwritten the in-memory 9000.
+    store.onEventForTesting(const OpencodeEvent(
+      type: 'session.deleted',
+      properties: <String, dynamic>{'sessionID': 's1'},
+    ));
+    expect(store.projectOrderKey('p1'), 9000);
     // But for a key not yet in memory, the cached value fills in.
-    expect(store.lastActivityForProject('p2'), 0); // sanity: absent key
+    expect(store.projectOrderKey('p2'), 0); // sanity: absent key
     await FileCacheStore(_profile.id).write('server', jsonEncode({
       'v': 1,
       'activity': {'p2': 3000},
     }));
     await store.loadCacheForTesting(_profile);
-    expect(store.lastActivityForProject('p2'), 3000);
+    expect(store.projectOrderKey('p2'), 3000);
     // p1 should still be 9000 (loading p2's cache didn't reset p1's SSE value).
-    expect(store.lastActivityForProject('p1'), 9000);
+    expect(store.projectOrderKey('p1'), 9000);
     store.dispose();
   });
 }

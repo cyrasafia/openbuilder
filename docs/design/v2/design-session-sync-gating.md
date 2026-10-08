@@ -1292,3 +1292,14 @@ stale 会话在列表页显示「—」直到 SSE 实时推送（`_livePreviewSi
 ### 效果
 
 stale 会话在列表页预览位置显示空直到 SSE 实时推送（`_livePreviewSids` 揭示）或进详情页对账回填；不再显示「—」。「—」从此只代表"该会话没有可显示的消息"。
+---
+
+## 勘误（2026-10-09，design-session-activity-time 放弃后的联动）
+
+活动叠加设计已整体拆除（见 design-session-activity-time.md 放弃记录）。本文机制锚点按下列口径理解，水位判定逻辑本身不变：
+
+- `SessionModel.updated` 恢复为服务端 `time.updated` **纯镜像**。本文所有「叠加值（`_withEffectiveActivity` = max(raw updated, raw idle, SSE `created` 叠加, busy 探针值)）」的表述一律按 raw `time.updated` 理解（§2、§9.8）。
+- `_mergeFetchedSessions` / `_withEffectiveActivity` 已删除，`_bootstrap` 与 refresh 直接 `_sessions = sessions`（raw 列表）。§3.1「批量路径在 `_sessions = _mergeFetchedSessions(sessions)` 之前插 diff、输入用 raw 列表」的机制锚点失效，但结论平凡成立——输入本就是 raw 列表，`_diffStaleSessions` 的 `max(updated, idle)` 判定不受影响。
+- `_probeBusyMessageTimes` 的「探针值 > 叠加 updated 才回填」（活动时间职责）已删；探针仅保留本文 §5.1 的 stale 判定（GL-2/GL-3）与预览回写（GL-4）。`OpencodeClient.latestMessageAt` 并入 `latestMessageSummary`（GL-4 的扩展即最终形态，独占该端点）。
+- `conv.sessionUpdated` 三处绑定（`ensureConversation` / `conversationFor` / refresh 回写循环）统一改走 `_effectiveFresh = max(updated, idle)`，与 `ensureSessionFresh` / `reconcileConversation` 的重烙口径一致。§9.9 的「叠加值安全性论证」因叠加消失而平凡成立（raw updated ≤ reconcile 窗口拉取时刻的内容位置）。
+- `_touchActivity` / `_notifyActivityThrottled` 已删；其「均不推进水位」的约束（§9.8、mapping）随源消失自动满足。子会话 settled（design-session-settle-idle）与 retry→busy 回落（design-session-retry-recovery）的父家族聚合刷新改由 `_onGlobalEvent` 尾部统一 `notifyListeners()`（break 路径）与 `step.started` case 内显式 `notifyListeners()`（return 路径）承担。

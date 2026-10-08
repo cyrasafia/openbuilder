@@ -148,3 +148,9 @@ if (sid5 != null && _statusMap[sid5]?.type == 'retry') {
 |---|---|---|---|
 | RR-1 | 🟢 | 存量缓存残留：旧版 `onRetryScheduled` 已写入并持久化的 `msg.error` 不会被本次修复主动清除；在线场景首次对账以服务端快照自愈，离线窗口期展示一次旧错误 | ✅ §6 补「不写存量缓存迁移」条目并说明自愈路径 |
 | RR-2 | 🟢 | 连续重试时 `_statusMap.message`（幂等守卫只记首次错误）与 `conv.retryMessage`（每次更新最新）可短暂分叉；期间全量刷新会把气泡文本回退为旧错误，下一次 `retry.scheduled` 即纠正 | 知悉接受：改动前即存在的既有行为，纯展示回退、可自愈；§6 已明确不动该守卫 |
+
+---
+
+## 勘误（2026-10-09）
+
+§3.1 代码块与 §5 表格第 6 行的 `_notifyActivityThrottled` 已随 design-session-activity-time 放弃而删除；`step.started` retry→busy 回落的列表刷新现由该 case 内显式 `notifyListeners()` 承担（return 路径不走 switch 尾部统一 notify）。

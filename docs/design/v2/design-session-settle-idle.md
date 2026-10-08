@@ -104,3 +104,9 @@ if (wasBusy) { /* 通知 + stale reload 保留 */ }
 |------|------|
 | `lib/core/session/server_store.dart` | settle 分支（`session.execution.succeeded/failed/interrupted`）新增 `_conversations[sid2]?.setStatus('idle')`；wasRetry 分支的同类调用合并 |
 | `test/` | 新增/更新用例：settle 事件后 conv.status=='idle'（busy 与 retry 两条路径 + conv 不存在路径） |
+
+---
+
+## 勘误（2026-10-09）
+
+§5 表格第 6 行的 `_notifyActivityThrottled` 已随 design-session-activity-time 放弃而删除；子会话 settled 后的父家族聚合刷新现由 `_onGlobalEvent` 尾部统一 `notifyListeners()` 兜住（settle 分支走 break 路径）。

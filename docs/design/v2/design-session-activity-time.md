@@ -1,5 +1,9 @@
 # design-session-activity-time.md — 会话活动时间(最后更新时间)不回退
 
+> **状态：已放弃（2026-10-09）**。本设计的"活动叠加单调量"方案已整体拆除，
+> `SessionModel.updated` 恢复为服务端 `time.updated` 的纯镜像。根因调研与
+> 字段盘点两节仍有效；放弃原因与拆除清单见文末「放弃记录」。
+
 ## 问题
 
 会话列表页 / 项目详情页 / 项目列表页中,**进行中会话**的「最后更新时间」有时跳回几分钟以前,过一会又跳回来;排序随之抖动(会话先沉下去再弹回顶部)。
@@ -110,3 +114,64 @@ usage 事件的 cost 更新与时间叠加分离:cost 永远取事件值,时间�
 ## 评审意见
 
 (待评审)
+
+## 放弃记录（2026-10-09）
+
+### 放弃原因
+
+多个会话同时 running 时，流式事件持续改写各会话的活动叠加值，排序键互相超越，
+列表顺序来回跳动——本设计要解决的"抖动"以另一种形态复现，且体感更差
+（长 run 会话凭流式活动长期霸占顶部，压制了用户更晚提交 prompt 的会话）。
+
+### 替代语义
+
+- `SessionModel.updated` 恢复为服务端 `time.updated` 的**纯镜像**：SSE 流式事件
+  不再叠加，服务端快照无条件生效（不再防回退）。
+- 排序统一按原始 `time.updated` 降序（时间晚的在前）：
+  - 会话列表页 `sortedSessions()`、项目详情页按 worktree 分组内的排序——
+    代码不变，语义随镜像恢复自动生效；
+  - 项目列表改为 `projectOrderKey(projectID)` / `globalDirOrderKey(directory)`：
+    取项目内**未归档**会话最晚的 `time.updated`；一个未归档会话都没有时退回
+    `_lastActivityByKey` 水位线（含已归档会话的历史最晚时间），避免刚清空的
+    项目瞬间沉底。水位线**只作回退**，不再抬高仍有未归档会话的项目。
+- 列表「最后更新时间」显示（relTime）同步回到原始 `time.updated`
+  （run 期间冻结在 prompt 提交时刻）。
+
+### 拆除清单
+
+- `_withEffectiveActivity` / `_mergeFetchedSessions`（max 合并与防回退）；
+- `_touchActivity` 及全部 SSE 事件叠加点（step / text / usage / inbox /
+  execution 族）；`session.inbox.delivered`、`session.step.streamed` 回落为
+  显式空事件；
+- `_notifyActivityThrottled` + `_activityNotifyTimer` / `_activityTouchInterval`
+  节流三件套；run 边界的列表刷新改由事件分发尾部统一 notify 兜住，
+  `step.started` 的 retry→busy 在 return 路径上显式 `notifyListeners()`；
+- `_probeBusyMessageTimes` 的活动回填分支与 `OpencodeClient.latestMessageAt`。
+  探针本身保留，职责收敛为 sync-gating 的 stale 判定
+  （`latestMessageSummary`，见 design-session-sync-gating.md）。
+
+### 不随排序切换的语义
+
+- `conv.sessionUpdated`（sync-gating 的水位绑定值）保持
+  `_effectiveFresh = max(updated, idle)`——`ensureConversation` /
+  `conversationFor` / 全量对账回写循环三处绑定 2026-10-09 起统一走
+  `_effectiveFresh`，与 `ensureSessionFresh` / `reconcileConversation`
+  的既有重烙口径一致；水位判定不消费排序/显示语义。
+- `relTime` 显示随镜像恢复为原始 `time.updated`。
+
+### 交叉引用勘误
+
+以下现行文档中对已拆机制的引用按本记录理解（各文档末尾已附日期勘误）：
+`design-session-sync-gating.md`（`_withEffectiveActivity` / `_mergeFetchedSessions`
+/ `latestMessageAt` /「叠加值」表述 / 探针活动回填）、
+`design-session-settle-idle.md` 与 `design-session-retry-recovery.md`
+（`_notifyActivityThrottled`）。
+
+### 仍然有效的结论
+
+- 根因调研：服务端 `time.updated` 仅会话级操作 touch、run 期间冻结在 prompt
+  提交——恢复镜像后这就是客户端直接呈现的语义，调研结论继续成立；
+- 「最新消息时间」字段盘点：`time.streamed` 仍是唯一持久化实时源，供
+  sync-gating 的 stale 判定与 busy 探针使用；
+- `_lastActivityByKey` 水位线及其缓存 round-trip（`activity` 字段）保留，
+  仅服务项目列表回退排序。
