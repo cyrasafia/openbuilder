@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_builder/features/conversation/conversation_screen.dart';
 import 'package:open_builder/ui/theme.dart';
 
 // Regression test for the gray conversation-detail screen.
@@ -56,5 +57,35 @@ void main() {
     // Feeding the raw static-final theme to fromTheme is what crashed.
     expect(AppTheme.dark.textTheme.bodyMedium?.fontSize, isNull);
     expect(AppTheme.light.textTheme.bodyMedium?.fontSize, isNull);
+  });
+
+  testWidgets('conversation markdown sheet keeps heading line height CJK-safe',
+      (tester) async {
+    MarkdownStyleSheet? assistant;
+    MarkdownStyleSheet? user;
+    await tester.pumpWidget(MaterialApp(
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      home: Builder(builder: (context) {
+        assistant = buildConversationMdStyle(context, user: false);
+        user = buildConversationMdStyle(context, user: true);
+        return const SizedBox();
+      }),
+    ));
+    await tester.pump();
+    for (final sheet in [assistant!, user!]) {
+      final headings = [
+        sheet.h1,
+        sheet.h2,
+        sheet.h3,
+        sheet.h4,
+        sheet.h5,
+        sheet.h6,
+      ];
+      for (final h in headings) {
+        expect(h!.height, greaterThanOrEqualTo(1.45));
+        expect(h.color, isNotNull);
+      }
+    }
   });
 }

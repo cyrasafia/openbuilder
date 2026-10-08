@@ -117,6 +117,47 @@ _messagePalette(BuildContext context, bool user) {
   );
 }
 
+MarkdownStyleSheet buildConversationMdStyle(BuildContext context,
+    {required bool user}) {
+  final p = _messagePalette(context, user);
+  final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
+  return mdBase.copyWith(
+    p: TextStyle(fontSize: 14, height: 1.45, color: p.text),
+    pPadding: const EdgeInsets.only(bottom: 6),
+    strong: TextStyle(fontWeight: FontWeight.w600, color: p.text),
+    h1: mdBase.h1?.copyWith(color: p.text, height: 1.45),
+    h2: mdBase.h2?.copyWith(color: p.text, height: 1.45),
+    h3: mdBase.h3?.copyWith(color: p.text, height: 1.45),
+    h4: mdBase.h4?.copyWith(color: p.text, height: 1.45),
+    h5: mdBase.h5?.copyWith(color: p.text, height: 1.45),
+    h6: mdBase.h6?.copyWith(color: p.text, height: 1.45),
+    em: mdBase.em?.copyWith(color: p.text),
+    del: mdBase.del?.copyWith(color: p.text),
+    tableHead: mdBase.tableHead?.copyWith(color: p.text),
+    tableBody: mdBase.tableBody?.copyWith(color: p.text),
+    tableBorder: TableBorder.all(color: p.border),
+    tableColumnWidth: const IntrinsicColumnWidth(),
+    tableScrollbarThumbVisibility: false,
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: p.border, width: 1)),
+    ),
+    a: TextStyle(color: p.link),
+    code: TextStyle(fontSize: 13, fontFamily: 'monospace', color: p.code),
+    codeblockDecoration: BoxDecoration(
+      color: p.codeBackground,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: p.border),
+    ),
+    codeblockPadding: const EdgeInsets.all(12),
+    listBullet: TextStyle(color: p.text),
+    blockquote: TextStyle(color: p.text, fontStyle: FontStyle.italic),
+    blockquoteDecoration: BoxDecoration(
+      border: Border(left: BorderSide(color: p.quoteBar, width: 3)),
+    ),
+    blockquotePadding: const EdgeInsets.only(left: 12),
+  );
+}
+
 sealed class _PendingItem {
   const _PendingItem();
 }
@@ -847,7 +888,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                   style: TextStyle(
                     fontSize: 12,
                     color: scheme.onSurfaceVariant,
-                    height: 1.4,
+                    height: 1.45,
                   ),
                 ),
               ),
@@ -2103,45 +2144,8 @@ class _ConversationScreenState extends State<ConversationScreen>
     return TextStyle(fontSize: 14, height: 1.45, color: p.text);
   }
 
-  MarkdownStyleSheet _buildMdStyle({required bool user}) {
-    final p = _messagePalette(context, user);
-    final mdBase = MarkdownStyleSheet.fromTheme(Theme.of(context));
-    return mdBase.copyWith(
-      p: TextStyle(fontSize: 14, height: 1.45, color: p.text),
-      pPadding: const EdgeInsets.only(bottom: 6),
-      strong: TextStyle(fontWeight: FontWeight.w600, color: p.text),
-      h1: mdBase.h1?.copyWith(color: p.text),
-      h2: mdBase.h2?.copyWith(color: p.text),
-      h3: mdBase.h3?.copyWith(color: p.text),
-      h4: mdBase.h4?.copyWith(color: p.text),
-      h5: mdBase.h5?.copyWith(color: p.text),
-      h6: mdBase.h6?.copyWith(color: p.text),
-      em: mdBase.em?.copyWith(color: p.text),
-      del: mdBase.del?.copyWith(color: p.text),
-      tableHead: mdBase.tableHead?.copyWith(color: p.text),
-      tableBody: mdBase.tableBody?.copyWith(color: p.text),
-      tableBorder: TableBorder.all(color: p.border),
-      tableColumnWidth: const IntrinsicColumnWidth(),
-      tableScrollbarThumbVisibility: false,
-      horizontalRuleDecoration: BoxDecoration(
-        border: Border(top: BorderSide(color: p.border, width: 1)),
-      ),
-      a: TextStyle(color: p.link),
-      code: TextStyle(fontSize: 13, fontFamily: 'monospace', color: p.code),
-      codeblockDecoration: BoxDecoration(
-        color: p.codeBackground,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: p.border),
-      ),
-      codeblockPadding: const EdgeInsets.all(12),
-      listBullet: TextStyle(color: p.text),
-      blockquote: TextStyle(color: p.text, fontStyle: FontStyle.italic),
-      blockquoteDecoration: BoxDecoration(
-        border: Border(left: BorderSide(color: p.quoteBar, width: 3)),
-      ),
-      blockquotePadding: const EdgeInsets.only(left: 12),
-    );
-  }
+  MarkdownStyleSheet _buildMdStyle({required bool user}) =>
+      buildConversationMdStyle(context, user: user);
 
   void _onMdLink(String? href) {
     if (href == null || href.isEmpty) return;
@@ -2929,7 +2933,7 @@ class _ToolChipState extends State<_ToolChip>
               style: const TextStyle(
                 fontSize: 12,
                 color: Color(0xFFF85149),
-                height: 1.4,
+                height: 1.45,
               ),
             ),
           ),
@@ -3503,6 +3507,20 @@ class _SubagentMessageState extends State<_SubagentMessage> {
               children.add(cached);
               break;
             }
+            final mdBase = MarkdownStyleSheet.fromTheme(theme);
+            final mdSheet = mdBase.copyWith(
+              p: TextStyle(fontSize: 13, height: 1.45, color: appColors.code),
+              h1: mdBase.h1?.copyWith(height: 1.45),
+              h2: mdBase.h2?.copyWith(height: 1.45),
+              h3: mdBase.h3?.copyWith(height: 1.45),
+              h4: mdBase.h4?.copyWith(height: 1.45),
+              h5: mdBase.h5?.copyWith(height: 1.45),
+              h6: mdBase.h6?.copyWith(height: 1.45),
+              code: TextStyle(
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                  color: appColors.code),
+            );
             final built = Padding(
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: Column(
@@ -3513,14 +3531,7 @@ class _SubagentMessageState extends State<_SubagentMessage> {
                     data: _linkify(effective),
                     softLineBreak: isUser,
                     onTapLink: (text, href, title) => _onLink(context, href),
-                    styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                      p: TextStyle(
-                          fontSize: 13, height: 1.45, color: appColors.code),
-                      code: TextStyle(
-                          fontSize: 12,
-                          fontFamily: 'monospace',
-                          color: appColors.code),
-                    ),
+                    styleSheet: mdSheet,
                   ),
                   if (overLimit)
                     Padding(
