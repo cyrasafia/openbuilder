@@ -1874,19 +1874,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   void onRetryScheduled(String? mid, int attempt, Map<String, dynamic> error) {
-    final message = error['message']?.toString();
-    setStatus('retry', retryMessage: message);
-    if (mid != null) {
-      final msg = _findMessage(mid);
-      if (msg != null &&
-          msg.error == null &&
-          message != null &&
-          message.isNotEmpty) {
-        msg.error = error;
-        _touchMessages(<String>{mid});
-        notifyListeners();
-      }
-    }
+    setStatus('retry', retryMessage: error['message']?.toString());
   }
 
   void onExecutionSettled(String outcome) {

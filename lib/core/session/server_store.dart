@@ -1822,6 +1822,12 @@ class ServerStore extends ChangeNotifier {
       case 'session.step.started':
         final sid5 = ev.properties['sessionID']?.toString();
         final mid5 = ev.properties['assistantMessageID']?.toString();
+        if (sid5 != null && _statusMap[sid5]?.type == 'retry') {
+          _statusMap[sid5] = const SessionStatusValue('busy');
+          _conversations[sid5]?.setStatus('busy');
+          if (isChildSession(sid5)) _notifyActivityThrottled();
+          _scheduleCacheSave();
+        }
         if (sid5 != null && mid5 != null) {
           final conv = ensureConversation(sid5);
           conv?.onStepStarted(

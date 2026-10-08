@@ -305,14 +305,13 @@ void main() {
   });
 
   group('retry scheduled error propagation', () {
-    test('retry.scheduled propagates error to message error', () {
+    test('retry.scheduled drives the bubble, not the message error', () {
       final conv = _conv('s6', _fakeClient());
       conv.onStepStarted('m1');
       conv.onRetryScheduled('m1', 1, {'message': 'provider 502'});
       expect(conv.isRetry, isTrue);
       expect(conv.retryMessage, 'provider 502');
-      expect(conv.messages.single.error, isNotNull);
-      expect(conv.messages.single.error!['message'], 'provider 502');
+      expect(conv.messages.single.error, isNull);
     });
 
     test('retry.scheduled does not overwrite existing message error', () {
