@@ -1,6 +1,6 @@
 # 按需 SSE 连接池 — 设计文档
 
-> **⚠️ 已被取代（2026-08-24）**：[design-sse-global-event.md](../v2/design-sse-global-event.md)
+> **⚠️ 已被取代（2026-08-24）**：[design-sse-global-event.md](design-sse-global-event.md)
 > 的单条 `/global/event` 全局流取代本文的多连接模型（watchdog/required/idle 池整体删除）。
 > 本文 §1.3"关键实测结论"是误判——实测的是**裸 `/event`（过滤端点）**而非 `/global/event`，
 > 误判分析与代价记录见该文档 §1。本文以下为历史记录。
@@ -52,7 +52,7 @@ for (final dir in _eventDirectories()) {
 > 只剩 connected/heartbeat，观察为真但被泛化成了"单流不可用"。真正的无过滤单流
 > 端点 `/global/event`（GlobalBus 直通，v1.0.66 起可用，彼时已存在 8 个月）从未被测试。
 > 完整分析（含 spec 端点表"可选"标注如何屏蔽了该端点、Last-Event-ID 从未生效、
-> 按需池复杂度作为误判代价）见 [design-sse-global-event.md](../v2/design-sse-global-event.md) §1。
+> 按需池复杂度作为误判代价）见 [design-sse-global-event.md](design-sse-global-event.md) §1。
 
 ---
 
