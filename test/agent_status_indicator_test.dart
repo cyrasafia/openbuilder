@@ -5,6 +5,7 @@ import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/domain/models.dart';
 import 'package:open_builder/l10n/gen/app_localizations.dart';
+import 'package:open_builder/ui/theme.dart';
 import 'package:open_builder/ui/widgets.dart';
 
 Widget _wrap(Widget child) => MaterialApp(
@@ -112,7 +113,8 @@ void main() {
     expect(find.byIcon(Icons.help_outline), findsNothing);
   });
 
-  testWidgets('dots carry the desktop four-color palette', (tester) async {
+  testWidgets('dots carry the per-brightness four-color palette',
+      (tester) async {
     List<BoxDecoration> circleDecorations() => tester
         .widgetList<DecoratedBox>(find.byType(DecoratedBox))
         .map((b) => b.decoration)
@@ -120,28 +122,54 @@ void main() {
         .where((d) => d.shape == BoxShape.circle)
         .toList();
 
-    Future<void> show(AgentIndicatorState state) async {
-      await tester.pumpWidget(_wrap(AgentStatusGlyph(state: state)));
-      await tester.pump();
+    Future<void> show(AgentIndicatorState state, {bool dark = false}) async {
+      await tester.pumpWidget(MaterialApp(
+        theme: dark ? AppTheme.dark : AppTheme.light,
+        locale: const Locale('en'),
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [Locale('en'), Locale('zh')],
+        home: Scaffold(body: AgentStatusGlyph(state: state)),
+      ));
+      // MaterialApp animates theme switches via AnimatedTheme (200ms); a
+      // bare pump() would sample the lerp start. Pump past the transition —
+      // pumpAndSettle would hang on the _HaloDot breathing animation.
+      await tester.pump(const Duration(milliseconds: 300));
     }
 
     // Halo states: center dot renders the accent at full opacity (the halo
     // layer is alpha-animated).
     await show(const AgentIndicatorState(AgentRunState.working));
     expect(circleDecorations().map((d) => d.color),
+        contains(const Color(0xFF15803D)));
+    await show(const AgentIndicatorState(AgentRunState.working), dark: true);
+    expect(circleDecorations().map((d) => d.color),
         contains(const Color(0xFF1DAE4E)));
 
     await show(const AgentIndicatorState(AgentRunState.retrying));
     expect(circleDecorations().map((d) => d.color),
+        contains(const Color(0xFFB91C1C)));
+    await show(const AgentIndicatorState(AgentRunState.retrying), dark: true);
+    expect(circleDecorations().map((d) => d.color),
         contains(const Color(0xFFE5484D)));
 
-    // Static states: exactly one dot. Light theme (test default) renders the
-    // desktop light waiting amber; idle is dimmed to 0.55 alpha.
+    // Static states: exactly one dot. The waiting amber is per-brightness;
+    // idle is dimmed to 0.55 alpha.
     await show(const AgentIndicatorState(AgentRunState.paused,
         pauseReason: AgentPauseReason.permission, pendingCount: 1));
     expect(circleDecorations().single.color, const Color(0xFFB8860B));
+    await show(const AgentIndicatorState(AgentRunState.paused,
+        pauseReason: AgentPauseReason.permission, pendingCount: 1),
+        dark: true);
+    expect(circleDecorations().single.color, const Color(0xFFFBBF24));
 
     await show(const AgentIndicatorState(AgentRunState.idle));
+    expect((circleDecorations().single.color!.a * 255).round(), 140);
+    await show(const AgentIndicatorState(AgentRunState.idle), dark: true);
     expect((circleDecorations().single.color!.a * 255).round(), 140);
   });
 

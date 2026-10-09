@@ -198,18 +198,26 @@ String _agentStatusLabel(AgentIndicatorState state, AppLocalizations l) =>
             : l.agentNeedChoice,
     };
 
-/// Four-color dot palette aligned with the openbuilder-desktop session status
-/// dots (tokens.css --status-running / --status-error / --status-waiting).
-/// Single source of truth for the pill and the compact indicators: working =
-/// green (breathing), retrying = red (breathing, red only flags the error
-/// cause), failed = red (static, terminal), paused/waiting = amber (static),
-/// idle = outline gray (static).
+/// Four-color dot palette, one row per brightness. Dark theme keeps the
+/// openbuilder-desktop session dots (tokens.css --status-running /
+/// --status-error / --status-waiting, tuned for #0E0F12). Light theme darkens
+/// green/red to >= 4.5:1 on #F7F8FA — the accent also paints the pill label
+/// text (11.5px) and the paused border, not just the dot. The waiting amber
+/// keeps the desktop light value #B8860B: darker compliant variants read as
+/// mud-brown and lose meaning when the dot is used alone (recognition over
+/// contrast, per design-error-message §3.3). Single source of truth for the
+/// pill and the compact indicators: working = green (breathing), retrying =
+/// red (breathing, red only flags the error cause), failed = red (static,
+/// terminal), paused/waiting = amber (static), idle = outline gray (static).
 Color _agentAccentColor(AgentRunState state, BuildContext context) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   return switch (state) {
-    AgentRunState.working => const Color(0xFF1DAE4E),
-    AgentRunState.retrying => const Color(0xFFE5484D),
-    AgentRunState.failed => const Color(0xFFE5484D),
+    AgentRunState.working =>
+      dark ? const Color(0xFF1DAE4E) : const Color(0xFF15803D),
+    AgentRunState.retrying =>
+      dark ? const Color(0xFFE5484D) : const Color(0xFFB91C1C),
+    AgentRunState.failed =>
+      dark ? const Color(0xFFE5484D) : const Color(0xFFB91C1C),
     AgentRunState.paused =>
       dark ? const Color(0xFFFBBF24) : const Color(0xFFB8860B),
     AgentRunState.idle => Theme.of(context).colorScheme.outline,
