@@ -70,6 +70,14 @@ void main() {
     state = store.agentIndicatorStateOf('session-1');
     expect(state.state, AgentRunState.working);
     expect(state.pendingCount, 0);
+
+    store.onEventForTesting(const OpencodeEvent(
+      type: 'session.execution.failed',
+      properties: {'sessionID': 'session-1'},
+    ));
+    state = store.agentIndicatorStateOf('session-1');
+    expect(state.state, AgentRunState.failed);
+    store.dispose();
   });
 
   testWidgets('indicator renders all visible states and pending count',
@@ -85,6 +93,9 @@ void main() {
     await show(const AgentIndicatorState(AgentRunState.retrying));
     expect(find.text('Retrying'), findsOneWidget);
     expect(find.byIcon(Icons.autorenew), findsNothing);
+
+    await show(const AgentIndicatorState(AgentRunState.failed));
+    expect(find.text('Failed'), findsOneWidget);
 
     await show(const AgentIndicatorState(AgentRunState.idle));
     expect(find.text('Idle'), findsOneWidget);

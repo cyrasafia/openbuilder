@@ -466,6 +466,53 @@ void main() {
     });
   });
 
+  group('reconcile finish→status inference', () {
+    test('terminal error finish marks the conversation error', () async {
+      final entries = [
+        assistantMsg(
+            id: 'msg_e1',
+            created: 500,
+            content: [textPart('boom')],
+            finish: 'error'),
+      ];
+      final conv = _conv('s1', PageMockClient(entries));
+      await conv.reconcile();
+      expect(conv.status, 'error');
+      conv.dispose();
+    });
+
+    test('idle inference from stop finish is unchanged', () async {
+      final entries = [
+        assistantMsg(
+            id: 'msg_s1',
+            created: 500,
+            content: [textPart('done')],
+            finish: 'stop'),
+      ];
+      final conv = _conv('s1', PageMockClient(entries));
+      await conv.reconcile();
+      expect(conv.status, 'idle');
+      conv.dispose();
+    });
+
+    test('inference is skipped while the conversation is busy', () async {
+      final entries = [
+        assistantMsg(
+            id: 'msg_e1',
+            created: 500,
+            content: [textPart('boom')],
+            finish: 'error'),
+      ];
+      final conv = _conv('s1', PageMockClient(entries));
+      conv.setStatus('busy');
+      await conv.reconcile();
+      expect(conv.status, 'busy',
+          reason: 'a page fetched before the new run started must not '
+              'settle it to the old terminal finish');
+      conv.dispose();
+    });
+  });
+
   group('optimistic→authoritative bridging', () {
     test('reconcile supersedes a pending optimistic user message (no double echo)',
         () async {

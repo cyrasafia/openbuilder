@@ -265,12 +265,13 @@ List<AgentIndicatorState> _statesFor(
 }
 
 // Status display order for the collapsed (>4 sessions) summary:
-// 空闲 > 运行中 > 暂停 > 重试.
+// 空闲 > 运行中 > 暂停 > 重试 > 失败.
 const _statusOrder = <AgentRunState>[
   AgentRunState.idle,
   AgentRunState.working,
   AgentRunState.paused,
   AgentRunState.retrying,
+  AgentRunState.failed,
 ];
 
 /// Renders a project's session-status summary in place of the old session

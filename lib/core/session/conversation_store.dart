@@ -203,6 +203,8 @@ class ConversationStore extends ChangeNotifier {
   ({List<SessionModel> children, List<SessionModel> runningChildren}) Function(
       String parentSessionId)? backgroundChildrenSource;
 
+  void Function(String status)? onReconciledStatus;
+
   final CacheStore? cacheStore;
 
   ConversationStore(this.sessionId, this.client,
@@ -851,13 +853,16 @@ class ConversationStore extends ChangeNotifier {
       final entries = page.entries;
       AppLogger.I.d(_tag,
           'reconcile fetched ${entries.length} messages $sessionId hasCursor=${page.olderCursor != null}');
-      if (entries.isNotEmpty) {
+      if (entries.isNotEmpty && !busy) {
         final last = entries.last;
         if (last is IdleMessage) {
-          setStatus('idle');
-        } else if (last is AssistantMessage &&
-            (last.finish == 'stop' || last.finish == 'error')) {
-          setStatus('idle');
+          applyReconciledStatus('idle');
+        } else if (last is AssistantMessage) {
+          if (last.finish == 'stop') {
+            applyReconciledStatus('idle');
+          } else if (last.finish == 'error') {
+            applyReconciledStatus('error');
+          }
         }
       }
       final overlapped = _entriesOverlapSegment(entries, 0);
@@ -2002,6 +2007,11 @@ class ConversationStore extends ChangeNotifier {
 
   void onRetryScheduled(String? mid, int attempt, Map<String, dynamic> error) {
     setStatus('retry', retryMessage: error['message']?.toString());
+  }
+
+  void applyReconciledStatus(String s) {
+    setStatus(s);
+    onReconciledStatus?.call(s);
   }
 
   void onExecutionSettled(String outcome) {

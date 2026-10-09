@@ -14,6 +14,7 @@
   "errorGeneric": "操作失败，请稍后重试",
   "agentRunning": "运行中",
   "agentRetrying": "重试中",
+  "agentFailed": "失败",
   "agentIdle": "空闲",
   "agentNeedAuth": "需要授权",
   "agentNeedChoice": "需要选择",

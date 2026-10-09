@@ -133,7 +133,7 @@ void main() {
     store.dispose();
   });
 
-  test('replay retry-exhausted sequence ends idle with terminal error', () {
+  test('replay retry-exhausted sequence ends error with terminal error', () {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(_session('s1'));
     final conv = ConversationStore('s1', _fakeClient());
@@ -160,8 +160,8 @@ void main() {
     store.onEventForTesting(_ev('session.execution.failed', 's1'));
 
     final msg = conv.messages.firstWhere((m) => m.id == mid);
-    expect(store.statusOf('s1').type, 'idle');
-    expect(conv.status, 'idle');
+    expect(store.statusOf('s1').type, 'error');
+    expect(conv.status, 'error');
     expect(conv.retryMessage, isNull);
     expect(msg.error?['message'],
         'Upstream request failed (503), attempts exhausted.',

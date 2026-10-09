@@ -212,11 +212,13 @@ class ServerStore extends ChangeNotifier {
       _statusMap[id] ?? const SessionStatusValue('idle');
 
   /// 家族（family）聚合状态：自身 + 全部后代子会话。
-  /// 子会话进行中时父会话据此展示为进行中；`retry` 优先于 `busy`。
+  /// 子会话进行中时父会话据此展示为进行中；`retry` 优先于 `busy`；
+  /// `error` 只取自身终态错误，后代错误不上浮（防陈旧子会话污染父行）。
   /// 仅在需要「家族进行中」语义的展示口径使用（design-subagent-background）。
   SessionStatusValue sessionActivity(String id) {
     var retry = false;
     var busy = false;
+    var selfError = false;
     final visited = <String>{};
     final stack = <String>[id];
     while (stack.isNotEmpty) {
@@ -227,12 +229,15 @@ class ServerStore extends ChangeNotifier {
         retry = true;
       } else if (type == 'busy') {
         busy = true;
+      } else if (type == 'error' && sid == id) {
+        selfError = true;
       }
       final children = _childrenByParent[sid];
       if (children != null) stack.addAll(children);
     }
     if (retry) return const SessionStatusValue('retry');
     if (busy) return const SessionStatusValue('busy');
+    if (selfError) return const SessionStatusValue('error');
     return const SessionStatusValue('idle');
   }
 
@@ -348,6 +353,7 @@ class ServerStore extends ChangeNotifier {
     return switch (sessionActivity(sessionId).type) {
       'busy' => const AgentIndicatorState(AgentRunState.working),
       'retry' => const AgentIndicatorState(AgentRunState.retrying),
+      'error' => const AgentIndicatorState(AgentRunState.failed),
       _ => const AgentIndicatorState(AgentRunState.idle),
     };
   }
@@ -763,6 +769,7 @@ class ServerStore extends ChangeNotifier {
           children: childSessionsOf(parentSessionId),
           runningChildren: runningChildSessionsOf(parentSessionId),
         );
+    conv.onReconciledStatus = (s) => _onConvReconciledStatus(sid, s);
     conv.seedSyncedUpdated(_contentWatermarks[sid] ?? 0);
     _conversations[sid] = conv;
     final initStatus = statusOf(sid);
@@ -1115,11 +1122,29 @@ class ServerStore extends ChangeNotifier {
     _statusMap.forEach((id, v) {
       if (v.type == 'retry' && fresh.containsKey(id)) {
         merged[id] = v;
+      } else if (v.type == 'error' && !fresh.containsKey(id)) {
+        merged[id] = v;
       }
     });
     _statusMap
       ..clear()
       ..addAll(merged);
+  }
+
+  void _onConvReconciledStatus(String sid, String status) {
+    final cur = _statusMap[sid]?.type;
+    if (status == 'idle' && cur == 'error') {
+      _statusMap[sid] = const SessionStatusValue('idle');
+      _scheduleCacheSave();
+      notifyListeners();
+    } else if (status == 'error' &&
+        cur != 'error' &&
+        cur != 'busy' &&
+        cur != 'retry') {
+      _statusMap[sid] = const SessionStatusValue('error');
+      _scheduleCacheSave();
+      notifyListeners();
+    }
   }
 
   Future<List<SessionModel>> _fetchAllSessions() async {
@@ -1765,8 +1790,11 @@ class ServerStore extends ChangeNotifier {
         if (sid2 != null) {
           final wasBusy = _statusMap[sid2]?.type == 'busy' ||
               _statusMap[sid2]?.type == 'retry';
-          _statusMap[sid2] = const SessionStatusValue('idle');
-          _conversations[sid2]?.setStatus('idle');
+          final settled = ev.type == 'session.execution.failed'
+              ? const SessionStatusValue('error')
+              : const SessionStatusValue('idle');
+          _statusMap[sid2] = settled;
+          _conversations[sid2]?.setStatus(settled.type);
           _scheduleCacheSave();
           if (wasBusy) {
             AppLogger.I.i(_tag, 'execution settled ${ev.type} $sid2');

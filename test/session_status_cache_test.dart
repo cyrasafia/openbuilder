@@ -140,6 +140,92 @@ void main() {
     store.dispose();
   });
 
+  test('error status survives a refresh while the session is inactive', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    store.onEventForTesting(_busyEvent('s1'));
+    store.onEventForTesting(const OpencodeEvent(
+      type: 'session.execution.failed',
+      properties: {'sessionID': 's1'},
+    ));
+    expect(store.statusOf('s1').type, 'error');
+
+    // A terminal error is not an active state: the session is absent from
+    // the active map, and that absence must NOT wash the error back to idle.
+    store.mergeStatusForTesting(
+      fresh: const {},
+      sessions: [_session(id: 's1', directory: '/dirA')],
+    );
+    expect(store.statusOf('s1').type, 'error',
+        reason: 'terminal error survives reconcile while nothing is running');
+    store.dispose();
+  });
+
+  test('error status is cleared once the session runs again', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    store.onEventForTesting(_busyEvent('s1'));
+    store.onEventForTesting(const OpencodeEvent(
+      type: 'session.execution.failed',
+      properties: {'sessionID': 's1'},
+    ));
+    expect(store.statusOf('s1').type, 'error');
+
+    // A fresh run reported by the active map replaces the stale error.
+    store.mergeStatusForTesting(
+      fresh: const {'s1': SessionStatusValue('busy')},
+      sessions: [_session(id: 's1', directory: '/dirA')],
+    );
+    expect(store.statusOf('s1').type, 'busy',
+        reason: 'a new run overrides a previous terminal error');
+    store.dispose();
+  });
+
+  test('reconciled idle clears a stale error from the status map', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    final conv = store.ensureConversation('s1');
+    store.onEventForTesting(_busyEvent('s1'));
+    store.onEventForTesting(const OpencodeEvent(
+      type: 'session.execution.failed',
+      properties: {'sessionID': 's1'},
+    ));
+    expect(store.statusOf('s1').type, 'error');
+
+    // The session re-ran to success while we were offline: the reconciled
+    // message page (finish=stop) is authoritative evidence of idle.
+    conv!.applyReconciledStatus('idle');
+    expect(store.statusOf('s1').type, 'idle',
+        reason: 'reconcile evidence clears the sticky error');
+    expect(conv.status, 'idle');
+    store.dispose();
+  });
+
+  test('reconciled terminal error propagates to an idle status map', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    final conv = store.ensureConversation('s1');
+
+    conv!.applyReconciledStatus('error');
+    expect(store.statusOf('s1').type, 'error',
+        reason: 'finish=error evidence marks the list status too');
+    expect(conv.status, 'error');
+    store.dispose();
+  });
+
+  test('reconciled error does not clobber a running status map', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session(id: 's1', directory: '/dirA'));
+    final conv = store.ensureConversation('s1');
+    store.onEventForTesting(_busyEvent('s1'));
+    expect(store.statusOf('s1').type, 'busy');
+
+    conv!.applyReconciledStatus('error');
+    expect(store.statusOf('s1').type, 'busy',
+        reason: 'a live run outranks page-tail error evidence');
+    store.dispose();
+  });
+
   test('resume applies fresh status for every successfully fetched session',
       () {
     final store = ServerStore()..client = _fakeClient();

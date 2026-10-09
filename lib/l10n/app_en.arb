@@ -14,6 +14,7 @@
   "errorGeneric": "Operation failed. Please try again later.",
   "agentRunning": "Running",
   "agentRetrying": "Retrying",
+  "agentFailed": "Failed",
   "agentIdle": "Idle",
   "agentNeedAuth": "Authorization needed",
   "agentNeedChoice": "Selection needed",

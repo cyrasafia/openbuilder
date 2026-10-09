@@ -127,6 +127,7 @@ class AgentStatusIndicator extends StatelessWidget {
     final label = switch (state.state) {
       AgentRunState.working => l.agentRunning,
       AgentRunState.retrying => l.agentRetrying,
+      AgentRunState.failed => l.agentFailed,
       AgentRunState.idle => l.agentIdle,
       AgentRunState.paused => state.pauseReason == AgentPauseReason.permission
           ? l.agentNeedAuth
@@ -137,6 +138,8 @@ class AgentStatusIndicator extends StatelessWidget {
           key: const ValueKey('working'), color: color),
       AgentRunState.retrying => _HaloDot(
           key: const ValueKey('retrying'), color: color),
+      AgentRunState.failed => _StaticDot(
+          key: const ValueKey('failed'), color: color),
       AgentRunState.idle => _StaticDot(
           key: const ValueKey('idle'), color: color, alpha: 140),
       AgentRunState.paused => _StaticDot(
@@ -187,6 +190,7 @@ String _agentStatusLabel(AgentIndicatorState state, AppLocalizations l) =>
     switch (state.state) {
       AgentRunState.working => l.agentRunning,
       AgentRunState.retrying => l.agentRetrying,
+      AgentRunState.failed => l.agentFailed,
       AgentRunState.idle => l.agentIdle,
       AgentRunState.paused =>
         state.pauseReason == AgentPauseReason.permission
@@ -198,12 +202,14 @@ String _agentStatusLabel(AgentIndicatorState state, AppLocalizations l) =>
 /// dots (tokens.css --status-running / --status-error / --status-waiting).
 /// Single source of truth for the pill and the compact indicators: working =
 /// green (breathing), retrying = red (breathing, red only flags the error
-/// cause), paused/waiting = amber (static), idle = outline gray (static).
+/// cause), failed = red (static, terminal), paused/waiting = amber (static),
+/// idle = outline gray (static).
 Color _agentAccentColor(AgentRunState state, BuildContext context) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   return switch (state) {
     AgentRunState.working => const Color(0xFF1DAE4E),
     AgentRunState.retrying => const Color(0xFFE5484D),
+    AgentRunState.failed => const Color(0xFFE5484D),
     AgentRunState.paused =>
       dark ? const Color(0xFFFBBF24) : const Color(0xFFB8860B),
     AgentRunState.idle => Theme.of(context).colorScheme.outline,
@@ -225,6 +231,7 @@ class AgentStatusGlyph extends StatelessWidget {
     final glyph = switch (state.state) {
       AgentRunState.working ||
       AgentRunState.retrying => _HaloDot(color: color),
+      AgentRunState.failed => _StaticDot(color: color),
       AgentRunState.paused => _StaticDot(color: color),
       AgentRunState.idle => _StaticDot(color: color, alpha: 140),
     };

@@ -43,7 +43,7 @@ void main() {
     store.dispose();
   });
 
-  test('execution.failed clears a retry conversation status', () {
+  test('execution.failed settles a retry conversation status to error', () {
     final store = ServerStore()..client = _fakeClient();
     store.upsertSessionForTesting(_session('s1'));
     final conv = ConversationStore('s1', _fakeClient());
@@ -51,10 +51,20 @@ void main() {
     conv.setStatus('retry', retryMessage: 'boom');
     store.onEventForTesting(_ev('session.retry.scheduled', 's1'));
     store.onEventForTesting(_ev('session.execution.failed', 's1'));
-    expect(store.statusOf('s1').type, 'idle');
-    expect(conv.status, 'idle');
+    expect(store.statusOf('s1').type, 'error');
+    expect(conv.status, 'error');
     expect(conv.retryMessage, isNull);
     conv.dispose();
+    store.dispose();
+  });
+
+  test('execution.failed settles without a conversation as error', () {
+    final store = ServerStore()..client = _fakeClient();
+    store.upsertSessionForTesting(_session('s1'));
+    store.onEventForTesting(_ev('session.execution.started', 's1'));
+    expect(store.statusOf('s1').type, 'busy');
+    store.onEventForTesting(_ev('session.execution.failed', 's1'));
+    expect(store.statusOf('s1').type, 'error');
     store.dispose();
   });
 
