@@ -137,6 +137,25 @@ usage 事件的 cost 更新与时间叠加分离:cost 永远取事件值,时间�
 - 列表「最后更新时间」显示（relTime）同步回到原始 `time.updated`
   （run 期间冻结在 prompt 提交时刻）。
 
+### 实时镜像补记（2026-10-09）
+
+「纯镜像」存在实时性缺口：会话级操作 touch 了服务端 `time.updated`，但
+`session.renamed` / `session.inbox.enqueued` / `session.metadata.updated` /
+`session.revert.*` 等 case 均不更新本地模型，列表排序须等下拉刷新的全量
+对账。修复（仍属纯镜像，非活动叠加）：服务端写 `time_updated =
+event.created`，故上述 touch 事件（含 `moved` / `agent|model.selected` /
+`permissions`）用信封 `created` 直接改写本地 `SessionModel.updated`
+（`ServerStore._mirrorTimeUpdated`：仅已知顶层会话、`created` 严格大于当前值
+才写、写后 notify）。流式族（step/text/tool/usage/execution）与 `viewed`
+不 touch 服务端字段，继续不参与——run 期间排序冻结语义不变，无多会话抖动。
+回归测试见 `test/session_activity_time_test.dart`。
+
+`session.forked` 刻意不镜像（2026-10-10 v2.0.18 活体实证）：fork 后源会话
+`time.updated` 前后不变（源行不 touch）；且事件 `data.sessionID` 指向**新**
+会话（`parentID` 才是源），对本端 unknown，镜像必然 no-op。附带发现：fork
+的新会话只发 `session.forked`、不发 `session.created`，客户端要等对账才见
+——新会话出现时机是独立缺口，不属本次排序修复范围。
+
 ### 拆除清单
 
 - `_withEffectiveActivity` / `_mergeFetchedSessions`（max 合并与防回退）；

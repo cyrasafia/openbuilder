@@ -1739,6 +1739,7 @@ class ServerStore extends ChangeNotifier {
         break;
       case 'session.renamed':
         final sid = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sid, ev.created);
         final title = ev.properties['title']?.toString();
         if (sid != null && title != null && title.isNotEmpty) {
           final s = sessionById(sid);
@@ -1755,21 +1756,26 @@ class ServerStore extends ChangeNotifier {
         }
         break;
       case 'session.moved':
+        _mirrorTimeUpdated(ev.properties['sessionID']?.toString(), ev.created);
         _scheduleReconcile();
         break;
       case 'session.agent.selected':
       case 'session.model.selected':
         final sid = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sid, ev.created);
         if (sid != null) unawaited(_refreshSessionMeta(sid));
         break;
       case 'session.metadata.updated':
         final sidM = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidM, ev.created);
         final metaM = ev.properties['metadata'];
         if (sidM != null && metaM is Map) {
           _applyMetadataSnapshot(sidM, metaM);
         }
         break;
       case 'session.permissions':
+        _mirrorTimeUpdated(ev.properties['sessionID']?.toString(), ev.created);
+        break;
       case 'session.viewed':
       case 'session.forked':
       case 'session.instructions.updated':
@@ -1960,6 +1966,7 @@ class ServerStore extends ChangeNotifier {
         return;
       case 'session.inbox.enqueued':
         final sidB = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidB, ev.created);
         final inboxB = ev.properties['inboxID']?.toString();
         final itemB = ev.properties['item'];
         if (sidB != null && inboxB != null && itemB is Map) {
@@ -2024,6 +2031,7 @@ class ServerStore extends ChangeNotifier {
       case 'session.revert.staged':
       case 'session.revert.cleared':
         final sidC = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidC, ev.created);
         if (sidC != null) {
           final conv = _conversations[sidC];
           if (conv != null) {
@@ -2033,6 +2041,7 @@ class ServerStore extends ChangeNotifier {
         break;
       case 'session.revert.committed':
         final sidR = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidR, ev.created);
         if (sidR != null) {
           final conv = _conversations[sidR];
           if (conv != null) {
@@ -2300,6 +2309,14 @@ class ServerStore extends ChangeNotifier {
       _busyProbeInFlight = false;
     }
     if (touched) _notifyPreviewChanged();
+  }
+
+  void _mirrorTimeUpdated(String? sid, int? created) {
+    if (sid == null || created == null) return;
+    final s = sessionById(sid);
+    if (s == null || created <= s.updated) return;
+    _upsertSession(s.copyWith(updated: created));
+    notifyListeners();
   }
 
   void _applyMetadataSnapshot(String sid, Map meta) {

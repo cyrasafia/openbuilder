@@ -8,8 +8,12 @@ import 'package:open_builder/domain/models.dart';
 /// Tests for raw `time.updated` mirroring. The effective-activity overlay of
 /// design-session-activity-time.md was abandoned (2026-10-09): it reordered
 /// the list back and forth while several sessions were running.
-/// `SessionModel.updated` now mirrors the server field only — SSE streaming
+/// `SessionModel.updated` mirrors the server field only — SSE streaming
 /// events and the busy probe never pad it, and server snapshots always win.
+/// Session-level events whose server handler writes `time_updated =
+/// event.created` (inbox.enqueued / renamed / moved / *.selected /
+/// metadata.updated / permissions / revert.*) mirror the envelope `created`
+/// so the list re-sorts without a manual refresh.
 
 const _t0 = 1790000000000;
 const _t1 = _t0 + 60000;
@@ -17,7 +21,7 @@ const _t2 = _t0 + 300000;
 const _t4 = _t0 + 600000;
 
 SessionModel _session(String id,
-        {int updated = _t1, int? idle, String title = 's'}) =>
+        {int updated = _t1, int? idle, String title = 's', String? parent}) =>
     SessionModel(
       id: id,
       projectID: 'p1',
@@ -26,6 +30,7 @@ SessionModel _session(String id,
       created: _t0,
       updated: updated,
       idle: idle,
+      parentID: parent,
     );
 
 OpencodeEvent _ev(String type, String sid, int? created) => OpencodeEvent(
@@ -43,7 +48,6 @@ void main() {
       store.onEventForTesting(_ev('session.step.started', 's1', _t2));
       store.onEventForTesting(_ev('session.text.delta', 's1', _t2));
       store.onEventForTesting(_ev('session.step.streamed', 's1', _t2));
-      store.onEventForTesting(_ev('session.inbox.enqueued', 's1', _t2));
       store.onEventForTesting(_ev('session.execution.started', 's1', _t2));
       store.onEventForTesting(_ev('session.execution.succeeded', 's1', _t4));
       expect(store.sessionById('s1')?.updated, _t1);
@@ -90,6 +94,69 @@ void main() {
       store.upsertSessionForTesting(_session('s3', updated: _t2));
       expect(store.sortedSessions().map((s) => s.id).toList(),
           ['s2', 's3', 's1']);
+      store.dispose();
+    });
+  });
+
+  group('session-level touch events mirror ev.created', () {
+    test('inbox.enqueued / renamed / metadata / permissions / revert mirror',
+        () {
+      final store = ServerStore()..client = _ProbeClient();
+      store.upsertSessionForTesting(_session('s1', updated: _t1));
+      store.onEventForTesting(_ev('session.inbox.enqueued', 's1', _t2));
+      expect(store.sessionById('s1')?.updated, _t2);
+      store.onEventForTesting(_ev('session.renamed', 's1', _t4));
+      expect(store.sessionById('s1')?.updated, _t4);
+      store.onEventForTesting(_ev('session.metadata.updated', 's1', _t0));
+      expect(store.sessionById('s1')?.updated, _t4);
+      store.onEventForTesting(_ev('session.permissions', 's1', null));
+      expect(store.sessionById('s1')?.updated, _t4);
+      store.onEventForTesting(_ev('session.revert.committed', 's1', _t4));
+      expect(store.sessionById('s1')?.updated, _t4);
+      store.dispose();
+    });
+
+    test('older created never regresses updated (monotonic guard)', () {
+      final store = ServerStore()..client = _ProbeClient();
+      store.upsertSessionForTesting(_session('s1', updated: _t4));
+      store.onEventForTesting(_ev('session.inbox.enqueued', 's1', _t1));
+      expect(store.sessionById('s1')?.updated, _t4);
+      store.dispose();
+    });
+
+    test('unknown sessions and child sessions are no-ops', () {
+      final store = ServerStore()..client = _ProbeClient();
+      store.upsertSessionForTesting(_session('s1', updated: _t1));
+      store.upsertSessionForTesting(_session('p1', updated: _t0));
+      store.upsertSessionForTesting(_session('c1', parent: 'p1'));
+      expect(store.sessionById('c1'), isNull);
+      store.onEventForTesting(_ev('session.inbox.enqueued', 'unknown', _t4));
+      store.onEventForTesting(_ev('session.inbox.enqueued', 'c1', _t4));
+      expect(store.sessionById('s1')?.updated, _t1);
+      expect(store.childSessionsOf('p1').single.updated, _t1);
+      store.dispose();
+    });
+
+    test('inbox.enqueued mirror notifies listeners (return path)', () {
+      final store = ServerStore()..client = _ProbeClient();
+      store.upsertSessionForTesting(_session('s1', updated: _t1));
+      var notified = 0;
+      store.addListener(() => notified++);
+      store.onEventForTesting(_ev('session.inbox.enqueued', 's1', _t2));
+      expect(notified, 1);
+      expect(store.sessionById('s1')?.updated, _t2);
+      store.dispose();
+    });
+
+    test('mirror reorders sortedSessions live', () {
+      final store = ServerStore()..client = _ProbeClient();
+      store.upsertSessionForTesting(_session('s1', updated: _t4));
+      store.upsertSessionForTesting(_session('s2', updated: _t1));
+      expect(
+          store.sortedSessions().map((s) => s.id).toList(), ['s1', 's2']);
+      store.onEventForTesting(_ev('session.inbox.enqueued', 's2', _t4 + 1));
+      expect(
+          store.sortedSessions().map((s) => s.id).toList(), ['s2', 's1']);
       store.dispose();
     });
   });
