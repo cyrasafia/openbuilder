@@ -832,47 +832,21 @@ void main() {
     });
   });
 
-  group('todos derived from todowrite tool calls', () {
-    test('latest todowrite input wins', () {
+  group('tool.called', () {
+    test('notifies listeners and creates the tool part (SSE gap path)', () {
       final conv = _conv('s1', _fakeClient());
+      addTearDown(conv.dispose);
       conv.onStepStarted('m1');
-      conv.onToolInputStarted('m1', 'c1', 'todowrite');
-      conv.onToolCalled('m1', 'c1', {
-        'todos': [
-          {'content': 'step a', 'status': 'in_progress'},
-          {'content': 'step b', 'status': 'pending'},
-        ],
-      }, null);
-      expect(conv.todos.length, 2);
-      expect(conv.todos.first.content, 'step a');
-      expect(conv.todos.first.active, isTrue);
-
-      conv.onToolInputStarted('m1', 'c2', 'todowrite');
-      conv.onToolCalled('m1', 'c2', {
-        'todos': [
-          {'content': 'step a', 'status': 'completed'},
-          {'content': 'step b', 'status': 'in_progress'},
-        ],
-      }, null);
-      expect(conv.todos.length, 2);
-      expect(conv.todos.first.done, isTrue);
-      expect(conv.todos[1].active, isTrue);
-    });
-
-    test('no todowrite leaves todos empty', () {
-      final conv = _conv('s2', _fakeClient());
-      conv.onStepStarted('m1');
-      conv.onToolInputStarted('m1', 'c1', 'bash');
+      var notified = 0;
+      conv.addListener(() => notified++);
       conv.onToolCalled('m1', 'c1', {'command': 'ls'}, null);
-      expect(conv.todos, isEmpty);
-    });
-
-    test('todowrite without todos key is ignored', () {
-      final conv = _conv('s3', _fakeClient());
-      conv.onStepStarted('m1');
-      conv.onToolInputStarted('m1', 'c1', 'todowrite');
-      conv.onToolCalled('m1', 'c1', const {}, null);
-      expect(conv.todos, isEmpty);
+      expect(notified, 1);
+      final msg = conv.messages.firstWhere((m) => m.id == 'm1');
+      expect(
+        msg.parts
+            .any((p) => p.type == 'tool' && p.toolInput?['command'] == 'ls'),
+        isTrue,
+      );
     });
   });
 

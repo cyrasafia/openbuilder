@@ -233,7 +233,6 @@
   "@sendFailed": {"placeholders": {"detail": {"type": "String"}}},
   "abortFailed": "Failed to abort: {detail}",
   "@abortFailed": {"placeholders": {"detail": {"type": "String"}}},
-  "todoTitle": "Tasks",
   "reasoning": "Reasoning",
   "linkOpenFailed": "Unable to open link",
   "fileLinkNotInProject": "File is not inside the project",

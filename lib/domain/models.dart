@@ -988,37 +988,6 @@ class FileAttachment {
   };
 }
 
-class Todo {
-  final String? id;
-  final String content;
-  final String status;
-  final String priority;
-  const Todo({
-    this.id,
-    required this.content,
-    required this.status,
-    this.priority = 'medium',
-  });
-
-  factory Todo.fromJson(Map<String, dynamic> j) => Todo(
-    id: j['id']?.toString(),
-    content: (j['content'] ?? '').toString(),
-    status: (j['status'] ?? 'pending').toString(),
-    priority: (j['priority'] ?? 'medium').toString(),
-  );
-
-  bool get done => status == 'completed' || status == 'cancelled';
-  bool get active => status == 'in_progress';
-  bool get cancelled => status == 'cancelled';
-
-  Map<String, dynamic> toJson() => {
-    'id': id,
-    'content': content,
-    'status': status,
-    'priority': priority,
-  };
-}
-
 class WorktreeInfo {
   final String directory;
   final String strategy;

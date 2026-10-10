@@ -164,7 +164,6 @@ rounded:
   chip: 8px
   code-block: 8px
   user-bubble: 14px
-  todo-card: 12px
 
 spacing:
   chip-padding-h: 10px

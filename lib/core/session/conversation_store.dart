@@ -218,7 +218,6 @@ class ConversationStore extends ChangeNotifier {
 
   final List<DisplayMessage> _messages = [];
   final List<_Segment> _segments = [];
-  List<Todo> _todos = [];
   final List<Permission> _permissions = [];
   final List<FormInfo> _forms = [];
   bool loading = false;
@@ -268,7 +267,6 @@ class ConversationStore extends ChangeNotifier {
   static const _loadMaxBackoff = Duration(seconds: 30);
 
   List<DisplayMessage> get messages => List.unmodifiable(_messages);
-  List<Todo> get todos => List.unmodifiable(_todos);
   List<Permission> get permissions => List.unmodifiable(_permissions);
   List<FormInfo> get forms => List.unmodifiable(_forms);
   bool get busy => status == 'busy' || status == 'retry';
@@ -879,7 +877,6 @@ class ConversationStore extends ChangeNotifier {
                 cursor: page.olderCursor));
       }
       _sort(const <String>{});
-      _recomputeTodos();
       loaded = true;
       error = null;
       _stale = false;
@@ -1317,7 +1314,6 @@ class ConversationStore extends ChangeNotifier {
         cursor: s2['cursor']?.toString(),
       ));
     }
-    _recomputeTodos();
     if (_messages.isNotEmpty) loaded = true;
   }
 
@@ -1361,7 +1357,6 @@ class ConversationStore extends ChangeNotifier {
       }
       if (added && !_disposed) {
         _sort(const <String>{});
-        _recomputeTodos();
       }
     } catch (e) {
       AppLogger.I.w(_tag, 'loadCacheForGate failed: $e');
@@ -1759,7 +1754,6 @@ class ConversationStore extends ChangeNotifier {
     }
     if (input != null && input.isNotEmpty) dp.toolInput = input;
     dp.toolStatus = 'running';
-    if (dp.tool == 'todowrite') _recomputeTodos();
     notifyListeners();
     _reconcileStartNotices();
   }
@@ -1805,7 +1799,6 @@ class ConversationStore extends ChangeNotifier {
     dp.toolStatus = status;
     if (output != null && output.isNotEmpty) dp.toolOutput = output;
     if (error != null && error.isNotEmpty) dp.toolError = error;
-    if (dp.tool == 'todowrite') _recomputeTodos();
     _previewableTouch(msg);
     notifyListeners();
   }
@@ -1819,7 +1812,6 @@ class ConversationStore extends ChangeNotifier {
     if (msg == null) return;
     if (finish != null) msg.finish = finish;
     if (cost != null) msg.cost = cost;
-    _recomputeTodos();
     _touchMessages(<String>{mid});
     if (finish != 'tool-calls') {
       unawaited(_saveCache());
@@ -1893,7 +1885,6 @@ class ConversationStore extends ChangeNotifier {
         ..addAll(merged);
       _touchMessages(<String>{mid});
     }
-    _recomputeTodos();
     notifyListeners();
   }
 
@@ -2023,37 +2014,6 @@ class ConversationStore extends ChangeNotifier {
         msg.type != 'assistant' || (msg.finish != null && msg.finish!.isNotEmpty);
     if (cacheable) {
       _touchMessages(<String>{msg.id});
-    }
-  }
-
-  void _recomputeTodos() {
-    List<Todo>? latest;
-    for (final m in _messages) {
-      if (m.type != 'assistant') continue;
-      for (final p in m.parts) {
-        if (p.type != 'tool' || p.tool != 'todowrite') continue;
-        final input = p.toolInput;
-        if (input == null) continue;
-        if (input['todos'] is List) {
-          latest = (input['todos'] as List)
-              .whereType<Map>()
-              .map((e) => Todo.fromJson(e.cast<String, dynamic>()))
-              .toList();
-        }
-      }
-    }
-    final old = _todos;
-    final next = latest ?? const <Todo>[];
-    if (old.length != next.length) {
-      _todos = next;
-      return;
-    }
-    for (var i = 0; i < old.length; i++) {
-      if (old[i].content != next[i].content ||
-          old[i].status != next[i].status) {
-        _todos = next;
-        return;
-      }
     }
   }
 

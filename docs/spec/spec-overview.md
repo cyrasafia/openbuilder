@@ -110,7 +110,6 @@ Assistant = { id, time, agent, model, content: [text | reasoning | tool][], fini
 ToolState = { status: streaming | running | completed | error, input, content, metadata }
 Form      = { id, sessionID, title, fields[] }                    // 取代 v1 question；答复 {fieldKey: value}
 Permission= { id, sessionID, action, resources, save, metadata }  // v1 的 type/patterns 改名
-Todo      = 消息流中 todowrite 工具调用的 state.input.todos（无端点无事件，客户端推导）
 FileDiff  = { file, patch, additions, deletions, status }
 ```
 
@@ -133,7 +132,6 @@ FileDiff  = { file, patch, additions, deletions, status }
 | Shell | `POST /api/session/:id/shell` | body `{command}` |
 | 中止 | `POST /api/session/:id/interrupt` | |
 | Worktree 组 | `GET/POST/DELETE /api/worktree` + `POST /api/worktree/refresh` | 按 projectID；列表含主 checkout；create 执行 `commands.start` |
-| Todo | —（无端点） | 从消息流 `todowrite` 工具调用推导 |
 | **Diff** | `GET /api/session/:id/diff?from=&to=&context=` · `GET /api/vcs/diff?mode=working\|branch\|committed` | mode 取代 v1 `git/branch` |
 | Revert | `POST /api/session/:id/revert/stage` + `/revert/commit` | 两段式 |
 | 权限 | `GET /api/permission/request` · `POST /api/session/:id/permission/:rid/reply` | reply body `{decision: once\|always\|reject}` |

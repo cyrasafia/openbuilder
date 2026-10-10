@@ -47,7 +47,6 @@
 | **Worktree（工作区）** | `path`、`branch`、`vcsDir?` | 一个 git worktree（= opencode 的一个 `Project`） |
 | **Session（会话）** | `id`、`title`、`projectID`、`directory`、`status`、`time{created,updated,archived?}`、`lastMessage*`、`lastTime*`、`summary{add,del,files}`、`tokens`、`cost` | 一次任务对话；`*` 前端维护/派生；`time.archived` 非空 = 已归档 |
 | **Message / Part** | 见 specs §4.1 | 对话消息与其分片（text/reasoning/tool/…） |
-| **Todo** | `content`、`status`、`priority` | 会话内任务清单 |
 
 ### 2.2 枚举与约定
 
@@ -172,14 +171,13 @@
   - **终止**（仅 `busy` 时可点）
   - **更多**：分享 / Fork / 归档 / 删除
 - **正文**（自上而下）：
-  1. **任务进度卡**：Todo 清单 + 完成度进度条（`done/total`）。
-  2. **消息时间线**：
+  1. **消息时间线**：
      - 用户消息：右对齐气泡。
      - 助手消息：左对齐 + 小 avatar；分片渲染：
        - `text`：正文（Markdown，支持代码块）。
        - `reasoning`：折叠/展开，斜体 muted。
        - `tool`：工具调用 chip（状态图标 + 工具名 + 路径，可展开看输出）。
-  3. **流式指示**：`busy` 时末尾显示打字动画。
+  2. **流式指示**：`busy` 时末尾显示打字动画。
 - **底部指令栏**：附件 + 输入框 + 发送；输入框提示：「`/` 命令　`!` shell」。
 - **交互**：下拉加载历史；实时 SSE 增量追加 part（流式 token）。
 - **空态/错误**：`session.error` 时 toast + 状态标记；权限请求（`permission.updated`）就地弹卡 allow/deny。

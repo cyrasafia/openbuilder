@@ -26,7 +26,7 @@ openbuilder/
 │  │  └─ api/                    # 手写 Dart client（对齐 v2 spec，勿手改；用 tool/gen_client.sh 刷新参考）
 │  ├─ domain/                    # 纯模型与 fromJson 映射（models.dart）
 │  ├─ features/
-│  │  ├─ conversation/           # 流式对话 + todo + 权限 + compose + 命令
+│  │  ├─ conversation/           # 流式对话 + 权限 + compose + 命令
 │  │  ├─ files/                  # Diff 列表/详情 + 文件树/内容
 │  │  ├─ projects/               # 项目详情（按 worktree 分段会话）
 │  │  ├─ servers/                # 欢迎 / 添加 / 编辑 / 发现 / 连接服务器

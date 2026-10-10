@@ -42,11 +42,11 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'message_autolink.dart';
 
 /// Max height of a footer card's scrollable content, as a fraction of the
-/// screen height. Footer cards (todo / permission / question) bound their
-/// scroll region with a [ConstrainedBox] using this factor; the card must NOT
-/// rely on the footer's flex allocation, because a vertical [Column] gives its
-/// non-flex children an unbounded main-axis constraint, which would defeat
-/// [SingleChildScrollView].
+/// screen height. Footer cards (permission / question / background task)
+/// bound their scroll region with a [ConstrainedBox] using this factor; the
+/// card must NOT rely on the footer's flex allocation, because a vertical
+/// [Column] gives its non-flex children an unbounded main-axis constraint,
+/// which would defeat [SingleChildScrollView].
 const double _kFooterCardContentHeightFactor = 0.3;
 
 const String _kCustomOptionValue = '\u0000custom';
@@ -1417,7 +1417,6 @@ class _ConversationScreenState extends State<ConversationScreen>
                 RepaintBoundary(
                   child: _FooterPanel(
                     parentSessionId: widget.sessionId,
-                    todos: conv.todos,
                     permissions: conv.permissions,
                     questions: conv.forms,
                     store: conv,
@@ -2149,129 +2148,8 @@ Future<void> openExternalLink(BuildContext context, String? href) async {
   }
 }
 
-class _TodoCard extends StatelessWidget {
-  final List<Todo> todos;
-  final bool collapsed;
-  final VoidCallback? onToggle;
-  const _TodoCard({required this.todos, this.collapsed = false, this.onToggle});
-
-  @override
-  Widget build(BuildContext context) {
-    final done = todos.where((t) => t.done).length;
-    final pct = todos.isEmpty ? 0.0 : done / todos.length;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: onToggle,
-            child: Row(
-              children: [
-                const Icon(Icons.checklist, size: 16),
-                const SizedBox(width: 6),
-                Text(
-                  l(context).todoTitle,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '$done/${todos.length}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ),
-                if (onToggle != null) ...[
-                  const SizedBox(width: 6),
-                  Icon(
-                    collapsed ? Icons.expand_less : Icons.expand_more,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ],
-              ],
-            ),
-          ),
-          if (!collapsed)
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight:
-                    MediaQuery.sizeOf(context).height *
-                    _kFooterCardContentHeightFactor,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 10),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LinearProgressIndicator(
-                        value: pct,
-                        minHeight: 5,
-                        backgroundColor: const Color(0xFF23272E),
-                        valueColor: AlwaysStoppedAnimation(
-                          Theme.of(context).colorScheme.primary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    ...todos.map(_todoRow),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _todoRow(Todo t) {
-    final icon = t.cancelled
-        ? Icons.cancel
-        : t.done
-        ? Icons.check_box
-        : t.active
-        ? Icons.indeterminate_check_box
-        : Icons.check_box_outline_blank;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 16),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              t.content,
-              style: TextStyle(
-                fontSize: 12.5,
-                decoration: t.done
-                    ? TextDecoration.lineThrough
-                    : TextDecoration.none,
-                color: t.done ? const Color(0xFF8B949E) : null,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _FooterPanel extends StatefulWidget {
   final String parentSessionId;
-  final List<Todo> todos;
   final List<Permission> permissions;
   final List<FormInfo> questions;
   final ConversationStore store;
@@ -2279,7 +2157,6 @@ class _FooterPanel extends StatefulWidget {
   final Future<void> Function(String childId) onStopTask;
   const _FooterPanel({
     required this.parentSessionId,
-    required this.todos,
     required this.permissions,
     required this.questions,
     required this.store,
@@ -2292,8 +2169,6 @@ class _FooterPanel extends StatefulWidget {
 }
 
 class _FooterPanelState extends State<_FooterPanel> {
-  bool _todoExpanded = false;
-
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -2333,16 +2208,13 @@ class _FooterPanelState extends State<_FooterPanel> {
             ),
           );
         }
-        if (widget.todos.any((t) => !t.done) && totalPending == 0) {
-          children.add(
-            _TodoCard(
-              todos: widget.todos,
-              collapsed: !_todoExpanded,
-              onToggle: () => setState(() => _todoExpanded = !_todoExpanded),
-            ),
-          );
-        }
         if (children.isEmpty) return const SizedBox.shrink();
+        final stacked = [
+          for (var i = 0; i < children.length; i++) ...[
+            if (i > 0) const Divider(height: 25),
+            children[i],
+          ],
+        ];
         return Container(
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surface,
@@ -2351,7 +2223,7 @@ class _FooterPanelState extends State<_FooterPanel> {
           ),
           child: Padding(
             padding: const EdgeInsets.all(12),
-            child: Column(mainAxisSize: MainAxisSize.min, children: children),
+            child: Column(mainAxisSize: MainAxisSize.min, children: stacked),
           ),
         );
       },
@@ -3213,124 +3085,115 @@ class _BackgroundTaskCardState extends State<_BackgroundTaskCard> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final loc = l(context);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHigh.withAlpha(120),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outline.withAlpha(100)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: () {
-              setState(() => _expanded = !_expanded);
-              _syncTicker();
-            },
-            child: Row(
-              children: [
-                Icon(Icons.rocket_launch_outlined,
-                    size: 16, color: scheme.primary),
-                const SizedBox(width: 6),
-                Text(
-                  loc.bgTaskCardTitle,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () {
+            setState(() => _expanded = !_expanded);
+            _syncTicker();
+          },
+          child: Row(
+            children: [
+              Icon(Icons.rocket_launch_outlined,
+                  size: 16, color: scheme.primary),
+              const SizedBox(width: 6),
+              Text(
+                loc.bgTaskCardTitle,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
                 ),
-                const Spacer(),
-                Text(
-                  loc.bgTaskCardCount(widget.tasks.length),
-                  style: TextStyle(fontSize: 11.5, color: scheme.outline),
-                ),
-                const SizedBox(width: 6),
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: scheme.outline,
-                ),
-              ],
-            ),
-          ),
-          if (_expanded)
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.sizeOf(context).height *
-                    _kFooterCardContentHeightFactor,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (final t in widget.tasks)
-                      InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () => widget.onView(
-                            t.id, t.title.isNotEmpty ? t.title : t.id),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      t.title.isNotEmpty ? t.title : t.id,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 13),
+              const Spacer(),
+              Text(
+                loc.bgTaskCardCount(widget.tasks.length),
+                style: TextStyle(fontSize: 11.5, color: scheme.outline),
+              ),
+              const SizedBox(width: 6),
+              Icon(
+                _expanded ? Icons.expand_less : Icons.expand_more,
+                size: 18,
+                color: scheme.outline,
+              ),
+            ],
+          ),
+        ),
+        if (_expanded)
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height *
+                  _kFooterCardContentHeightFactor,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final t in widget.tasks)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => widget.onView(
+                          t.id, t.title.isNotEmpty ? t.title : t.id),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    t.title.isNotEmpty ? t.title : t.id,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    [
+                                      if ((t.agent ?? '').isNotEmpty) t.agent!,
+                                      _elapsed(t.created),
+                                    ].join(' · '),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      color: scheme.outline,
                                     ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      [
-                                        if ((t.agent ?? '').isNotEmpty) t.agent!,
-                                        _elapsed(t.created),
-                                      ].join(' · '),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        color: scheme.outline,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
-                              IconButton(
-                                icon: const Icon(Icons.stop_circle_outlined,
-                                    size: 18),
-                                tooltip: loc.bgTaskStop,
-                                onPressed: _stopping.contains(t.id)
-                                    ? null
-                                    : () async {
-                                        setState(() => _stopping.add(t.id));
-                                        try {
-                                          await widget.onStop(t.id);
-                                        } finally {
-                                          if (mounted) {
-                                            setState(
-                                                () => _stopping.remove(t.id));
-                                          }
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.stop_circle_outlined,
+                                  size: 18),
+                              tooltip: loc.bgTaskStop,
+                              onPressed: _stopping.contains(t.id)
+                                  ? null
+                                  : () async {
+                                      setState(() => _stopping.add(t.id));
+                                      try {
+                                        await widget.onStop(t.id);
+                                      } finally {
+                                        if (mounted) {
+                                          setState(
+                                              () => _stopping.remove(t.id));
                                         }
-                                      },
-                              ),
-                            ],
-                          ),
+                                      }
+                                    },
+                            ),
+                          ],
                         ),
                       ),
-                  ],
-                ),
+                    ),
+                ],
               ),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }
@@ -4032,124 +3895,113 @@ class _PermissionCardState extends State<_PermissionCard> {
   @override
   Widget build(BuildContext context) {
     final loc = l(context);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primaryContainer.withAlpha(120),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withAlpha(120),
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _collapsed = !_collapsed),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.shield_outlined,
-                  size: 16,
-                  color: Theme.of(context).colorScheme.primary,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _collapsed = !_collapsed),
+          child: Row(
+            children: [
+              Icon(
+                Icons.shield_outlined,
+                size: 16,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                loc.permissionRequest,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
                 ),
-                const SizedBox(width: 6),
+              ),
+              const Spacer(),
+              if (widget.queueTotal > 1)
                 Text(
-                  loc.permissionRequest,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+                  loc.queuePending(1, widget.queueTotal),
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: Theme.of(context).colorScheme.outline,
                   ),
                 ),
-                const Spacer(),
-                if (widget.queueTotal > 1)
+              const SizedBox(width: 6),
+              Icon(
+                _collapsed ? Icons.expand_less : Icons.expand_more,
+                size: 18,
+                color: Theme.of(context).colorScheme.outline,
+              ),
+            ],
+          ),
+        ),
+        if (_collapsed)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              _title(loc),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTheme.mono.copyWith(fontSize: 12.5),
+            ),
+          )
+        else
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight:
+                  MediaQuery.sizeOf(context).height *
+                  _kFooterCardContentHeightFactor,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 8),
                   Text(
-                    loc.queuePending(1, widget.queueTotal),
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
+                    _title(loc),
+                    style: AppTheme.mono.copyWith(fontSize: 12.5),
                   ),
-                const SizedBox(width: 6),
-                Icon(
-                  _collapsed ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      FilledButton.tonal(
+                        style: FilledButton.styleFrom(
+                          foregroundColor: Colors.red,
+                          backgroundColor: Colors.red.withAlpha(25),
+                        ),
+                        onPressed: _replying
+                            ? null
+                            : () => _respond('reject'),
+                        child: Text(loc.reject),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.tonal(
+                        onPressed: _replying
+                            ? null
+                            : () => _respond('always'),
+                        child: Text(loc.permissionAlwaysAllow),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: _replying ? null : () => _respond('once'),
+                        child: _replying
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Text(loc.permissionAllowOnce),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
-          if (_collapsed)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                _title(loc),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppTheme.mono.copyWith(fontSize: 12.5),
-              ),
-            )
-          else
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight:
-                    MediaQuery.sizeOf(context).height *
-                    _kFooterCardContentHeightFactor,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 8),
-                    Text(
-                      _title(loc),
-                      style: AppTheme.mono.copyWith(fontSize: 12.5),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        FilledButton.tonal(
-                          style: FilledButton.styleFrom(
-                            foregroundColor: Colors.red,
-                            backgroundColor: Colors.red.withAlpha(25),
-                          ),
-                          onPressed: _replying
-                              ? null
-                              : () => _respond('reject'),
-                          child: Text(loc.reject),
-                        ),
-                        const SizedBox(width: 8),
-                        FilledButton.tonal(
-                          onPressed: _replying
-                              ? null
-                              : () => _respond('always'),
-                          child: Text(loc.permissionAlwaysAllow),
-                        ),
-                        const SizedBox(width: 8),
-                        FilledButton(
-                          onPressed: _replying ? null : () => _respond('once'),
-                          child: _replying
-                              ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : Text(loc.permissionAllowOnce),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+      ],
     );
   }
 }
@@ -4305,113 +4157,104 @@ class _FormCardState extends State<_FormCard> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final totalSub = _fields.length;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: scheme.tertiaryContainer.withAlpha(100),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.tertiary.withAlpha(120)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _collapsed = !_collapsed),
-            child: Row(
-              children: [
-                Icon(Icons.help_outline, size: 16, color: scheme.tertiary),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    widget.form.title,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _collapsed = !_collapsed),
+          child: Row(
+            children: [
+              Icon(Icons.help_outline, size: 16, color: scheme.tertiary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  widget.form.title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                if (totalSub > 1)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: Text(
-                      '${_step + 1}/$totalSub',
-                      style: TextStyle(fontSize: 11.5, color: scheme.outline),
-                    ),
-                  ),
-                if (widget.queueTotal > 1)
-                  Text(
-                    l(context).queuePending(1, widget.queueTotal),
+              ),
+              if (totalSub > 1)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text(
+                    '${_step + 1}/$totalSub',
                     style: TextStyle(fontSize: 11.5, color: scheme.outline),
                   ),
-                const SizedBox(width: 6),
-                Icon(
-                  _collapsed ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: scheme.outline,
                 ),
-              ],
+              if (widget.queueTotal > 1)
+                Text(
+                  l(context).queuePending(1, widget.queueTotal),
+                  style: TextStyle(fontSize: 11.5, color: scheme.outline),
+                ),
+              const SizedBox(width: 6),
+              Icon(
+                _collapsed ? Icons.expand_less : Icons.expand_more,
+                size: 18,
+                color: scheme.outline,
+              ),
+            ],
+          ),
+        ),
+        if (!_collapsed)
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight:
+                  MediaQuery.sizeOf(context).height *
+                  _kFooterCardContentHeightFactor,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _fieldBlock(_field),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Spacer(),
+                      FilledButton.tonal(
+                        style: FilledButton.styleFrom(
+                          foregroundColor: Colors.red,
+                          backgroundColor: Colors.red.withAlpha(25),
+                        ),
+                        onPressed: _replying ? null : _reject,
+                        child: Text(l(context).reject),
+                      ),
+                      const SizedBox(width: 8),
+                      if (_isLastStep)
+                        FilledButton(
+                          onPressed: _replying || !_stepAnswered
+                              ? null
+                              : _reply,
+                          child: _replying
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Text(l(context).submit),
+                        )
+                      else
+                        FilledButton(
+                          onPressed: _replying || !_stepAnswered
+                              ? null
+                              : _next,
+                          child: Text(l(context).nextStep),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
-          if (!_collapsed)
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight:
-                    MediaQuery.sizeOf(context).height *
-                    _kFooterCardContentHeightFactor,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _fieldBlock(_field),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        const Spacer(),
-                        FilledButton.tonal(
-                          style: FilledButton.styleFrom(
-                            foregroundColor: Colors.red,
-                            backgroundColor: Colors.red.withAlpha(25),
-                          ),
-                          onPressed: _replying ? null : _reject,
-                          child: Text(l(context).reject),
-                        ),
-                        const SizedBox(width: 8),
-                        if (_isLastStep)
-                          FilledButton(
-                            onPressed: _replying || !_stepAnswered
-                                ? null
-                                : _reply,
-                            child: _replying
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : Text(l(context).submit),
-                          )
-                        else
-                          FilledButton(
-                            onPressed: _replying || !_stepAnswered
-                                ? null
-                                : _next,
-                            child: Text(l(context).nextStep),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -4449,18 +4292,15 @@ class _FormCardState extends State<_FormCard> {
               label: opt.label,
               description: opt.description,
             ),
-          if (f.custom) ...[
+          if (f.custom)
             _optionTile(
               f: f,
               value: _kCustomOptionValue,
               label: l(context).formCustomAnswer,
+              below: sel.contains(_kCustomOptionValue)
+                  ? _customAnswerField(f)
+                  : null,
             ),
-            if (sel.contains(_kCustomOptionValue))
-              Padding(
-                padding: const EdgeInsets.only(left: 26, bottom: 4),
-                child: _customAnswerField(f),
-              ),
-          ],
         ] else if (f.type == 'boolean')
           InkWell(
             onTap: _replying ? null : () => _toggle(f.key, 'true', true),
@@ -4526,6 +4366,7 @@ class _FormCardState extends State<_FormCard> {
     required String value,
     required String label,
     String? description,
+    Widget? below,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final active = (_selected[f.key] ?? const <String>{}).contains(value);
@@ -4545,44 +4386,58 @@ class _FormCardState extends State<_FormCard> {
             color: active ? scheme.tertiary : Colors.transparent,
           ),
         ),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              active
-                  ? (f.isMultiselect
-                        ? Icons.check_box
-                        : Icons.radio_button_checked)
-                  : (f.isMultiselect
-                        ? Icons.check_box_outline_blank
-                        : Icons.radio_button_unchecked),
-              size: 18,
-              color: scheme.tertiary,
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                  if ((description ?? '').isNotEmpty)
-                    Text(
-                      description!,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: scheme.outline,
+            Row(
+              children: [
+                Icon(
+                  active
+                      ? (f.isMultiselect
+                            ? Icons.check_box
+                            : Icons.radio_button_checked)
+                      : (f.isMultiselect
+                            ? Icons.check_box_outline_blank
+                            : Icons.radio_button_unchecked),
+                  size: 18,
+                  color: scheme.tertiary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w400,
+                        ),
                       ),
-                    ),
-                ],
-              ),
+                      if ((description ?? '').isNotEmpty)
+                        Text(
+                          description!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: scheme.outline,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
+            if (below != null) ...[
+              const SizedBox(height: 4),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: below,
+              ),
+            ],
           ],
         ),
       ),
@@ -4590,15 +4445,22 @@ class _FormCardState extends State<_FormCard> {
   }
 
   Widget _customAnswerField(FormFieldSpec f) {
-    return TextField(
-      controller: _customCtlFor(f.key),
-      enabled: !_replying,
-      onChanged: (_) => setState(() {}),
-      maxLines: 1,
-      decoration: InputDecoration(
-        hintText: f.placeholder ?? '',
-        isDense: true,
-        border: const OutlineInputBorder(),
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(left: 26),
+      child: TextField(
+        controller: _customCtlFor(f.key),
+        enabled: !_replying,
+        onChanged: (_) => setState(() {}),
+        maxLines: 1,
+        style: const TextStyle(fontSize: 13),
+        decoration: InputDecoration(
+          hintText: f.placeholder ?? '',
+          hintStyle: TextStyle(fontSize: 13, color: scheme.outline),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 4),
+          border: InputBorder.none,
+        ),
       ),
     );
   }
