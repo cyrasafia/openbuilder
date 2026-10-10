@@ -445,8 +445,105 @@ void main() {
     },
   );
 
+  // _HScrollForwarder 焦点守卫：正文获焦（长按选词/点正文）后 SDK 横向扩选
+  // 激活，转发会与扩选叠加——获焦期间不转发；toggle 回调 unfocus 后恢复。
   testWidgets(
-    'tapping the text body does not steal focus from the composer',
+    'code-block horizontal forwarding yields while text is focused and '
+    'resumes after toggle unfocus',
+    (tester) async {
+      const sid = 'uc-code-focus';
+      final code = 'int main() { return 0; } // ${'x' * 200}';
+      final tail = List.generate(
+        30,
+        (i) => 'line $i of the long user message',
+      ).join('\n\n');
+      final longText = 'before the code\n\n```\n$code\n```\n\n$tail';
+      await _pumpConversation(
+        tester,
+        sessionId: sid,
+        entries: [
+          _user(sid, 'u1', longText, 1000),
+          _assistant(sid, 'a1', 'ok', 2000),
+        ],
+      );
+      final host = find.byKey(const ValueKey('uc:u1'));
+      await _waitCollapsed(tester, host);
+
+      final svFinder = find.descendant(
+        of: host,
+        matching: find.byType(SingleChildScrollView),
+      );
+      double codePixels() =>
+          tester.widget<SingleChildScrollView>(svFinder).controller!.position
+              .pixels;
+
+      // Focus the text body by long-pressing the first paragraph (not the
+      // code block): the selection toolbar appears and primary focus moves
+      // into the bubble.
+      final firstText = find
+          .descendant(of: host, matching: find.byType(SelectableText))
+          .first;
+      await tester.longPressAt(
+        tester.getTopLeft(firstText) + const Offset(30, 10),
+      );
+      await tester.pumpAndSettle();
+      expect(codePixels(), 0.0);
+
+      // While focused, a horizontal drag over the code text must NOT be
+      // forwarded (SDK drag-selection owns it).
+      var gesture = await tester.startGesture(
+        tester.getTopLeft(svFinder) + const Offset(40, 20),
+      );
+      for (var i = 0; i < 8; i++) {
+        await gesture.moveBy(const Offset(-30, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(
+        codePixels(),
+        0.0,
+        reason: 'forwarding must yield while the text body holds focus',
+      );
+
+      // Tapping the text body toggles expand and unfocuses (toggle callback),
+      // so focus leaves the bubble and forwarding must resume.
+      await tester.tapAt(tester.getCenter(firstText));
+      await tester.pumpAndSettle();
+      final focus = FocusManager.instance.primaryFocus;
+      var focusInBubble = false;
+      focus?.context?.visitAncestorElements((ancestor) {
+        if (ancestor == host.evaluate().single) {
+          focusInBubble = true;
+          return false;
+        }
+        return true;
+      });
+      expect(focusInBubble, isFalse, reason: 'toggle must unfocus the body');
+
+      gesture = await tester.startGesture(
+        tester.getTopLeft(svFinder) + const Offset(40, 20),
+      );
+      for (var i = 0; i < 8; i++) {
+        await gesture.moveBy(const Offset(-30, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(
+        codePixels(),
+        greaterThan(0.0),
+        reason: 'forwarding must resume once focus leaves the bubble',
+      );
+    },
+  );
+
+  // ExcludeFocus 已移除（2026-10-10）：它使 SelectableText 永不可获焦，SDK
+  // 在无焦点时每次 controller 变更都会 dispose 整个 selection overlay——
+  // 工具栏上按「全选」后菜单直接消失。放弃「点气泡不弹键盘」换取选中
+  // 交互正常：点正文会获焦（键盘收起，可接受）。
+  testWidgets(
+    'tapping the text body focuses the text and select-all keeps the toolbar',
     (tester) async {
       const sid = 'uc-focus';
       final longText = List.generate(
@@ -464,22 +561,40 @@ void main() {
       final host = find.byKey(const ValueKey('uc:u1'));
       await _waitCollapsed(tester, host);
 
-      final field = find.byType(TextField).first;
-      await tester.tap(field);
-      await tester.pumpAndSettle();
-      final composerFocus = FocusManager.instance.primaryFocus;
-      expect(composerFocus, isNotNull);
-
-      await tester.tap(host);
-      await tester.pump();
-      expect(
-        FocusManager.instance.primaryFocus,
-        same(composerFocus),
-        reason: 'message text is focus-excluded; the composer must keep '
-            'focus (and the keyboard) when a bubble is tapped',
+      // Long-press a word while still collapsed, then press Select all on
+      // the toolbar: the toolbar must survive the controller change.
+      final firstText = find
+          .descendant(of: host, matching: find.byType(SelectableText))
+          .first;
+      await tester.longPressAt(
+        tester.getTopLeft(firstText) + const Offset(30, 10),
       );
-      await _settle(tester, () => tester.getSize(host).height > 240.0);
-      expect(tester.getSize(host).height, greaterThan(240.0));
+      await tester.pumpAndSettle();
+      expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+
+      // The long-press path requests keyboard, which must actually focus the
+      // text now (ExcludeFocus removed) — this is what keeps the overlay
+      // alive through controller changes below.
+      final focus = FocusManager.instance.primaryFocus;
+      expect(focus, isNotNull);
+      var insideBubble = false;
+      focus!.context!.visitAncestorElements((ancestor) {
+        if (ancestor == host.evaluate().single) {
+          insideBubble = true;
+          return false;
+        }
+        return true;
+      });
+      expect(insideBubble, isTrue, reason: 'text body must be focusable');
+
+      await tester.tap(find.text('Select all').first);
+      await tester.pumpAndSettle();
+      expect(
+        find.byType(AdaptiveTextSelectionToolbar),
+        findsOneWidget,
+        reason: 'select-all is a controller change; with focus the overlay '
+            'must be updated, not disposed',
+      );
     },
   );
 
@@ -522,6 +637,87 @@ void main() {
         scroll.position.pixels,
         greaterThan(before),
         reason: 'vertical drag over the text body must scroll the list',
+      );
+    },
+  );
+
+  // 折叠盒按自然高度布局 child、仅 clamp 自身尺寸：裁切线以下的段落保有
+  // 真实布局坐标。Android 拖选 handle 时 SDK 按 drag cause 对选区端点调
+  // bringIntoView→showOnScreen，外层列表会为这段「布局存在但视觉不可见」
+  // 的几何大幅跳滚（实测单次数百 px），handle 拖动被打断。_TopClampBox
+  // 需把 child 的 reveal 矩形截进盒子可见区后再向上传播。
+  testWidgets(
+    'collapsed: drag selection below the clamp line does not jump the list',
+    (tester) async {
+      const sid = 'uc-reveal-clamp';
+      final longText = List.generate(
+        40,
+        (i) => 'line $i of the long user message',
+      ).join('\n\n');
+      await _pumpConversation(
+        tester,
+        sessionId: sid,
+        entries: [
+          _assistant(
+            sid,
+            'a3',
+            List.generate(8, (i) => 'older reply $i').join('\n\n'),
+            1000,
+          ),
+          _user(sid, 'u1', longText, 2000),
+          _assistant(
+            sid,
+            'a1',
+            List.generate(20, (i) => 'newer reply $i').join('\n\n'),
+            3000,
+          ),
+          _assistant(sid, 'a2', 'end', 3001),
+        ],
+      );
+      final host = find.byKey(const ValueKey('uc:u1'));
+
+      // Scroll toward older messages until the collapsed bubble is in view
+      // with scroll room left below it (toward newer messages), so a reveal
+      // jump would have space to happen.
+      final listFinder = find.byType(Scrollable).first;
+      await _settle(
+        tester,
+        () => find.byType(Scrollable).evaluate().isNotEmpty,
+      );
+      for (var i = 0; i < 30 && host.evaluate().isEmpty; i++) {
+        await tester.drag(listFinder, const Offset(0, 300));
+        await tester.pumpAndSettle();
+      }
+      await _waitCollapsed(tester, host);
+
+      // One EditableText per markdown paragraph; pick the deepest one — its
+      // layout position sits far below the clamp line, invisible.
+      final paragraphs = find
+          .descendant(of: host, matching: find.byType(EditableText))
+          .evaluate()
+          .map((e) => (e as StatefulElement).state as EditableTextState)
+          .toList()
+        ..sort((a, b) => a.renderEditable
+            .localToGlobal(Offset.zero)
+            .dy
+            .compareTo(b.renderEditable.localToGlobal(Offset.zero).dy));
+      final deep = paragraphs.last;
+      final deepTop = deep.renderEditable.localToGlobal(Offset.zero);
+      expect(deepTop.dy, greaterThan(600), reason: 'deepest paragraph is off-screen');
+
+      final scroll = tester.state<ScrollableState>(listFinder);
+      final before = scroll.position.pixels;
+      deep.renderEditable.selectPositionAt(
+        from: deepTop + const Offset(60, 10),
+        to: deepTop + const Offset(60, 30),
+        cause: SelectionChangedCause.drag,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        (scroll.position.pixels - before).abs(),
+        lessThan(1.0),
+        reason: 'reveal requests for clipped-off geometry must not scroll '
+            'the conversation list',
       );
     },
   );

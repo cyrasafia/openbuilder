@@ -133,13 +133,15 @@
 
 壳层只需把 `onTapText` 接到 `_toggleUserExpanded`（经 `_parts`/`_part`/`_markdownPart` 透传，仅 user 消息），两态即统一可切换。回调内守卫可折叠性（tap 时读 `_userNaturalHeight` 最新值，闭包不受实例缓存影响）：短消息不触发无谓重建；更关键是首帧自然高度未测出时 tap 不得抢先标记 expanded——否则跨过门槛后该消息不再默认折叠。
 
-### 6.3 正文 tap 的副作用收口：ExcludeFocus
+### 6.3 正文 tap 的副作用收口：ExcludeFocus（**已移除 2026-10-10**）
 
 内部 tap 赢出会 `selectPosition(cause: tap)` → `requestKeyboard()` → EditableText 抢焦点——若输入框正在输入，点气泡收起会关键盘。用户气泡正文整体包 `ExcludeFocus`：祖先 `descendantsAreFocusable=false` 使内部 `requestFocus` 被 `canRequestFocus` 门控直接忽略（focus_manager `_doRequestFocus` 早退）。副作用收口后正文 tap 仅剩不可见的 collapsed selection 写入。长按选词 + 工具栏不依赖焦点（`onSingleLongTapStart` Android 分支无条件 selectWord；`showToolbar` 无焦点门控），复制动经 EditableText 自身 Actions 分发，均不受影响。只读正文本无焦点需求，a11y 影响可忽略。
 
+**移除记录（2026-10-10）**：ExcludeFocus 的恒无焦点有一条未验证的暗坑——`EditableTextState._didChangeTextEditingValue` → `_updateOrDisposeSelectionOverlayIfNeeded`（editable_text.dart）对每次 controller 变更检查焦点：无焦点即 dispose 整个 selection overlay（工具栏+手柄）。工具栏上按「全选」恰是 controller 变更 → 菜单消失、不再复现（widget 测试与纯 Flutter 最小重现均实证；agent 消息无 ExcludeFocus 不受影响）。决策：放弃「点气泡不弹键盘」（点正文获焦、键盘收起，可接受），移除三处 ExcludeFocus（短消息/折叠/展开分支），换取选中交互正常。连带修订 §6.4：正文获焦后 SDK 横向扩选不再恒 no-op，`_HScrollForwarder` 增加焦点守卫（primaryFocus 在气泡子树内时不接管，让位扩选）。
+
 ### 6.4 代码块/表格横向滚动：_HScrollForwarder 裸 Listener 转发
 
-正文横向拖动被 SelectableText 的 `TapAndHorizontalDragGestureRecognizer`（Android `eagerVictoryOnDrag=true`，横向超 slop 即赢）赢走，代码块/表格外层的横向 `SingleChildScrollView` 永远拿不到拖动——**展开态原本就如此**（触摸端无焦点时该赢家是纯 no-op：`onDragSelectionStart/Update` 的 Android/iOS touch 分支均门控 `renderEditable.hasFocus`）。ExcludeFocus 使正文恒无焦点，no-op 恒成立。
+正文横向拖动被 SelectableText 的 `TapAndHorizontalDragGestureRecognizer`（Android `eagerVictoryOnDrag=true`，横向超 slop 即赢）赢走，代码块/表格外层的横向 `SingleChildScrollView` 永远拿不到拖动——**展开态原本就如此**（触摸端无焦点时该赢家是纯 no-op：`onDragSelectionStart/Update` 的 Android/iOS touch 分支均门控 `renderEditable.hasFocus`）。~~ExcludeFocus 使正文恒无焦点，no-op 恒成立。~~（2026-10-10 修订：ExcludeFocus 已移除，正文可获焦。获焦后横向扩选激活，转发器加焦点守卫，见下。）
 
 `_HScrollForwarder`（壳层最外）以裸 `Listener` 旁路竞技场——raw 指针事件路由不受竞技场胜负影响，赢家 no-op 期间 Listener 照常收到 move：
 
@@ -147,6 +149,7 @@
 2. move：横向位移超 `kTouchSlop` 且横向主导（与内部 recognizer 同门槛、同判据）→ `position.drag(...)` 接管，后续 `DragUpdateDetails(primaryDelta: dx)` 转发；纵向主导不接管（列表滚动不受影响）。
 3. up：`VelocityTracker` 速度给 `drag.end` 产生 fling；cancel 走 `drag.cancel()`。目标以 `ScrollableState.mounted` 守卫防 prune 竞态。
 4. **轴锁定**：接管后累计位移转为纵向主导 → `drag.cancel()` 且本指针不再接管。转发器旁路竞技场、无人能拒绝它，而两处起手列表的 VerticalDrag 不会被预先拒绝——代码块 padding 带（无 SelectableText recognizer 入局）、iOS 文本区（`eagerVictoryOnDrag=false` 不抢赢）——斜拖会双滚动；轴锁定止血。代价：Android 文本区 TapAndHorizontalDrag 抢赢时列表 VerticalDrag 已被拒，接管后手势转纵向则转发器中止、该指针剩余行程无人滚动（死区）——需 Android + 代码正文起手 + 中途转向三条件叠加，罕见，接受（不锁的代价是双滚动，更糟）。
+5. **焦点守卫**（2026-10-10）：`primaryFocus` 在气泡子树内（点过/长按过正文）时 down 即不认目标——SDK 横向扩选此时是激活态，转发滚动会与扩选叠加出双效果；焦点离开气泡后恢复转发。切换展开/收起的那次 tap 本身会获焦（SDK tap 路径先于 onTapText 回调），若焦点驻留则「tap 展开 → 横滚代码块」随即失效——`_toggleUserExpanded` 回调对正文焦点（EditableText 后代）显式 `unfocus()`，toggle 后转发即刻恢复（顺带清掉 tap 写入的 collapsed 选区）。
 
 选区手柄拖动不受干扰：手柄渲染在 Overlay，命中路径不含气泡子树，Listener 收不到该指针。
 
@@ -162,7 +165,7 @@
 
 ### 6.7 验证
 
-`user_message_collapse_test.dart` 新增：展开态文本 tap 收起、折叠态链接 tap 跳转且不展开（launchUrl 测试环境异常落 SnackBar 断言）、折叠态长按选词 + `AdaptiveTextSelectionToolbar`、折叠态代码块横拖 `position.pixels > 0` 且不误展开、正文 tap 不抢输入框焦点（`primaryFocus` 同一性）、文本区纵向拖动仍滚动会话列表。全量 542 测试通过，`analyze --fatal-infos` 零 issue。
+`user_message_collapse_test.dart` 新增：展开态文本 tap 收起、折叠态链接 tap 跳转且不展开（launchUrl 测试环境异常落 SnackBar 断言）、折叠态长按选词 + `AdaptiveTextSelectionToolbar`、折叠态代码块横拖 `position.pixels > 0` 且不误展开、~~正文 tap 不抢输入框焦点（`primaryFocus` 同一性）~~（2026-10-10 反转为「正文可获焦 + 全选后工具栏保留」，见 §6.3 移除记录）、文本区纵向拖动仍滚动会话列表；另补折叠态拖选越过裁切线不跳滚会话列表（五期 reveal 截断）、代码块转发焦点守卫（获焦让位 / toggle unfocus 后恢复）。全量 793 测试通过，`analyze --fatal-infos` 零 issue。
 
 ---
 

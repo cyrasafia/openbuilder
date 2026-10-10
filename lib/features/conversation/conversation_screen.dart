@@ -9,6 +9,7 @@ import 'package:flutter/rendering.dart'
     show
         BoxHitTestResult,
         BoxParentData,
+        MatrixUtils,
         RenderAbstractViewport,
         RenderBox,
         RenderShiftedBox,
@@ -1077,6 +1078,24 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   void _toggleUserExpanded(String id) {
+    // 文本区 tap 的 SDK 路径先获焦（selectWordEdge→requestKeyboard），toggle
+    // 回调随即 unfocus：焦点驻留气泡会使 _HScrollForwarder 让位（横向扩选
+    // 激活），「tap 展开 → 横滚代码块」随即失效；unfocus 同时清掉 tap 写入
+    // 的 collapsed 选区。仅当焦点确在正文（EditableText 后代）时动它，不误
+    // 伤输入框等其他焦点。
+    final focus = FocusManager.instance.primaryFocus;
+    final focusContext = focus?.context;
+    if (focusContext != null) {
+      var inBody = false;
+      focusContext.visitAncestorElements((ancestor) {
+        if (ancestor.widget is EditableText) {
+          inBody = true;
+          return false;
+        }
+        return true;
+      });
+      if (inBody) focus!.unfocus();
+    }
     setState(() {
       if (_expandedUserIds.contains(id)) {
         _expandedUserIds.remove(id);
@@ -4913,9 +4932,10 @@ class _BackToTurnTopButton extends StatelessWidget {
 ///
 /// 手势（三期：收起/展开行为一致）：正文保持完全可交互——链接可点、长按
 /// 选词复制、代码块/表格横向滚动；短按任意位置切换折叠/展开：
-/// - 文本区 tap 被 selectable markdown 的内部手势赢走（光标/选区副作用由
-///   [ExcludeFocus] 收口，不抢输入框焦点），壳层经 MarkdownBody.onTapText
-///   观察该 tap 并切换；链接 tap 由 span recognizer 赢出、不触发 onTapText，
+/// - 文本区 tap 被 selectable markdown 的内部手势赢走（tap 会获焦并抢走
+///   输入框焦点、键盘收起，2026-10-10 起接受；toggle 回调随即 unfocus，
+///   见 [_toggleUserExpanded]），壳层经 MarkdownBody.onTapText 观察该 tap
+///   并切换；链接 tap 由 span recognizer 赢出、不触发 onTapText，
 ///   天然分流不折叠。
 /// - 空白区/渐变条/浮标 tap 无内部竞争者，壳层 GestureDetector 直接赢出。
 /// - 长按由 SelectableText 内部 LongPress 赢出（选词 + 工具栏），两态一致。
@@ -5032,9 +5052,7 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
         MediaQuery.sizeOf(context).height * _kUserCollapseFraction;
     _collapseHeight = collapseHeight;
     if (n == null || n <= collapseHeight + _kUserCollapseMinGain) {
-      return _HScrollForwarder(
-        child: ExcludeFocus(child: widget.child),
-      );
+      return _HScrollForwarder(child: widget.child);
     }
     return _HScrollForwarder(
       child: AnimatedBuilder(
@@ -5064,9 +5082,7 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
                   // 高度逐帧连续，切 t>=1 展开分支无 +44 单帧跳变。
                   child: _TopClampBox(
                     height: h,
-                    child: ExcludeFocus(
-                      child: _UserExpandBase(child: widget.child),
-                    ),
+                    child: _UserExpandBase(child: widget.child),
                   ),
                 ),
                 Positioned(
@@ -5099,7 +5115,7 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
       onTap: widget.onToggle,
       child: Stack(
         children: [
-          ExcludeFocus(child: _UserExpandBase(child: widget.child)),
+          _UserExpandBase(child: widget.child),
           Positioned(
             left: 0,
             right: 0,
@@ -5116,13 +5132,15 @@ class _UserCollapseHostState extends State<_UserCollapseHost>
 }
 
 /// 用户气泡内的横向滚动转发器：代码块/表格正文上的横向拖动会被
-/// SelectableText 的 TapAndHorizontalDragGestureRecognizer 赢走（气泡内正文
-/// 被 [ExcludeFocus] 收口后，触摸端该赢家是纯 no-op），内部的横向
-/// SingleChildScrollView 拿不到拖动。此 widget 以裸 [Listener] 旁路手势
-/// 竞技场（raw 事件路由不受竞技场胜负影响），在指针按下时命中测试找出
-/// 指针下的横向 [Scrollable]，横向位移超过 slop 且横向主导时，用
-/// [ScrollPosition.drag] 把后续位移转发给它（带速度跟踪，抬手给 fling）。
-/// 纵向拖动不转发（列表滚动不受影响）；tap/长按/链接点按走原手势系统。
+/// SelectableText 的 TapAndHorizontalDragGestureRecognizer 赢走（正文无
+/// 焦点时触摸端该赢家是纯 no-op），内部的横向 SingleChildScrollView
+/// 拿不到拖动。此 widget 以裸 [Listener] 旁路手势竞技场（raw 事件路由
+/// 不受竞技场胜负影响），在指针按下时命中测试找出指针下的横向
+/// [Scrollable]，横向位移超过 slop 且横向主导时，用 [ScrollPosition.drag]
+/// 把后续位移转发给它（带速度跟踪，抬手给 fling）。纵向拖动不转发
+/// （列表滚动不受影响）；tap/长按/链接点按走原手势系统。正文已获焦时
+/// （点过/长按过正文）不接管：SDK 的横向扩选此时是激活态，转发会与
+/// 代码块滚动叠加出双效果。
 class _HScrollForwarder extends StatefulWidget {
   final Widget child;
 
@@ -5156,7 +5174,24 @@ class _HScrollForwarderState extends State<_HScrollForwarder> {
     _down = e.position;
     _tracker = VelocityTracker.withKind(e.kind)
       ..addPosition(e.timeStamp, e.position);
-    _target = _findHorizontalScrollable(e.position);
+    _target = _focusInsideBubble() ? null : _findHorizontalScrollable(e.position);
+  }
+
+  /// 正文获焦（点过/长按过）后 SDK 的横向扩选处于激活态：TapAndPan 赢家
+  /// 不再是 no-op，转发滚动会与扩选叠加。此时让位，本指针周期不接管。
+  bool _focusInsideBubble() {
+    final focus = FocusManager.instance.primaryFocus;
+    final focusContext = focus?.context;
+    if (focusContext is! Element) return false;
+    var inside = false;
+    focusContext.visitAncestorElements((ancestor) {
+      if (ancestor == context) {
+        inside = true;
+        return false;
+      }
+      return true;
+    });
+    return inside;
   }
 
   void _onMove(PointerMoveEvent e) {
@@ -5320,6 +5355,47 @@ class _RenderTopClampBox extends RenderShiftedBox {
       Size(child.size.width, _height.clamp(0.0, child.size.height)),
     );
     (child.parentData! as BoxParentData).offset = Offset.zero;
+  }
+
+  // 折叠盒按自然高度布局 child、仅 clamp 自身尺寸：裁切线以下的文本保有
+  // 真实布局坐标。Android 拖选 handle 时 SDK 会按 drag cause 对选区端点
+  // 调 bringIntoView→showOnScreen，外层列表会为这段「布局存在但视觉不可
+  // 见」的几何大幅跳滚（实测单次数百 px），handle 拖动被打断。这里把
+  // child 的 reveal 矩形截进盒子可见区后再向上传播：裁切线以下的内容
+  // 至多滚到盒缘可见，不再拉动列表。
+  @override
+  void showOnScreen({
+    RenderObject? descendant,
+    Rect? rect,
+    Duration duration = Duration.zero,
+    Curve curve = Curves.ease,
+  }) {
+    Rect? local = rect == null
+        ? null
+        : descendant == null || identical(descendant, this)
+            ? rect
+            : MatrixUtils.transformRect(
+                descendant.getTransformTo(this),
+                rect,
+              );
+    final Rect? clamped = local == null
+        ? null
+        : Rect.fromLTWH(
+            local.left
+                .clamp(0.0, math.max(0.0, size.width - local.width))
+                .toDouble(),
+            local.top
+                .clamp(0.0, math.max(0.0, size.height - local.height))
+                .toDouble(),
+            math.min(local.width, size.width),
+            math.min(local.height, size.height),
+          );
+    super.showOnScreen(
+      descendant: this,
+      rect: clamped,
+      duration: duration,
+      curve: curve,
+    );
   }
 }
 
