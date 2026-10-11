@@ -119,7 +119,6 @@ class AgentStatusIndicator extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context)!;
-    final paused = state.state == AgentRunState.paused;
     final color = _agentAccentColor(state.state, context);
     final background = state.state == AgentRunState.idle
         ? Theme.of(context).colorScheme.surfaceContainerHighest
@@ -161,7 +160,6 @@ class AgentStatusIndicator extends StatelessWidget {
           decoration: BoxDecoration(
             color: background,
             borderRadius: BorderRadius.circular(12),
-            border: paused ? Border.all(color: color) : null,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -206,7 +204,7 @@ String _agentStatusLabel(AgentIndicatorState state, AppLocalizations l) =>
 /// openbuilder-desktop session dots (tokens.css --status-running /
 /// --status-error / --status-waiting, tuned for #0E0F12). Light theme darkens
 /// green/red to >= 4.5:1 on #F7F8FA — the accent also paints the pill label
-/// text (11.5px) and the paused border, not just the dot. The waiting amber
+/// text (11.5px), not just the dot. The waiting amber
 /// keeps the desktop light value #B8860B: darker compliant variants read as
 /// mud-brown and lose meaning when the dot is used alone (recognition over
 /// contrast, per design-error-message §3.3). Unread blue matches the desktop
