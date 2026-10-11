@@ -105,7 +105,7 @@ Phase 2 完成（revert 仅接口、未进菜单；prompt 流式待活跃会话�
 20. App 生命周期管理（`WidgetsBindingObserver`）：进后台 30s 断开 SSE、回前台重连并全量对账（对齐 specs §5）。当前实现后台不主动断，靠 OS 杀连接 + `server.connected` 事件自愈——功能可用但费电、且与 spec 偏离；本阶段补齐生命周期钩子
 21. 会话缓存上限：`_conversations` 当前无上限，看过的会话 `ConversationStore` 永久驻留（仅靠 `session.deleted` 清理），长期使用内存单调增长；本阶段加容量上限 + LRU 淘汰
 22. `connect()` 状态机修整（server_store.dart:117-120）：bootstrap 失败时仍置 `connected=true` 并启动 SSE，状态机不一致（连不上也算「已连接」），靠下游 `error!=null && sessions.isEmpty` 兜底渲染错误页。本阶段改为失败即标记 `error` 并保持未连接，错误页走显式路径
-24. 版本号方案：`A.B.C+N`（`pubspec.yaml`）。A.B 为业务版本（仅按需手动升级），C 为 build 编号（从 0 起，每次成功 build 自增；业务版本升级后重置为 0），N 为 Android versionCode（≥1，每次成功构建持续递增，业务版本升级时不重置；构建失败保持原版本）。打包走 `scripts/build.sh`（以 bump 后的 C+N 执行 `flutter build apk --release`，仅成功后保留新版本）；升业务版本用 `scripts/build.sh --bump-business 0.2`
+24. 版本号方案：`A.B.C+N`（`pubspec.yaml`）。A.B.C 为 versionName（**仅手动升级**，不随 build 变化），N 为 Android versionCode（≥1，每次成功构建自增 1，从不重置；构建失败保持原版本）。打包走 `scripts/build.sh`（仅自增 versionCode，以新 N 执行 `flutter build apk --release`，仅成功后保留新版本）；升 versionName 用 `scripts/build.sh --set-version 0.10.1`。任何 versionName 升级都打三段式 tag `v<A.B.C>`（落在该版本的 bump commit 上）
 
 > 注：工作项 23（双端打包发布/签名）移出 Phase 3，后续单独处理。
 

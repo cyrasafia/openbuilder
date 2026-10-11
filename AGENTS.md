@@ -35,7 +35,7 @@ openbuilder/
 │  └─ ui/                        # 主题、共享 widgets（theme.dart / widgets.dart）
 ├─ docs/                         # 设计文档、执行计划、评审、参考（按类型分子目录：spec/ design/ plan/ review/ todo/ ref/；design 下再分 v1/ v2/）
 ├─ scripts/
-│  ├─ build.sh                   # release 构建（自动递增版本号）
+│  ├─ build.sh                   # release 构建（自动递增 build number）
 │  └─ analyze.sh                 # 静态分析（先 pub get 重建 l10n，再 analyze --fatal-infos）
 ├─ test/                         # 单元 + widget + smoke 测试
 ├─ tool/
@@ -51,27 +51,36 @@ openbuilder/
 
 > **Flutter 路径**：本机 Flutter 未加入 `PATH`，默认位于 `~/development/flutter/bin/flutter`。直接运行 `flutter` 会报找不到命令；`scripts/build.sh` 会自动把该路径加入 `PATH`，可用环境变量 `FLUTTER_HOME` 覆盖（同理 `ANDROID_SDK_ROOT` / `JAVA_HOME` 均可覆盖）。
 
-### Release APK（必须用脚本，自动递增版本号）
+### Release APK（必须用脚本，自动递增 build number）
 
 ```bash
 ./scripts/build.sh
 ```
 
-脚本会：读 `pubspec.yaml` version → 递增 patch + versionCode → 设 `JAVA_HOME`（~/development/jdk21）→ `flutter build apk --release` → 重命名 APK 为 `OpenBuilder-<版本>.apk` → 写回 pubspec。
+脚本会：读 `pubspec.yaml` version → versionCode +1（versionName 不动）→ 设 `JAVA_HOME`（~/development/jdk21）→ `flutter build apk --release` → 重命名 APK 为 `OpenBuilder-<版本>.apk` → 写回 pubspec。
 
 产物：`build/app/outputs/flutter-apk/OpenBuilder-<版本>.apk`（脚本会把 `app-release.apk` 重命名为 `OpenBuilder-A.B.C-N.apk`）
 
 > **不要直接 `flutter build apk`** — 会跳过版本递增。
 
-> **构建后默认动作**：在 `main` 分支上 Release build **成功**后，默认执行：提交 `pubspec.yaml`（`chore: bump version to <版本>`）→ 推送。若 build **失败**则无需执行这些动作。
+### 版本号方案
 
-### 升级业务版本号
+`pubspec.yaml: version: A.B.C+N`：
+
+- `A.B.C` = versionName，**只手动升级**（脚本默认不动）。
+- `N` = Android versionCode，每次成功 build 自增 1，**从不重置**；构建失败保持原版本。
+
+> **构建后默认动作**：在 `main` 分支上 Release build **成功**后，默认执行：提交 `pubspec.yaml`（`chore: bump version to <版本>`）→ 若本次升级了 versionName 则打 tag `v<A.B.C>` → 推送（含 tag）。若 build **失败**则无需执行这些动作。
+
+> **tag 约定**：任何 versionName 升级都打三段式 tag `v<A.B.C>`（如 `v0.10.1`），落在该版本的 bump commit 上；versionCode 自增不打 tag。
+
+### 升级版本号（versionName）
 
 ```bash
-./scripts/build.sh --bump-business 0.2
+./scripts/build.sh --set-version 0.10.1
 ```
 
-将 A.B 设为给定值、patch 重置为 0、versionCode 继续递增（如 `0.3.2+51` → `0.2.0+52`）。
+将 versionName 设为给定值（三段式 `A.B.C`），同时 versionCode 继续递增（如 `0.10.0+126` → `0.10.1+127`）。版本号未变或非三段式会直接报错。
 
 ### 静态分析（必须用脚本）
 

@@ -3,22 +3,21 @@
 #
 # Versioning scheme (see docs/plan/plan-overview.md):
 #   pubspec.yaml: version: A.B.C+N
-#     - A.B  = business version (only bumped on explicit request)
-#     - C    = build number (patch part of versionName), starts at 0, +1/build
-#     - N    = Android versionCode (must be >= 1), +1/build
+#     - A.B.C = version name (manual only; upgrade with --set-version)
+#     - N     = Android versionCode (must be >= 1), +1/build
 #
-# This script builds with C and N bumped by 1 and keeps the new version only
-# after a successful build. To bump the business version (A.B), reset C to 0,
-# and keep N increasing, pass: ./scripts/build.sh --bump-business 0.2
+# This script keeps the version name and bumps N by 1 on every build. The new
+# version is kept only after a successful build. To upgrade the version name,
+# pass: ./scripts/build.sh --set-version 0.10.1
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 PUBSPEC="pubspec.yaml"
 
-bump_business=""
-if [[ "${1:-}" == "--bump-business" ]]; then
-  bump_business="${2:?usage: build.sh [--bump-business A.B]}"
+set_version=""
+if [[ "${1:-}" == "--set-version" ]]; then
+  set_version="${2:?usage: build.sh [--set-version A.B.C]}"
 fi
 
 # Read current version line.
@@ -27,20 +26,26 @@ ver="${line#version: }"           # A.B.C+N
 base="${ver%%+*}"                 # A.B.C
 cur_code="${ver#*+}"
 [[ "$cur_code" =~ ^[0-9]+$ ]] || cur_code=0
-IFS='.' read -r major minor patch <<<"$base"
 
-if [[ -n "$bump_business" ]]; then
-  IFS='.' read -r major minor <<<"$bump_business"
-  patch=0
-  code=$((cur_code + 1))
-else
-  patch=$((patch + 1))
-  code=$((cur_code + 1))
+new_name="$base"
+if [[ -n "$set_version" ]]; then
+  [[ "$set_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "error: 版本号须为 A.B.C 三段式：$set_version" >&2
+    exit 1
+  }
+  [[ "$set_version" != "$base" ]] || {
+    echo "error: 版本号未变化：$set_version" >&2
+    exit 1
+  }
+  new_name="$set_version"
 fi
 
-new_name="${major}.${minor}.${patch}"
+code=$((cur_code + 1))
 new_ver="${new_name}+${code}"
 echo "Building version ${new_ver}"
+if [[ "$new_name" != "$base" ]]; then
+  echo "Version name ${base} -> ${new_name}（构建成功后打 tag v${new_name} 并推送）"
+fi
 
 # Env.
 export PATH="${FLUTTER_HOME:-$HOME/development/flutter}/bin:$PATH"
