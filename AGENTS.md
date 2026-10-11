@@ -220,3 +220,4 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design/v2/design-archive-metadata.md` | 归档会话识别对齐（双源 `time.archived` + `metadata.archivedAt` 桌面端私约，任一非空即归档；`isArchived` 收敛判定；SSE `session.metadata.updated` 四象限：已知会话快照直更零回源、未知未归档回源 GET 恢复（取消归档实时重现）、未知已归档忽略；缓存 round-trip；归档写路径已落地——菜单项回归，GET 整包合并→PATCH REPLACE + 本地快照即时移除、SSE 回声幂等，取消归档仍桌面端；官方归档 API 回归后双端同迁） |
 | `design/v2/design-worktree-branch-sync.md` | worktree 创建后分支挂载（v2 一律 detached HEAD 的客户端自救：创建后 `git switch -c opencode/<name>` 挂同名分支、slug 守卫防注入、撞名 rand 后缀重试；删除后在 canonical 下**总是** `-D` 同名分支——squash merge 下已并入判断失效，§8 修订——仅 `-D` 失败保留 + 10s SnackBar 提示；经 `POST /api/shell` 纯 API 通道，权威设计见 openbuilder-desktop 同名文档） |
 | `ref/ref-opencode-review-subagent.md` | OpenCode v2 `/review` 与 subagent 行为参考（内置 `/review` 不再开子会话的结论与证据、同名命令覆盖机制、subagent 触发条件、全局 reviewer agent + command 配置、术语约定、验证方法与踩坑） |
+| `ref/ref-version-tags.md` | 版本 tag 历史记录（三段式回填：76 个 tag 的 tag ↔ commit 映射、可复现的补打方法、未打 tag 的版本变动清单、`1.0.0` 与 2026-09-30 回退段裁定） |
