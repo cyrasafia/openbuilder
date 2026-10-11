@@ -48,6 +48,14 @@ class ServerStore extends ChangeNotifier {
   DateTime? _lastPreviewNotifyAt;
   static const _previewNotifyInterval = Duration(milliseconds: 120);
   bool _busyProbeInFlight = false;
+  final Map<String, int> _pendingAcks = {};
+  final Map<String, int> _ackRetryDelays = {};
+  final Map<String, Timer> _ackRetryTimers = {};
+  final Set<String> _metaRefreshInFlight = {};
+  @visibleForTesting
+  static Duration ackRetryBaseDelay = const Duration(milliseconds: 250);
+  @visibleForTesting
+  static Duration ackRetryMaxDelay = const Duration(seconds: 5);
   ConnectionProfile? _profile;
   CacheStore? _cacheStore;
 
@@ -354,7 +362,9 @@ class ServerStore extends ChangeNotifier {
       'busy' => const AgentIndicatorState(AgentRunState.working),
       'retry' => const AgentIndicatorState(AgentRunState.retrying),
       'error' => const AgentIndicatorState(AgentRunState.failed),
-      _ => const AgentIndicatorState(AgentRunState.idle),
+      _ => isSessionUnread(sessionId)
+          ? const AgentIndicatorState(AgentRunState.unread)
+          : const AgentIndicatorState(AgentRunState.idle),
     };
   }
 
@@ -745,7 +755,85 @@ class ServerStore extends ChangeNotifier {
     _activeSessionId = sid;
     if (sid != null) {
       _sse?.reconnectNow();
+      maybeMarkViewed(sid);
     }
+  }
+
+  bool isSessionUnread(String sid) {
+    final s = sessionById(sid);
+    if (s == null) return false;
+    final idle = s.idle;
+    if (idle == null) return false;
+    final viewed = s.viewed;
+    return viewed == null || idle > viewed;
+  }
+
+  void maybeMarkViewed(String sid) {
+    if (_activeSessionId != sid) return;
+    final s = sessionById(sid);
+    if (s == null) return;
+    final idle = s.idle;
+    if (idle == null) return;
+    final viewed = s.viewed;
+    if (viewed != null && viewed >= idle) return;
+    if (_pendingAcks[sid] == idle) return;
+    unawaited(_markViewed(sid, idle));
+  }
+
+  Future<void> _markViewed(String sid, int idle) async {
+    final c = client;
+    if (c == null || sessionById(sid) == null) return;
+    _pendingAcks[sid] = idle;
+    try {
+      await c.markSessionViewed(sid, idle);
+      _ackRetryDelays.remove(sid);
+      _ackRetryTimers.remove(sid)?.cancel();
+      _applyViewedWatermark(sid, idle);
+    } catch (_) {
+      _scheduleAckRetry(sid);
+    } finally {
+      if (_pendingAcks[sid] == idle) _pendingAcks.remove(sid);
+    }
+  }
+
+  void _scheduleAckRetry(String sid) {
+    if (client == null) return;
+    final delay = _ackRetryDelays[sid] ?? ackRetryBaseDelay.inMilliseconds;
+    final next = delay * 2;
+    final capped = next > ackRetryMaxDelay.inMilliseconds
+        ? ackRetryMaxDelay.inMilliseconds
+        : next;
+    _ackRetryDelays[sid] = capped;
+    _ackRetryTimers[sid]?.cancel();
+    _ackRetryTimers[sid] =
+        Timer(Duration(milliseconds: delay), () {
+      _ackRetryTimers.remove(sid);
+      maybeMarkViewed(sid);
+    });
+  }
+
+  void _applyViewedWatermark(String sid, int idle) {
+    final s = sessionById(sid);
+    if (s == null) return;
+    final viewed = s.viewed;
+    if (viewed != null && viewed >= idle) return;
+    _upsertSession(s.copyWith(viewed: idle));
+    notifyListeners();
+  }
+
+  void _clearAckState(String id) {
+    _pendingAcks.remove(id);
+    _ackRetryDelays.remove(id);
+    _ackRetryTimers.remove(id)?.cancel();
+  }
+
+  void _clearAllAckState() {
+    for (final t in _ackRetryTimers.values) {
+      t.cancel();
+    }
+    _ackRetryTimers.clear();
+    _pendingAcks.clear();
+    _ackRetryDelays.clear();
   }
 
   void ensureSseForSession(String sessionId) {
@@ -901,6 +989,7 @@ class ServerStore extends ChangeNotifier {
       _contentWatermarks.clear();
       _staleSessionIds.clear();
       _livePreviewSids.clear();
+      _clearAllAckState();
       _sseEpoch = 0;
       _lastDiffEpoch = -1;
       _projectsFetched = false;
@@ -1313,7 +1402,13 @@ class ServerStore extends ChangeNotifier {
       _projects = newProjects;
       _diffStaleSessions(sessions,
           full: true, busySids: _busySids(active: active));
-      _sessions = sessions;
+      final oldSessions = {for (final s in _sessions) s.id: s};
+      _sessions = [
+        for (final s in sessions)
+          oldSessions[s.id] == null
+              ? s
+              : _mergeTimeWatermarks(oldSessions[s.id]!, s),
+      ];
       _markGhostSessions(ghostIds);
       if (active != null) {
         _mergeStatus(fresh: active, sessions: sessions);
@@ -1334,6 +1429,7 @@ class ServerStore extends ChangeNotifier {
       final activeId = _activeSessionId;
       if (activeId != null) {
         unawaited(refreshCommands(directory: sessionById(activeId)?.directory));
+        maybeMarkViewed(activeId);
       }
     } catch (_) {
       notifyListeners();
@@ -1777,6 +1873,13 @@ class ServerStore extends ChangeNotifier {
         _mirrorTimeUpdated(ev.properties['sessionID']?.toString(), ev.created);
         break;
       case 'session.viewed':
+        final sidV = ev.properties['sessionID']?.toString();
+        final idleV = _i(ev.properties['idle']);
+        if (sidV != null && idleV > 0) {
+          _applyViewedWatermark(sidV, idleV);
+          maybeMarkViewed(sidV);
+        }
+        break;
       case 'session.forked':
       case 'session.instructions.updated':
         break;
@@ -1802,6 +1905,12 @@ class ServerStore extends ChangeNotifier {
           _statusMap[sid2] = settled;
           _conversations[sid2]?.setStatus(settled.type);
           _scheduleCacheSave();
+          final shutdownInterrupt = ev.type == 'session.execution.interrupted' &&
+              ev.properties['reason']?.toString() == 'shutdown';
+          if (!shutdownInterrupt && sessionById(sid2) != null) {
+            unawaited(_refreshSessionMeta(sid2)
+                .whenComplete(() => maybeMarkViewed(sid2)));
+          }
           if (wasBusy) {
             AppLogger.I.i(_tag, 'execution settled ${ev.type} $sid2');
             if (!isChildSession(sid2)) {
@@ -2240,11 +2349,16 @@ class ServerStore extends ChangeNotifier {
   Future<void> _refreshSessionMeta(String sid) async {
     final c = client;
     if (c == null) return;
+    if (_metaRefreshInFlight.contains(sid)) return;
+    _metaRefreshInFlight.add(sid);
     try {
       final s = await c.sessionMeta(sid);
       _upsertSession(s);
       notifyListeners();
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _metaRefreshInFlight.remove(sid);
+    }
   }
 
   Future<void> _backfillPreview(String sid, ConversationStore conv) async {
@@ -2333,6 +2447,7 @@ class ServerStore extends ChangeNotifier {
     final idx = _sessions.indexWhere((x) => x.id == s.id);
     _bumpLastActivity(s);
     if (s.parentID != null) {
+      _clearAckState(s.id);
       _sessions.removeWhere((x) => x.id == s.id);
       if (s.isArchived) {
         final host = _cardHostSessionId(s.id);
@@ -2346,19 +2461,38 @@ class ServerStore extends ChangeNotifier {
       return;
     }
     if (s.isArchived) {
+      _clearAckState(s.id);
       _sessions.removeWhere((x) => x.id == s.id);
       _unindexChild(s.id, s.parentID);
       _childSessions.remove(s.id);
       _scheduleCacheSave();
       return;
     }
+    int? prevIdle;
     if (idx == -1) {
       _sessions.add(s);
     } else {
-      _sessions[idx] = s;
+      final old = _sessions[idx];
+      prevIdle = old.idle;
+      _sessions[idx] = _mergeTimeWatermarks(old, s);
     }
     _scheduleCacheSave();
     _backfillConversationDirectory(s.id, s.directory);
+    final landedIdle = (idx == -1 ? s : _sessions[idx]).idle;
+    if (landedIdle != null && (prevIdle == null || landedIdle > prevIdle)) {
+      maybeMarkViewed(s.id);
+    }
+  }
+
+  SessionModel _mergeTimeWatermarks(SessionModel old, SessionModel s) {
+    final idle = old.idle == null || s.idle == null
+        ? (s.idle ?? old.idle)
+        : max(old.idle!, s.idle!);
+    final viewed = old.viewed == null || s.viewed == null
+        ? (s.viewed ?? old.viewed)
+        : max(old.viewed!, s.viewed!);
+    if (idle == s.idle && viewed == s.viewed) return s;
+    return s.copyWith(idle: idle, viewed: viewed);
   }
 
   void _indexChild(String id, String? parentID) {
@@ -2539,6 +2673,7 @@ class ServerStore extends ChangeNotifier {
     _conversations.remove(id);
     _lastMessage.remove(id);
     _statusMap.remove(id);
+    _clearAckState(id);
     _ghostSessionIds.remove(id);
     _contentWatermarks.remove(id);
     _livePreviewSids.remove(id);
@@ -2581,6 +2716,7 @@ class ServerStore extends ChangeNotifier {
     _pendingForms.clear();
     _recentlyResolvedForms.clear();
     _recentlyResolvedPermissions.clear();
+    _clearAllAckState();
     commandsNotifier.value = const [];
     _commandsDegraded = false;
     _commandsCacheDir = null;
@@ -2604,6 +2740,7 @@ class ServerStore extends ChangeNotifier {
     _previewNotifyTimer = null;
     _cacheSaveTimer?.cancel();
     _cacheSaveTimer = null;
+    _clearAllAckState();
     commandsNotifier.dispose();
     previewVersion.dispose();
     super.dispose();

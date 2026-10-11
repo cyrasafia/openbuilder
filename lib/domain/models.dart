@@ -338,7 +338,7 @@ class SessionStatusValue {
   int get hashCode => Object.hash(type, message);
 }
 
-enum AgentRunState { working, retrying, failed, idle, paused }
+enum AgentRunState { working, retrying, failed, idle, paused, unread }
 
 enum AgentPauseReason { permission, choice }
 

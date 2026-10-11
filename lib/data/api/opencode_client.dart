@@ -171,6 +171,13 @@ class OpencodeClient {
     );
   }
 
+  Future<void> markSessionViewed(String sessionId, int idle) async {
+    await dio.post<dynamic>(
+      '/api/session/$sessionId/view',
+      data: {'idle': idle},
+    );
+  }
+
   Future<Map<String, dynamic>> archiveSession(String sessionId) async {
     final r = await dio.get<dynamic>('/api/session/$sessionId');
     final meta = _dataMap(r.data)['metadata'];

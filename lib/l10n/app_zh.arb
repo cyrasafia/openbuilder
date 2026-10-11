@@ -16,6 +16,7 @@
   "agentRetrying": "重试中",
   "agentFailed": "失败",
   "agentIdle": "空闲",
+  "agentUnread": "未读",
   "agentNeedAuth": "需要授权",
   "agentNeedChoice": "需要选择",
   "agentPendingCount": "{count, plural, other{，共 {count} 项待处理}}",

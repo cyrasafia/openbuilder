@@ -129,6 +129,7 @@ class AgentStatusIndicator extends StatelessWidget {
       AgentRunState.retrying => l.agentRetrying,
       AgentRunState.failed => l.agentFailed,
       AgentRunState.idle => l.agentIdle,
+      AgentRunState.unread => l.agentUnread,
       AgentRunState.paused => state.pauseReason == AgentPauseReason.permission
           ? l.agentNeedAuth
           : l.agentNeedChoice,
@@ -142,6 +143,8 @@ class AgentStatusIndicator extends StatelessWidget {
           key: const ValueKey('failed'), color: color),
       AgentRunState.idle => _StaticDot(
           key: const ValueKey('idle'), color: color, alpha: 140),
+      AgentRunState.unread => _StaticDot(
+          key: const ValueKey('unread'), color: color),
       AgentRunState.paused => _StaticDot(
           key: const ValueKey('paused'), color: color),
     };
@@ -192,23 +195,27 @@ String _agentStatusLabel(AgentIndicatorState state, AppLocalizations l) =>
       AgentRunState.retrying => l.agentRetrying,
       AgentRunState.failed => l.agentFailed,
       AgentRunState.idle => l.agentIdle,
+      AgentRunState.unread => l.agentUnread,
       AgentRunState.paused =>
         state.pauseReason == AgentPauseReason.permission
             ? l.agentNeedAuth
             : l.agentNeedChoice,
     };
 
-/// Four-color dot palette, one row per brightness. Dark theme keeps the
+/// Five-color dot palette, one row per brightness. Dark theme keeps the
 /// openbuilder-desktop session dots (tokens.css --status-running /
 /// --status-error / --status-waiting, tuned for #0E0F12). Light theme darkens
 /// green/red to >= 4.5:1 on #F7F8FA — the accent also paints the pill label
 /// text (11.5px) and the paused border, not just the dot. The waiting amber
 /// keeps the desktop light value #B8860B: darker compliant variants read as
 /// mud-brown and lose meaning when the dot is used alone (recognition over
-/// contrast, per design-error-message §3.3). Single source of truth for the
+/// contrast, per design-error-message §3.3). Unread blue matches the desktop
+/// --status-unread tokens (#58A6FF dark / #0969DA light, GitHub blue) so the
+/// marker reads the same across clients. Single source of truth for the
 /// pill and the compact indicators: working = green (breathing), retrying =
 /// red (breathing, red only flags the error cause), failed = red (static,
-/// terminal), paused/waiting = amber (static), idle = outline gray (static).
+/// terminal), paused/waiting = amber (static), unread = blue (static,
+/// produced-but-unreviewed), idle = outline gray (static).
 Color _agentAccentColor(AgentRunState state, BuildContext context) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   return switch (state) {
@@ -220,6 +227,8 @@ Color _agentAccentColor(AgentRunState state, BuildContext context) {
       dark ? const Color(0xFFE5484D) : const Color(0xFFB91C1C),
     AgentRunState.paused =>
       dark ? const Color(0xFFFBBF24) : const Color(0xFFB8860B),
+    AgentRunState.unread =>
+      dark ? const Color(0xFF58A6FF) : const Color(0xFF0969DA),
     AgentRunState.idle => Theme.of(context).colorScheme.outline,
   };
 }
@@ -241,6 +250,7 @@ class AgentStatusGlyph extends StatelessWidget {
       AgentRunState.retrying => _HaloDot(color: color),
       AgentRunState.failed => _StaticDot(color: color),
       AgentRunState.paused => _StaticDot(color: color),
+      AgentRunState.unread => _StaticDot(color: color),
       AgentRunState.idle => _StaticDot(color: color, alpha: 140),
     };
     return Tooltip(

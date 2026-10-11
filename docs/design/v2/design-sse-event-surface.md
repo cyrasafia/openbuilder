@@ -36,6 +36,7 @@
 | `session.usage.recorded/updated` | cost 字段更新 + 活动 touch | L1811-1821 |
 | `session.synthetic` | `onSynthetic` 物化合成消息（后台任务启停提示的官方来源之一） | L1972-1986 |
 | `session.moved` | 触发对账 | L1733-1735 |
+| `session.viewed`（2026-10-11 起，design-unread-marker） | 未读水位消费：`viewed = max(本地, event.idle)` 落库（`_applyViewedWatermark`，他端 ack 即本端消标）；随后对激活会话触发 `maybeMarkViewed` | L1856-1863 |
 | 目录失效族 11 事件（另有 v1 名 `catalog.updated` 同权触发，归类见 §2.4）：`command/agent/model/provider/skill/plugin/reference/integration.updated`、`mcp.status.changed`、`mcp.resources.changed`、`websearch.updated` | 触发 `refreshCommands`（斜杠命令缓存失效） | L2074-2090 |
 
 **缺口**（→ §3 GAP-3 / GAP-4）：
@@ -43,7 +44,7 @@
 - 目录失效触发清单缺 `config.updated`（配置重载即发布，桌面端源码锚点 `config.ts:276`）与 `models-dev.refreshed`；
 - `vcs.branch.updated` 落入 `default` **静默丢弃**，连对账都不触发——与 worktree 分支挂载（`design-worktree-branch-sync.md`）相关：他端切分支后移动端不感知。
 
-**与桌面端同判（不接，无消费场景或低值）**：`session.compaction.*`、`session.shell.started/ended`（no-op case 占位）、`filesystem.changed`（v2.0.18 唯一发布者是 LocationWatcher，仅监听 `.git/HEAD`，全树监听不可得——桌面端附录 B3 结论维持）、`location.shutdown`、`installation.updated/update-available`、`credential.switched/updated`（信封 `{global:true}` 无 location，接时需过闸门旁路）、`pty.*` / `shell.*`（本项目无终端 UI，不展示他端终端是既定设计）、`session.permissions/instructions.updated/viewed/forked`（no-op 占位）。
+**与桌面端同判（不接，无消费场景或低值）**：`session.compaction.*`、`session.shell.started/ended`（no-op case 占位）、`filesystem.changed`（v2.0.18 唯一发布者是 LocationWatcher，仅监听 `.git/HEAD`，全树监听不可得——桌面端附录 B3 结论维持）、`location.shutdown`、`installation.updated/update-available`、`credential.switched/updated`（信封 `{global:true}` 无 location，接时需过闸门旁路）、`pty.*` / `shell.*`（本项目无终端 UI，不展示他端终端是既定设计）、`session.permissions/instructions.updated/forked`（no-op 占位；`session.viewed` 已于 2026-10-11 升级为消费，见表 B）。
 
 ### 2.3 表 C 对照：定义了但 v2.0.18 无发布者（勿接）
 

@@ -16,6 +16,7 @@
   "agentRetrying": "Retrying",
   "agentFailed": "Failed",
   "agentIdle": "Idle",
+  "agentUnread": "Unread",
   "agentNeedAuth": "Authorization needed",
   "agentNeedChoice": "Selection needed",
   "agentPendingCount": "{count, plural, one{, {count} item pending} other{, {count} items pending}}",

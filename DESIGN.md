@@ -277,13 +277,29 @@ surfaceBright               #353A35  ← 最亮表面
 | error | `#F85149` | error |
 | pending | `#8B949E` | hourglass_top |
 
+### Agent 状态色（硬编码）
+
+会话行状态 pill / 项目 Tab glyph 与聚合 chip 共用的五色板。语义固定、按深浅主题分档
+（浅色加深至 ≥4.5:1,同色也绘制 pill 文字与 paused 描边）。与工具状态色同性质:状态指示
+不随 ColorScheme 变化。深色沿用桌面端 tokens.css 同名令牌;未读蓝与桌面端 `--status-unread`
+同值,保证跨端一致。
+
+| 状态 | 深色 | 浅色 | 动效 | 语义 |
+|------|------|------|------|------|
+| working | `#1DAE4E` | `#15803D` | 呼吸 | 运行中 |
+| retrying | `#E5484D` | `#B91C1C` | 呼吸 | 出错重试中 |
+| failed | `#E5484D` | `#B91C1C` | 静态 | 终局失败 |
+| paused | `#FBBF24` | `#B8860B` | 静态 | 待输入(授权/选择) |
+| unread | `#58A6FF` | `#0969DA` | 静态 | 已产出未验收(服务端水位 `time.idle > time.viewed`) |
+| idle | `colorScheme.outline` | `colorScheme.outline` | 静态 | 空闲 |
+
 ### 使用规范
 
 1. **优先用 ColorScheme 语义角色**,不硬编码 hex。`onSurface` 做主文字,`outline` 做次级,`surfaceContainerHighest` 做容器背景。
 2. **AppColors 用于 ColorScheme 未覆盖的场景**:代码高亮、链接、用户气泡配色。通过 `theme.extension<AppColors>()!` 获取。
-3. **工具状态色是唯一允许硬编码的场景**——它们是语义固定的状态指示,不随主题变化。
+3. **工具状态色与 agent 状态色是仅有的两个允许硬编码的场景**——它们是语义固定的状态指示,不随主题变化。
 4. **用户气泡深浅模式共用同一组基础色值**（气泡背景、文字、次级文字、链接、边框等），仅 `userCodeBackground` 因深浅模式背景对比需要而不同。气泡本身是深色容器,在浅色页面上也保持深底以维持对比。
-5. **不引入新的硬编码色**。需要新颜色时,优先从 ColorScheme 选取;确需扩展时加入 AppColors 并定义深浅两态。
+5. **不引入新的硬编码色**。需要新颜色时,优先从 ColorScheme 选取;确需扩展时加入 AppColors 并定义深浅两态。状态指示色扩展走 agent 状态色板(单一色源 `_agentAccentColor`,双主题分档)。
 
 ## 字重标度
 
