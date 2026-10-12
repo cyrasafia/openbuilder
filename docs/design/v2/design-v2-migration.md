@@ -317,7 +317,7 @@ v2 的 TS 生态为 `packages/protocol`（Effect HttpApi 定义）+ `packages/sd
 | 项 | 优先级 | 阻塞点 | 跟踪 |
 |----|--------|--------|------|
 | 大文件下载中途截断 | 🔴 | Bun `keepAliveTimeout=5s` 掐断整包 body（>~20MB 慢链路 100% 失败）；等 opencode #50507 合并发版后升级服务端；`/api/fs/read` 无 `Range`（不返回 206），客户端明确不做断点续传绕过。2026-10-06 桌面端核对：#50507 至 v2.0.24 仍 open（源码 grep 零命中） | `docs/todo/todo-large-file-download-bun-keepalive.md` |
-| 幽灵 worktree project | 🟡 | v1 迁移带入的目录级 project 行无删除路径（v2 只 upsert）；`/api/worktree` 登记清单不校验存在性；根治需向 opencode 提 issue（未提；桌面端核对 v2.0.18..24 project 层无回收机制）。**一次性清理已由桌面端在同 DB 代执行**（2026-09-29/30 两轮删 116+34 行，终态 50 行全部 canonical 磁盘存在）——todo 的「暂不清理」分支视为已完成；客户端过滤防的是**再生**（worktree 功能测试、server 重启解析 cwd 均为新燃料源）。过滤路线简化（替代原「登记清单白名单」设计）：canonical 命中 worktree 根即剔除，活 worktree 由宿主项目二级展示不误伤，零额外请求 | `docs/todo/todo-ghost-worktree-projects.md`；openbuilder-desktop `docs/ref/ref-pseudo-project-cleanup.md` |
+| 幽灵 worktree project | ✅ 已关闭 | v1 迁移带入的目录级 project 行（v2 只 upsert，无删除路径）。**一次性清理已执行**（2026-09-29/30 两轮删 116+34 行，终态 50 行全部 canonical 磁盘存在）——原修复方向 3 完成；方向 1（向 opencode 提 issue）与方向 2（客户端过滤，含「canonical 命中 worktree 根即剔除」简化路线）**确定不做**，再生风险接受（worktree 功能测试、server 重启解析 cwd 可再引入） | openbuilder-desktop `docs/ref/ref-pseudo-project-cleanup.md` |
 | 归档官方 API | 🟡 | v2.0.18 无端点、console 亦为 stub；现以 `time.archived` + `metadata.archivedAt` 私约识别、PATCH metadata 写路径模拟；官方 API 回归后双端同迁。2026-10-06 桌面端核对：v2.0.24 PATCH payload 仍只有 title/metadata/permissions、零 archive 提交、#47848（unarchive）open——复核节奏可放宽至跟随 minor 版本 | `docs/design/v2/design-archive-metadata.md` |
 | Android passkey 断言 origin | 🟡 | Authelia `RPOrigins` 硬编码为请求 origin，`android:apk-key-hash:` 断言必被拒，等 v4.40（#11432）；配套项 A（assetlinks.json）/ 项 C（AASA）为部署侧配置，也未做 | `docs/todo/todo-authelia-passkey-origin.md` |
 
