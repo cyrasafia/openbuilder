@@ -41,6 +41,16 @@ SessionModel _session({required String id, required String directory}) =>
       'time': {'updated': 1000},
     });
 
+SessionModel _failedSession({required String id, required String directory}) =>
+    SessionModel.fromJson({
+      'id': id,
+      'projectID': 'p1',
+      'location': {'directory': directory},
+      'title': 't',
+      'time': {'updated': 1000},
+      'outcome': 'failed',
+    });
+
 OpencodeEvent _busyEvent(String sid) => OpencodeEvent(
       type: 'session.execution.started',
       properties: {'sessionID': sid},
@@ -151,10 +161,13 @@ void main() {
     expect(store.statusOf('s1').type, 'error');
 
     // A terminal error is not an active state: the session is absent from
-    // the active map, and that absence must NOT wash the error back to idle.
+    // the active map, and that absence must NOT wash the error back to idle
+    // (the server-side outcome=failed backs the sticky error up).
     store.mergeStatusForTesting(
       fresh: const {},
-      sessions: [_session(id: 's1', directory: '/dirA')],
+      sessions: [
+        _failedSession(id: 's1', directory: '/dirA'),
+      ],
     );
     expect(store.statusOf('s1').type, 'error',
         reason: 'terminal error survives reconcile while nothing is running');
@@ -174,7 +187,9 @@ void main() {
     // A fresh run reported by the active map replaces the stale error.
     store.mergeStatusForTesting(
       fresh: const {'s1': SessionStatusValue('busy')},
-      sessions: [_session(id: 's1', directory: '/dirA')],
+      sessions: [
+        _failedSession(id: 's1', directory: '/dirA'),
+      ],
     );
     expect(store.statusOf('s1').type, 'busy',
         reason: 'a new run overrides a previous terminal error');
@@ -282,6 +297,134 @@ void main() {
     expect(store.statusOf('s1').type, 'idle',
         reason: 'status must not be persisted/restored from disk');
     store.dispose();
+  });
+
+  group('outcome=failed recovers the error status (server-side source)', () {
+    test('cold boot: failed outcome and absent from active → error', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.mergeStatusForTesting(
+        fresh: const {},
+        sessions: [_failedSession(id: 's1', directory: '/dirA')],
+      );
+      expect(store.statusOf('s1').type, 'error',
+          reason: 'server-side outcome=failed must recover the red dot');
+      store.dispose();
+    });
+
+    test('active (busy) outranks the failed outcome', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.mergeStatusForTesting(
+        fresh: const {'s1': SessionStatusValue('busy')},
+        sessions: [_failedSession(id: 's1', directory: '/dirA')],
+      );
+      expect(store.statusOf('s1').type, 'busy',
+          reason: 'running sessions never fall back to outcome');
+      store.dispose();
+    });
+
+    test('refresh with a succeeded outcome clears the stale error', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.mergeStatusForTesting(
+        fresh: const {},
+        sessions: [_failedSession(id: 's1', directory: '/dirA')],
+      );
+      expect(store.statusOf('s1').type, 'error');
+
+      final rerun = SessionModel.fromJson({
+        'id': 's1',
+        'projectID': 'p1',
+        'location': {'directory': '/dirA'},
+        'title': 't',
+        'time': {'updated': 2000},
+        'outcome': 'succeeded',
+      });
+      store.mergeStatusForTesting(
+        fresh: const {},
+        sessions: [rerun],
+      );
+      expect(store.statusOf('s1').type, 'idle',
+          reason: 'a successful rerun updates outcome and clears the error');
+      store.dispose();
+    });
+
+    test('interrupted outcome stays idle (no red dot)', () {
+      final interrupted = SessionModel.fromJson({
+        'id': 's1',
+        'projectID': 'p1',
+        'location': {'directory': '/dirA'},
+        'title': 't',
+        'time': {'updated': 1000},
+        'outcome': 'interrupted',
+      });
+      final store = ServerStore()..client = _fakeClient();
+      store.mergeStatusForTesting(
+        fresh: const {},
+        sessions: [interrupted],
+      );
+      expect(store.statusOf('s1').type, 'idle');
+      store.dispose();
+    });
+
+    test('stale in-memory retry is washed to error by the merge', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.onEventForTesting(OpencodeEvent(
+        type: 'session.retry.scheduled',
+        properties: {
+          'sessionID': 's1',
+          'assistantMessageID': 'm1',
+          'error': 'x',
+        },
+      ));
+      expect(store.statusOf('s1').type, 'retry');
+
+      store.mergeStatusForTesting(
+        fresh: const {},
+        sessions: [_failedSession(id: 's1', directory: '/dirA')],
+      );
+      expect(store.statusOf('s1').type, 'error',
+          reason: 'a stale retry (not in active) must not block the outcome');
+      store.dispose();
+    });
+
+    test('stale snapshot race: in-memory model backs the SSE error (NB-1)',
+        () {
+      final store = ServerStore()..client = _fakeClient();
+      store.onEventForTesting(_busyEvent('s1'));
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'session.execution.failed',
+        properties: {'sessionID': 's1'},
+      ));
+      // _refreshSessionMeta updated the in-memory model after the event.
+      store.upsertSessionForTesting(
+          _failedSession(id: 's1', directory: '/dirA'));
+
+      // The refresh snapshot was fetched BEFORE the failure (no outcome).
+      store.mergeStatusForTesting(
+        fresh: const {},
+        sessions: [_session(id: 's1', directory: '/dirA')],
+      );
+      expect(store.statusOf('s1').type, 'error',
+          reason: 'in-memory model outcome backs the SSE error against a '
+              'stale snapshot fetched before the failure');
+      store.dispose();
+    });
+
+    test('error with no outcome corroboration anywhere is washed', () {
+      final store = ServerStore()..client = _fakeClient();
+      store.onEventForTesting(_busyEvent('s1'));
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'session.execution.failed',
+        properties: {'sessionID': 's1'},
+      ));
+      store.mergeStatusForTesting(
+        fresh: const {},
+        sessions: [_session(id: 's1', directory: '/dirA')],
+      );
+      expect(store.statusOf('s1').type, 'idle',
+          reason: 'server evidence (snapshot + in-memory model) says not '
+              'failed → the stale error is washed');
+      store.dispose();
+    });
   });
 }
 

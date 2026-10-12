@@ -8,23 +8,23 @@ import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 
 class _BackfillMockClient extends OpencodeClient {
-  final Future<List<Permission>> Function(String directory)? permissionsHandler;
-  final Future<List<FormInfo>> Function(String? directory)? formsHandler;
-  final void Function(String directory)? onPermissionFetch;
+  final Future<List<Permission>> Function(String sessionId)? permissionsHandler;
+  final Future<List<FormInfo>> Function(String sessionId)? formsHandler;
+  final void Function(String sessionId)? onPermissionFetch;
   _BackfillMockClient(
       {this.permissionsHandler, this.formsHandler, this.onPermissionFetch})
       : super(_noopDio());
 
   @override
-  Future<List<Permission>> pendingPermissions(String directory) async {
-    onPermissionFetch?.call(directory);
-    return await (permissionsHandler?.call(directory) ??
+  Future<List<Permission>> sessionPermissions(String sessionId) async {
+    onPermissionFetch?.call(sessionId);
+    return await (permissionsHandler?.call(sessionId) ??
         Future.value(const <Permission>[]));
   }
 
   @override
-  Future<List<FormInfo>> listForms({String? directory}) async =>
-      await (formsHandler?.call(directory) ??
+  Future<List<FormInfo>> sessionForms(String sessionId) async =>
+      await (formsHandler?.call(sessionId) ??
           Future.value(const <FormInfo>[]));
 }
 
@@ -70,6 +70,12 @@ void _replyForm(ServerStore store, String sid, String fid) =>
     store.onEventForTesting(OpencodeEvent(
       type: 'form.replied',
       properties: {'sessionID': sid, 'id': fid},
+    ));
+
+void _markBusy(ServerStore store, String sid) =>
+    store.onEventForTesting(OpencodeEvent(
+      type: 'session.execution.started',
+      properties: {'sessionID': sid},
     ));
 
 void main() {
@@ -155,16 +161,17 @@ void main() {
       final p2 = Permission(id: 'per_2', action: 'bash', sessionID: 's2');
       late ServerStore store;
       final client = _BackfillMockClient(
-        permissionsHandler: (dir) async => dir == '/d1' ? [p2] : const [],
-        onPermissionFetch: (dir) {
-          if (dir != '/d2') return;
+        permissionsHandler: (sid) async => sid == 's2' ? [p2] : const [],
+        onPermissionFetch: (sid) {
+          if (sid != 's2') return;
           final conv = store.ensureConversation('s2')!;
           conv.onPermissionResolved!(p2.id);
         },
       );
       store = ServerStore()..client = client;
-      store.upsertSessionForTesting(_session('s1', dir: '/d1'));
-      store.upsertSessionForTesting(_session('s2', dir: '/d2'));
+      store.upsertSessionForTesting(_session('s1'));
+      store.upsertSessionForTesting(_session('s2'));
+      _markBusy(store, 's2');
 
       await store.backfillPermissionsForTesting();
       expect(store.hasPendingPermission('s2'), isFalse,
@@ -181,6 +188,7 @@ void main() {
       );
       final store = ServerStore()..client = client;
       store.upsertSessionForTesting(_session('s1'));
+      _markBusy(store, 's1');
       _askPermission(store, p1);
       _replyPermission(store, 's1', p1.id);
       expect(store.hasPendingPermission('s1'), isFalse);
@@ -197,6 +205,7 @@ void main() {
       );
       final store = ServerStore()..client = client;
       store.upsertSessionForTesting(_session('s1'));
+      _markBusy(store, 's1');
       _askForm(store, f1);
       _replyForm(store, 's1', f1.id);
       expect(store.hasPendingQuestion('s1'), isFalse);
@@ -220,6 +229,7 @@ void main() {
       );
       final store = ServerStore()..client = client;
       store.upsertSessionForTesting(_session('s1'));
+      _markBusy(store, 's1');
 
       final f1 = store.backfillPermissionsForTesting();
       final f2 = store.backfillPermissionsForTesting();
@@ -231,6 +241,99 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(fetches, 2,
           reason: 'trailing trigger re-runs exactly once after completion');
+    });
+  });
+
+  group('session-level fanout', () {
+    test('sid set = busy/retry ∪ pending-card hosts; idle sessions untouched',
+        () async {
+      final fetched = <String>[];
+      final p1 =
+          Permission(id: 'per_1', action: 'bash', sessionID: 's_busy_no_card');
+      final client = _BackfillMockClient(
+        permissionsHandler: (sid) async {
+          fetched.add(sid);
+          return sid == 's_busy_no_card' ? [p1] : const [];
+        },
+      );
+      final store = ServerStore()..client = client;
+      store.upsertSessionForTesting(_session('s_idle'));
+      store.upsertSessionForTesting(_session('s_busy_no_card'));
+      _markBusy(store, 's_busy_no_card');
+
+      await store.backfillPermissionsForTesting();
+      expect(fetched, contains('s_busy_no_card'));
+      expect(fetched, isNot(contains('s_idle')),
+          reason: 'idle session without cards is not queried');
+      expect(store.hasPendingPermission('s_busy_no_card'), isTrue,
+          reason: 'card returned for the busy sid is injected');
+    });
+
+    test('failed sid keeps its cards; other sids still reconcile', () async {
+      final p1 = Permission(id: 'per_1', action: 'bash', sessionID: 's1');
+      late ServerStore store;
+      final client = _BackfillMockClient(
+        permissionsHandler: (sid) async {
+          if (sid == 's1') throw Exception('boom');
+          return const [];
+        },
+      );
+      store = ServerStore()..client = client;
+      store.upsertSessionForTesting(_session('s1'));
+      store.upsertSessionForTesting(_session('s2'));
+      _markBusy(store, 's1');
+      _askPermission(store, p1);
+      expect(store.hasPendingPermission('s1'), isTrue);
+
+      await store.backfillPermissionsForTesting();
+      expect(store.hasPendingPermission('s1'), isTrue,
+          reason: 'failed sid must keep its in-memory card');
+    });
+
+    test('card host cleared when server returns empty for the host', () async {
+      final p1 = Permission(id: 'per_1', action: 'bash', sessionID: 's1');
+      final client = _BackfillMockClient(
+        permissionsHandler: (_) async => const [],
+      );
+      final store = ServerStore()..client = client;
+      store.upsertSessionForTesting(_session('s1'));
+      _askPermission(store, p1);
+      expect(store.hasPendingPermission('s1'), isTrue);
+
+      await store.backfillPermissionsForTesting();
+      expect(store.hasPendingPermission('s1'), isFalse,
+          reason: 'server-side reply must clear the stale in-memory card');
+    });
+
+    test('same card in child+parent shapes is not double-counted (NIT-2)',
+        () async {
+      final pChild = Permission(id: 'per_1', action: 'bash', sessionID: 'kid');
+      final pParent = Permission(id: 'per_1', action: 'bash', sessionID: 'par');
+      final client = _BackfillMockClient(
+        permissionsHandler: (sid) async {
+          if (sid == 'kid') throw Exception('boom');
+          return [pParent];
+        },
+      );
+      final store = ServerStore()..client = client;
+      store.upsertSessionForTesting(_session('par'));
+      store.upsertSessionForTesting(SessionModel(
+          id: 'kid',
+          projectID: 'p',
+          directory: '/d',
+          title: 't',
+          created: 0,
+          updated: 0,
+          parentID: 'par'));
+      _askPermission(store, pChild);
+      expect(store.agentIndicatorStateOf('par').pendingCount, 1);
+
+      await store.backfillPermissionsForTesting();
+      expect(store.agentIndicatorStateOf('par').pendingCount, 1,
+          reason: 'a failed child shape must not duplicate the recovered '
+              'parent shape of the same card');
+      expect(store.hasPendingPermission('kid'), isFalse,
+          reason: 'the stale child-shaped entry is dropped');
     });
   });
 }

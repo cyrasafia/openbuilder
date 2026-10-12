@@ -148,7 +148,7 @@ void main() {
       expect(store.isGatedDirectoryForTesting('/elsewhere'), isFalse);
       expect(store.isGatedDirectoryForTesting(''), isFalse,
           reason: 'empty-string directories stay out of the gate, matching '
-              'the isNotEmpty guards in _eventDirectories');
+              'the isNotEmpty guards in _isGatedDirectory');
       store.dispose();
     });
   });

@@ -1033,20 +1033,6 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  Set<String> _eventDirectories() {
-    final dirs = <String>{};
-    for (final p in _projects) {
-      if (p.canonical.isNotEmpty) dirs.add(p.canonical);
-      for (final d in worktreeDirsOf(p.id)) {
-        if (d.isNotEmpty) dirs.add(d);
-      }
-    }
-    for (final s in _sessions) {
-      if (s.directory.isNotEmpty) dirs.add(s.directory);
-    }
-    return dirs;
-  }
-
   bool _isGatedDirectory(String directory) {
     if (directory.isEmpty) return false;
     for (final p in _projects) {
@@ -1208,13 +1194,26 @@ class ServerStore extends ChangeNotifier {
     required List<SessionModel> sessions,
   }) {
     final merged = Map.of(fresh);
+    final failedOutcome = <String>{};
+    for (final s in sessions) {
+      if (s.outcome == 'failed') failedOutcome.add(s.id);
+    }
+    for (final s in _sessions) {
+      if (s.outcome == 'failed') failedOutcome.add(s.id);
+    }
     _statusMap.forEach((id, v) {
       if (v.type == 'retry' && fresh.containsKey(id)) {
         merged[id] = v;
-      } else if (v.type == 'error' && !fresh.containsKey(id)) {
+      } else if (v.type == 'error' &&
+          !fresh.containsKey(id) &&
+          failedOutcome.contains(id)) {
         merged[id] = v;
       }
     });
+    for (final sid in failedOutcome) {
+      if (fresh.containsKey(sid)) continue;
+      merged[sid] = const SessionStatusValue('error');
+    }
     _statusMap
       ..clear()
       ..addAll(merged);
@@ -1453,6 +1452,22 @@ class ServerStore extends ChangeNotifier {
     await refreshListAndWorkingSse(force: false, reconcileWorktrees: true);
   }
 
+  Set<String> _backfillSids() {
+    final sids = <String>{};
+    for (final e in _statusMap.entries) {
+      if (e.value.type == 'busy' || e.value.type == 'retry') sids.add(e.key);
+    }
+    for (final p in _pendingPermissions.values) {
+      sids.add(p.sessionID);
+      sids.add(_cardHostSessionId(p.sessionID));
+    }
+    for (final f in _pendingForms.values) {
+      sids.add(f.sessionID);
+      sids.add(_cardHostSessionId(f.sessionID));
+    }
+    return sids;
+  }
+
   Future<void> _backfillPermissions() async {
     final c = client;
     if (c == null) return;
@@ -1464,32 +1479,36 @@ class ServerStore extends ChangeNotifier {
     try {
       _purgeExpiredResolved();
       final prev = Map.of(_pendingPermissions);
-      final dirs = _eventDirectories();
-      final failedDirs = <String>{};
+      final sids = _backfillSids();
+      final failedSids = <String>{};
       final next = <String, Permission>{};
-      for (final dir in dirs) {
+      await Future.wait(sids.map((sid) async {
         try {
-          final pending = await c.pendingPermissions(dir);
+          final pending = await c.sessionPermissions(sid);
           for (final perm in pending) {
             if (_recentlyResolvedPermissions.containsKey(perm.id)) {
-              AppLogger.I.i(_tag, 'backfill permission skipped (recently resolved) sid=${perm.sessionID} pid=${perm.id} dir=$dir');
+              AppLogger.I.i(_tag, 'backfill permission skipped (recently resolved) sid=${perm.sessionID} pid=${perm.id}');
               continue;
             }
             next[perm.sessionID] = perm;
             _conversations[_cardHostSessionId(perm.sessionID)]
                 ?.onPermission(perm);
-            AppLogger.I.i(_tag, 'backfill permission re-inject sid=${perm.sessionID} pid=${perm.id} dir=$dir');
+            AppLogger.I.i(_tag, 'backfill permission re-inject sid=${perm.sessionID} pid=${perm.id}');
           }
         } catch (_) {
-          failedDirs.add(dir);
+          failedSids.add(sid);
         }
-      }
+      }));
       for (final entry in prev.entries) {
-        final session =
-            sessionById(entry.key) ?? _childSessions[entry.key];
-        final dir = session?.directory ?? '';
-        if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
-          if (_recentlyResolvedPermissions.containsKey(entry.value.id)) continue;
+        if (next.values.any((p) => p.id == entry.value.id)) {
+          continue;
+        }
+        final host = _cardHostSessionId(entry.value.sessionID);
+        if (failedSids.contains(entry.value.sessionID) ||
+            failedSids.contains(host)) {
+          if (_recentlyResolvedPermissions.containsKey(entry.value.id)) {
+            continue;
+          }
           next.putIfAbsent(entry.key, () => entry.value);
         }
       }
@@ -1522,30 +1541,29 @@ class ServerStore extends ChangeNotifier {
     if (c == null) return;
     _purgeExpiredResolved();
     final prev = Map.of(_pendingForms);
-    final dirs = _eventDirectories();
-    final failedDirs = <String>{};
+    final sids = _backfillSids();
+    final failedSids = <String>{};
     final next = <String, FormInfo>{};
-    for (final dir in dirs) {
+    await Future.wait(sids.map((sid) async {
       try {
-        final pending = await c.listForms(directory: dir);
+        final pending = await c.sessionForms(sid);
         for (final f in pending) {
           if (_recentlyResolvedForms.containsKey(f.id)) {
-            AppLogger.I.i(_tag, 'backfill form skipped (recently resolved) sid=${f.sessionID} fid=${f.id} dir=$dir');
+            AppLogger.I.i(_tag, 'backfill form skipped (recently resolved) sid=${f.sessionID} fid=${f.id}');
             continue;
           }
           next[f.id] = f;
           _conversations[_cardHostSessionId(f.sessionID)]?.onForm(f);
-          AppLogger.I.i(_tag, 'backfill form re-inject sid=${f.sessionID} fid=${f.id} dir=$dir');
+          AppLogger.I.i(_tag, 'backfill form re-inject sid=${f.sessionID} fid=${f.id}');
         }
       } catch (_) {
-        failedDirs.add(dir);
+        failedSids.add(sid);
       }
-    }
+    }));
     for (final entry in prev.entries) {
-      final session =
-          sessionById(entry.value.sessionID) ?? _childSessions[entry.value.sessionID];
-      final dir = session?.directory ?? '';
-      if (failedDirs.contains(dir) || dir.isEmpty || !dirs.contains(dir)) {
+      final host = _cardHostSessionId(entry.value.sessionID);
+      if (failedSids.contains(entry.value.sessionID) ||
+          failedSids.contains(host)) {
         if (_recentlyResolvedForms.containsKey(entry.key)) continue;
         next.putIfAbsent(entry.key, () => entry.value);
       }

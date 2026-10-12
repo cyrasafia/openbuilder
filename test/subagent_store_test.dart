@@ -560,11 +560,11 @@ class _EmptyBackfillClient extends OpencodeClient {
   _EmptyBackfillClient() : super(_deadDio());
 
   @override
-  Future<List<Permission>> pendingPermissions(String directory) async =>
+  Future<List<Permission>> sessionPermissions(String sessionId) async =>
       const [];
 
   @override
-  Future<List<FormInfo>> listForms({String? directory}) async =>
+  Future<List<FormInfo>> sessionForms(String sessionId) async =>
       const [];
 }
 

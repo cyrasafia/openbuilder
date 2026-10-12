@@ -116,3 +116,76 @@ idle/error ──conv reconcile 推断（finish 证据）──→ 同步到 _st
 | R5 | 无代码改动；理由记入本表 | ✅ |
 
 验证记录：analyze --fatal-infos 零 issue；全量 792 测试通过（含 smoke）。
+
+### 修订：outcome 恢复（2026-10-11，重连/冷启动不再丢红点）
+
+**问题**：D1 残窗之一「重连（`connect` 清 `_statusMap`）或 app 重启后 error 丢失」实际发生——用户重启 app 后错误终止的会话回到灰点，「错误终止要看得见」失效。
+
+**发现**：列表接口 `GET /api/session` 的 `Session.Info.outcome` 是**服务端持久化的「上次 run 终局」**（`succeeded | failed | interrupted`），且独立于 active 表（running 会话也带历史 outcome，实测 v2.0.18）。`outcome == 'failed' && 不在 active 表` 即 error 态——列表自带，零额外请求，比 conv reconcile 页尾推断更直接、覆盖更早（bootstrap 即恢复，无需打开详情页）。
+
+**改动**：`_mergeStatus`（bootstrap / refresh 对账层）追加：
+
+```dart
+final failedOutcome = {for (final s in sessions) if (s.outcome == 'failed') s.id}
+    ..addAll([for (final s in _sessions) if (s.outcome == 'failed') s.id]);
+// error 保留条件收紧：不在 active 表 **且** outcome=failed 佐证（sessions
+// 快照 ∪ 内存模型，内存模型经 _refreshSessionMeta 在事件后更新——NB-1 缓解）
+// （1214 行既有保留逻辑同步收紧——陈旧 error 由服务端终局证据裁定）
+for (final sid in failedOutcome) {
+  if (fresh.containsKey(sid)) continue;   // running 优先
+  merged[sid] = const SessionStatusValue('error');
+}
+```
+
+保留条件从「不在 active 表」收紧为「不在 active 表 **且** outcome=failed」——error 的粘性判定升级为服务端终局证据裁定：
+
+- 重跑成功（outcome 变 succeeded）后陈旧 error 被 REST 对账直接清除——原先只能靠 conv 反写（场景 9 的 REST 侧自愈补齐）；
+- 服务端 `execution.failed` 事件与 outcome=failed 同源（同一服务端状态机），SSE 写入的 error 在对账时恒有佐证，D1 粘性语义无损。
+
+**自洽性核对**（与既有闭环不打架）：
+
+- 与 D6 反写：推断 idle（finish=stop）清 error 的场景 = 离线重跑成功 → 该次 run 更新 outcome 为 succeeded → 下次 refresh 不再写回。outcome=failed 的会话页尾 finish=error（同一次 run），两源一致。
+- 与 active 自愈（D1）：active 出现（新 run）→ fresh busy 覆盖（`_mergeStatus` 既有逻辑优先）。
+- 与 `interrupted`：用户主动中断 ≠ 失败，不写红（仅 `failed`）。
+- 子会话：`_addSessions` 把 `parentID != null` 的会话路由进 `_childSessions`、不进 `_mergeStatus` 的 sessions 参数——`failedOutcome` 恒不含 child，子会话的 outcome 不参与本机制（家族聚合 D2 不上浮的语义天然保持）。
+- 陈旧 retry（不在 active、无卡）：断连期间的 retry 残留被 outcome=failed 覆盖为 error（原对账语义「不在 active 即洗」不变，error 是更精确的落点）。
+- 服务端时序（活体实测，v2.0.18）：`execution.failed` SSE 事件客户端到达后立即 `GET /api/session`（两次实测：+39ms / +48ms），`outcome` 均已为 `failed`——**先落库再发事件**，「SSE 写入的 error 在对账时恒有佐证」成立。
+
+**场景追加**：
+
+| # | 场景 | 期望 | 测试 |
+|---|------|------|------|
+| 13 | 冷启动：active 空 + sessions 含 outcome=failed | `statusOf == 'error'`（红静态点） | 新增单测 |
+| 14 | active 含该会话（busy） | 不写 error（running 优先） | 新增单测 |
+| 15 | refresh 后 outcome 变 succeeded（重跑成功） | error 被对账清除（保留条件无佐证） | 新增单测 |
+| 16 | outcome=interrupted / null | 不写红（仅 failed） | 新增单测 |
+| 17 | 陈旧内存 retry + outcome=failed 对账 | retry 被洗为 error（不阻塞） | 新增单测 |
+| 18 | 快照竞态（NB-1）：SSE 刚写 error、快照取自事件前、内存模型已更新 outcome | error 保留（内存模型佐证） | 新增单测 |
+| 19 | 快照与内存模型均无 outcome 佐证（服务端终局证据说不失败） | 陈旧 error 被洗为 idle | 新增单测 |
+| 5' | 既有「error 保留」场景 | mock sessions 补 outcome=failed 后语义不变 | 既有测试更新 |
+
+**不做的事**：不引入 `interrupted` / `succeeded` 的恢复——只有失败是「要看得见」的用户诉求；不落盘（`_statusMap` 仍纯内存，恢复源是服务端字段而非本地缓存）。
+
+### 评审处置（2026-10-12，代码评审 subagent，独立上下文）
+
+结论：可合入，无阻塞（blocking）。处置如下：
+
+| # | 级别 | 问题 | 处置 |
+|---|------|------|------|
+| NB-1 | 🟡 | 快照竞态：refresh 在途抓完 sessions 后、`_mergeStatus` 前收到 `execution.failed`——SSE 写的 error 被快照（无 outcome）洗为 idle；旧代码（仅判不在 active）不洗 | ✅ 采纳缓解：`failedOutcome` 并入内存 `_sessions` 中 outcome=failed 的 sid（`_refreshSessionMeta` 在事件后更新模型，比快照新）；场景 18 单测固化。**残窗**：事件到达 → meta 更新完成之间的单 RTT 内 merge 仍会洗；后果为红点暂时回灰，由下一次 refresh（outcome 已 failed，写回）或 conv 反写自愈。服务端先落库再发事件（活体实测 +39ms/+48ms），纯客户端窗口 |
+| NIT-1 | 🟢 | `_mergeStatus` 第二循环 busy/retry 守卫不可达（merged 非 fresh 侧只可能是 error/null） | ✅ 简化删除 |
+| NIT-3 | 🟢 | 文档「子会话 outcome 写 `_statusMap[child]`」不可达（child 被 `_addSessions` 路由，不进 merge 列表） | ✅ 表述已修正（上文自洽性核对） |
+| NIT-4 | 🟢 | `sessions` 列表 limit 1000，超限会话的内存 error 被对账洗（旧代码保留） | 保持：`_sessions` 并入 `failedOutcome`（NB-1 缓解）后，经 `_refreshSessionMeta` / 事件进入内存模型的超限会话亦有佐证；纯「从未进过内存」的超限会话无 UI 行（列表同 limit），不可见即无感。>1000 非归档会话的形状极边缘 |
+| 待确认 | 🟡 | 缺「事件发出与 outcome 落库时序」活体证据 | ✅ 已补：两次实测（+39ms / +48ms）事件到达即查 outcome 均已 failed——先落库再发事件，「恒有佐证」成立（v2.0.18） |
+
+#### 修复复审
+
+| # | 修复内容 | 复核结果 |
+|---|---------|---------|
+| NB-1 | `failedOutcome` 并入 `_sessions` 模型 + 场景 18/19 单测 ×2 | ✅ 竞态窗口缩至事件→meta 单 RTT，残窗记入上表 |
+| NIT-1 | 第二循环守卫删除（行为等价：非 fresh 侧 cur ∈ {null, error}） | ✅ 场景 13-19 全过 |
+| NIT-3 | 文档表述修正 | ✅ |
+| NIT-4 | 依托 NB-1 缓解，无独立代码改动 | ✅ |
+| 待确认 | 活体时序证据（+39ms/+48ms 两次） | ✅ 记入自洽性核对 |
+
+验证记录（评审后）：全量 835 测试通过；analyze --fatal-infos 零 issue。

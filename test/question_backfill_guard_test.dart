@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/session/server_store.dart';
+import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 
@@ -9,8 +10,14 @@ class _FormsMockClient extends OpencodeClient {
   _FormsMockClient({this.forms = const []}) : super(_noopDio());
 
   @override
-  Future<List<FormInfo>> listForms({String? directory}) async => forms;
+  Future<List<FormInfo>> sessionForms(String sessionId) async => forms;
 }
+
+void _markBusy(ServerStore store, String sid) =>
+    store.onEventForTesting(OpencodeEvent(
+      type: 'session.execution.started',
+      properties: {'sessionID': sid},
+    ));
 
 Dio _noopDio() => Dio(BaseOptions(
       connectTimeout: const Duration(milliseconds: 1),
@@ -24,6 +31,7 @@ void main() {
           id: 'frm_g1', sessionID: 's1', title: 'q', fields: const []);
       final client = _FormsMockClient(forms: [f1]);
       final store = ServerStore()..client = client;
+      _markBusy(store, 's1');
       store.upsertSessionForTesting(const SessionModel(
         id: 's1',
         projectID: 'p',
@@ -51,6 +59,7 @@ void main() {
           id: 'frm_g2', sessionID: 's2', title: 'q', fields: const []);
       final client = _FormsMockClient(forms: [f1]);
       final store = ServerStore()..client = client;
+      _markBusy(store, 's2');
       store.upsertSessionForTesting(const SessionModel(
         id: 's2',
         projectID: 'p',
