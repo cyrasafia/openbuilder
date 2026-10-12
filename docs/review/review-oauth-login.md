@@ -123,7 +123,7 @@
 
 1. 真机双端验证 WebView → `http://127.0.0.1:8901/callback` 投递（Android 已有全局 cleartext 允许；iOS 已加 `NSAllowsLocalNetworking`）。
 2. 真机全链路（design-oauth-login.md 测试要点 §端到端 4 项）。
-3. Authelia `redirect_uris` 固定 8901 精确匹配（服务端已配，见 todo-authelia-bearer-authz.md 验证记录）。
+3. Authelia `redirect_uris` 固定 8901 精确匹配（服务端已配，见 ref-authelia-oauth-client.md 验证记录）。
 
 ## 问题清单（第六轮：真机联调回归——授权成功后闪回授权页）
 

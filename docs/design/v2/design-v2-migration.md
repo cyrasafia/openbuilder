@@ -304,7 +304,7 @@ v2 的 TS 生态为 `packages/protocol`（Effect HttpApi 定义）+ `packages/sd
 | form 卡 `external` 字段（T3） | 🟢 | MCP 授权流字段被误渲染为文本框；需决策剔除或提供「打开浏览器授权」入口 | 同上 |
 | form 卡 `required` 语义（T4） | 🟢 | `_stepAnswered` 对所有输入式字段强制非空，未按 `required` 区分 | 同上 |
 | v2 新端点接入 | 🟢 | 已接入：worktree 组、form 体系、shell 一次性命令、skill 列表、revert stage/commit。未接入：persistent-pty、websearch、rpc/plugin/mcp 组、`fs/write`、session `fork`/`move`/`stats`/`import`/`export`/`generate`/`environment`/`view`/`wait`/`log`/`instructions`/`entries`、`worktree/refresh`、`location/reload` 等——按需单独设计 | 本文档「不做的事」#5 |
-| OAuth 双端 WebView 回调投递验证 | 🟡 | Android cleartext / iOS ATS 下的回调投递（验收 #1，其余 6/7 已过），留客户端实现期验证 | `docs/todo/todo-authelia-bearer-authz.md` |
+| OAuth 双端 WebView 回调投递验证 | 🟢 | 已关闭：验收 #1（Android cleartext / iOS ATS 下的回调投递）未验证，其余 6/7 已过；该 v1 OAuth 路线已随认证迁 v2 关闭，不再跟踪 | `docs/ref/ref-authelia-oauth-client.md` |
 | `session.created` 字段级合并 | 🔴 | 已核实本仓存在与桌面端同构的竞态：`_onEvent` 的 `session.created` 分支用事件骨架构出完整 `SessionModel`（title 缺省 `'Untitled'`），`_upsertSession` 对已有条目**整体替换**、无字段级合并，且该事件路径不回源刷新——POST 响应（完整 SessionInfo）先落地、SSE 回声后到时 agent/model/title 被顶掉。参照桌面端修法：事件缺失字段从本地回填、事件显式字段优先（零 REST 往返；桌面端点名否决了回源刷新方案） | openbuilder-desktop 同名文档 §SSE 与对账重设计 |
 | active 对账在途竞态守卫 | 🟡 | 对照桌面端 D7 review #1 修订自查：清 idle 看 `statusSetAt` 置位时刻 vs 快照发起时刻、补 busy 看本地消息终局证据、60s 周期对账钳制残余漂移——本仓已用 `/api/session/active` 双向 diff，守卫与周期对账两处未核对 | 同上 §增补决策记录 D7 |
 | 死目录会话跳过归档私约 | 🟢 | 桌面端用户裁定「死目录不执行私约」；本仓归档写路径（design-archive-metadata）可对齐：ghost 会话跳过 PATCH。错误分类随版本改善：目录缺失 PATCH 由 500 转 404（≥2.0.23，#52668） | openbuilder-desktop `docs/ref/ref-pseudo-project-cleanup.md` §6 |

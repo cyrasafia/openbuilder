@@ -156,7 +156,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design-` | `docs/design/`（协议相关再分 `v1/`、`v2/`） | 子系统设计文档 | `design-load-retry.md`、`v2/design-session-sync-gating.md` |
 | `plan-` | `docs/plan/` | 执行计划（配套 design） | `plan-load-retry.md` |
 | `review-` | `docs/review/` | 代码评审报告（提交级或设计级） | `review-load-retry.md`、`review-04c8b07.md` |
-| `todo-` | `docs/todo/` | 待办问题跟踪（已知缺陷/技术债，含现象、根因、修复方向、验收标准） | `todo-cache-write-race.md` |
+| `todo-` | `docs/todo/` | 待办问题跟踪（已知缺陷/技术债，含现象、根因、修复方向、验收标准） | `todo-form-card-v2-parity.md` |
 | `ref-` | `docs/ref/` | 参考资料（外部行为调研、结论与证据、可复用配置等，非本项目设计） | `ref-opencode-review-subagent.md` |
 
 ### design 文档结构约定

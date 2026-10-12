@@ -108,7 +108,7 @@ Assertion 回传 Authelia → origin 校验 → 登录继续（对 OAuth 流程�
 2. **为什么开关只在 OAuth 登录屏调用？** 作用域隔离：`FOR_APP` 是 per-WebView 设置，Markdown 预览等屏不需要也不应获得 WebAuthn 能力，最小权限。
 3. **为什么失败一律静默降级？** passkey 是增强路径，所有失败形态（APK 旧、assetlinks 缺、GMS 缺）最终表现都收敛于现状（按钮无响应/页面报错），无新增 UI 状态可承诺；日志供排查。
 4. **为什么 iOS 硬编码维护者域名？** 关联域是**编译期静态**烙进 entitlements 的，平台无动态方案；fork/自部署者改一行换成自己的 auth 主机即可（todo 文档注明）。代价已在 design-oauth-login「安全代价」同思路下接受。
-5. **为什么 Authelia 侧「等 v4.40」而非打补丁？** 与 `todo-authelia-bearer-authz.md` 同模式：服务器侧配置/补丁独立跟踪验收，客户端不阻塞合入（客户端改动本身无服务端依赖也可安全上线——未配置即降级）。且上游已排期（#11432，milestone v4.40.0；#12495/#12496 佐证社区诉求与实现路径），本地补丁/fork 的维护成本换不回多少提前量——iOS 侧先行即可覆盖一半场景。
+5. **为什么 Authelia 侧「等 v4.40」而非打补丁？** 与 Authelia OAuth client 配置（`ref-authelia-oauth-client.md`）同模式：服务器侧配置/补丁独立跟踪验收，客户端不阻塞合入（客户端改动本身无服务端依赖也可安全上线——未配置即降级）。且上游已排期（#11432，milestone v4.40.0；#12495/#12496 佐证社区诉求与实现路径），本地补丁/fork 的维护成本换不回多少提前量——iOS 侧先行即可覆盖一半场景。
 6. **为什么升 androidx.webkit 到 1.14.0？** 官方指南钦点版本；1.12.0 为 WebView WebAuthn 初版，1.12.1+ 含修复（Corbado 实测建议）。gradle 依赖仲裁取最高版本，webview_flutter_android 传递的 1.12.0 被安全覆盖。
 
 ## 不做的事

@@ -1,18 +1,19 @@
-# TODO: Authelia 侧 OAuth Bearer 授权配置（authorization_code + PKCE + PAR client）
+# Authelia OAuth client 服务端配置与实测记录（已关闭归档）
 
-> 状态：**已验证（2026-08-20，服务端全链路 6/7 通过；#1 双端 WebView 平台项留客户端实现期）** ｜ 来源：2026-08-19 实测 + 方案演化至 v4
-> 关联设计：[design-oauth-login.md](../design/v1/design-oauth-login.md)（ADR：auth-code + PKCE + PAR + loopback + 双端统一应用内 WebView；已归档 v1，认证前提勘误见 [design-server-auth.md](../design/v2/design-server-auth.md)）
+> 类型：参考（ref，可复用配置 + 实测结论），**非本项目待办。**
+> 来源：原 `docs/todo/todo-authelia-bearer-authz.md`（2026-10-12 关闭并转 ref）。
+> 关闭原因：本清单对应 v1 OAuth 路线（应用内 WebView + loopback 回调）。认证已迁 v2，见 [design-auth-adaptation.md](../design/v2/design-auth-adaptation.md)；认证前提勘误见 [design-server-auth.md](../design/v2/design-server-auth.md)。
 > 最终集成参数：client_id `openbuilder-app`；redirect_uri `http://127.0.0.1:8901/callback`；scope `offline_access authelia.bearer.authz`；audience `https://oc.cyrasafia.party:4433`；PAR 强制；PKCE S256 强制。
 
 ## 背景（方案演化浓缩）
 
 - v1 device flow：Client Restrictions 第 5 条排除 device_code → 废。
 - v3 gw（IdP + oauth2-proxy + device flow）：两服务偏重 + JWT/audience 配置摩擦（实测踩坑）→ 废。
-- **v4（当前）**：回归 Authelia 单组件——它自己同时当 IdP 和 forward-auth 校验器，客户端用 **authorization_code + PKCE + PAR + loopback（应用内 WebView 保活回调）**。本 todo 是 v4 的服务端配置清单。
+- v4：Authelia 单组件——它自己同时当 IdP 和 forward-auth 校验器，客户端用 authorization_code + PKCE + PAR + loopback（应用内 WebView 保活回调）。本清单是 v4 的服务端配置。
 
 ## 根因备忘（为什么这么配）
 
-Bearer 替代 Cookie 穿 forward-auth 是显式 opt-in，且携带 `authelia.bearer.authz` 的 client 受 8 条硬性限制（见设计文档 ADR 表），配置必须逐条满足，否则 Authelia 校验直接报错或 token 穿不过网关。
+Bearer 替代 Cookie 穿 forward-auth 是显式 opt-in。携带 `authelia.bearer.authz` 的 client 受 8 条硬性限制（见 [design-oauth-login.md](../design/v1/design-oauth-login.md) ADR 表）。配置必须逐条满足，否则 Authelia 校验直接报错或 token 穿不过网关。
 
 ## 配置清单（Authelia `configuration.yml`）
 
@@ -74,7 +75,7 @@ server:
 
 ### 4. 重启 Authelia 生效
 
-## 客户端侧配合参数（配置完成后按此联调）
+## 客户端侧配合参数
 
 ```
 POST {par_endpoint}
@@ -88,7 +89,7 @@ client_id=openbuilder-app
 → form_post 回 loopback:8901；code + code_verifier 换 token。
 ```
 
-## 验收标准
+## 验收标准（原清单）
 
 1. WebView（Android/iOS 各一）内完成 Authelia 登录 + 2FA + consent，form_post 成功投递到 `http://127.0.0.1:8901/callback`（平台 cleartext/ATS 配置生效）。
 2. 换到的 token（含 `authelia.bearer.authz` + 正确 audience）以 Bearer 访问 `GET https://oc.cyrasafia.party:4433/global/health` 返回 `200 {"healthy":true,...}`，不再 302。
@@ -102,7 +103,7 @@ client_id=openbuilder-app
 
 | # | 验收项 | 结果 |
 |---|---|---|
-| 1 | 双端 WebView 内 form_post 投递 | ⏳ 客户端实现期验证（Android cleartext / iOS ATS） |
+| 1 | 双端 WebView 内 form_post 投递 | ⏳ 未验证（客户端实现期项；随 v1 路线关闭，不再跟踪） |
 | 2 | Bearer 访问 `/global/health` | ✅ 200 `{"healthy":true,"version":"1.18.18"}` |
 | 3 | 业务端点 + SSE | ✅ `/config` 200；`/event` 200 `text/event-stream` 长连接建立 |
 | 4 | 无凭证仍被保护 | ✅ 302 → Authelia 门户 |
