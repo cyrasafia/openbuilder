@@ -23,7 +23,7 @@ git rev-list --reverse --topo-order main -- pubspec.yaml
 3. 跳过 `1.0.0`（`flutter create` 模板默认值，方案未生效）。
 4. 改写已有两段式 tag 时**保留原目标 commit**，只改名字。
 
-结果：76 个轻量（lightweight）tag，`v0.1.0` … `v0.10.0`；本地与 origin 一致。
+结果：77 个 tag，`v0.1.0` … `v0.10.1`；本地与 origin 一致。2026-10-12 按新约定全量转为**注释标签（annotated）**——tag 对象重建，tag 名与目标 commit 不变，tagger 日期沿用对应 commit 日期。
 
 校验：逐个比对 tag 目标 commit 的 versionName 与 tag 名，76/76 一致。
 
@@ -107,6 +107,7 @@ git rev-list --reverse --topo-order main -- pubspec.yaml
 | `v0.9.8` | `1e5cf4c` | 2026-10-09 | `0.9.8+124` |
 | `v0.9.9` | `d34311b` | 2026-10-09 | `0.9.9+125` |
 | `v0.10.0` | `cede509` | 2026-10-10 | `0.10.0+126` |
+| `v0.10.1` | `2d31080` | 2026-10-12 | `0.10.1+130` |
 
 ## 版本变动但未打 tag 的 commit
 
@@ -143,11 +144,11 @@ git rev-list --reverse --topo-order main -- pubspec.yaml
 
 ## 跳号说明
 
-历史 versionName 不连续：patch 位曾是 build 计数，每个 build 都变，且部分 build 未入库（如 `0.1.14`–`0.1.25`、`0.5.1`–`0.5.7`）。故 tag 数 76，少于 build number 总数（最高 `126`）。
+历史 versionName 不连续：patch 位曾是 build 计数，每个 build 都变，且部分 build 未入库（如 `0.1.14`–`0.1.25`、`0.5.1`–`0.5.7`）。故 tag 数 77，少于 build number 总数（最高 `130`）。
 
 ## 当前 HEAD 未打 tag
 
-`aca5097`（本轮版本机制调整）的 versionName 仍是 `0.10.0`，tag 落在 `0.10.0` 的 bump commit `cede509`。符合「tag 落在该版本的 bump commit」约定。
+`2d31080`（`0.10.1` bump）已打 `v0.10.1`。此前 `aca5097`（版本机制调整）的 versionName 仍是 `0.10.0`，tag 落在 `0.10.0` 的 bump commit `cede509`——符合「tag 落在该版本的 bump commit」约定。
 
 ## 相关
 
