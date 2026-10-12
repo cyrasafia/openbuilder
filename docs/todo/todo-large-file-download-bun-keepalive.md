@@ -1,6 +1,6 @@
 # TODO: 大文件下载中途被服务端掐断（Bun `keepAliveTimeout`，等上游修复）
 
-> 状态：待上游修复 ｜ 优先级：🔴 阻塞（>~20MB 的文件在慢链路上 100% 失败）｜ 来源：2026-10-01 真机日志（`oc.cyrasafia.party:4433`）+ 本机 localhost:15120（opencode v2.0.18）复现 ｜ 关联上游：anomalyco/opencode#50505（OPEN）、#50507（OPEN，未合并）
+> 状态：待上游修复 ｜ 优先级：🔴 阻塞（>~20MB 的文件在慢链路上 100% 失败）｜ 来源：2026-10-01 真机日志（`oc.cyrasafia.party:4433`）+ 本机 localhost:15120（opencode v2.0.18）复现 ｜ 关联上游：anomalyco/opencode#50505（OPEN）、#50507（OPEN，未合并）｜ 最近复检：2026-10-11——上游仍未合（#50507 被 retarget `v2`→`dev`）+ 本机 v2.0.24 活体复现，见文末复检记录
 
 ## 现象
 
@@ -92,9 +92,37 @@ Node 不受影响；chunked `HttpServerResponse.stream` 响应不受影响（周
 - 响应头不再出现会截断整包 body 的 `Keep-Alive: timeout=5` 行为（`server.keepAliveTimeout = 0` 生效）。
 - 回归：`readFileStream` 的 `FileDL` 日志出现 `body received` + `parsed` 且无 `FAILED`；小文件下载不受影响。
 
+## 复检记录
+
+### 2026-10-11 复检（上游动态 + v2.0.24 活体复现）
+
+**上游（anomalyco/opencode）：**
+
+- PR #50507 仍 OPEN、未合并（无 review、无 assignee）。**新动态**：维护者 thdxr 于 2026-10-10 将 base 分支从 `v2` 改为 `dev`——维护者已介入，通常为推进合并的前兆，但截至本日仍未合。
+- Issue #50505 仍 OPEN（assignee: rekram1-node）。
+- dev 分支源码 `packages/server/src/process.ts` `bind()`：`createServer()` 后无 `keepAliveTimeout` 赋值 → 等效修复未从其他路径落入主线。
+- 发版：v1 线 2026-10-11 发 v1.19.0（核心改动即引导迁移到 2：`opencode upgrade --major` / TUI `/update`，且 v1 更新不再自动安装）；v2 线至本日无此修复。
+
+**本机活体（localhost:15120，已从 v2.0.18 升级至 v2.0.24）：**
+
+- 文档原实测基于 v2.0.18；本机常驻服务现报 `version: 2.0.24`。用同款验收方法（`curl --limit-rate 2M`）复测 63MB APK，**仍 100% 复现**：
+
+  ```
+  $ curl -sS -o dl-test.bin -w "http=%{http_code} size=%{size_download} time=%{time_total}\n" \
+      -u opencode:*** --limit-rate 2M \
+      "http://localhost:15120/api/fs/read/build/app/outputs/flutter-apk/OpenBuilder-0.9.9-125.apk?location%5Bdirectory%5D=/home/cyrasafia/projects/my-tools/openbuilder"
+  curl: (18) end of response with 49557530 bytes missing
+  http=200 size=15930926 time=7.192264
+  ```
+
+- 响应头未变：整包 `content-length: 65488456`（非 chunked）+ `Keep-Alive: timeout=5` → 截断机制与根因分析一致。
+- 复现 URL 形态备注：`/api/fs/read/` 后接**相对 `location[directory]` 的项目内相对路径**（`build/app/...`）；传绝对路径形态（`home/cyrasafia/...`）会返回 404 `FileNotFoundError`，回归复测时注意。
+
+**判定：** 与 2026-10-06 桌面端核对结论一致——修复未落地，继续等 #50507 合并发版后升级服务端；客户端不动、「不做断点续传绕过」的决策不变。
+
 ## 相关引用
 
 - 上游：anomalyco/opencode#50505、#50507；oven-sh/bun#13712、#13392、#12446
 - 客户端代码：`lib/data/api/opencode_client.dart` `readFileStream`（`FileDL` 日志 + 下载入口）
 - 相关设计：`docs/design/design-file-streaming.md`、`docs/design/design-file-view.md`
-- 历史相关：`docs/todo/todo-oauth-file-download-auth-failure.md`（下载认证问题，已修复，与本问题无关）
+- 历史相关：下载认证问题（已修复，todo 文档已删，与本问题无关）
