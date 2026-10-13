@@ -35,11 +35,14 @@ SessionModel _session(String id, String dir,
 /// Mock client whose `removeWorktree` outcome is controllable.
 class _RemoveWorktreeMockClient extends OpencodeClient {
   bool failRemove = false;
+  bool failEvict = false;
   /// Session ids that should fail DELETE (e.g. 404 race with SSE echo).
   final Set<String> failDeleteIds = {};
   int removeCalls = 0;
   String? lastDirectory;
   String? lastWorktreeDir;
+  int evictCalls = 0;
+  final List<String> evictedDirs = [];
   List<SessionModel> directorySessions = const [];
   final List<String> deletedSessionIds = [];
   final List<String> callOrder = [];
@@ -70,6 +73,14 @@ class _RemoveWorktreeMockClient extends OpencodeClient {
     lastDirectory = projectID;
     lastWorktreeDir = worktreeDir;
     if (failRemove) throw Exception('server error');
+  }
+
+  @override
+  Future<void> evictLocation(String directory) async {
+    callOrder.add('evict');
+    evictCalls++;
+    evictedDirs.add(directory);
+    if (failEvict) throw Exception('debug endpoint missing');
   }
 }
 
@@ -166,11 +177,13 @@ void main() {
 
       expect(client.deletedSessionIds, containsAll(['sb1', 'sb2']));
       expect(client.callOrder.first, 'list');
-      expect(client.callOrder.last, 'remove');
+      expect(client.callOrder.last, 'evict');
       expect(client.callOrder.indexOf('remove'),
           greaterThan(client.callOrder.indexOf('delete:sb1')));
       expect(client.callOrder.indexOf('remove'),
           greaterThan(client.callOrder.indexOf('delete:sb2')));
+      expect(client.callOrder.indexOf('evict'),
+          greaterThan(client.callOrder.indexOf('remove')));
     });
 
     test('deletes all worktree sessions including archived ones', () async {
@@ -253,6 +266,60 @@ void main() {
       expect(client.deletedSessionIds, containsAll(['sb1', 'sb2', 'sb3']));
       // The worktree removal still ran and local state is fully cleaned.
       expect(client.removeCalls, 1);
+      expect(store.worktreeDirsOf(_projectId), isEmpty);
+      expect(store.sessions.where((s) => s.directory == _worktreeDir), isEmpty);
+      expect(store.isWorktreeDeleting(_worktreeDir), isFalse);
+    });
+
+    test('evicts the warm location after a successful removal '
+        '(design-worktree-delete-location-evict §3.3)', () async {
+      final client = _RemoveWorktreeMockClient();
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+      store.setWorktreeDirsForTesting(_projectId, [_worktreeDir]);
+
+      await store.removeWorktree(_mainDir, worktreeDir: _worktreeDir);
+
+      expect(client.evictCalls, 1);
+      expect(client.evictedDirs, [_worktreeDir]);
+      expect(
+        client.callOrder.indexOf('evict'),
+        greaterThan(client.callOrder.indexOf('remove')),
+        reason: 'evict must come after DELETE /api/worktree succeeds',
+      );
+    });
+
+    test('no evict when the worktree removal fails (directory may be alive)',
+        () async {
+      final client = _RemoveWorktreeMockClient()..failRemove = true;
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+      store.setWorktreeDirsForTesting(_projectId, [_worktreeDir]);
+
+      expect(
+        () => store.removeWorktree(_mainDir, worktreeDir: _worktreeDir),
+        throwsA(isA<OperationException>()),
+      );
+      await Future.delayed(Duration.zero);
+
+      expect(client.evictCalls, 0);
+    });
+
+    test('evict failure is best-effort: removal still succeeds (D1)',
+        () async {
+      final client = _RemoveWorktreeMockClient()..failEvict = true;
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+      store.setWorktreeDirsForTesting(_projectId, [_worktreeDir]);
+      store.upsertSessionForTesting(_session('sb1', _worktreeDir));
+
+      final keptBranch = await store.removeWorktree(
+        _mainDir,
+        worktreeDir: _worktreeDir,
+      );
+
+      // The branch cleanup still ran to completion (null = no branch kept).
+      expect(keptBranch, isNull);
       expect(store.worktreeDirsOf(_projectId), isEmpty);
       expect(store.sessions.where((s) => s.directory == _worktreeDir), isEmpty);
       expect(store.isWorktreeDeleting(_worktreeDir), isFalse);

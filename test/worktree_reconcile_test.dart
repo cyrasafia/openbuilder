@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/core/session/server_store.dart';
+import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 
@@ -61,6 +62,76 @@ class _WorktreesMockClient extends OpencodeClient {
         updated: 1000,
       ),
     ];
+  }
+}
+
+class _WarmLocationsMockClient extends OpencodeClient {
+  final Set<String> warmDirs;
+  final bool failList;
+  int listCalls = 0;
+  final List<String> evicted = [];
+
+  _WarmLocationsMockClient({
+    this.warmDirs = const {},
+    this.failList = false,
+  }) : super(_noopDio());
+
+  @override
+  Future<Set<String>> listWarmLocationDirectories() async {
+    listCalls++;
+    if (failList) throw Exception('debug endpoint missing');
+    return warmDirs;
+  }
+
+  @override
+  Future<void> evictLocation(String directory) async {
+    evicted.add(directory);
+  }
+}
+
+class _ReconcileWarmClient extends OpencodeClient {
+  List<SessionModel> snapshot = const [];
+  List<ProjectModel> projectList = const [];
+  Map<String, List<String>> byProject = const {};
+  Set<String> warmDirs = const {};
+  int listCalls = 0;
+  final List<String> evicted = [];
+
+  _ReconcileWarmClient() : super(Dio(BaseOptions(baseUrl: 'http://test')));
+
+  @override
+  Future<List<SessionModel>> sessions(
+      {String? directory,
+      String? project,
+      String? subpath,
+      int limit = 1000,
+      String? search,
+      String? parentID}) async {
+    return snapshot;
+  }
+
+  @override
+  Future<List<ProjectModel>> projects() async => projectList;
+
+  @override
+  Future<Map<String, SessionStatusValue>> activeSessions() async =>
+      const {};
+
+  @override
+  Future<List<WorktreeInfo>> worktrees(String projectID) async =>
+      (byProject[projectID] ?? const [])
+          .map((d) => WorktreeInfo(directory: d))
+          .toList();
+
+  @override
+  Future<Set<String>> listWarmLocationDirectories() async {
+    listCalls++;
+    return warmDirs;
+  }
+
+  @override
+  Future<void> evictLocation(String directory) async {
+    evicted.add(directory);
   }
 }
 
@@ -368,6 +439,120 @@ void main() {
         map,
       );
       expect(ids, isEmpty);
+    });
+  });
+
+  group('ServerStore._evictGhostWarmLocations', () {
+    test('no warm-location request when there is no ghost session (D3)',
+        () async {
+      final client = _WarmLocationsMockClient();
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.upsertSessionForTesting(_session('s1', 'p1', '/repo/p1'));
+
+      await store.evictGhostWarmLocationsForTesting();
+
+      expect(client.listCalls, 0);
+      expect(client.evicted, isEmpty);
+    });
+
+    test('evicts only the ghost-directory ∩ warm-set intersection',
+        () async {
+      final client = _WarmLocationsMockClient(warmDirs: {
+        '/wt/gone',
+        '/wt/other',
+      });
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.upsertSessionForTesting(_session('s1', 'p1', '/wt/gone'));
+      store.upsertSessionForTesting(_session('s2', 'p1', '/wt/ghost'));
+      store.markGhostSessionsForTesting({'s1', 's2'});
+
+      await store.evictGhostWarmLocationsForTesting();
+
+      expect(client.listCalls, 1);
+      expect(client.evicted, ['/wt/gone']);
+    });
+
+    test('throttled: a second sweep inside the interval is a no-op',
+        () async {
+      final client = _WarmLocationsMockClient(warmDirs: {'/wt/gone'});
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.upsertSessionForTesting(_session('s1', 'p1', '/wt/gone'));
+      store.markGhostSessionsForTesting({'s1'});
+
+      await store.evictGhostWarmLocationsForTesting();
+      await store.evictGhostWarmLocationsForTesting();
+
+      expect(client.listCalls, 1);
+      expect(client.evicted, ['/wt/gone']);
+    });
+
+    test('best-effort: a failing warm-list request is swallowed, no evict',
+        () async {
+      final client = _WarmLocationsMockClient(failList: true);
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      store.upsertSessionForTesting(_session('s1', 'p1', '/wt/gone'));
+      store.markGhostSessionsForTesting({'s1'});
+
+      await store.evictGhostWarmLocationsForTesting();
+
+      expect(client.listCalls, 1);
+      expect(client.evicted, isEmpty);
+    });
+
+    test('empty worktree inventory marks no ghost, so the sweep stays idle',
+        () async {
+      final client = _WarmLocationsMockClient(warmDirs: {'/wt/ghost'});
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project('p1')]);
+      // Dropped session + empty inventory map: _detectGhostSessionIds is
+      // fail-open (empty list never flags), so no ghost feeds the sweep.
+      final ids = store.detectGhostSessionIdsForTesting(
+        [_session('s1', 'p1', '/wt/ghost')],
+        [],
+        [_project('p1')],
+        const {},
+      );
+      store.upsertSessionForTesting(_session('s1', 'p1', '/wt/ghost'));
+      expect(ids, isEmpty);
+
+      await store.evictGhostWarmLocationsForTesting();
+
+      expect(client.listCalls, 0);
+    });
+  });
+
+  group('sweep rides the production refreshListAndWorkingSse path', () {
+    // 二轮评审 R1/R2 回归锁：ghost 标记发生在 _sessions 被新鲜列表替换之后，
+    // 被标记的会话已不在 _sessions——directory 必须取自替换前旧列表并持久化
+    // （_ghostSessionDirs），否则生产路径上盘点交集恒空、永不 evict；同时锁
+    // NB1 挂点（直调 refreshListAndWorkingSse，不经 _reconcile，也触发盘点）。
+    test('ghost marked from the pre-swap list, then warm ∩ ghost evicted',
+        () async {
+      final client = _ReconcileWarmClient()
+        ..projectList = [_project('p1')]
+        ..byProject = {'p1': ['/repo/p1', '/wt/live']}
+        ..snapshot = [_session('s2', 'p1', '/wt/live')]
+        ..warmDirs = {'/wt/gone', '/wt/live'};
+      final store = ServerStore()..client = client;
+      store.installSseForTesting(SseClient(baseUrl: 'http://127.0.0.1:9'));
+      store.setProjectsForTesting([_project('p1')]);
+      store.setWorktreeDirsForTesting(
+          'p1', ['/repo/p1', '/wt/gone', '/wt/live']);
+      store.upsertSessionForTesting(_session('s1', 'p1', '/wt/gone'));
+
+      await store.refreshListAndWorkingSse(
+          force: false, reconcileWorktrees: true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(store.sessionById('s1'), isNull,
+          reason: 'fresh list replaced the session but the ghost id stays');
+      expect(client.listCalls, 1);
+      expect(client.evicted, ['/wt/gone']);
+      store.dispose();
     });
   });
 

@@ -60,6 +60,7 @@ class ServerStore extends ChangeNotifier {
   CacheStore? _cacheStore;
 
   static const kMaxRefreshInterval = Duration(seconds: 30);
+  static const _ghostWarmSweepInterval = Duration(minutes: 5);
   DateTime? _lastFullRefreshAt;
 
   String? _activeSessionId;
@@ -95,6 +96,8 @@ class ServerStore extends ChangeNotifier {
   static const _kMaxChildSessions = 64;
   final Map<String, SessionStatusValue> _statusMap = {};
   final Set<String> _ghostSessionIds = {};
+  final Map<String, String> _ghostSessionDirs = {};
+  DateTime? _lastGhostWarmSweepAt;
   final Map<String, String> _lastMessage = {};
   final Map<String, int> _lastActivityByKey = {};
   final Map<String, bool> _workspaceEnabled = {};
@@ -475,6 +478,15 @@ class ServerStore extends ChangeNotifier {
         _statusMap.remove(sid);
       }
       _scheduleCacheSave();
+      // evict warm location（断伪行燃料 6，design-worktree-delete-location-evict
+      // §3.3）：须在本地引用清理后——此后对账链不再发该目录请求。失败仅 warn，
+      // 删除已成功不能改判失败（D1：无自愈，后果=回到无方案现状）
+      try {
+        await c.evictLocation(worktreeDir);
+      } catch (e) {
+        AppLogger.I
+            .w(_tag, 'evictLocation best-effort skipped: $worktreeDir ($e)');
+      }
       // 分支清理（design-worktree-branch-sync §2.2 / §8 修订）：v2 DELETE
       // 不清分支，客户端总是 -D 同名分支（squash merge 下已并入判断失效，
       // 不再判）。必须在 worktree DELETE 之后（cleanup 在项目 canonical
@@ -982,6 +994,8 @@ class ServerStore extends ChangeNotifier {
       _childrenByParent.clear();
       _statusMap.clear();
       _ghostSessionIds.clear();
+      _ghostSessionDirs.clear();
+      _lastGhostWarmSweepAt = null;
       _lastMessage.clear();
       _lastActivityByKey.clear();
       _workspaceEnabled.clear();
@@ -1117,18 +1131,67 @@ class ServerStore extends ChangeNotifier {
     }));
   }
 
-  void _markGhostSessions(Set<String> ids) {
+  /// [dirsById] 传替换前旧会话列表的 id→directory（生产路径：ghost 标记发生在
+  /// `_sessions` 已被新鲜列表替换之后，被标记的会话必然不在 `_sessions` 里，
+  /// 只能从旧列表取 directory——二轮评审 R1 修复）。缺省回退 join 当前
+  /// `_sessions`（测试播种路径：upsert 后标记）。持久化进 `_ghostSessionDirs`
+  /// 供盘点消费（须跨 refresh 存活：首次标记可能落在节流窗口内，由后续
+  /// refresh 补跑）。
+  void _markGhostSessions(Set<String> ids,
+      [Map<String, String> dirsById = const {}]) {
     for (final id in ids) {
       _statusMap[id] = const SessionStatusValue('idle');
       _ghostSessionIds.add(id);
+      String? dir = dirsById[id];
+      if (dir == null) {
+        for (final s in _sessions) {
+          if (s.id == id) {
+            dir = s.directory;
+            break;
+          }
+        }
+      }
+      if (dir != null && dir.isNotEmpty) _ghostSessionDirs[id] = dir;
       _conversations[id]?.markWorkspaceMissing();
     }
   }
+
+  /// 盘点 evict：ghost 会话目录 ∩ warm 集合批量 evict（断燃料 6 他端删除
+  /// 路径，design-worktree-delete-location-evict §3.3）。ghost 空短路 + ≥5
+  /// 分钟节流——正常态零额外请求。判定只用 server 权威数据（库存 diff 的
+  /// ghost 信号），不做本机磁盘存在性（移动端连远程 server，语义错位）。
+  Future<void> _evictGhostWarmLocations() async {
+    final c = client;
+    if (c == null || _ghostSessionIds.isEmpty) return;
+    final now = DateTime.now();
+    if (_lastGhostWarmSweepAt != null &&
+        now.difference(_lastGhostWarmSweepAt!) < _ghostWarmSweepInterval) {
+      return;
+    }
+    _lastGhostWarmSweepAt = now;
+    try {
+      final warm = await c.listWarmLocationDirectories();
+      // ghost 会话不在 _sessions（标记时已被新鲜列表替换）——directory 从
+      // 标记时持久化的 map 取（二轮评审 R1 修复）
+      final ghostDirs = _ghostSessionDirs.values
+          .where((d) => d.isNotEmpty)
+          .toSet();
+      final dead = warm.intersection(ghostDirs);
+      if (dead.isEmpty) return;
+      await Future.wait(
+          dead.map((d) => c.evictLocation(d).catchError((_) => null)));
+    } catch (_) {}
+  }
+
+  @visibleForTesting
+  Future<void> evictGhostWarmLocationsForTesting() =>
+      _evictGhostWarmLocations();
 
   void _unghostRecovered(List<SessionModel> sessions) {
     if (_ghostSessionIds.isEmpty) return;
     for (final s in sessions) {
       _ghostSessionIds.remove(s.id);
+      _ghostSessionDirs.remove(s.id);
     }
   }
 
@@ -1164,11 +1227,15 @@ class ServerStore extends ChangeNotifier {
       _unghostRecovered(sessions);
       final ghostIds =
           _detectGhostSessionIds(_sessions, sessions, projects, worktreesByDir);
+      final ghostDirsById = {
+        for (final s in _sessions)
+          if (ghostIds.contains(s.id)) s.id: s.directory,
+      };
       _projects = projects;
       _projectsFetched = true;
       _diffStaleSessions(sessions, full: true, busySids: _busySids());
       _sessions = sessions;
-      _markGhostSessions(ghostIds);
+      _markGhostSessions(ghostIds, ghostDirsById);
       final active = await _fetchActiveStatuses();
       if (active != null) {
         _mergeStatus(fresh: active, sessions: sessions);
@@ -1408,7 +1475,10 @@ class ServerStore extends ChangeNotifier {
               ? s
               : _mergeTimeWatermarks(oldSessions[s.id]!, s),
       ];
-      _markGhostSessions(ghostIds);
+      _markGhostSessions(ghostIds, {
+        for (final s in oldSessions.values)
+          s.id: s.directory,
+      });
       if (active != null) {
         _mergeStatus(fresh: active, sessions: sessions);
         if (_sseLive || force) unawaited(_probeBusyMessageTimes());
@@ -1442,6 +1512,10 @@ class ServerStore extends ChangeNotifier {
           .then((_) => _backfillPreview(activeId!, activeConv)));
     }
     unawaited(_backfillPermissions());
+    // 盘点兜底（NB1 挂点裁定）：挂 refreshListAndWorkingSse 末尾——四个触发面
+    // （_reconcile 转调/tab 直刷/force/resume stale）全覆盖，ghost 标记同调用
+    // 内最新鲜；_bootstrap 路径由紧随的首次刷新兜底
+    unawaited(_evictGhostWarmLocations());
     PerfProbe.I.markEvent('refresh-done');
     notifyListeners();
     return true;
@@ -1714,6 +1788,7 @@ class ServerStore extends ChangeNotifier {
     _contentWatermarks.clear();
     _staleSessionIds.clear();
     _ghostSessionIds.clear();
+    _ghostSessionDirs.clear();
     _livePreviewSids.clear();
   }
 
@@ -2693,6 +2768,7 @@ class ServerStore extends ChangeNotifier {
     _statusMap.remove(id);
     _clearAckState(id);
     _ghostSessionIds.remove(id);
+    _ghostSessionDirs.remove(id);
     _contentWatermarks.remove(id);
     _livePreviewSids.remove(id);
     _staleSessionIds.remove(id);
@@ -2726,6 +2802,8 @@ class ServerStore extends ChangeNotifier {
     _childrenByParent.clear();
     _statusMap.clear();
     _ghostSessionIds.clear();
+    _ghostSessionDirs.clear();
+    _lastGhostWarmSweepAt = null;
     _lastMessage.clear();
     _lastActivityByKey.clear();
     _workspaceEnabled.clear();

@@ -240,6 +240,27 @@ class OpencodeClient {
     });
   }
 
+  /// DELETE /api/debug/location — evict 一个 warm location（204）。
+  /// 端点在 pin spec 内（debug.location.evict，deepObject query）；server 升 pin
+  /// 需 spec diff 回归（design-worktree-delete-location-evict §2）。directory
+  /// 必填——server 端 requestRef 兜底 process.cwd()，裸调会误 evict server cwd。
+  Future<void> evictLocation(String directory) async {
+    await dio.delete<dynamic>('/api/debug/location',
+        queryParameters: {'location[directory]': directory});
+  }
+
+  /// GET /api/debug/location — warm 集合的 directory 列表（裸数组，
+  /// Location.PublicRef 仅 directory 字段）。
+  Future<Set<String>> listWarmLocationDirectories() async {
+    final r = await dio.get<dynamic>('/api/debug/location');
+    if (r.data is! List) return const {};
+    return (r.data as List)
+        .whereType<Map>()
+        .map((e) => e['directory']?.toString() ?? '')
+        .where((d) => d.isNotEmpty)
+        .toSet();
+  }
+
   /// POST /api/shell 执行一次性命令至终态（design-worktree-branch-sync 的
   /// 分支挂载/清理通道）。轮询 GET /api/shell/{id}（300ms）至非 running，
   /// 读 /api/shell/{id}/output 累积输出，best-effort DELETE 清理。超时抛
