@@ -1,6 +1,7 @@
 # design-worktree-delete-location-evict.md — worktree 删除时 evict location（断伪行燃料 6）
 
-> 日期：2026-10-12
+> 日期：2026-10-12；2026-10-13 机制订正（§13，ref 三订：路径 B 证伪、
+> 真触发器 = location 请求、evict 价值重定位——实现代码不动，归因修正）
 > 状态：已实现（一轮 + 二轮评审意见已处置，见 §11；最终核对见
 > `docs/review/review-worktree-delete-location-evict.md`）
 > 关联：openbuilder-desktop `docs/ref/ref-pseudo-project-cleanup.md` §3.3/§3.4/§5.2/§7c/§8
@@ -33,6 +34,9 @@ server 内存里的 **warm location**。
   27 小时，续命源未定位）→ digitalocean 插件 `Schedule.spaced("5 minutes")` 周期
   刷新 provider 触发目录解析 → 兜底建档。**实测：SQL 删行后 15 秒重建 19 行；server
   重启清 warm 集合、刷新立即停止。**
+  （三订订正：本路径「刷新触发建档」机制与「19 行归因 warm」均已被推翻——
+  warm 受控实验刷新照常零建行，19 行实为桌面端对账循环对 19 个死目录串行
+  各发一发 location 请求；warm 死驻留本身成立。见 §13。）
 
 **移动端在本问题中的双重角色**：
 
@@ -321,6 +325,7 @@ DELETE method + `location[directory]` query 逐字节形状——端点已在 pi
   射程内**（无 warm 留存则交集抓不到），兜底只有上游治本（发现失败不应建档）。
   加请求闸的收益 = 消掉每次请求的一次 upsert，成本 = 文件树/peek 入口的分支
   复杂度，判不值得；上游修复后本条整体消亡。
+  （三订订正：路径 A 即唯一建档机制、非边缘情形；裁定维持，见 §13。）
 - 不做 evict 重试/退避/待 evict 队列——删除路径失败即回到现状（该目录无止血，
   见 D1 终稿自查修正）；盘点自愈仅覆盖 ghost 路径（他端删除）。
 - 不监听 SSE 事件驱动 evict（无对应事件面；盘点已覆盖）。
@@ -465,3 +470,68 @@ evict 失败的自愈路径 = 对账盘点（ghost 信号仍在）」——**不
 
 修复后验证：`scripts/analyze.sh` 零 issue；`flutter test` 848 全过
 （847 基线 + 1 生产路径用例）。
+
+## 13. 三订订正（2026-10-13，ref-pseudo-project-cleanup §3.4 三订/§7e）
+
+> 依据：openbuilder-desktop `docs/ref/ref-pseudo-project-cleanup.md` 2026-10-13
+> 深夜三订（受控实验 + 源码锚 + 确定性复现）。**实现代码不动**——两处 evict
+> 保留；本节修正的是本文档写作时的机制归因（基于 10-12 的二订认知），防止
+> 后续读者按已证伪的机制做推演。
+
+### 13.1 证伪与定位
+
+| 命题 | 本文档原表述 | 三订结论 |
+|---|---|---|
+| warm 5 分钟刷新 → 建档 | §1 路径 B：周期刷新 provider 触发目录解析 → 兜底建档（持续再生） | **证伪**。warm 受控实验：死目录 location 驻留 ≥10 分钟、5 分钟刷新事件照发——零建行 |
+| 15 秒 19 行归因 | warm 刷新再生（§1 路径 B 实测引证） | **订正**：桌面端对账/轮询循环对 19 个死目录**串行各发了一发** location 请求（`GET /api/vcs/diff?location[directory]=…`）——每发一行 |
+| 真触发器 | 未定位（推测 warm 刷新；桌面端一度推测「半删窗口」，亦作废） | **已定位、确定性复现**：任何携带 `location[directory]=<死目录>` 的请求 → location 中间件按需 boot → `project.resolve(目录)` → 目录哈希兜底建档，**一发一行**，与 warm/刷新/删除时机全部无关。根源 = `FSUtil.resolve` 对缺失路径回退返回原路径（`util/fs-util.ts:105-111`），删除后的目录 resolve 照样走完 |
+| 安全端点 | （未涉及） | `GET /api/project` / `GET /api/worktree` / `POST worktree/refresh` / `GET /api/session?directory=`（plain 过滤参数，非 location）等不带 location 的请求实证零建行；本端 `sessionsForDirectory` 走的正是 plain `directory` 参数 |
+
+### 13.2 evict 价值重定位（代码不动）
+
+- **对伪行零作用**：evict 只清 warm 驻留；后续带 location 的请求会 re-boot
+  location → resolve → 建档，evict 防不住（ref §3.4 断根口径明示）。
+- **保留价值**：① warm 死驻留治理——`idleTimeToLive: infinity` 下死目录 location
+  每 5 分钟照发 `provider.updated`/`model.updated` 事件（噪声），evict 即断；
+  ② 与桌面端行为一致（design-worktree-sync §3.4 已落地同款）。
+- 删除路径 evict（§3.3）与 ghost 盘点 evict（§3.3）**双双保留**，仅本文档
+  「断伪行燃料 6」的立论表述作废；§4 场景表、§7 验收的**结果口径仍有效**
+  （删后无伪行再生），但无再生的真因是「删除后没有 location 请求打向死目录」
+  （见 13.3），不是 evict。
+
+### 13.3 本端删除时序与请求面复核（三订口径，2026-10-13 代码复核）
+
+三订后关键防线从「断 warm」变为「**删除后没有任何带死目录 location 的请求**」。
+逐点复核（结论：现状成立，无需改码）：
+
+- `removeWorktree` 时序：DELETE 之后仅 evict（DebugGroup 不挂 LocationMiddleware，
+  §2 已核）+ 分支清理（`POST /api/shell` cwd=canonical，活目录）+ 本地内存清理
+  ——零 location 请求打向死目录。§5 差异 1 的「守卫前提」在真触发器口径下
+  依然成立，且从「防 warm 再生」升格为「防确定性建档」。
+- 桌面端 §3.5（删前停 vcs 轮询 + 等 in-flight location 请求，ref §3.4 客户端
+  预防）**本端无对应物**：本端无 vcs 轮询（diff 屏一次性拉取）；sessions/projects
+  tab 的 `Timer.periodic` → `refreshListAndWorkingSse` → sessions/projects/worktrees，
+  全部不带 location 参数（13.1 安全端点）。busy 探针（`_probeBusyMessageTimes`）/
+  权限 backfill 为 per-session 端点且仅覆盖运行中会话——仅「他端删 worktree 时
+  会话还在跑」的瞬态窗口可命中，属可接受边缘。
+- ghost 会话闸门：compose 闸（`conversation_screen.dart:1603`）之外 footer 整体
+  替换为 `_WorkspaceMissingBanner`（`:1119`）——`/` 命令刷新
+  （`_triggerCommandRefresh` → `GET /api/command?location[directory]=…`）在
+  ghost 会话不可达。
+- 残余暴露面 = ghost 会话的 peek/文件树/diff（§9 NB2 裁定维持：同 canonical
+  单行 upsert、404 即时反馈、行数不增——但三订后须补一句：**手工清行后只要
+  再有请求即复现**，彻底消亡只能等上游）。
+
+### 13.4 连带订正
+
+- 上游 issue 弹药升级：ref §7c 时代「现象确凿、机制归因存疑」→ 三订后可按
+  **确定性复现**写（`DELETE /api/worktree` → 对死目录发
+  `GET /api/vcs/diff?location[directory]=…` → 伪行立即出现；根源
+  `FSUtil.resolve` 回退 + upsert-only 无回收）。
+- 识别口径补充（防误清）：**同路径双行**（ref §3.5，2026-10-13 实证：origin
+  添加/变更切换身份输入，老行=根提交/钉住文件、新行=remote 哈希，两行 `vcs=git`
+  且都对应真实仓库）是**合法身份行、非伪行**——不满足 §1 判定指纹，不要按
+  伪行清；清法见 ref §5.2 同路径双行重指向。本端表现 = 项目列表出现两个同名
+  项目，属 server 数据态，无客户端动作。
+- 桌面端 `design-worktree-sync.md` §3.4 文字仍停留在二订（「触发器未定位」
+  「半删窗口」），§3.5 尚未落笔——本端引用其结论时以 ref 三订为准。
