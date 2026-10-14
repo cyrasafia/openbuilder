@@ -72,7 +72,7 @@ openbuilder/
 
 > **构建后默认动作**：在 `main` 分支上 Release build **成功**后，默认执行：提交 `pubspec.yaml`（`chore: bump version to <版本>`）→ 若本次升级了 versionName 则打 tag `v<A.B.C>` → 推送（含 tag）。若 build **失败**则无需执行这些动作。
 
-> **tag 约定**：任何 versionName 升级都打三段式 tag `v<A.B.C>`（如 `v0.10.1`），落在该版本的 bump commit 上；versionCode 自增不打 tag。**统一用注释标签（annotated）**：创建 `git tag -a v<A.B.C> -m "<版本>"`，推送 `git push origin v<A.B.C>`（轻量标签不会被 `--follow-tags` 推送）。
+> **tag 约定**：任何 versionName 升级都打三段式 tag `v<A.B.C>`（如 `v0.10.1`），落在该版本的 bump commit 上；versionCode 自增不打 tag。**统一用注释标签（annotated）**：创建 `git tag -a v<A.B.C> -m "<版本>"`，推送 `git push origin v<A.B.C>`（轻量标签不会被 `--follow-tags` 推送）。**tag 说明**：用户提供了该版本主要改动时，把改动摘要写进 `-m`（可多行）；未提供时用版本号占位；历史 tag 不回填说明。
 
 ### 升级版本号（versionName）
 
