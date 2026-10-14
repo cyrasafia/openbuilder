@@ -102,7 +102,7 @@ flutter test                     # 含 widget + parse + smoke（smoke 需本地 
 
 本机已有一个常驻 opencode 服务可供联调 / smoke 测试：
 
-- 地址：`http://localhost:15120`（**v2.0.18**，`/api/*` 面）
+- 地址：`http://localhost:15120`（**v2.0.26**，`/api/*` 面）
 - 认证：用户名 `opencode`，密码 `1234321`（Basic Auth；v2 强制密码）
 
 可用于触发 SSE 事件、权限卡、form 卡、会话流等真实交互。**禁止杀死该进程**（它会中断正在进行的推理 / 测试）；如需独立环境，请新起一个实例到**其他端口**（隔离 DB：`OPENCODE_DB=/tmp/opencode/v2-test.db OPENCODE_PASSWORD=<pw> opencode serve --port <port>`），并用各自 PID 精确管理，不要用 `pkill -f "opencode serve"` 之类的通配杀进程。
@@ -204,6 +204,8 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `design/design-user-message-collapse.md` | 高用户消息折叠/展开（自然高度 > 整屏×0.4 默认折叠，门槛键盘无关；自然/渲染高度分账防振荡、判定挂既有测高事件非每帧、OverflowBox+ClipRect 壳在实例缓存外；含 onNotification 读高 debug 断言修复） |
 | `design/design-image-attachment-thumbnail.md` | 图片附件缩略图统一渲染（乐观↔权威一致：判定改由 fileMime 驱动、ImageDataCache 异步解码 + native 缩放、复用 ImageView 放大、限最大高度；化解 CR-2 内存/掉帧顾虑） |
 | `design/design-bump-minsdk-34.md` | 提升 minSdk 至 34 + 清理冗余兼容代码（移除 core library desugaring、`Build.VERSION` 死分支、`-v21` 资源限定符；解锁通知运行时权限 / 暗色 uiMode / 预测性返回 / HCPP；不含 Markdown→WebView） |
+| `design/design-background-keepalive.md` | 会话运行中后台保活与完成通知调研（**纯调研无实施决策**；Android FGS dataSync 三形态 + 6h/24h 预算分析、iOS 26 BGContinuedProcessingTask / background URLSession 长轮询链 / beginBackgroundTask 断言补缺；服务端原语 `POST /api/experimental/session/{id}/wait` 长轮询活体实测 + v2.0.18 源码验证；方案矩阵 + P0-P2 建议路线 + 开放问题） |
+| `design/design-background-notify.md` | 后台会话观察与完成通知 P0 实施（调研 P0 路线落地：BN-0 通知可见性三根因修复——Android 运行时权限首请求/完成通道升 heads-up/iOS beginBackgroundTask 断言 + 25s 统一 pause；**streaming/卡阻塞双口径**（busy ∧ 无待决卡才驱动保活，含上浮 host 维度，卡只吃 lingering）+ Android FGS dataSync 空壳 + **lingering 3min 宽限窗**（前台后台统一，兜住「完成即读/出卡快答」信号窗后即停，续航优先）+ `onTimeout`/`onTaskRemoved` 优雅停；通知生命周期——每会话双槽 id、当前会话可见性门控、看过即清（本端进页/他端已读 `session.viewed`/他端答卡/他端删除）+ 流断开时 resume/connect 补账（payload sid + 活跃通知扫描，覆盖已读与答卡）；平台×busy 行为矩阵 + S1-S27 场景 + D1-D11 决策；**两轮评审**（1次设计评审 BN-R1..R7 + 2次实现评审 BN-R8..R15，全部修复复审 ✅）；配套 `review/review-background-notify.md` 核对报告，**已实现**） |
 | `design/design-markdown-webview.md` | 文件详情页 Markdown 预览 Flutter Markdown → WebView（mar→HTML + CSS 复刻三档字重 + JS 桥 + 预热池；依赖 HCPP，前提为 minSdk 34；含原生缓解/分块/换渲染器/WebView 四方向选型否决理由） |
 | `design/design-html-preview.md` | HTML 文件预览（默认预览 + 手动切源码；原始文档 CSP/viewport meta 注入，WebView 复用 markdown 预览基础设施，`MarkdownWebView` 泛化为 `PreviewWebView`） |
 | `design/design-message-autolink.md` | 会话消息链接自动识别（URI + 项目内文件路径：围栏感知纯文本改写 + content-keyed memoize；`ob-file:` 自定义 scheme 分流；peek 快照进文件容器；行内代码仅纯目标转链；URI 主体 ASCII-only 修复全角标点吞字；`_trimTrailing` 追加 `*` 剥离修复强调标记吞入链接；含十轮评审记录） |

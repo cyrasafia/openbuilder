@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
+import '../../core/platform/ios_bg_task.dart';
+import '../../core/platform/keepalive_controller.dart';
 import '../../ui/l10n_ext.dart';
 
 class MainShell extends StatefulWidget {
@@ -39,22 +43,38 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
         _foreground = false;
-        // Defer SSE teardown by 30s — if the user returns quickly (e.g. quick
-        // app switch / notification peek) we avoid a full reconnect cycle.
+        serverStore.setAppForeground(false);
+        if (state == AppLifecycleState.paused) {
+          unawaited(IosBgTask.begin('sse-pause-window'));
+        }
         _pauseTimer?.cancel();
-        _pauseTimer = Timer(const Duration(seconds: 30), () {
-          if (!_foreground) unawaited(serverStore.pause());
-        });
+        _pauseTimer = Timer(const Duration(seconds: 25), _onPauseTimer);
         break;
       case AppLifecycleState.resumed:
         _foreground = true;
+        serverStore.setAppForeground(true);
         _pauseTimer?.cancel();
         _pauseTimer = null;
+        unawaited(IosBgTask.end());
         unawaited(serverStore.resume());
+        break;
+      case AppLifecycleState.detached:
+        unawaited(IosBgTask.end());
         break;
       default:
         break;
     }
+  }
+
+  void _onPauseTimer() {
+    if (_foreground) return;
+    if (!kIsWeb &&
+        Platform.isAndroid &&
+        KeepaliveController.I.observationActive) {
+      return;
+    }
+    unawaited(
+        serverStore.pause().whenComplete(() => unawaited(IosBgTask.end())));
   }
 
   @override
