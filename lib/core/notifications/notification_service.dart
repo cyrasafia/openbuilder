@@ -59,8 +59,8 @@ class NotificationService {
     if (android != null) {
       try {
         await android.deleteNotificationChannel('agent_complete');
-      } catch (_) {
-        return;
+      } catch (e) {
+        AppLogger.I.w(_tag, 'stale channel cleanup failed: $e');
       }
     }
     _initialized = true;
