@@ -29,7 +29,7 @@
 
 ## 已知限制（设计接受项回执）
 
-- **现场修复（2026-10-14 真机实测）**：升级安装的完成通知静默不可见——旧版 `show()` 调用已把 `agent_complete` 通道以 Importance.low 注册（权限只拦显示不拦建通道），升 high 被系统忽略。修复：新通道 id `agent_complete_v2` + init 时删除残留通道 + `_show` 失败日志（原 `.catchError` 黑洞）。
+- **现场修复（2026-10-14 真机实测）**：升级安装的完成通知静默不可见——旧版 `show()` 调用已把 `agent_complete` 通道以 Importance.low 注册（权限只拦显示不拦建通道），升 high 被系统忽略。裁定（无其他用户）：**不换通道 id、不做启动清理**，本机经 v2 中间版本/卸载重装重置后 `agent_complete` 以 high 新建；`_show` 成功/失败日志保留（原 `.catchError` 黑洞）。若有存量用户，「换新 id + init 删除残留」方案已在设计 D4 备案。
 - S2 滑卡后通知停（`onTaskRemoved` 停服务）；S3 OEM 杀进程；S4 6h dataSync 预算 `onTimeout` 后不再后台重启；S9 iOS 25s 后完成无通知（P1 范围）；S26 流断期间他端答卡无完成通知（补账只清通知不补状态）。
 - 通知点击路由到具体会话未做（payload 已预埋 sid，P1 接线）。
 - `getActiveNotifications` 在 iOS 对非插件来源通知 id 为 null——本项目通知全部经插件发出，不受影响。
