@@ -19,7 +19,7 @@ import UIKit
       binaryMessenger: engineBridge.applicationRegistrar.messenger())
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
-        result(FlutterError(code: "delegate_gone", message: nil, nil))
+        result(FlutterError(code: "delegate_gone", message: nil, details: nil))
         return
       }
       switch call.method {

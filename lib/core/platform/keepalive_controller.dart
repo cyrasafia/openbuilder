@@ -18,7 +18,7 @@ class KeepaliveBackend {
 
   Future<void> stop() => AndroidKeepalive.stop();
 
-  Future<bool> requestPermission() =>
+  Future<bool?> requestPermission() =>
       NotificationService.requestAndroidPermissionIfNeeded();
 }
 
@@ -35,6 +35,7 @@ class KeepaliveController with WidgetsBindingObserver {
   KeepaliveBackend? _backend;
   int _streaming = 0;
   bool _fgsOn = false;
+  bool _startInFlight = false;
   bool _permDenied = false;
   DateTime? _lingerStartedAt;
   Timer? _lingerTimer;
@@ -99,24 +100,33 @@ class KeepaliveController with WidgetsBindingObserver {
 
   Future<void> _tryStart() async {
     final backend = _backend;
-    if (backend == null || _fgsOn) return;
-    final granted = await backend.requestPermission();
-    if (!granted) {
-      _permDenied = true;
-      AppLogger.I.w(_tag, 'notification permission denied, no keepalive');
-      return;
-    }
-    if (_streaming <= 0) return;
+    if (backend == null || _fgsOn || _startInFlight) return;
+    _startInFlight = true;
     try {
-      await backend.start(_streaming);
-    } on PlatformException {
-      return;
-    } on MissingPluginException {
-      return;
+      final granted = await backend.requestPermission();
+      if (granted == false) {
+        _permDenied = true;
+        AppLogger.I.w(_tag, 'notification permission denied, no keepalive');
+        return;
+      }
+      if (granted != true) {
+        AppLogger.I.w(_tag, 'notification permission unknown, skip attempt');
+        return;
+      }
+      if (_streaming <= 0) return;
+      try {
+        await backend.start(_streaming);
+      } on PlatformException {
+        return;
+      } on MissingPluginException {
+        return;
+      }
+      _fgsOn = true;
+      AppLogger.I.i(_tag, 'watching streaming=$_streaming');
+      if (_streaming <= 0) _enterLinger();
+    } finally {
+      _startInFlight = false;
     }
-    _fgsOn = true;
-    AppLogger.I.i(_tag, 'watching streaming=$_streaming');
-    if (_streaming <= 0) _enterLinger();
   }
 
   void _enterLinger() {
@@ -170,6 +180,7 @@ class KeepaliveController with WidgetsBindingObserver {
     _store = null;
     _backend = null;
     _fgsOn = false;
+    _startInFlight = false;
     _permDenied = false;
     _initialized = false;
   }

@@ -279,3 +279,23 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | BN-R13 | `taskID == .invalid` → 不入字典、`result(nil)` | AppDelegate.swift | ✅ |
 | BN-R14 | `stop` → `stopService()`；移除 Service 的 ACTION_STOP 分支与常量 | MainActivity.kt、KeepaliveService.kt | ✅ |
 | BN-R15 | §2.7 文案对齐 `Watching 1 session` / `Watching N sessions` | 本文档 | ✅ |
+
+### 3次评审意见（2026-10-14，合入前整体复核，独立 subagent 审 origin/main...HEAD）
+
+结论：1 项 🔴 阻塞（iOS Swift 编译错误）+ 1 项 🟡 + 2 项 🟢，全部修复。
+
+| 编号 | 优先级 | 问题 | 修复 |
+|------|--------|------|------|
+| BN-R16 | 🔴 阻塞 | `FlutterError(code:message:details:)` 第三参缺 `details:` 标签——iOS 构建必失败；CI 只跑 Android APK 拦不住，Linux 无法编译 Swift 漏网 | 补 `details: nil` 标签；macOS 构建验证仍待办 |
+| BN-R17 | 🟡 中 | `requestAndroidPermissionIfNeeded` 把初始化失败（`_initialized == false`）也返回 false → `_permDenied` 粘死，本进程不可逆失去后台观察；用户从未拒绝过 | 改 tri-state（`Future<bool?>`）：null=未知（不粘死、下次 rise/回前台重试）、false=已拒绝（粘死）、true=已授权；controller 按 null/分叉处理 |
+| BN-R18 | 🟢 低 | `_tryStart` 无重入保护：rise 与 `_onForeground` 同帧并发可双调 `backend.start`（Android 幂等，仅重复日志） | `_startInFlight` 守卫 + `finally` 复位 |
+| BN-R19 | 🟢 低 | `reconcileStale` 读全局 `serverStore` 单例，测试注入局部 store 时查错对象 | 接受不改：生产环境二者同体；测试未覆盖该路径；改动需穿透静态层得不偿失 |
+
+### 修复复审（3次）
+
+| 编号 | 修复内容 | 位置 | 状态 |
+|------|----------|------|------|
+| BN-R16 | `details: nil` 标签补齐 | AppDelegate.swift | ✅（编译验证仍需 macOS） |
+| BN-R17 | tri-state 权限语义 + controller null 分叉 | notification_service.dart、keepalive_controller.dart、KeepaliveBackend、测试 fake | ✅ |
+| BN-R18 | `_startInFlight` 重入守卫 | keepalive_controller.dart | ✅ |
+| BN-R19 | 记录接受理由，不改码 | 本文档 | ✅ |

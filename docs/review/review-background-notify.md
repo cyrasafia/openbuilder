@@ -25,7 +25,7 @@
 - `./scripts/analyze.sh`：0 issue（`--fatal-infos` 门槛）。
 - `flutter test`：858 全过，含新增 `test/background_notify_test.dart` 10 例——streaming 口径（own-card / child-card-blocks-host 两例）、前台抑制、settle→viewed 清槽、卡答复清槽、进会话清槽、deleted 清槽、状态机三例（rise→linger→stop、linger 中 rise 取消、槽空提前停）。
 - `flutter build apk --debug`：通过（Kotlin/Manifest 编译验证）。
-- iOS Swift：无法在本机（Linux）编译验证；`FlutterImplicitEngineBridge.applicationRegistrar.messenger()` API 经官方头文件确认，**需 macOS 上一遍构建**。
+- iOS Swift：无法在本机（Linux）编译验证；3次评审发现并修复一处确定性编译错误（`FlutterError` 缺 `details:` 标签，BN-R16），`engineBridge.applicationRegistrar.messenger()` API 经官方头文件确认，**仍需 macOS 上一遍构建**。
 
 ## 已知限制（设计接受项回执）
 

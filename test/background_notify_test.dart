@@ -61,7 +61,7 @@ class _FakeBackend extends KeepaliveBackend {
   }
 
   @override
-  Future<bool> requestPermission() async => true;
+  Future<bool?> requestPermission() async => true;
 }
 
 void main() {

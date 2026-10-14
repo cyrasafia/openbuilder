@@ -178,13 +178,14 @@ class NotificationService {
     }
   }
 
-  static Future<bool> requestAndroidPermissionIfNeeded() async {
+  /// null = 未知（初始化失败，不粘死、可重试）；false = 已拒绝；true = 已授权。
+  static Future<bool?> requestAndroidPermissionIfNeeded() async {
     if (kIsWeb || !Platform.isAndroid) return true;
     if (!_initialized) await init();
-    if (!_initialized) return false;
+    if (!_initialized) return null;
     final android = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
-    if (android == null) return false;
+    if (android == null) return null;
     final enabled = await android.areNotificationsEnabled();
     if (enabled == true) return true;
     final prefs = await SharedPreferences.getInstance();
