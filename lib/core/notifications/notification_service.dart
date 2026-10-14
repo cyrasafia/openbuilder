@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../app_state.dart';
 import '../../domain/models.dart';
 import '../../l10n/gen/app_localizations.dart';
+import '../logging/app_logger.dart';
 import '../../ui/l10n_ext.dart';
 
 /// Lightweight local-notification service for alerts when the agent finishes
@@ -19,6 +20,7 @@ import '../../ui/l10n_ext.dart';
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
+  static const _tag = 'Notif';
   static const _permAskedKey = 'notifPermAsked';
 
   static final Set<String> _pendingRun = {};
@@ -47,6 +49,20 @@ class NotificationService {
     if (ios != null) {
       await ios.requestPermissions(alert: true, badge: true, sound: true);
     }
+    // Old builds registered the completion channel at Importance.low (channel
+    // creation happens on show() even when posting was blocked by the missing
+    // runtime permission). Importance can never be raised afterwards, so the
+    // stale channel is deleted and a fresh id is used (see _agentChannel).
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+    if (android != null) {
+      try {
+        await android.deleteNotificationChannel('agent_complete');
+      } catch (_) {
+        return;
+      }
+    }
     _initialized = true;
   }
 
@@ -58,7 +74,7 @@ class NotificationService {
   // localized. A neutral English word is used (only affects the channel label
   // in system settings, not the notification body).
   static const _agentChannel = AndroidNotificationDetails(
-    'agent_complete',
+    'agent_complete_v2',
     'Agent',
     importance: Importance.high,
     priority: Priority.high,
@@ -83,16 +99,23 @@ class NotificationService {
     AndroidNotificationDetails channel,
     String payload,
   ) async {
-    await _plugin.show(
-      id,
-      title,
-      body,
-      NotificationDetails(
-        android: channel,
-        iOS: DarwinNotificationDetails(),
-      ),
-      payload: payload,
-    );
+    try {
+      await _plugin.show(
+        id,
+        title,
+        body,
+        NotificationDetails(
+          android: channel,
+          iOS: DarwinNotificationDetails(),
+        ),
+        payload: payload,
+      );
+      AppLogger.I.d(_tag, 'posted id=$id channel=${channel.channelId}');
+    } catch (e) {
+      AppLogger.I.e(
+          _tag, 'post failed id=$id channel=${channel.channelId}: $e');
+      rethrow;
+    }
   }
 
   /// Notify that an agent run completed (session went busy → idle).
