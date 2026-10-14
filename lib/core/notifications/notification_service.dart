@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../app_state.dart';
 import '../../domain/models.dart';
 import '../../l10n/gen/app_localizations.dart';
+import '../logging/app_logger.dart';
 import '../../ui/l10n_ext.dart';
 
 /// Lightweight local-notification service for alerts when the agent finishes
@@ -19,6 +20,7 @@ import '../../ui/l10n_ext.dart';
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
+  static const _tag = 'Notif';
   static const _permAskedKey = 'notifPermAsked';
 
   static final Set<String> _pendingRun = {};
@@ -83,16 +85,24 @@ class NotificationService {
     AndroidNotificationDetails channel,
     String payload,
   ) async {
-    await _plugin.show(
-      id,
-      title,
-      body,
-      NotificationDetails(
-        android: channel,
-        iOS: DarwinNotificationDetails(),
-      ),
-      payload: payload,
-    );
+    if (debugFakeShow) return;
+    try {
+      await _plugin.show(
+        id,
+        title,
+        body,
+        NotificationDetails(
+          android: channel,
+          iOS: DarwinNotificationDetails(),
+        ),
+        payload: payload,
+      );
+      AppLogger.I.d(_tag, 'posted id=$id channel=${channel.channelId}');
+    } catch (e) {
+      AppLogger.I.e(
+          _tag, 'post failed id=$id channel=${channel.channelId}: $e');
+      rethrow;
+    }
   }
 
   /// Notify that an agent run completed (session went busy → idle).
@@ -105,13 +115,18 @@ class NotificationService {
         ? sessionTitle
         : loc.convDefaultTitle;
     _pendingRun.add(sid);
-    await _show(
-      _runNotifId(sid),
-      'Open Builder',
-      loc.notifRunCompleteBody(title),
-      _agentChannel,
-      sid,
-    );
+    try {
+      await _show(
+        _runNotifId(sid),
+        'Open Builder',
+        loc.notifRunCompleteBody(title),
+        _agentChannel,
+        sid,
+      );
+    } catch (_) {
+      _pendingRun.remove(sid);
+      rethrow;
+    }
   }
 
   /// Notify that a permission request is awaiting the user's response.
@@ -124,13 +139,18 @@ class NotificationService {
         ? sessionTitle
         : loc.convDefaultTitle;
     _pendingCards.add(cardSid);
-    await _show(
-      _cardNotifId(cardSid),
-      loc.notifPermissionTitle,
-      loc.notifPermissionBody(title, permissionTitle(loc, p)),
-      _permissionChannel,
-      cardSid,
-    );
+    try {
+      await _show(
+        _cardNotifId(cardSid),
+        loc.notifPermissionTitle,
+        loc.notifPermissionBody(title, permissionTitle(loc, p)),
+        _permissionChannel,
+        cardSid,
+      );
+    } catch (_) {
+      _pendingCards.remove(cardSid);
+      rethrow;
+    }
   }
 
   /// Notify that a question is awaiting the user's answer.
@@ -146,13 +166,18 @@ class NotificationService {
         ? header
         : loc.notifQuestionDefaultHeader;
     _pendingCards.add(cardSid);
-    await _show(
-      _cardNotifId(cardSid),
-      loc.notifQuestionTitle,
-      loc.notifQuestionBody(title, h),
-      _questionChannel,
-      cardSid,
-    );
+    try {
+      await _show(
+        _cardNotifId(cardSid),
+        loc.notifQuestionTitle,
+        loc.notifQuestionBody(title, h),
+        _questionChannel,
+        cardSid,
+      );
+    } catch (_) {
+      _pendingCards.remove(cardSid);
+      rethrow;
+    }
   }
 
   static Future<void> cancelSessionRun(String sid) async {
@@ -205,6 +230,9 @@ class NotificationService {
   static void debugMarkInitialized() {
     _initialized = true;
   }
+
+  @visibleForTesting
+  static bool debugFakeShow = false;
 
   @visibleForTesting
   static void debugResetSlots() {

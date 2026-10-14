@@ -197,7 +197,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - **D1 用 a 形态（FGS 空壳 + Dart 观察）而非 c 形态（原生 watcher）**：P0 改动最小；权限/问题卡通知天然工作（S12）；滑卡失效由 `onTaskRemoved` 显式接受（S2）。c 形态留给 P2 且须先解决「原生侧权限卡通知」复杂度。
 - **D2 FGS 启动点只在 streaming 0→N（前台）**：Android 12+ 后台启动 FGS 受限且无「退后台宽限」豁免；pause 时刻启动不可靠，不赌。启动契机天然存在：新 run 必经「用户发送 prompt」（前台），本端答卡恢复运行也发生在前台。
 - **D3 streaming 与卡阻塞拆口径（含子会话）**：`streamingSessionCount` = busy|retry ∧ 无待决卡，扫全量 `_statusMap`（含 `_childSessions` 中的 id）。只有 streaming 驱动保活；卡阻塞只吃 3min lingering（卡可能数小时无人处理，长连接损害续航）。
-- **D4 完成通道 importance low→high**：完成是用户等待型事件，应 heads-up。已知降级路径：老安装若已注册 `agent_complete` 通道（importance 只能降不能升），保持 silent——多数安装因 BN-0a 从未成功 post 过，通道大概率未注册，实际影响面接近零。
+- **D4 完成通道 importance low→high**：完成是用户等待型事件，应 heads-up。~~已知降级路径：老安装若已注册 `agent_complete` 通道（importance 只能降不能升），保持 silent——多数安装因 BN-0a 从未成功 post 过，通道大概率未注册，实际影响面接近零~~（**现场翻车 2026-10-14**：插件在 `show()` 时即建通道——权限只拦 `notify()` 不拦 `createNotificationChannel`，老安装的 `agent_complete` 通道早已以 low 注册，升级后 high 被系统忽略、完成通知静默不可见。真机实测确认。因**当前无其他用户**，裁定不换通道 id、不做启动清理——本机经 v2 中间版本/卸载重装已重置，`agent_complete` 将以 high 新建；若未来有存量用户再启用「换新 id + 删除残留」方案。`_show` 补成功/失败日志保留——原 `.catchError` 黑洞）。
 - **D5 权限请求时机为首次 streaming 转变**：有上下文（用户刚下达任务），优于冷启动时无上下文弹窗。
 - **D6 pause 计时 30s→25s 且双平台统一**：iOS 断言 ~30s 到期前留 5s 收尾；Android 缓存进程窗口远大于此，25s 无代价。统一值简化代码。
 - **D7 streaming→0 进 3min lingering（前台/后台统一），到期停**：停下的瞬间恰是通知开始需要 `session.viewed` / 答卡信号的时刻；宽限窗兜住「完成即读」「出卡快答」两条常见路径，到期即停兜住电池与 6h 预算。「通知/卡存活多久就保活多久」= 常驻空闲保活，否决。流断开期间的他端动作由重连补账兜底（§2.6 两级清除）。teardown 从后台执行合法（非 FGS 启动）。

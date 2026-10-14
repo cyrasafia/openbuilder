@@ -68,7 +68,7 @@ class KeepaliveService : Service() {
     companion object {
         private const val TAG = "OpenBuilder/Keepalive"
         const val CHANNEL_ID = "watching"
-        const val NOTIF_ID = 100
+        const val NOTIF_ID = -100
         const val EXTRA_COUNT = "count"
         private var lastCount = 1
     }
