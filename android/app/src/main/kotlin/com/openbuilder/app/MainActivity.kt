@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
     private val channel = "com.openbuilder.app/font_weight"
     private val filesChannel = "com.openbuilder.app/files"
     private val passkeyChannel = "com.openbuilder.app/passkey"
+    private val keepaliveChannel = "com.openbuilder.app/keepalive"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -105,6 +106,44 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "enableForAttachedWebViews" -> result.success(enableWebAuthnForAttachedWebViews())
+                    else -> result.notImplemented()
+                }
+            }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, keepaliveChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        val count = call.argument<Int>("count") ?: 1
+                        try {
+                            startForegroundService(
+                                Intent(this, KeepaliveService::class.java)
+                                    .putExtra(KeepaliveService.EXTRA_COUNT, count)
+                            )
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("start_failed", e.message, null)
+                        }
+                    }
+                    "updateCount" -> {
+                        val count = call.argument<Int>("count") ?: 1
+                        try {
+                            startService(
+                                Intent(this, KeepaliveService::class.java)
+                                    .putExtra(KeepaliveService.EXTRA_COUNT, count)
+                            )
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("update_failed", e.message, null)
+                        }
+                    }
+                    "stop" -> {
+                        try {
+                            stopService(Intent(this, KeepaliveService::class.java))
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("stop_failed", e.message, null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

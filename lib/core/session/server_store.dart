@@ -42,6 +42,40 @@ class ServerStore extends ChangeNotifier {
   Timer? _healthProbeTimer;
   Future<void>? _pauseOperation;
   bool _foreground = true;
+
+  bool get appForeground => _foreground;
+
+  void setAppForeground(bool v) => _foreground = v;
+
+  bool _suppressNotify(String hostSid) =>
+      _foreground && _activeSessionId == hostSid;
+
+  bool hasPendingCard(String sid) =>
+      _pendingPermissions.containsKey(sid) ||
+      _pendingForms.values.any((f) => f.sessionID == sid);
+
+  bool _isCardBlocked(String sid) {
+    if (hasPendingCard(sid)) return true;
+    for (final p in _pendingPermissions.values) {
+      if (_cardHostSessionId(p.sessionID) == sid) return true;
+    }
+    for (final f in _pendingForms.values) {
+      if (_cardHostSessionId(f.sessionID) == sid) return true;
+    }
+    return false;
+  }
+
+  int get streamingSessionCount {
+    var n = 0;
+    for (final e in _statusMap.entries) {
+      final t = e.value.type;
+      if (t != 'busy' && t != 'retry') continue;
+      if (_isCardBlocked(e.key)) continue;
+      n++;
+    }
+    return n;
+  }
+
   int _healthProbeGeneration = 0;
   @visibleForTesting
   static Duration healthProbeInterval = const Duration(seconds: 5);
@@ -768,6 +802,21 @@ class ServerStore extends ChangeNotifier {
     if (sid != null) {
       _sse?.reconnectNow();
       maybeMarkViewed(sid);
+      _cancelNotificationsForHost(sid);
+    }
+  }
+
+  void _cancelNotificationsForHost(String sid) {
+    unawaited(NotificationService.cancelSessionAll(sid));
+    for (final p in _pendingPermissions.values) {
+      if (_cardHostSessionId(p.sessionID) == sid) {
+        unawaited(NotificationService.cancelCard(p.sessionID));
+      }
+    }
+    for (final f in _pendingForms.values) {
+      if (_cardHostSessionId(f.sessionID) == sid) {
+        unawaited(NotificationService.cancelCard(f.sessionID));
+      }
     }
   }
 
@@ -1031,7 +1080,7 @@ class ServerStore extends ChangeNotifier {
       _startSse();
       _lastFullRefreshAt = DateTime.now();
       connected = true;
-      unawaited(_backfillPermissions());
+      unawaited(_reconcileStaleNotifications());
       notifyListeners();
     } catch (e) {
       AppLogger.I.e(_tag, 'connect failed ${profile.hostDisplay}: $e');
@@ -1942,6 +1991,7 @@ class ServerStore extends ChangeNotifier {
         if (sid != null) {
           _removeSession(sid);
           fileBrowsing.removeSessionData(sid);
+          unawaited(NotificationService.cancelSessionAll(sid));
         }
         break;
       case 'session.moved':
@@ -1971,6 +2021,7 @@ class ServerStore extends ChangeNotifier {
         if (sidV != null && idleV > 0) {
           _applyViewedWatermark(sidV, idleV);
           maybeMarkViewed(sidV);
+          unawaited(NotificationService.cancelSessionRun(sidV));
         }
         break;
       case 'session.forked':
@@ -2006,9 +2057,9 @@ class ServerStore extends ChangeNotifier {
           }
           if (wasBusy) {
             AppLogger.I.i(_tag, 'execution settled ${ev.type} $sid2');
-            if (!isChildSession(sid2)) {
+            if (!isChildSession(sid2) && !_suppressNotify(sid2)) {
               unawaited(NotificationService.notifyRunComplete(
-                      sessionById(sid2)?.title)
+                      sid2, sessionById(sid2)?.title)
                   .catchError((_) {}));
             }
             final conv = _conversations[sid2];
@@ -2281,9 +2332,11 @@ class ServerStore extends ChangeNotifier {
           _conversations[host]?.onForm(f);
           AppLogger.I.i(_tag,
               'SSE form.created sid=${f.sessionID} fid=${f.id} host=$host');
-          unawaited(NotificationService.notifyQuestion(
-                  sessionById(host)?.title, f.title)
-              .catchError((_) {}));
+          if (!_suppressNotify(host)) {
+            unawaited(NotificationService.notifyQuestion(
+                    f.sessionID, sessionById(host)?.title, f.title)
+                .catchError((_) {}));
+          }
         }
         break;
       case 'form.replied':
@@ -2293,6 +2346,9 @@ class ServerStore extends ChangeNotifier {
         AppLogger.I.i(_tag, 'SSE ${ev.type} sid=$sidD fid=$fid');
         if (fid != null) {
           _markFormResolved(fid);
+        }
+        if (sidD != null) {
+          unawaited(NotificationService.cancelCard(sidD));
         }
         if (sidD != null && fid != null) {
           _conversations[_cardHostSessionId(sidD)]?.onFormReplied(fid);
@@ -2305,9 +2361,11 @@ class ServerStore extends ChangeNotifier {
         _conversations[host]?.onPermission(p);
         AppLogger.I.i(_tag,
             'SSE permission.asked sid=${p.sessionID} pid=${p.id} host=$host');
-        unawaited(NotificationService.notifyPermission(
-                sessionById(host)?.title, p)
-            .catchError((_) {}));
+        if (!_suppressNotify(host)) {
+          unawaited(NotificationService.notifyPermission(
+                  p.sessionID, sessionById(host)?.title, p)
+              .catchError((_) {}));
+        }
         break;
       case 'permission.replied':
         final sidE = ev.properties['sessionID']?.toString();
@@ -2315,6 +2373,9 @@ class ServerStore extends ChangeNotifier {
         AppLogger.I.i(_tag, 'SSE permission.replied sid=$sidE pid=$pid');
         if (pid != null) {
           _markPermissionResolved(pid);
+        }
+        if (sidE != null) {
+          unawaited(NotificationService.cancelCard(sidE));
         }
         if (sidE != null && pid != null) {
           _conversations[_cardHostSessionId(sidE)]?.onPermissionReplied(pid);
@@ -2692,14 +2753,14 @@ class ServerStore extends ChangeNotifier {
       _conversations[child.id]?.onFormReplied(entry.id);
       form = entry;
     }
-    if (perm != null) {
+    if (perm != null && !_suppressNotify(hostSid)) {
       unawaited(NotificationService.notifyPermission(
-              sessionById(hostSid)?.title, perm)
+              perm.sessionID, sessionById(hostSid)?.title, perm)
           .catchError((_) {}));
     }
-    if (form != null) {
+    if (form != null && !_suppressNotify(hostSid)) {
       unawaited(NotificationService.notifyQuestion(
-              sessionById(hostSid)?.title, form.title)
+              form.sessionID, sessionById(hostSid)?.title, form.title)
           .catchError((_) {}));
     }
   }
@@ -2987,6 +3048,7 @@ class ServerStore extends ChangeNotifier {
 
     if (_sse == null) {
       await refreshListAndWorkingSse(force: true);
+      unawaited(_reconcileStaleNotifications());
       return;
     }
 
@@ -2994,11 +3056,21 @@ class ServerStore extends ChangeNotifier {
         DateTime.now().difference(_lastFullRefreshAt!) > kMaxRefreshInterval;
     if (stale) {
       await refreshListAndWorkingSse(force: false, reconcileWorktrees: true);
+      unawaited(_reconcileStaleNotifications());
       return;
     }
 
-    unawaited(_backfillPermissions());
+    unawaited(_reconcileStaleNotifications());
     notifyListeners();
+  }
+
+  Future<void> _reconcileStaleNotifications() async {
+    try {
+      await _backfillPermissions();
+    } catch (e) {
+      AppLogger.I.w(_tag, 'reconcile notifications backfill failed: $e');
+    }
+    await NotificationService.reconcileStale();
   }
 
   Future<void> _stopSse({bool flushCache = true}) async {

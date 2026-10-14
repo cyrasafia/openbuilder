@@ -13,6 +13,7 @@ import 'core/logging/app_logger.dart';
 import 'core/logging/perf_probe.dart';
 import 'core/notifications/notification_service.dart';
 import 'core/net/system_font_weight.dart';
+import 'core/platform/keepalive_controller.dart';
 import 'l10n/gen/app_localizations.dart';
 import 'ui/theme.dart';
 
@@ -50,6 +51,7 @@ void main() {
     await defaultAgentModelStore.load();
     wireServerStore();
     await NotificationService.init();
+    KeepaliveController.I.init();
     await SystemFontWeight.init();
     await initSettings();
     if (kDebugMode || kProfileMode) PerfProbe.I.start();

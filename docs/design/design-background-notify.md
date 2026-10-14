@@ -45,7 +45,7 @@ busy 判定单一真相源仍是 `ServerStore._statusMap`（`busy | retry`，含
 
 | 角色 | 文件 | 职责 |
 |------|------|------|
-| `ServerStore` | `lib/core/session/server_store.dart` | 新增 public getter：`streamingSessionCount`（busy\|retry ∧ 无待决卡）与 `pendingCardHostCount`（复用 `_pendingPermissions`/`_pendingForms`）；不新增状态 |
+| `ServerStore` | `lib/core/session/server_store.dart` | 新增 public getter：`streamingSessionCount`（busy\|retry ∧ 非卡阻塞——**含 host 维度**：卡所属会话与其上浮 host 都算阻塞，私有 `_isCardBlocked` 判定）与 `hasPendingCard(sid)`（own-key 口径，补账用）；不新增状态 |
 | `KeepaliveController`（新） | `lib/core/platform/keepalive_controller.dart` | 监听 `serverStore`；差分计算 busy 集合变化；驱动 FGS start/stop/update 与权限请求；纯逻辑可单测 |
 | `AndroidKeepalive`（新） | `lib/core/platform/android_keepalive.dart` | MethodChannel `com.openbuilder.app/keepalive` 封装：`start(count)` / `stop` / `updateCount` |
 | `IosBgTask`（新） | `lib/core/platform/ios_bg_task.dart` | MethodChannel `com.openbuilder.app/bg_task` 封装：`begin(label)` / `end(id)` |
@@ -89,7 +89,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 ### 2.5 方法拆分
 
-1. `ServerStore`：加 `streamingSessionCount` / `pendingCardHostCount` getter（口径见 §2.1）；加 `setAppForeground(bool)`（维护 `_foreground`，与 `pause()/resume()` 解耦——busy 跳过 pause 的路径下前台标志仍须翻转，供 §2.6 发送门控使用）；通知发送点（`notifyRunComplete`/`notifyPermission`/`notifyQuestion` 调用处）加门控：`_foreground && _activeSessionId == hostSid` 时跳过；`setActiveConversation`、`session.viewed`、`session.deleted`、三个卡解决分支挂对应清除调用。
+1. `ServerStore`：加 `streamingSessionCount` getter（口径见 §2.1，实现为私有 `_isCardBlocked`：own-key + host 维度）；加 `setAppForeground(bool)`（维护 `_foreground`，与 `pause()/resume()` 解耦——busy 跳过 pause 的路径下前台标志仍须翻转，供 §2.6 发送门控使用）；通知发送点（`notifyRunComplete`/`notifyPermission`/`notifyQuestion` 调用处）加门控：`_foreground && _activeSessionId == hostSid` 时跳过；`setActiveConversation`、`session.viewed`、`session.deleted`、三个卡解决分支挂对应清除调用。
 2. `MainShell.didChangeAppLifecycleState`：
    - `paused/inactive`：`serverStore.setAppForeground(false)`；`_pauseTimer` 改 25s（inactive 仍 armed，现状语义保持）。**仅 `paused` 时** `IosBgTask.begin`（iOS，BN-R3 口径：inactive 涵盖通知中心/控制中心等前台瞬态，跟随 begin 会制造断言循环；与 §2.4 一致）。到期回调：`Android ∧ !kIsWeb ∧ !permDenied ∧ (streamingSessionCount > 0 ∨ KeepaliveController.lingering)` → 跳过 pause（SSE 保持，后续由 controller 在 lingering 到期时统一 teardown）；否则 `serverStore.pause()`；iOS 分支 pause 后 `IosBgTask.end`。
    - `resumed`：`serverStore.setAppForeground(true)` + 取消计时器 + `IosBgTask.end` + 现有 `resume()`。
@@ -155,7 +155,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 ### 2.7 UI
 
-- FGS 常驻通知：标题 `Open Builder`，正文 `Watching N session(s)`（英文不本地化，与通道命名不本地化的既有约定一致，见 notification_service.dart:43-45 注释）。通道名 `Watching`。
+- FGS 常驻通知：标题 `Open Builder`，正文单数 `Watching 1 session` / 复数 `Watching N sessions`（英文不本地化，与通道命名不本地化的既有约定一致，见 notification_service.dart 通道注释）。通道名 `Watching`。
 - 权限请求时机 = 用户刚发送第一条 prompt 后（streaming 0→N，前台、有上下文）。系统弹窗即商品本身的价值说明，不加自定义预弹窗（v1）。
 - 完成通知升级为 heads-up 后与权限/问题卡视觉一致。
 - 不加设置开关（不做的事 §4）。
@@ -249,3 +249,33 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | BN-R5 | wait 错误面补 400/401，标注 401 关联 oauth 开放问题 | 调研文档 §2.2 | ✅ |
 | BN-R6 | AGENTS.md 测试服务版本改 2.0.26 | AGENTS.md | ✅ |
 | BN-R7 | 行号 765→766 | §2.6 清除表 | ✅ |
+
+### 2次评审意见（2026-10-14，实现评审，独立 subagent）
+
+结论：无 🔴 阻塞项，3 项 🟡 实现偏差修复后合入，5 项 🟢。
+
+| 编号 | 优先级 | 问题 | 修复 |
+|------|--------|------|------|
+| BN-R8 | 🟡 中 | `streamingSessionCount` 缺「卡路由 host」维度：子会话 ask 卡上浮后，父会话的 run 被阻塞但仍计为 streaming——FGS 为无人处理的卡无限期保活（实证：p1+c1 双 busy，c1 挂卡后 count=1 而非 0） | `_isCardBlocked` 增加 host 维度（own-key + 上浮 host 双判），`hasPendingCard` 保持 own-key（补账口径正确不动） |
+| BN-R9 | 🟡 中 | streaming 0→N 启动缺 resumed 门控（§2.5(3)）：后台宽限窗内他端新 run 会触发权限弹窗 + 必败的 startForegroundService；且失败后 `observationActive` 仍真 → MainShell 跳过 pause → SSE 无 FGS 保护悬挂，再无 teardown 路径 | 双修：rise 时经 `WidgetsBinding.instance.lifecycleState` 门控（null 视为前台）；`observationActive` 改为要求 `_fgsOn ∨ lingering`（未真正持有 FGS 不向 MainShell 承诺观察） |
+| BN-R10 | 🟡 中 | 冷启动不跑补账：`reconcileStale` 只挂在 `resume()`（唯一调用点是 resumed 生命周期）；进程死后他端已答/已读的通知在打开 app 后仍残留，S22 只兑现一半 | `connect()` bootstrap 成功路径的 `_backfillPermissions()` 替换为 `_reconcileStaleNotifications()` |
+| BN-R11 | 🟢 低 | `_tryStart` 的 `_streaming <= 0` 检查与 `await start()` 间有毫秒级竞窗，settle 落入则 FGS 卡在 watching 无 linger | start 返回后复查，`_streaming <= 0` 则 `_enterLinger()` |
+| BN-R12 | 🟢 低 | 设计 §2.3/§2.5(1) 的 `pendingCardHostCount` 未实现（无消费方） | 文档同步删除，改为 `_isCardBlocked` 私有实现描述 |
+| BN-R13 | 🟢 低 | iOS `beginBackgroundTask` 返回 `.invalid` 时仍入字典回传 NSUIntegerMax | 加 `.invalid` 守卫，回传 nil |
+| BN-R14 | 🟢 低 | MainActivity `stop` 用 `startService(ACTION_STOP)`——FGS 已死且后台时抛 IllegalStateException | 改 `stopService()`；Service 侧 ACTION_STOP 分支与常量随之移除（onDestroy 统一收口） |
+| BN-R15 | 🟢 低 | 实现文案 `Watching 1 session`（单数特判）与设计 `Watching N session(s)` 不一致 | 文档措辞对齐实现（更自然） |
+
+评审另核实（无问题）：槽位种子化先于 `_enterLinger` 首 tick（`delegate.load` 为 SynchronousFuture，await 同步恢复）；`_stop` 前台/后台分叉的新鲜读取；清除挂点规则 1-4 全落位；`_pendingPermissions` 按 sessionID 键 / `_pendingForms` 按 form id 键与两处口径匹配；pause/resume 与 `setAppForeground` 无冲突；iOS begin/end 配对与 expiration 捕获；Kotlin `onTimeout(Int)` 在 compileSdk 36 下合法、`START_NOT_STICKY`/`STOP_FOREGROUND_REMOVE` 语义正确；MainShell begin 仅 paused（BN-R3）、25s 统一（D6）、`_agentChannel` importance high（D4）。
+
+### 修复复审（2次）
+
+| 编号 | 修复内容 | 位置 | 状态 |
+|------|----------|------|------|
+| BN-R8 | `_isCardBlocked` = `hasPendingCard(sid) ∨ 任一 pending 卡的 host == sid`；新增 host 维度测试（p1+c1 双 busy，c1 挂卡 → 0，答卡 → 2） | server_store.dart、background_notify_test.dart | ✅ |
+| BN-R9 | rise 门控 `lifecycleState == null ∨ resumed`；`observationActive` 改 `_fgsOn ∨ lingering` | keepalive_controller.dart | ✅ |
+| BN-R10 | connect bootstrap 成功路径挂 `_reconcileStaleNotifications()`（内含 backfill） | server_store.dart connect() | ✅ |
+| BN-R11 | `await start()` 后复查 `_streaming <= 0` → `_enterLinger()` | keepalive_controller.dart `_tryStart` | ✅ |
+| BN-R12 | 设计 §2.3/§2.5(1) 改为 `_isCardBlocked` 私有实现，删除 `pendingCardHostCount` | 本文档 | ✅ |
+| BN-R13 | `taskID == .invalid` → 不入字典、`result(nil)` | AppDelegate.swift | ✅ |
+| BN-R14 | `stop` → `stopService()`；移除 Service 的 ACTION_STOP 分支与常量 | MainActivity.kt、KeepaliveService.kt | ✅ |
+| BN-R15 | §2.7 文案对齐 `Watching 1 session` / `Watching N sessions` | 本文档 | ✅ |
