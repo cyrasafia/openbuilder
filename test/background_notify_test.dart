@@ -68,6 +68,7 @@ void main() {
   setUp(() {
     TestWidgetsFlutterBinding.ensureInitialized();
     NotificationService.debugMarkInitialized();
+    NotificationService.debugFakeShow = true;
     NotificationService.debugResetSlots();
   });
 

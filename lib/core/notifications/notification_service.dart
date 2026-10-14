@@ -85,6 +85,7 @@ class NotificationService {
     AndroidNotificationDetails channel,
     String payload,
   ) async {
+    if (debugFakeShow) return;
     try {
       await _plugin.show(
         id,
@@ -114,13 +115,18 @@ class NotificationService {
         ? sessionTitle
         : loc.convDefaultTitle;
     _pendingRun.add(sid);
-    await _show(
-      _runNotifId(sid),
-      'Open Builder',
-      loc.notifRunCompleteBody(title),
-      _agentChannel,
-      sid,
-    );
+    try {
+      await _show(
+        _runNotifId(sid),
+        'Open Builder',
+        loc.notifRunCompleteBody(title),
+        _agentChannel,
+        sid,
+      );
+    } catch (_) {
+      _pendingRun.remove(sid);
+      rethrow;
+    }
   }
 
   /// Notify that a permission request is awaiting the user's response.
@@ -133,13 +139,18 @@ class NotificationService {
         ? sessionTitle
         : loc.convDefaultTitle;
     _pendingCards.add(cardSid);
-    await _show(
-      _cardNotifId(cardSid),
-      loc.notifPermissionTitle,
-      loc.notifPermissionBody(title, permissionTitle(loc, p)),
-      _permissionChannel,
-      cardSid,
-    );
+    try {
+      await _show(
+        _cardNotifId(cardSid),
+        loc.notifPermissionTitle,
+        loc.notifPermissionBody(title, permissionTitle(loc, p)),
+        _permissionChannel,
+        cardSid,
+      );
+    } catch (_) {
+      _pendingCards.remove(cardSid);
+      rethrow;
+    }
   }
 
   /// Notify that a question is awaiting the user's answer.
@@ -155,13 +166,18 @@ class NotificationService {
         ? header
         : loc.notifQuestionDefaultHeader;
     _pendingCards.add(cardSid);
-    await _show(
-      _cardNotifId(cardSid),
-      loc.notifQuestionTitle,
-      loc.notifQuestionBody(title, h),
-      _questionChannel,
-      cardSid,
-    );
+    try {
+      await _show(
+        _cardNotifId(cardSid),
+        loc.notifQuestionTitle,
+        loc.notifQuestionBody(title, h),
+        _questionChannel,
+        cardSid,
+      );
+    } catch (_) {
+      _pendingCards.remove(cardSid);
+      rethrow;
+    }
   }
 
   static Future<void> cancelSessionRun(String sid) async {
@@ -214,6 +230,9 @@ class NotificationService {
   static void debugMarkInitialized() {
     _initialized = true;
   }
+
+  @visibleForTesting
+  static bool debugFakeShow = false;
 
   @visibleForTesting
   static void debugResetSlots() {
