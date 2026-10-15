@@ -1,6 +1,6 @@
 # TODO: 大文件下载中途被服务端掐断（Bun `keepAliveTimeout`，等上游修复）
 
-> 状态：待上游修复 ｜ 优先级：🔴 阻塞（>~20MB 的文件在慢链路上 100% 失败）｜ 来源：2026-10-01 真机日志（`oc.cyrasafia.party:4433`）+ 本机 localhost:15120（opencode v2.0.18）复现 ｜ 关联上游：anomalyco/opencode#50505（OPEN）、#50507（OPEN，未合并）｜ 最近复检：2026-10-11——上游仍未合（#50507 被 retarget `v2`→`dev`）+ 本机 v2.0.24 活体复现，见文末复检记录
+> 状态：✅ 已修复（上游 v2.0.25–26 的 `fs/read` 流式改造，根因见 2026-10-15 复检；跟踪的 PR #50507 未合、修复路径不同）｜ 新待办：**客户端断点续传**（服务端 `Range`/206 已就绪，见文末「后续待办」）｜ 原优先级：🔴 阻塞（>~20MB 的文件在慢链路上 100% 失败）——已解除 ｜ 来源：2026-10-01 真机日志（`oc.cyrasafia.party:4433`）+ 本机 localhost:15120 复现 ｜ 关联上游：anomalyco/opencode#50505（OPEN）、#50507（OPEN，未合并——本问题经流式改造独立解决）｜ 最近复检：2026-10-15
 
 ## 现象
 
@@ -126,3 +126,34 @@ Node 不受影响；chunked `HttpServerResponse.stream` 响应不受影响（周
 - 客户端代码：`lib/data/api/opencode_client.dart` `readFileStream`（`FileDL` 日志 + 下载入口）
 - 相关设计：`docs/design/design-file-streaming.md`、`docs/design/design-file-view.md`
 - 历史相关：下载认证问题（已修复，todo 文档已删，与本问题无关）
+
+### 2026-10-15 复检（v2.0.26 活体验收通过 + 根因定位：非 Bun 升级）
+
+**本机活体（localhost:15120，已升 v2.0.26）——验收标准全过：**
+
+- `curl --limit-rate 4M`：65MB APK 15.6s 完整下载。
+- `curl --limit-rate 1M`（验收标准）：65MB APK **62.4s 完成，exit=0**；sha256 与源文件一致。
+- 此前 v2.0.24 同方法 100% 于 ~7.2s/16MB 截断（见 2026-10-11 复检）。
+- 响应头未变：仍整包 `content-length` + `Keep-Alive: timeout=5`——计时器仍在，但不再掐断。
+
+**根因定位（排除 Bun 升级，是 opencode 服务端自身的流式改造）：**
+
+- Bun 版本未变：v2.0.24 与 v2.0.26 的 `.github/workflows/publish.yml` 完全相同（`bun-version: 1.4.2` + `BUN_COMPILE_RELEASE: bun-v1.4.2`）。
+- 真正变化在 opencode 服务端自身（v2.0.25–26 区间，`packages/core/src/filesystem.ts` +30/-27 重构、`packages/server/src/handlers/fs.ts` 重写）：
+  - 旧（≤2.0.24）：`FileSystem.read` 返回整包 `content: Uint8Array`，handler `HttpServerResponse.uint8Array(content)`——单次写出后无 write，Bun 5s keepAlive 计时器到期即销毁 socket。
+  - 新（≥2.0.25/26）：`read` 返回 `{ mime, size, mtime, stream() }` 惰性流，handler `HttpServerResponse.stream(file.stream({offset, bytesToRead}), { contentLength })`——周期性 write 持续重置计时器。
+  - 即本文根因分析中「chunked/流式响应不受影响」的机制；上游以流式改造绕开问题，#50507 的 `keepAliveTimeout = 0` 路线未合、也不再必要。
+
+**附带变化（对本项目重要）：** `/api/fs/read` 新增 `ETag` / `Last-Modified` / `If-None-Match`（304）/**`Range`（206 分段）**/`If-Range`/`416`。本文原记录「服务端不支持 Range（实测带 Range 仍 200 全量）」已过时——断点续传的服务端前提成立。
+
+**上游状态：** #50505 / #50507 仍 OPEN 未合并；上游 v2 线已发至 v2.0.29。远端服务器 `oc.cyrasafia.party:4433` 需 ≥ v2.0.26 才能享受修复。
+
+## 后续待办：客户端断点续传
+
+服务端 `Range`/206 已就绪，客户端可实现分段续传：
+
+- 入口：`OpencodeClient.readFileStream`（FileViewScreen `_download` / `_FileExportDialog._run` 共用）。检测本地 partial 文件，带 `Range: bytes=<received>-` 重发。
+- 判定：响应 `206` + `content-range` 才续传；`200`（服务端版本回退或不支持）整包重下。
+- 一致性：用首响应的 `etag` / `last-modified` 作 `If-Range`——断点期间文件被 agent 改写则服务端回 200 整包，避免错误拼接。
+- 完整性校验：续传完成后以「累计字节数 == `content-length`」为准（服务端不提供源文件 hash）。
+- 诊断：沿用 `FileDL` 日志（补 `resume` 字段：续传起点/响应码）。
