@@ -300,6 +300,8 @@
   "notifQuestionBody": "\"{title}\": {detail}",
   "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
   "notifQuestionDefaultHeader": "Question",
+  "notifChannelTasksName": "Background task completion",
+  "notifChannelTasksDesc": "Alerts when a task finishes or needs your decision",
   "copied": "Copied",
   "subagentRunning": "Running",
   "subagentCompleted": "Done",

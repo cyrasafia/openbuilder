@@ -300,6 +300,8 @@
   "notifQuestionBody": "「{title}」: {detail}",
   "@notifQuestionBody": {"placeholders": {"title": {"type": "String"}, "detail": {"type": "String"}}},
   "notifQuestionDefaultHeader": "问题",
+  "notifChannelTasksName": "后台任务完成通知",
+  "notifChannelTasksDesc": "任务完成或需要授权、问题处理时提醒",
   "copied": "已复制",
   "subagentRunning": "运行中",
   "subagentCompleted": "已完成",

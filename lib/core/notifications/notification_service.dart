@@ -49,34 +49,37 @@ class NotificationService {
     if (ios != null) {
       await ios.requestPermissions(alert: true, badge: true, sound: true);
     }
+    // Migration: legacy channels merged into 'tasks' (design-notification-
+    // channels); deleting also drops their unread tray notifications.
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android != null) {
+      for (final id in const ['agent_complete', 'permission', 'question']) {
+        try {
+          await android.deleteNotificationChannel(id);
+        } catch (_) {}
+      }
+    }
     _initialized = true;
   }
 
   static Future<AppLocalizations> _loc() =>
       AppLocalizations.delegate.load(resolveActiveLocale());
 
-  // Android notification channels are created once with a fixed id; the system
-  // ignores later name updates for the same id, so the channel name is NOT
-  // localized. A neutral English word is used (only affects the channel label
-  // in system settings, not the notification body).
-  static const _agentChannel = AndroidNotificationDetails(
-    'agent_complete',
-    'Agent',
-    importance: Importance.high,
-    priority: Priority.high,
-  );
-  static const _permissionChannel = AndroidNotificationDetails(
-    'permission',
-    'Permission',
-    importance: Importance.high,
-    priority: Priority.high,
-  );
-  static const _questionChannel = AndroidNotificationDetails(
-    'question',
-    'Question',
-    importance: Importance.high,
-    priority: Priority.high,
-  );
+  // The system freezes behavioral settings (importance/sound) at channel
+  // creation but applies name/description updates on re-submit; the plugin
+  // re-submits on every show(), so the localized name/description follow the
+  // active locale from one notification to the next.
+  static Future<AndroidNotificationDetails> _taskChannel() async {
+    final loc = await _loc();
+    return AndroidNotificationDetails(
+      'tasks',
+      loc.notifChannelTasksName,
+      importance: Importance.high,
+      priority: Priority.high,
+      channelDescription: loc.notifChannelTasksDesc,
+    );
+  }
 
   static Future<void> _show(
     int id,
@@ -120,7 +123,7 @@ class NotificationService {
         _runNotifId(sid),
         'Open Builder',
         loc.notifRunCompleteBody(title),
-        _agentChannel,
+        await _taskChannel(),
         sid,
       );
     } catch (_) {
@@ -144,7 +147,7 @@ class NotificationService {
         _cardNotifId(cardSid),
         loc.notifPermissionTitle,
         loc.notifPermissionBody(title, permissionTitle(loc, p)),
-        _permissionChannel,
+        await _taskChannel(),
         cardSid,
       );
     } catch (_) {
@@ -171,7 +174,7 @@ class NotificationService {
         _cardNotifId(cardSid),
         loc.notifQuestionTitle,
         loc.notifQuestionBody(title, h),
-        _questionChannel,
+        await _taskChannel(),
         cardSid,
       );
     } catch (_) {
@@ -204,7 +207,20 @@ class NotificationService {
   }
 
   /// null = 未知（初始化失败，不粘死、可重试）；false = 已拒绝；true = 已授权。
-  static Future<bool?> requestAndroidPermissionIfNeeded() async {
+  /// 并发调用共享同一个在途请求：弹窗期间的后来者等待同一次用户答复，
+  /// 不会读到「已问过 ∧ 未授权」的中间态。
+  static Future<bool?> requestAndroidPermissionIfNeeded() {
+    final inFlight = _permRequestInFlight;
+    if (inFlight != null) return inFlight;
+    final future = _doRequestAndroidPermissionIfNeeded();
+    _permRequestInFlight = future;
+    future.whenComplete(() => _permRequestInFlight = null).ignore();
+    return future;
+  }
+
+  static Future<bool?>? _permRequestInFlight;
+
+  static Future<bool?> _doRequestAndroidPermissionIfNeeded() async {
     if (kIsWeb || !Platform.isAndroid) return true;
     if (!_initialized) await init();
     if (!_initialized) return null;
@@ -218,6 +234,18 @@ class NotificationService {
     await prefs.setBool(_permAskedKey, true);
     final granted = await android.requestNotificationsPermission();
     return granted ?? false;
+  }
+
+  /// Read-only check: never shows the permission dialog (design-notification-
+  /// channels CH-5 — the dialog is only tied to the send action).
+  static Future<bool> notificationsEnabled() async {
+    if (kIsWeb || !Platform.isAndroid) return true;
+    if (!_initialized) await init();
+    if (!_initialized) return false;
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android == null) return false;
+    return await android.areNotificationsEnabled() ?? false;
   }
 
   @visibleForTesting

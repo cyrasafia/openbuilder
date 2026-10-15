@@ -1,0 +1,4 @@
+<resources>
+    <string name="keepalive_channel_name">Background task monitoring</string>
+    <string name="keepalive_channel_desc">Shown while sessions run in the background.</string>
+</resources>

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
@@ -62,6 +64,46 @@ class _FakeBackend extends KeepaliveBackend {
 
   @override
   Future<bool?> requestPermission() async => true;
+
+  @override
+  Future<bool> notificationsEnabled() async => true;
+}
+
+class _GatePermBackend extends KeepaliveBackend {
+  final starts = <int>[];
+  final grant = Completer<bool?>();
+  int permRequests = 0;
+
+  @override
+  Future<void> start(int count) async {
+    starts.add(count);
+  }
+
+  @override
+  Future<void> updateCount(int count) async {}
+
+  @override
+  Future<void> stop() async {}
+
+  @override
+  Future<bool?> requestPermission() {
+    permRequests++;
+    return grant.future;
+  }
+
+  @override
+  Future<bool> notificationsEnabled() async =>
+      grant.isCompleted && await grant.future == true;
+}
+
+class _MutablePermBackend extends _FakeBackend {
+  bool? perm = true;
+
+  @override
+  Future<bool?> requestPermission() async => perm;
+
+  @override
+  Future<bool> notificationsEnabled() async => perm == true;
 }
 
 void main() {
@@ -257,6 +299,86 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(KeepaliveController.I.lingering, isFalse);
       expect(backend.stops, 1);
+      store.dispose();
+    });
+
+    test('onUserPromptSent is a no-op when unsupported', () async {
+      await KeepaliveController.I.onUserPromptSent();
+    });
+
+    test('prompt-sent grant starts FGS once even if rise raced the dialog',
+        () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _GatePermBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      final sent = KeepaliveController.I.onUserPromptSent();
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, isEmpty);
+
+      backend.grant.complete(true);
+      await sent;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1]);
+      expect(KeepaliveController.I.observationActive, isTrue);
+      store.dispose();
+    });
+
+    test('prompt-sent deny disables observation', () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _GatePermBackend();
+      backend.grant.complete(false);
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      await KeepaliveController.I.onUserPromptSent();
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, isEmpty);
+      expect(KeepaliveController.I.observationActive, isFalse);
+      store.dispose();
+    });
+
+    test('manual re-enable then prompt-sent restores observation', () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _MutablePermBackend()..perm = false;
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(KeepaliveController.I.observationActive, isFalse);
+
+      backend.perm = true;
+      await KeepaliveController.I.onUserPromptSent();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1]);
+      expect(KeepaliveController.I.observationActive, isTrue);
+      store.dispose();
+    });
+
+    test('never-granted install: rise never requests permission (no dialog)',
+        () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _GatePermBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.permRequests, 0);
+      expect(backend.starts, isEmpty);
+      expect(KeepaliveController.I.observationActive, isFalse);
       store.dispose();
     });
   });

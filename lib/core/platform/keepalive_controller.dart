@@ -20,6 +20,9 @@ class KeepaliveBackend {
 
   Future<bool?> requestPermission() =>
       NotificationService.requestAndroidPermissionIfNeeded();
+
+  Future<bool> notificationsEnabled() =>
+      NotificationService.notificationsEnabled();
 }
 
 class KeepaliveController with WidgetsBindingObserver {
@@ -36,7 +39,7 @@ class KeepaliveController with WidgetsBindingObserver {
   int _streaming = 0;
   bool _fgsOn = false;
   bool _startInFlight = false;
-  bool _permDenied = false;
+  bool _permGranted = false;
   DateTime? _lingerStartedAt;
   Timer? _lingerTimer;
 
@@ -45,7 +48,7 @@ class KeepaliveController with WidgetsBindingObserver {
   bool get lingering => _lingerStartedAt != null;
 
   bool get observationActive =>
-      _backend != null && !_permDenied && (_fgsOn || lingering);
+      _backend != null && _permGranted && (_fgsOn || lingering);
 
   void init({ServerStore? store, KeepaliveBackend? backend}) {
     if (_initialized) return;
@@ -57,6 +60,16 @@ class KeepaliveController with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _activeStore.addListener(_onStoreChanged);
     _streaming = _activeStore.streamingSessionCount;
+  }
+
+  Future<void> onUserPromptSent() async {
+    final backend = _backend;
+    if (backend == null) return;
+    final granted = await backend.requestPermission();
+    if (granted == true) {
+      _permGranted = true;
+      unawaited(_tryStart());
+    }
   }
 
   @override
@@ -103,14 +116,10 @@ class KeepaliveController with WidgetsBindingObserver {
     if (backend == null || _fgsOn || _startInFlight) return;
     _startInFlight = true;
     try {
-      final granted = await backend.requestPermission();
-      if (granted == false) {
-        _permDenied = true;
-        AppLogger.I.w(_tag, 'notification permission denied, no keepalive');
-        return;
-      }
-      if (granted != true) {
-        AppLogger.I.w(_tag, 'notification permission unknown, skip attempt');
+      final enabled = await backend.notificationsEnabled();
+      _permGranted = enabled;
+      if (!enabled) {
+        AppLogger.I.w(_tag, 'notifications not granted, no keepalive');
         return;
       }
       if (_streaming <= 0) return;
@@ -181,7 +190,7 @@ class KeepaliveController with WidgetsBindingObserver {
     _backend = null;
     _fgsOn = false;
     _startInFlight = false;
-    _permDenied = false;
+    _permGranted = false;
     _initialized = false;
   }
 }

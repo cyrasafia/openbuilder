@@ -2,6 +2,8 @@ package com.openbuilder.app
 
 import android.app.Activity
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.os.Bundle
 import android.util.Log
 import java.io.File
@@ -29,7 +31,29 @@ class OpenBuilderApplication : Application() {
 
             override fun onActivityDestroyed(activity: Activity) {}
         })
+        ensureKeepaliveChannel()
         cleanupBloatedPrefs()
+    }
+
+    /// Created at process start, not in KeepaliveService.onCreate: when the
+    /// first FGS start lands while the app is backgrounded (permission grant
+    /// raced the user leaving), startForegroundService is rejected and the
+    /// service never runs — a service-side create would never execute.
+    /// Re-submitted unconditionally without an existence check: behavioral
+    /// settings are frozen at first creation (ignored on re-submit), while
+    /// name/description update to the current locale — a guard would pin the
+    /// name to the install-time language (CR-1).
+    private fun ensureKeepaliveChannel() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel(
+                KeepaliveService.CHANNEL_ID,
+                getString(R.string.keepalive_channel_name),
+                NotificationManager.IMPORTANCE_MIN
+            ).apply {
+                description = getString(R.string.keepalive_channel_desc)
+            }
+        )
     }
 
     /// Defense against the historical cold-start OOM (CSM-10): if

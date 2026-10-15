@@ -3,8 +3,6 @@ package com.openbuilder.app
 import android.app.Activity
 import android.app.Application
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
@@ -48,16 +46,6 @@ class KeepaliveService : Service() {
     override fun onCreate() {
         super.onCreate()
         startedActivities = OpenBuilderApplication.startedActivities
-        val nm = getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            nm.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Watching",
-                    NotificationManager.IMPORTANCE_MIN
-                )
-            )
-        }
         application.registerActivityLifecycleCallbacks(lifecycleCallbacks)
     }
 
