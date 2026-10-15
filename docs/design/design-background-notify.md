@@ -156,7 +156,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 规则 2 与规则 3 的信号都依赖 SSE 在线。lingering 窗外的「他端动作」补**重连补账**路径：
 
-- 所有事件通知 `show` 时携带 `payload: sid`（顺带为 P1 通知点击路由预留）。
+- 所有事件通知 `show` 时携带 `payload: sid`（P1 通知点击路由已兑现，D23）。
 - 每次 `resume()` 对账完成后：查活跃通知（双端统一 `getActiveNotifications()`——flutter_local_notifications 18.0.1 支持 iOS 10+ 与 Android 6+。**勿用** iOS `getPendingNotificationRequests`：它只含已调度未送达项，对已送达条目是 no-op（BN-R1）），按 payload 取 sid：
   - 完成槽：`!isSessionUnread(sid)`（viewed 水位线 ≥ idle，即他端已读）或会话已不存在 → 清。
   - 卡槽：对账刷新后的待决卡集合中该 sid 已无待决卡 → 清（他端答卡补账；对账流程须覆盖两个 pending 集合的刷新）。
@@ -165,7 +165,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 ### 2.7 UI
 
-- FGS 常驻通知：标题 `Open Builder`，正文单数 `Watching 1 session` / 复数 `Watching N sessions`（正文维持英文，后续可选本地化——正文与通道名是独立决策，见 design-notification-channels §2.4）。通道「后台任务状态监控 / Background task monitoring」（名/说经原生 string resources 本地化，进程启动按 locale 快照重提），importance `MIN`——**状态栏零图标、不弹横幅、条目沉抽屉底部（D21）**，完成通知因此成为状态栏唯一的会话运行信号。**仅退后台时展示，前台隐藏（§2.4 通知可见性，D20）。** 点击唤起 app（D22）：回 main shell 当前所在页，唤起即触发 D20 前台隐藏、条目自动消失；不路由具体会话（多会话无单一目标，完成通知的点击路由仍为 §6 待办）。
+- FGS 常驻通知：标题 `Open Builder`，正文单数 `Watching 1 session` / 复数 `Watching N sessions`（正文维持英文，后续可选本地化——正文与通道名是独立决策，见 design-notification-channels §2.4）。通道「后台任务状态监控 / Background task monitoring」（名/说经原生 string resources 本地化，进程启动按 locale 快照重提），importance `MIN`——**状态栏零图标、不弹横幅、条目沉抽屉底部（D21）**，完成通知因此成为状态栏唯一的会话运行信号。**仅退后台时展示，前台隐藏（§2.4 通知可见性，D20）。** 点击唤起 app（D22）：回 main shell 当前所在页，唤起即触发 D20 前台隐藏、条目自动消失；不路由具体会话（多会话无单一目标；完成/卡通知的点击路由见 D23）。
 - 权限请求时机 = 发送 prompt 的动作本身（`_send()` guard 通过即触发，发消息即弹——2026-10-15 修订，D5）。系统弹窗即商品本身的价值说明，不加自定义预弹窗（v1）。
 - 完成通知升级为 heads-up 后与权限/问题卡视觉一致。
 - 不加设置开关（不做的事 §4）。
@@ -205,6 +205,8 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | S29 | 前台运行中锁屏（D20） | 锁屏触发 onStop → 计数 1→0 → 常驻条目出现于抽屉底部、状态栏无图标（等价退后台）；解锁回前台 → 消失 |
 | S30 | 后台点击 `Watching` 常驻通知（D22） | app 唤起回前台（main shell 当前所在页）；计数 0→1 → 条目经 D20 自动消失；FGS 生命周期不受影响，resumed 走既有 `resume()` 对账 |
 | S31 | 从未请求过权限：发送 prompt → 弹窗立即出现（用户在前台注视 app）→ 授权 → 退后台 | 弹窗时机不依赖 busy 事件（D5 修订）；弹窗挂起期间 busy 已上升时，rise 的 `_tryStart` 只读检查不通过即跳过（无中毒面），`onUserPromptSent` 授权后补启恰好启动一次 FGS；拒绝则 `notifPermAsked` 标志兜底不再打扰（rise 不再请求，D5 第二次修订） |
+| S32 | app 存活（前台/后台）时点击完成/卡通知（D23） | `onDidReceiveNotificationResponse` 携 payload=sid → 归一卡宿主（subagent 卡 payload 是 child id，卡在父会话）→ push `/session/<host>`；进页触发看过即清（D11）清掉该通知；同会话双击在 800ms 防抖窗内被吞，不同会话连点互不影响；sid 未知（已删/他服务器残留）不 push |
+| S33 | app 被杀后点击通知冷启动（D23） | 插件仅经 `getNotificationAppLaunchDetails()` 暴露 payload（回调不发，两路径互斥）；main() 首帧后消费，等 `serverStore.connected`（bootstrap 含会话加载）≤10s 再 push；连接失败超时则丢弃深链、落在会话列表（避免数分钟后的突袭导航） |
 
 ## 4. 关键设计决策
 
@@ -221,7 +223,8 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - **D11 槽位粒度：完成按会话、卡按卡所属会话（child），六条清除规则 + 看过即清（§2.6）**：卡槽不取上浮 host——同父会话多并行 subagent 各挂卡时（design-subagent-background），按 host 分槽会互相覆盖且误清（BN-R2）。清除挂点全部复用现有信号：`setActiveConversation`（本端看过，经 pending 集合展开 host 名下卡槽）、`session.viewed`（**他端已读**——SSE 事件已存在且已有 handler）、卡解决三事件（他端答卡，事件原生携带卡所属 sessionID）、`session.deleted`（他端删除）、手划（系统默认）。补账统一走 `getActiveNotifications()`（双端，BN-R1）。取代早先「完成通知全局单条 + resume 即清」草案：per-session 规则不误清未看会话，且支持多会话并发提醒。（**通道正交声明，2026-10-15**：槽位模型基于 per-session 哈希通知 id，与承载通道无关——通道收敛为 `tasks` 单通道后（design-notification-channels）多通知并存与全部清除规则不变。）
 - **D20 FGS 常驻通知前台隐藏、退后台展示（2026-10-14 用户需求）**：前台时用户就在看 app，`Watching` 条目是噪音。实现为降级/重升：启动仍守 D2（前台 streaming 0→N，`startForegroundService` + 每次 delivery 必 `startForeground`——start 型 delivery 受 5s 约束，update 型为后台刷新文案所需，BN-R22 分述），随后前台 `stopForeground(REMOVE)` 隐藏，退后台（started 计数 1→0，onStop 派发中同步执行）`startForeground` 重升。**计数权威在 `OpenBuilderApplication`（进程起点维护静态 started 计数），service onCreate 取种子——BN-R20 修启动竞态**（delivery 晚于 onStop 派发时 service 建于后台，自设「前台」初值会误判、FGS 刚建即降级、约 1 分钟被系统停止，打穿主场景）。重升时刻落在官方豁免「app transitions from a user-visible state」（restrictions-bg-start 豁免清单第一条）内，仍 try/catch 兜底（失败不崩溃，但降级终点是 keepalive 死亡——service 约 1 分钟内被系统停止、SSE/完成通知失效，BN-R21）。备选「退后台才 `startForegroundService`」被否决：D2 立场维持（不赌豁免窗口的通道往返时机），且现行方案 Dart 侧零改动。副产物：前台隐藏期不计 dataSync 6h/24h 预算。
 - **D21 `watching` 通道 importance LOW→MIN：状态栏零图标，`Watching` 对用户的可见面降到平台允许的最低（2026-10-15 用户需求）**：MIN 通知无状态栏图标、不弹横幅、沉抽屉最底部——完成通知成为状态栏唯一的运行相关信号。**平台硬约束：FGS 通知无法完全移除**——`startForeground` 强制附带通知，Android 13+ 另有 FGS 任务管理器（「Active apps」）列表，均不可绕过；MIN 是官方给的最低档。与 D20 正交（MIN 管状态栏图标与排序，D20 管前台抽屉条目存否），两者叠加。与 D4 同坑：通道 importance 创建后粘滞（应用不可改，仅用户可），老安装的 `watching` 仍为 LOW——状态栏图标继续出现，需卸载重装或手动在通知设置改「最小化」重置；因当前无其他用户，沿用 D4 裁定不换通道 id、不做启动清理。完成/权限/问题卡通知独立通道，不受影响。
-- **D22 FGS 通知点击唤起 app（2026-10-15 用户需求）**：`setContentIntent(PendingIntent.getActivity → MainActivity，NEW_TASK|SINGLE_TOP，IMMUTABLE|UPDATE_CURRENT)`——PendingIntent 直达 activity，非 trampoline，Android 12 通知蹦床禁令（不允许 service/receiver 中转 startActivity）不适用。唤起后 `ActivityLifecycleCallbacks` 计数 0→1 自动走 D20 前台隐藏 → 条目即时消失，无需 autoCancel（ongoing 条目本不走点击即清）。冷启动无需处理：FGS 随进程存亡，通知存在即进程在。不路由具体会话——多会话并行时无单一目标，落在 main shell 当前所在页；完成通知的点击路由维持 §6 后续单独立项。
+- **D22 FGS 通知点击唤起 app（2026-10-15 用户需求）**：`setContentIntent(PendingIntent.getActivity → MainActivity，NEW_TASK|SINGLE_TOP，IMMUTABLE|UPDATE_CURRENT)`——PendingIntent 直达 activity，非 trampoline，Android 12 通知蹦床禁令（不允许 service/receiver 中转 startActivity）不适用。唤起后 `ActivityLifecycleCallbacks` 计数 0→1 自动走 D20 前台隐藏 → 条目即时消失，无需 autoCancel（ongoing 条目本不走点击即清）。冷启动无需处理：FGS 随进程存亡，通知存在即进程在。不路由具体会话——多会话并行时无单一目标，落在 main shell 当前所在页；完成/卡通知的点击路由已实施（D23）。
+- **D23 完成/卡通知点击定向跳转会话详情页（2026-10-16 用户需求，原 §6 待办提前实施）**：插件 `initialize` 注册 `onDidReceiveNotificationResponse`（payload=sid，§2.6 预留兑现）→ `openSessionFromNotification`（app_router.dart，与 `popToServerManagement` 同层的顶层函数）imperative push `/session/<sid>`，与列表点进一致；进页即走 D11 看过即清。**payload 归一到卡宿主（card host）**：subagent 卡通知的 payload 是卡所属 child 会话 id（design-subagent-background §D6——卡上浮父会话显示/回复，child 页面没有卡），导航前经 `cardHostSessionIdOf` 归一到顶层 host 再 push——直达可答卡页面；run-complete payload 恒为顶层会话（`!isChildSession` 守卫），归一幂等。**show 时 payload 不改**——`reconcileStale`/`getActiveNotifications` 槽位匹配依赖原始 child sid。**未知会话丢弃**：归一后 `sessionById(host) == null`（他端已删 / 残留他服务器的托盘通知）不 push、留在当前页。**双路径互斥性经插件 18.0.1 双端源码核实**：Android warm tap = `onNewIntent` → channel invoke，terminated 启动只在 `getNotificationAppLaunchDetails()`（activity launch intent）；iOS warm tap = delegate → channel invoke，terminated 时 `_launchNotificationResponseDict` 仅经 launch-details 暴露、`initialize` 不回放回调——冷热两路径不双发。冷启动处理在 main() 首帧后 `consumeLaunchNotification()` 一次消费：等 `serverStore.connected` 再 push（ConversationScreen 的 unavailable 分支不随 store 通知 setState 重建，未连接直跳会搁浅在「会话不可用」），上限 10s 超时丢弃。双击防抖 800ms **按 sid 分键**（同会话双击吞掉，不同会话连点互不影响）：`currentConfiguration.uri` 不反映 imperative matches（popToServerManagement 教训），不能做路径去重；防抖钟 `notificationTapClock` 可注入（测试）。FGS `Watching` 常驻通知维持 D22 不路由——多会话并行无单一目标。
 
 ## 5. 接口展望（P1/P2 预留，不实施）
 
@@ -234,7 +237,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - P1/P2 全部内容（见 §5）。
 - 常驻连接的空闲保活（无 busy 也挂 FGS）——6h/24h 预算与电池不允许。
 - iOS 前台横幅展示（`presentBanner`）——前台有应用内状态展示，横幅冗余。
-- 后台保活设置开关、通知点击路由到具体会话（FGS 常驻通知的点击唤起 app 已做，D22；「路由到具体会话」指完成/卡通知的定向跳转）、ntfy relay 文档——后续单独立项。
+- 后台保活设置开关、ntfy relay 文档——后续单独立项（通知点击路由到具体会话原列于此，已提前实施，见 D23）。
 - 通知按会话可见性门控（D9）。
 
 ## 7. 评审意见

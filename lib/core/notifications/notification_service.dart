@@ -23,6 +23,8 @@ class NotificationService {
   static const _tag = 'Notif';
   static const _permAskedKey = 'notifPermAsked';
 
+  static void Function(String sessionId)? onSessionNotificationTap;
+
   static final Set<String> _pendingRun = {};
   static final Set<String> _pendingCards = {};
 
@@ -40,6 +42,12 @@ class NotificationService {
     const iosInit = DarwinInitializationSettings();
     await _plugin.initialize(
       const InitializationSettings(android: androidInit, iOS: iosInit),
+      onDidReceiveNotificationResponse: (response) {
+        final sid = response.payload;
+        if (sid != null && sid.isNotEmpty) {
+          onSessionNotificationTap?.call(sid);
+        }
+      },
     );
     // iOS 14.2+ requires an explicit permissions request to trigger the
     // system authorization prompt; the Info.plist key alone is not enough.
@@ -291,5 +299,19 @@ class NotificationService {
         }
       }
     }
+  }
+
+  static Future<String?> consumeLaunchNotification() async {
+    if (kIsWeb || !_initialized) return null;
+    final NotificationAppLaunchDetails? details;
+    try {
+      details = await _plugin.getNotificationAppLaunchDetails();
+    } catch (_) {
+      return null;
+    }
+    if (details == null || !details.didNotificationLaunchApp) return null;
+    final sid = details.notificationResponse?.payload;
+    if (sid == null || sid.isEmpty) return null;
+    return sid;
   }
 }

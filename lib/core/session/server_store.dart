@@ -2817,6 +2817,8 @@ class ServerStore extends ChangeNotifier {
     return sid;
   }
 
+  String cardHostSessionIdOf(String sessionId) => _cardHostSessionId(sessionId);
+
   void _removeSession(String id) {
     final childHost =
         _childSessions.containsKey(id) ? _cardHostSessionId(id) : null;

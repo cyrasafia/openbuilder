@@ -81,6 +81,32 @@ void popToServerManagement(GoRouter router) {
       'base=$path fallback=$fellBack');
 }
 
+@visibleForTesting
+void resetNotificationTapDebounce() {
+  _lastNotificationTapAt.clear();
+}
+
+@visibleForTesting
+DateTime Function() notificationTapClock = DateTime.now;
+final Map<String, DateTime> _lastNotificationTapAt = {};
+
+/// Push the conversation page for a tapped notification (payload = session
+/// id). Returns whether a push happened; taps on the same session within the
+/// debounce window are swallowed — `currentConfiguration.uri` can't dedupe
+/// because it does not reflect imperative (pushed) matches.
+bool openSessionFromNotification(GoRouter router, String sid) {
+  if (sid.isEmpty) return false;
+  final now = notificationTapClock();
+  final last = _lastNotificationTapAt[sid];
+  if (last != null && now.difference(last) < const Duration(milliseconds: 800)) {
+    return false;
+  }
+  _lastNotificationTapAt[sid] = now;
+  AppLogger.I.i('Router', 'notification tap → /session/$sid');
+  router.push('/session/$sid');
+  return true;
+}
+
 GoRouter buildRouter(ConnectionStore store) {
   return GoRouter(
     refreshListenable: _PresenceRefreshListenable(store),

@@ -17,7 +17,7 @@ import 'core/platform/keepalive_controller.dart';
 import 'l10n/gen/app_localizations.dart';
 import 'ui/theme.dart';
 
-final _router = buildRouter(connectionStore);
+final appRouter = buildRouter(connectionStore);
 bool _appStarted = false;
 
 void main() {
@@ -50,6 +50,7 @@ void main() {
     await modelHideStore.load();
     await defaultAgentModelStore.load();
     wireServerStore();
+    NotificationService.onSessionNotificationTap = _openSessionFromNotification;
     await NotificationService.init();
     KeepaliveController.I.init();
     await SystemFontWeight.init();
@@ -57,6 +58,8 @@ void main() {
     if (kDebugMode || kProfileMode) PerfProbe.I.start();
     runApp(const OpenBuilderApp());
     _appStarted = true;
+    WidgetsBinding.instance.addPostFrameCallback(
+        (_) => unawaited(_handleLaunchNotification()));
   }, (error, stack) {
     AppLogger.I.e('Zone', 'unhandled: $error\n$stack');
     if (!_appStarted) {
@@ -85,6 +88,46 @@ void main() {
       ));
     }
   });
+}
+
+void _openSessionFromNotification(String sid) {
+  final host = serverStore.cardHostSessionIdOf(sid);
+  if (serverStore.sessionById(host) == null) {
+    AppLogger.I.i('Notif', 'tap dropped, unknown session: $sid');
+    return;
+  }
+  if (!_appStarted) {
+    WidgetsBinding.instance.addPostFrameCallback(
+        (_) => openSessionFromNotification(appRouter, host));
+    return;
+  }
+  openSessionFromNotification(appRouter, host);
+}
+
+/// Cold-launch path: a notification tap started the process. The conversation
+/// page strands on its unavailable branch when the store has no client, so
+/// wait for the active connection (bounded — a slow/failed connect drops the
+/// deep-link and leaves the user on the session list instead of surprising
+/// them with a late push minutes later).
+Future<void> _handleLaunchNotification() async {
+  final sid = await NotificationService.consumeLaunchNotification();
+  if (sid == null) return;
+  if (!serverStore.connected) {
+    final ready = Completer<void>();
+    void listener() {
+      if (serverStore.connected && !ready.isCompleted) ready.complete();
+    }
+    serverStore.addListener(listener);
+    try {
+      await ready.future.timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      AppLogger.I.i('Notif', 'launch tap dropped (connect timeout): $sid');
+      return;
+    } finally {
+      serverStore.removeListener(listener);
+    }
+  }
+  _openSessionFromNotification(sid);
 }
 
 class OpenBuilderApp extends StatefulWidget {
@@ -145,7 +188,7 @@ class _OpenBuilderAppState extends State<OpenBuilderApp>
           ],
           supportedLocales: const [Locale('zh'), Locale('en')],
           locale: resolveActiveLocale(),
-          routerConfig: _router,
+          routerConfig: appRouter,
         ),
       ),
     );
