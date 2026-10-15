@@ -31,5 +31,9 @@
 
 - **现场修复（2026-10-14 真机实测）**：升级安装的完成通知静默不可见——旧版 `show()` 调用已把 `agent_complete` 通道以 Importance.low 注册（权限只拦显示不拦建通道），升 high 被系统忽略。裁定（无其他用户）：**不换通道 id、不做启动清理**，本机经 v2 中间版本/卸载重装重置后 `agent_complete` 以 high 新建；`_show` 成功/失败日志保留（原 `.catchError` 黑洞）。若有存量用户，「换新 id + init 删除残留」方案已在设计 D4 备案。
 - S2 滑卡后通知停（`onTaskRemoved` 停服务）；S3 OEM 杀进程；S4 6h dataSync 预算 `onTimeout` 后不再后台重启；S9 iOS 25s 后完成无通知（P1 范围）；S26 流断期间他端答卡无完成通知（补账只清通知不补状态）。
+- **增补（2026-10-14，D20）**：FGS 常驻通知前台隐藏、退后台展示——纯 Kotlin 侧（`KeepaliveService` 注册 `ActivityLifecycleCallbacks` 计数驱动 `startForeground`/`stopForeground`），Dart/通道协议/`KeepaliveController` 零改动；`onStartCommand` 每次 delivery 仍先 `startForeground`（5s 约束）再按前台与否隐藏。另注（已修，2026-10-15）：`onTimeout(startId)` 单参覆写对 dataSync 不会被回调——Android 15+ 实际派发双参 `onTimeout(startId, fgsType)`（单参版仅 shortService 用），超时会走系统默认 ANR；已替换为双参覆写。
+- **增补（2026-10-15，D21）**：`watching` 通道 importance LOW→MIN——状态栏零图标、条目沉抽屉底部，完成通知成为状态栏唯一运行信号。平台硬约束：FGS 通知无法完全移除（`startForeground` 强制附带 + FGS 任务管理器）。老安装通道 importance 粘滞为 LOW，需卸载重装或手动改「最小化」重置（同 D4 坑，沿用其裁定不换 id、不清理）。
+- **增补（2026-10-15，D22）**：FGS 通知 `setContentIntent` 唤起 `MainActivity`（PendingIntent 直达 activity 非 trampoline；唤起即经 D20 前台隐藏自动消条目；不路由具体会话，完成通知点击路由仍为后续立项）。
+- **增补（2026-10-15，4次评审 BN-R20..R22，全部修复复审 ✅）**：BN-R20 启动竞态——started 计数权威迁 `OpenBuilderApplication`（进程起点维护），service onCreate 取种子，根除「delivery 晚于 onStop 派发 → 初值误判前台 → FGS 刚建即降级、约 1 分钟被系统停止」的主场景打穿；BN-R21 重升被拒的降级终点写实（keepalive 死亡，非「无通知观察」）；BN-R22 `onStartCommand` 5s 约束注释按 delivery 类型分述。
 - 通知点击路由到具体会话未做（payload 已预埋 sid，P1 接线）。
 - `getActiveNotifications` 在 iOS 对非插件来源通知 id 为 null——本项目通知全部经插件发出，不受影响。

@@ -1,6 +1,8 @@
 package com.openbuilder.app
 
+import android.app.Activity
 import android.app.Application
+import android.os.Bundle
 import android.util.Log
 import java.io.File
 
@@ -8,6 +10,25 @@ class OpenBuilderApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                startedActivities++
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                if (startedActivities > 0) startedActivities--
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+
+            override fun onActivityResumed(activity: Activity) {}
+
+            override fun onActivityPaused(activity: Activity) {}
+
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
         cleanupBloatedPrefs()
     }
 
@@ -54,6 +75,13 @@ class OpenBuilderApplication : Application() {
     }
 
     companion object {
+        /// Authoritative started-activity count, maintained since process start.
+        /// KeepaliveService seeds its own copy from it because its start
+        /// delivery can land after onStop was dispatched (still inside the
+        /// background-start exemption window), so "app is foreground at service
+        /// creation" cannot be assumed (BN-R20).
+        var startedActivities = 0
+            private set
         private const val TAG = "OpenBuilder/PrefCleanup"
         private const val BLOAT_THRESHOLD = 4L * 1024 * 1024 // 4 MiB
     }

@@ -49,7 +49,7 @@ busy 判定单一真相源仍是 `ServerStore._statusMap`（`busy | retry`，含
 | `KeepaliveController`（新） | `lib/core/platform/keepalive_controller.dart` | 监听 `serverStore`；差分计算 busy 集合变化；驱动 FGS start/stop/update 与权限请求；纯逻辑可单测 |
 | `AndroidKeepalive`（新） | `lib/core/platform/android_keepalive.dart` | MethodChannel `com.openbuilder.app/keepalive` 封装：`start(count)` / `stop` / `updateCount` |
 | `IosBgTask`（新） | `lib/core/platform/ios_bg_task.dart` | MethodChannel `com.openbuilder.app/bg_task` 封装：`begin(label)` / `end(id)` |
-| `KeepaliveService`（新） | `android/.../KeepaliveService.kt` | FGS 空壳：`dataSync` 类型、常驻通知、`onTimeout` / `onTaskRemoved` 优雅停止 |
+| `KeepaliveService`（新） | `android/.../KeepaliveService.kt` | FGS 空壳：`dataSync` 类型、常驻通知（**前台隐藏，见 §2.4 通知可见性**）、`onTimeout` / `onTaskRemoved` 优雅停止 |
 | `MainActivity` | `android/.../MainActivity.kt` | 注册 keepalive 通道，转发到 Service Intent |
 | `AppDelegate` | `ios/Runner/AppDelegate.swift` | 注册 bg_task 通道，包装 `beginBackgroundTask` / `endBackgroundTask` |
 | `NotificationService` | `lib/core/notifications/notification_service.dart` | Android 权限请求入口；`_agentChannel` importance 升级 |
@@ -75,6 +75,15 @@ watching/lingering ──(onTimeout ∨ onTaskRemoved)──▶ stopped
 - **接受的限制**（D2 同族）：lingering 到期停后，卡被答复、运行恢复 streaming、直至 settle——期间流已断，无完成通知；下次前台对账补状态。通知层面由 §2.6 两级清除兜底。
 - 启动点**只在** streaming 0→N 转变（用户发送 prompt 或本端答卡恢复运行，两者都发生在前台，规避 Android 12+ FGS 后台启动限制）。resume 对账发现 streaming（S13）也补启动（前台）。
 - 拒绝过权限（`notifPermDenied` 持久化标志）→ 不启动 FGS，pause 走 idle 路径（无通知能力时后台观察无用户价值）。
+
+#### 通知可见性：前台隐藏、退后台展示（2026-10-14 增补，D20）
+
+FGS 常驻通知（`Watching N sessions`）**仅在 app 退后台时展示**；用户就在前台看 app 时该条目是噪音，隐藏。实现为降级/重升（demote/promote），纯 Kotlin 侧，Dart/通道协议零改动：
+
+- `onStartCommand` 每次 delivery 都先 `startForeground(...)`（满足 `startForegroundService` 的 5s 约束），若 app 在前台随即 `stopForeground(STOP_FOREGROUND_REMOVE)` 隐藏——post 与 remove 在同一次消息处理内完成，无可感知闪烁。
+- 计数权威在 `OpenBuilderApplication`（进程 `onCreate` 即注册 `ActivityLifecycleCallbacks` 维护静态 started 计数，从进程起点准确——BN-R20：`startForegroundService` 的 delivery 可能晚于 onStop 派发达数百毫秒（豁免窗内仍会成功），service 内自设「前台」初值会在该竞态下把后台误判为前台——FGS 刚建即降级隐藏，后台普通 started service 约 1 分钟被系统停止，恰打穿「发完 prompt 立即退后台」主场景）。Service 在 `onCreate` 从权威计数取种子并自注册回调：计数 1→0（退后台，onStop 派发中同步）→ `startForeground(...)` 重升展示；0→1（回前台）→ `stopForeground` 隐藏。`onDestroy` 注销回调。
+- 退后台时刻的重升落在官方后台启动 FGS 豁免「**app transitions from a user-visible state**」（restrictions-bg-start 豁免清单第一条）内；仍以 try/catch 兜底——若被拒（OEM 变体等）不崩溃，但降级终点是 keepalive 死亡（BN-R21 修正原「无通知观察」表述）：service 沦为后台 app 的普通 started service，约 1 分钟内被系统停止，SSE 与完成通知随之失效；Dart `_fgsOn` 滞留 true 无即时自愈，靠前台 streaming 再变化或 lingering 到期路径恢复。原生 Android 12+ 不应触发。
+- 隐藏期间 service 为普通 started service：app 在前台时进程本就是 top，无保活需求；dataSync 的 6h/24h 预算只计 FGS 状态时长，前台隐藏期不消耗（预算副产物收益）。
 
 #### iOS 断言生命周期
 
@@ -103,7 +112,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
    - `_agentChannel`：`Importance.low/Priority.low` → `Importance.high/Priority.high`（与 permission/question 通道对齐）。
    - id 模型改造（§2.6）：`notifyRunComplete` 增加 sid 参数用 `_runNotifId(sid)`；`notifyPermission` / `notifyQuestion` 增加**卡所属会话** sid 参数（事件原生 sessionID）用 `_cardNotifId(cardSid)`；新增 `cancelSessionRun(String sid)`、`cancelCard(String cardSid)`、`cancelSessionAll(String sid)`（经 pending 集合展开 host 名下卡槽）。
    - 现状固定 id 0/1/2 全部退役。
-5. `KeepaliveService.kt`：`START` / `STOP` / `UPDATE` action；channel `watching`（`IMPORTANCE_LOW`，静默常驻条目）；`onTimeout(startId)`（API 35+ 才被调用，minSdk 34 下覆盖编译即可）→ `stopSelf`；`onTaskRemoved` → `stopSelf`。
+5. `KeepaliveService.kt`：`START` / `STOP` / `UPDATE` action；channel `watching`（`IMPORTANCE_MIN`——状态栏零图标、条目沉抽屉底部（D21），前台再隐藏——§2.4 通知可见性：`ActivityLifecycleCallbacks` 计数驱动 `startForeground`/`stopForeground` 切换）；通知 `setContentIntent` 唤起 `MainActivity`（D22：PendingIntent 直达 activity，非 trampoline）；`onTimeout(startId, fgsType)`（API 35+ 派发，minSdk 34 下覆盖编译即可；2026-10-15 勘误：dataSync 超时走**双参**回调，原单参覆写不会被调用）→ `stopSelf`；`onTaskRemoved` → `stopSelf`。
 6. `MainActivity.kt`：注册 `com.openbuilder.app/keepalive` 通道（模式照抄现有 files 通道）。
 7. `AppDelegate.swift`：注册 `com.openbuilder.app/bg_task` 通道。
 8. `AndroidManifest.xml`：`FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` 权限；`<service android:name=".KeepaliveService" android:foregroundServiceType="dataSync" android:exported="false"/>`。
@@ -155,7 +164,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 ### 2.7 UI
 
-- FGS 常驻通知：标题 `Open Builder`，正文单数 `Watching 1 session` / 复数 `Watching N sessions`（英文不本地化，与通道命名不本地化的既有约定一致，见 notification_service.dart 通道注释）。通道名 `Watching`。
+- FGS 常驻通知：标题 `Open Builder`，正文单数 `Watching 1 session` / 复数 `Watching N sessions`（英文不本地化，与通道命名不本地化的既有约定一致，见 notification_service.dart 通道注释）。通道名 `Watching`，importance `MIN`——**状态栏零图标、不弹横幅、条目沉抽屉底部（D21）**，完成通知因此成为状态栏唯一的会话运行信号。**仅退后台时展示，前台隐藏（§2.4 通知可见性，D20）。** 点击唤起 app（D22）：回 main shell 当前所在页，唤起即触发 D20 前台隐藏、条目自动消失；不路由具体会话（多会话无单一目标，完成通知的点击路由仍为 §6 待办）。
 - 权限请求时机 = 用户刚发送第一条 prompt 后（streaming 0→N，前台、有上下文）。系统弹窗即商品本身的价值说明，不加自定义预弹窗（v1）。
 - 完成通知升级为 heads-up 后与权限/问题卡视觉一致。
 - 不加设置开关（不做的事 §4）。
@@ -191,6 +200,9 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | S25 | 出卡 → 40s 后他端答卡（lingering 窗内） | 卡通知实时清除（tier-1）；该会话回 streaming → 回 watching，后续完成仍受保护 |
 | S26 | lingering 已停后他端答卡 → 运行恢复 streaming → settle | 流已断：无完成通知（D2 同族限制，接受）；下次前台对账补状态与补账清卡通知 |
 | S27 | 同一父会话下两个并行 subagent 各挂 ask 卡（后台，BN-R2） | 两卡分属不同 child sessionID → 两条独立卡槽并存；他端答其一 → 仅清对应卡槽，另一条不受影响 |
+| S28 | 前台运行中（streaming，D20） | 无 `Watching` 常驻条目；退后台出现（抽屉底部、状态栏无图标，D21）；回前台即时消失；期间 FGS 生命周期不受可见性切换影响 |
+| S29 | 前台运行中锁屏（D20） | 锁屏触发 onStop → 计数 1→0 → 常驻条目出现于抽屉底部、状态栏无图标（等价退后台）；解锁回前台 → 消失 |
+| S30 | 后台点击 `Watching` 常驻通知（D22） | app 唤起回前台（main shell 当前所在页）；计数 0→1 → 条目经 D20 自动消失；FGS 生命周期不受影响，resumed 走既有 `resume()` 对账 |
 
 ## 4. 关键设计决策
 
@@ -205,6 +217,9 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - **D9 通知发送按「当前会话可见性」门控（原「不门控」立场被产品需求推翻）**：`appForeground && activeSessionId == hostSid` 时抑制——用户正看该会话直播，通知纯噪音。门控信号复用 store 现有 `_foreground` + `_activeSessionId`，不新增状态。
 - **D10 口径 getter 放 store、pause 决策放 MainShell、状态机放 controller**：store 出数据（`streamingSessionCount`/`pendingCardHostCount`），MainShell 管生命周期跳转，controller 独占 watching/lingering 状态机；三者职责不交叉。
 - **D11 槽位粒度：完成按会话、卡按卡所属会话（child），六条清除规则 + 看过即清（§2.6）**：卡槽不取上浮 host——同父会话多并行 subagent 各挂卡时（design-subagent-background），按 host 分槽会互相覆盖且误清（BN-R2）。清除挂点全部复用现有信号：`setActiveConversation`（本端看过，经 pending 集合展开 host 名下卡槽）、`session.viewed`（**他端已读**——SSE 事件已存在且已有 handler）、卡解决三事件（他端答卡，事件原生携带卡所属 sessionID）、`session.deleted`（他端删除）、手划（系统默认）。补账统一走 `getActiveNotifications()`（双端，BN-R1）。取代早先「完成通知全局单条 + resume 即清」草案：per-session 规则不误清未看会话，且支持多会话并发提醒。
+- **D20 FGS 常驻通知前台隐藏、退后台展示（2026-10-14 用户需求）**：前台时用户就在看 app，`Watching` 条目是噪音。实现为降级/重升：启动仍守 D2（前台 streaming 0→N，`startForegroundService` + 每次 delivery 必 `startForeground`——start 型 delivery 受 5s 约束，update 型为后台刷新文案所需，BN-R22 分述），随后前台 `stopForeground(REMOVE)` 隐藏，退后台（started 计数 1→0，onStop 派发中同步执行）`startForeground` 重升。**计数权威在 `OpenBuilderApplication`（进程起点维护静态 started 计数），service onCreate 取种子——BN-R20 修启动竞态**（delivery 晚于 onStop 派发时 service 建于后台，自设「前台」初值会误判、FGS 刚建即降级、约 1 分钟被系统停止，打穿主场景）。重升时刻落在官方豁免「app transitions from a user-visible state」（restrictions-bg-start 豁免清单第一条）内，仍 try/catch 兜底（失败不崩溃，但降级终点是 keepalive 死亡——service 约 1 分钟内被系统停止、SSE/完成通知失效，BN-R21）。备选「退后台才 `startForegroundService`」被否决：D2 立场维持（不赌豁免窗口的通道往返时机），且现行方案 Dart 侧零改动。副产物：前台隐藏期不计 dataSync 6h/24h 预算。
+- **D21 `watching` 通道 importance LOW→MIN：状态栏零图标，`Watching` 对用户的可见面降到平台允许的最低（2026-10-15 用户需求）**：MIN 通知无状态栏图标、不弹横幅、沉抽屉最底部——完成通知成为状态栏唯一的运行相关信号。**平台硬约束：FGS 通知无法完全移除**——`startForeground` 强制附带通知，Android 13+ 另有 FGS 任务管理器（「Active apps」）列表，均不可绕过；MIN 是官方给的最低档。与 D20 正交（MIN 管状态栏图标与排序，D20 管前台抽屉条目存否），两者叠加。与 D4 同坑：通道 importance 创建后粘滞（应用不可改，仅用户可），老安装的 `watching` 仍为 LOW——状态栏图标继续出现，需卸载重装或手动在通知设置改「最小化」重置；因当前无其他用户，沿用 D4 裁定不换通道 id、不做启动清理。完成/权限/问题卡通知独立通道，不受影响。
+- **D22 FGS 通知点击唤起 app（2026-10-15 用户需求）**：`setContentIntent(PendingIntent.getActivity → MainActivity，NEW_TASK|SINGLE_TOP，IMMUTABLE|UPDATE_CURRENT)`——PendingIntent 直达 activity，非 trampoline，Android 12 通知蹦床禁令（不允许 service/receiver 中转 startActivity）不适用。唤起后 `ActivityLifecycleCallbacks` 计数 0→1 自动走 D20 前台隐藏 → 条目即时消失，无需 autoCancel（ongoing 条目本不走点击即清）。冷启动无需处理：FGS 随进程存亡，通知存在即进程在。不路由具体会话——多会话并行时无单一目标，落在 main shell 当前所在页；完成通知的点击路由维持 §6 后续单独立项。
 
 ## 5. 接口展望（P1/P2 预留，不实施）
 
@@ -217,7 +232,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - P1/P2 全部内容（见 §5）。
 - 常驻连接的空闲保活（无 busy 也挂 FGS）——6h/24h 预算与电池不允许。
 - iOS 前台横幅展示（`presentBanner`）——前台有应用内状态展示，横幅冗余。
-- 后台保活设置开关、通知点击路由到具体会话、ntfy relay 文档——后续单独立项。
+- 后台保活设置开关、通知点击路由到具体会话（FGS 常驻通知的点击唤起 app 已做，D22；「路由到具体会话」指完成/卡通知的定向跳转）、ntfy relay 文档——后续单独立项。
 - 通知按会话可见性门控（D9）。
 
 ## 7. 评审意见
@@ -299,3 +314,23 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | BN-R17 | tri-state 权限语义 + controller null 分叉 | notification_service.dart、keepalive_controller.dart、KeepaliveBackend、测试 fake | ✅ |
 | BN-R18 | `_startInFlight` 重入守卫 | keepalive_controller.dart | ✅ |
 | BN-R19 | 记录接受理由，不改码 | 本文档 | ✅ |
+
+### 4次评审意见（2026-10-15，D20-D22 增补实现评审，独立 subagent）
+
+结论：可以合入。无阻塞项；2 项非阻塞（其中 BN-R20 建议一并修复）+ 1 nit，全部处理。
+
+| 编号 | 优先级 | 问题 | 修复 |
+|------|--------|------|------|
+| BN-R20 | 🟡 中 | started 计数初值 `=1` 假设在启动竞态下不成立：`startForegroundService` 的 delivery 晚于 onStop 派发落地（豁免窗内仍成功）时，service 建于真实计数 0 的后台，初值误判前台 → FGS 刚建即 `stopForeground` 降级隐藏 → 后台 app 的普通 started service 约 1 分钟被系统停止，keepalive 静默死亡；Dart `_fgsOn` 滞留 true、`_onForeground` 重启入口被守卫挡死，无自愈——恰打穿「发完 prompt 立即退后台」主场景（改动前同竞态为良性驻留） | 计数权威迁 `OpenBuilderApplication`（进程 onCreate 注册回调、静态计数从进程起点准确）；service onCreate 取种子再自注册回调，删除初值假设 |
+| BN-R21 | 🟡 中 | 降级表述过于乐观：代码注释与 §2.4/D20 的「失败=降级为无通知观察」实为「service 约 1 分钟被系统停止、SSE/完成通知失效、`_fgsOn` 滞留无即时自愈」——失败面被低估 | §2.4、D20、`showNotification` 注释写实降级终点 |
+| BN-R22 | 🟢 低 | `onStartCommand` 注释「every delivery 须满足 5s 约束」写宽：仅 start 通道（`startForegroundService`）delivery 受 5s 约束，updateCount 走 `startService` 无此约束（每次都 `startForeground` 仍正确——后台态刷新文案需要） | 注释按 delivery 类型分述 |
+
+评审另核实（无问题）：双参 `onTimeout` 覆写与 API 35 dataSync 派发路径及仓库勘误一致；豁免第一条原文确认（restrictions-bg-start）；onCreate/onDestroy 回调配对；`catch (Exception)` 覆盖 `ForegroundServiceStartNotAllowedException`（IllegalStateException 子类）；`launchIntent` 非蹦床 + IMMUTABLE、SINGLE_TOP 唤起路径；configChanges 全覆盖无重建闪烁；Dart 侧 updateCount/stop 均捕获 PlatformException；三份文档（AGENTS.md / design / review）与实现互相对齐；D21 importance 粘滞与 D4 裁定一致；Kotlin `///` 注释沿用 MainActivity 既有模式不判违例。
+
+### 修复复审（4次）
+
+| 编号 | 修复内容 | 位置 | 状态 |
+|------|----------|------|------|
+| BN-R20 | `OpenBuilderApplication` 静态 started 计数（进程起点注册回调）；`KeepaliveService.onCreate` 取种子 | OpenBuilderApplication.kt、KeepaliveService.kt | ✅ |
+| BN-R21 | 降级终点写实（service ~1min 被系统停止、SSE/完成通知失效、`_fgsOn` 滞留） | §2.4、D20、showNotification 注释 | ✅ |
+| BN-R22 | 注释按 delivery 类型分述 5s 约束 | onStartCommand 注释 | ✅ |
