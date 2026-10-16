@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'core/connection/connection_profile.dart';
 import 'core/connection/connection_store.dart';
 import 'core/logging/app_logger.dart';
+import 'core/nav/app_route_observer.dart';
 import 'core/session/file_browsing_store.dart';
 import 'domain/models.dart';
 import 'features/conversation/conversation_screen.dart';
@@ -110,6 +111,7 @@ bool openSessionFromNotification(GoRouter router, String sid) {
 GoRouter buildRouter(ConnectionStore store) {
   return GoRouter(
     refreshListenable: _PresenceRefreshListenable(store),
+    observers: [appRouteObserver],
     initialLocation: '/sessions',
     redirect: (context, state) {
       final loc = state.matchedLocation;

@@ -28,6 +28,7 @@ import '../../core/attachments/file_ref.dart';
 import '../../core/attachments/image_data_cache.dart';
 import '../../core/net/net_error.dart';
 import '../../core/platform/keepalive_controller.dart';
+import '../../core/nav/app_route_observer.dart';
 import '../../core/logging/perf_probe.dart';
 import '../../core/session/conversation_store.dart';
 import '../../domain/models.dart';
@@ -175,7 +176,10 @@ final class _PendingFileRef extends _PendingItem {
 }
 
 class _ConversationScreenState extends State<ConversationScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, RouteAware {
+  Route<dynamic>? _route;
+  final Object _visibilityToken = Object();
+  bool _routeCovered = false;
   final _scrollController = ScrollController();
   final _ctl = TextEditingController();
   bool _cmdMode = false;
@@ -297,6 +301,7 @@ class _ConversationScreenState extends State<ConversationScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _syncRouteAware();
     _installTransitionGate();
     _mdStyleUser = _buildMdStyle(user: true);
     _mdStyleAssistant = _buildMdStyle(user: false);
@@ -304,6 +309,49 @@ class _ConversationScreenState extends State<ConversationScreen>
     // an inherited change must invalidate them so they rebuild with new styles.
     _messageChildCache.clear();
     _partWidgetCache.clear();
+  }
+
+  void _syncRouteAware() {
+    final route = ModalRoute.of(context);
+    if (route == null || identical(route, _route)) return;
+    if (_route != null) appRouteObserver.unsubscribe(this);
+    _route = route;
+    // subscribe 按当前可见性回放一次 didPush / didPushNext（可见性变化的后续回调由观察者广播）
+    appRouteObserver.subscribe(this, route);
+  }
+
+  @override
+  void didPush() {
+    _routeCovered = false;
+    _applyVisibility();
+  }
+
+  @override
+  void didPopNext() {
+    _routeCovered = false;
+    _applyVisibility();
+  }
+
+  @override
+  void didPushNext() {
+    _routeCovered = true;
+    _applyVisibility();
+  }
+
+  @override
+  void didPop() {
+    _routeCovered = true;
+    _applyVisibility();
+  }
+
+  void _applyVisibility() {
+    if (_routeCovered) {
+      serverStore.clearActiveConversationIf(widget.sessionId,
+          token: _visibilityToken);
+    } else {
+      serverStore.setActiveConversation(widget.sessionId,
+          token: _visibilityToken);
+    }
   }
 
   void _installTransitionGate() {
@@ -382,7 +430,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     serverStore.commandsNotifier.removeListener(_onCommandsChanged);
     serverStore.removeListener(_onServerStoreChanged);
     serverStore.fileBrowsing.unregisterRefPicker(widget.sessionId);
-    serverStore.setActiveConversation(null);
+    appRouteObserver.unsubscribe(this);
+    serverStore.clearActiveConversationIf(widget.sessionId,
+        token: _visibilityToken);
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     _backToTopTarget.dispose();
@@ -1215,7 +1265,7 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   @override
   Widget build(BuildContext context) {
-    serverStore.setActiveConversation(widget.sessionId);
+    _syncRouteAware();
     final session = serverStore.sessionById(widget.sessionId);
     final conv = serverStore.conversationFor(widget.sessionId);
     if (conv == null) {

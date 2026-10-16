@@ -74,21 +74,27 @@ unread(session) ⟺  time.idle !== undefined  &&  (time.viewed === undefined || 
 |---|---|---|---|
 | 消费未读 | ✓ | ✓ | ✓（本设计） |
 | 判定 | `idle !== undefined && (viewed \|\| idle > viewed)` | 同 | 同 |
-| ack 时机 | 窗口聚焦 + 正在看该会话 | chat Tab 激活 | **会话详情页在路由栈内**（见 §4.2） |
+| ack 时机 | 窗口聚焦 + 正在看该会话 | chat Tab 激活 | **会话详情页可见（未被不透明路由盖住）且 app 在前台**（见 §4.2） |
 | ack 去重 | `acknowledged Map<sid, idle>`，指数退避 | 同思路 | 同思路 |
 | 呈现场 | Tab 标记 | 左栏状态点 + chat Tab（聚合 chip 视觉重设计后另行补） | 会话行 pill + 项目 Tab glyph / **聚合 chip（本期含）** |
 | 子会话 | 只判 root | 同 | 同（`_sessions` 只收 root，天然满足） |
 
-**ack 口径（移动端裁定）**：**会话详情页（ConversationScreen）存在于路由栈内即 ack**。
-移动端没有 chat Tab，栈内等价「Tab 激活」：push 进入即清；停留期间（含被文件页等次级页
-暂时盖住、含 app 退后台）到达的终态视为已看；pop 离开后到达的终态保持未读。
+**ack 口径（移动端裁定，2026-10-15 收窄）**：**会话详情页可见（未被不透明（opaque）路由
+盖住，bottom sheet / dialog 等弹层不算盖住）且 app 在前台时即 ack**。移动端没有 chat Tab，
+「可见 + 前台」等价「Tab 激活」：push 进入即清；停留期间到达的终态视为已看；
+**被文件列表 / 文件详情 / diff 等次级路由盖住、或 app 退后台期间到达的终态不视为已看**
+（保持未读），回到可见 / 回前台时补一次 ack；pop 离开后到达的终态保持未读。
 
 ### 3.1 与本地通知的关系（移动端特有）
 
 移动端已有 `NotificationService.notifyRunComplete`（run 终态本地通知）。通知是**瞬时告警层**，
 未读标记是**持续状态层**，二者互补不互斥（对齐 PC 端对官方 GUI 通知清单的定位裁定：告警投递
-天然 per-device，未读真相必须服务端水位）。本设计**不动通知逻辑**；通知与蓝点并存（通知响过
-后未读仍在，直到点开）。
+天然 per-device，未读真相必须服务端水位）。通知与蓝点并存（通知响过后未读仍在，直到点开）。
+
+> **2026-10-15 关联修订**：通知的**抑制**判据（`_suppressNotify` = 前台 ∧ 本会话详情页可见，
+> 见 `design-background-notify.md` §2.6 D9）与 ack 共用同一个「可见」定义。二者同日收窄为
+> 「未被不透明路由盖住」，因为本端 ack 带服务端回声：若后台仍 ack，`session.viewed` 回声会
+> 把刚发出的完成通知撤掉（现场病灶「通知一闪即消」）。详见文末修订节。
 
 ## 4. 设计
 
@@ -108,25 +114,45 @@ unread(session) ⟺  time.idle !== undefined  &&  (time.viewed === undefined || 
 
 ### 4.2 标记已读策略（ack）
 
-触发条件（**一条**）：
+触发条件（**两条同时成立**）：
 
-- **该会话的详情页在路由栈内**（`_activeConversations` 集合含 sid）。
+- **该会话的详情页可见**——即未被**不透明（opaque）路由**盖住（`appRouteObserver` +
+  `RouteAware`；bottom sheet / dialog / popup menu 等 `PopupRoute.opaque == false` 的弹层
+  不算盖住）；
+- **app 在前台**（`ServerStore._foreground`，由 MainShell 生命周期写入）。
 
-实现：ConversationScreen `initState` 把 sid 注册进 ServerStore、`dispose` 移除
-（后进先出的路由栈语义：push 即激活，pop 即离开）。注册 / 移除 / `time.idle` 变化
-任一促成条件成立时，统一走 `maybeMarkViewed(sid)` 单入口，内部判「栈内 + isUnread +
-去重表无该水位」→ `POST /view {idle: 本地 time.idle}`。
+实现：新增 `lib/core/nav/app_route_observer.dart`（`AppRouteObserver extends NavigatorObserver`：
+维护根导航器路由栈，按「**上方是否存在不透明路由**」求值——`route is TransitionRoute ?
+route.opaque : true`，弹层（`PopupRoute.opaque == false`）不算盖住——并对可见性翻转的订阅者广播
+`didPushNext` / `didPopNext`），注册进 `buildRouter` 的 `GoRouter(observers: [...])`）。
+> 不复用框架 `RouteObserver`：它只通知「紧邻下方」路由（didPush / didPop 的 previousRoute），
+> 栈 `[详情页, 弹层, 文件页]` 的入栈 / 出栈会漏判（详情页被盖住、以及弹层未关时揭开都收不到回调）。
+> 首版即在此踩坑（评审实测：在子代理任务 sheet 里点文件链接 push 文件页 → 详情页仍算可见）。
+
+ConversationScreen `with RouteAware`，在 `didChangeDependencies` / `build` 里把自身路由订阅给
+观察者（`subscribe` 按当前可见性回放一次 `didPush` / `didPushNext`）→ 可见即激活；
+被盖住 / 正在离开 → `clearActiveConversationIf`；`dispose` 兜底清除 + 退订。清除侧带**所有权
+令牌**（`setActiveConversation(sid, token: …)` / `clearActiveConversationIf(sid, token: …)`，
+token 为页面 state 持有的不透明对象）——「只清自己」因而对两种并存都成立：栈内多详情页（下层
+页面不得清掉上层），以及同 id 页面被替换重建（旧 state 的 dispose 不得清掉新 state 的激活）。
+可见 / 回前台 / `time.idle` 变化任一促成条件成立时，统一走 `maybeMarkViewed(sid)` 单入口，内部判
+「可见 + 前台 + isUnread + 去重表无该水位」→ `POST /view {idle: 本地 time.idle}`；回前台补触发
+挂在 `setAppForeground(true)`。
 
 - **语义 = 一般 IM**：未读会话被点开即清标；停留期间到达的终态也即时 ack——
   「正在看的会话不显未读」。
-- **不判 app 前后台**：app 退后台但详情页仍在栈内 → 视为在看（对齐桌面端「Tab 激活即视为
-  在看」的用户裁定）；app 被杀后重进列表，未读保持到再次点开。
-- **不判栈顶**：详情页上叠文件页 / 设置页等次级路由时不 pop 详情页 → 仍在栈内 → 视为
-  停留（对齐桌面端「停留期间失焦也视为已看」）。
+- **判 app 前后台（2026-10-15 修订）**：退后台即视为没在看——后台期间到达的终态保持未读，
+  回前台补 ack。原「栈内即视为在看」让后台 ack 成了**本端完成通知的自清信号**（见文末修订）。
+- **判可见性（2026-10-15 修订）**：文件列表 / 文件详情 / diff 等次级路由（`PageRoute.opaque
+  == true`）盖住详情页时不 ack（用户不在看消息流）；回到详情页补 ack。弹层不算盖住——用户仍在
+  看详情页，弹层开着时照常 ack 与抑制通知。
 - 被否决的方案（同桌面端裁定）：
   - **要求「消息视口贴底」**：按 IM 习惯废弃——「滚到底才清」会让用户困惑；
-  - **要求「前台 / 栈顶」**：与「栈内」在点开路径等价，在停留路径引入「切走即变未读」
-    的额外态，去掉。
+  - ~~**要求「前台 / 栈顶」**~~ → **2026-10-15 用户裁定改采纳**（原裁定以「栈内等价栈顶」
+    为前提，未预见完成通知被本端 ack 回声自清）；
+  - **只看 `ModalRoute.isCurrent`**（短评：实现最简，见文末修订节）：弹层是 push 的路由，
+    会把详情页判成「不在看」——弹层开着时完成通知照发（与 D9「正在看该会话不打扰」相悖）。
+    故改用带 opaque 过滤的路由观察者（同一「可见」定义同时服务 ack 与通知抑制）。
 
 ### 4.3 终态补拉（保证及时）
 
@@ -234,18 +260,21 @@ root && unread          → unread（蓝静态，本设计新增）
 |---|---|---|
 | 1 | 列表里某会话跑完（详情页未打开） | 终态补拉后该行 pill 变蓝「未读」 |
 | 2 | 跑完时该会话详情页正打开 | 立即 ack（`POST /view`），无蓝点闪烁 |
-| 3 | 跑完时详情页在栈内但被文件页盖住 / app 退后台 | 仍即时 ack（栈内即视为在看），不置未读 |
+| 3 | 跑完时详情页在栈内但被文件页盖住 / app 退后台 | **不** ack（不在看消息流）：置未读；回到详情页 / 回前台补 ack（2026-10-15 修订） |
+| 3b | 跑完时详情页上开着模型选择器 / dialog（弹层） | 照常 ack（弹层不透明性为 false，不算盖住）；不置未读 |
 | 4 | 跑完时用户在该会话内上滚读历史 | 仍即时 ack（不判滚动位置，IM 习惯），不显未读 |
 | 5 | 点开一个已未读的会话 | push 即 ack，pill 即时转灰 |
 | 6 | 桌面端先 ack | 收到 `session.viewed` → 本端未读消除，不再 POST |
 | 7 | 会话失败后未看 | 显示 `failed`（红静态）；打开看到后 ack（点仍红，不再未读） |
 | 8 | ack 请求失败（网络） | 保持未读，指数退避重试直到成功 |
 | 9 | 断线重连 | 对账快照经 max 纪律落库；未读状态收敛（不因旧快照闪回） |
-| 10 | 连续两次 run 终态（页面停留） | 第二次终态补拉落库后同样即时 ack（§4.2 栈内 + idle 变化驱动）；`viewed` 单调 |
+| 10 | 连续两次 run 终态（页面可见且前台停留） | 第二次终态补拉落库后同样即时 ack（§4.2 可见 + 前台 + idle 变化驱动）；`viewed` 单调 |
 | 11 | 连续两次 run 终态（已离开页面） | 只 ack 到观察到的 idle；后一次 idle 蓝点重现（水位不回退） |
 | 12 | 本地通知与未读并存 | 通知响过（告警层）后蓝点仍在，直到点开（状态层） |
 | 13 | 子代理后台任务完成 | 父会话未读（子会话不独立标） |
 | 14 | 项目 >4 会话、其中 2 个未读 | 项目 Tab 聚合行出现蓝 chip「2」；点开其中一个后计数降为 1 |
+| 15 | 后台跑完 → 回到前台且详情页仍可见 | 回前台补 ack；完成通知随 ack 回声一并清除 |
+| 16 | 后台跑完 → 回前台但已 pop 回列表 | 无 ack（详情页不在）；蓝点与完成通知都保留到点开 |
 
 ## 7. 已知 gap / 明确不做
 
@@ -264,8 +293,10 @@ root && unread          → unread（蓝静态，本设计新增）
 |---|---|
 | `lib/data/api/opencode_client.dart` | 新增 `markSessionViewed(sessionID, idle)`（`POST /api/session/:id/view`） |
 | `lib/domain/models.dart` | `AgentRunState` 增 `unread` |
-| `lib/core/session/server_store.dart` | `session.viewed` case 消费（max 落库）；终态分支补拉（在途去重）；`isSessionUnread`；`_activeConversations` 注册 / 移除；`maybeMarkViewed` 单入口 + `_pendingAcks` 去重 + 退避；`_upsertSession` 对已存在会话 idle/viewed 取 max；`agentIndicatorStateOf` 插 unread 档 |
-| `lib/features/conversation/conversation_screen.dart` | initState / dispose 注册激活会话 |
+| `lib/core/session/server_store.dart` | `session.viewed` case 消费（max 落库）；终态分支补拉（在途去重）；`isSessionUnread`；可见会话注册 / 移除（`setActiveConversation` / `clearActiveConversationIf`，带所有权 token；2026-10-15 前语义为「栈内即激活」）；`maybeMarkViewed` 单入口（可见 + `_foreground` 双门控 + `_pendingAcks` 去重 + 退避）；`setAppForeground(true)` 回前台补 ack；可见性切换时对离开会话 `persistDraft`；`_upsertSession` 对已存在会话 idle/viewed 取 max；`agentIndicatorStateOf` 插 unread 档 |
+| `lib/core/nav/app_route_observer.dart` | **新增**（2026-10-15）：`AppRouteObserver extends NavigatorObserver` + 全局单例，维护根导航器路由栈、按「上方是否存在不透明路由」向订阅者广播 `didPushNext` / `didPopNext`（弹层不算盖住） |
+| `lib/app_router.dart` | `GoRouter(observers: [appRouteObserver])`（2026-10-15） |
+| `lib/features/conversation/conversation_screen.dart` | `with RouteAware`：`didPush` / `didPopNext` 激活，`didPushNext` / `didPop` 解除激活（`clearActiveConversationIf`）；`dispose` 退订 + 兜底清除 |
 | `lib/ui/widgets.dart` | `AgentStatusIndicator` / `AgentStatusGlyph` / `AgentStatusCountChip` / `_agentStatusLabel` / `_agentAccentColor` 加 unread 分支（蓝 #58A6FF / #0969DA） |
 | `lib/features/shell/projects_tab.dart` | `_statusOrder` 重排为绿红黄蓝灰时间序：`working > retrying > failed > paused > unread > idle`（用户 2026-10-11 裁定）+ 顺序注释更新；`_statusCountChips` / glyph 渲染经 `_agentAccentColor` 自动着蓝色 |
 | `lib/l10n/app_zh.arb` / `app_en.arb` | `agentUnread`（未读 / Unread） |
@@ -349,5 +380,73 @@ root && unread          → unread（蓝静态，本设计新增）
 |---|---|---|
 | UM-10 | §1 测试行已改 27 例，分项 5+3+7+4+4+1+3=27 自洽 | ✅ |
 | UM-11 | 守卫与 cancel 已落地 | ✅ |
+
+## 2026-10-15 修订：ack 口径收窄（可见 + 前台）
+
+**现场病灶**：后台跑完时 Android 完成通知「一闪即消」（发出后约百毫秒被撤）。
+
+**根因链**（活体复验：`POST /api/session/{id}/view` → 204，同一 `/api/event` 流收到
+`session.viewed` 回声）：
+
+1. 退后台只置 `_foreground = false`，详情页仍在栈内 → 原口径下 `_activeSessionId` 不清；
+2. 终态 → `notifyRunComplete` 发通知（`_suppressNotify` 因后台为假，判定正确）；
+3. 同一次终态消费里补拉 `sessionMeta` 落库 → `_upsertSession` 的 `landedIdle > prevIdle`
+   → `maybeMarkViewed` 只判 `_activeSessionId == sid`（**无前台判定**）→ 后台 POST `/view`；
+4. 服务端广播 `session.viewed`（本端 ack 带回声）；
+5. `session.viewed` 分支按「他端已读」无条件 `cancelSessionRun` → 通知被自己的 ack 回声撤掉。
+
+**修订**：ack 触发收窄为「详情页可见（未被不透明路由盖住）∧ app 前台」（§4.2）。连带影响：
+
+- 后台 / 被覆盖期间不再自清完成通知——`design-background-notify.md` §2.6 规则 3 恢复字面
+  语义「他端已读」；
+- 可见性判据带 **opaque 过滤**：弹层（bottom sheet / dialog / popup menu）不算盖住，故弹层
+  开着时仍 ack 且完成通知仍受抑制（首版实现用 `ModalRoute.isCurrent`，弹层会被误判成「不在
+  看」→ 通知照发；评审指出后改用不透明判据）；
+- 可见性求值按「**上方是否存在不透明路由**」而非「紧邻上方路由是否不透明」——第二版沿用了框架
+  `RouteObserver` 的紧邻语义，栈 `[详情页, 弹层, 文件页]` 会漏判（评审实测：子代理任务 sheet 内
+  点文件链接 → 详情页被文件页盖住却仍算可见；反向揭开同样漏判）；终版改为自维护路由栈
+  （`NavigatorObserver` 全量栈求值 + 广播）；
+- 回前台 / 回到详情页补一次 ack（`setAppForeground(true)` + 可见性回调）；
+- `dispose` 的兜底清除改为「只清自己」（`clearActiveConversationIf` + 所有权 token）——原无条件
+  `setActiveConversation(null)` 在栈内多详情页并存时会误清上层页面的激活态（评审实测：栈
+  `[A, B]` pop B 后 `active` 滞留 `null`）；同 id 页面被替换重建时旧 state 的 dispose 也因
+  token 不匹配而不再误清新 state；持有者判据是**严格比对**（`!identical(_activeOwner, token)` 即
+  不动），且激活一律由最后一个设置者持有（不继承旧持有者）——避免「无 token 清除静默失效」的陷阱；
+- 离开可见会话时顺带落盘草稿（补 `_pauseWork` 原本只保活跃会话草的缺口），且走微任务让出导航帧
+  （`_flushDraftOffFrame`：整表落盘含全量消息映射，不进导航回调的同步段）。
+
+**已知偏差（接受）**：
+
+- `_activeSessionId` 语义收窄后，被文件页 / diff 盖住期间该会话失去 `_evictConversations` 的 LRU
+  豁免与 `refreshCommands` 的命令缓存预热（该页仍挂载，`conversationFor` 每次重建会把它挪到 LRU
+  末尾，且 >20 会话才触发驱逐；命令缓存靠 30s 对账补齐）。后者在 `_cmdRefreshTriggered` 已置位时
+  不复工——属既有兜底表述的二手路径，量级可忽略。
+- `appRouteObserver` 只服务**根导航器**（全栈求值，订阅者不区分 navigator）：嵌套 Navigator 内的
+  页面若订阅，会把「宿主容器路由被盖住」误判为可见。今日唯一订阅者是根层的 ConversationScreen，
+  不可达；已在观察者类注释标注约束。
+- 观察者单例的 `_stack` 在整棵 Navigator 被拆除（不走 pop / remove）时不收缩，进程内（测试）
+  会留陈旧条目；陈旧条目恒在目标路由下方，判定不受影响（已注在类注释）。生产只有一棵常驻导航器。
+- `subscribe` 对「不在栈内」的路由按栈顶记账（判可见）——服务未注册观察者的 harness（各 widget
+  测试自建 GoRouter），生产不会走到该分支（observer 通知先于页面首帧 build）。
+- `didReplace` 把旧路由的订阅者整体转给新路由（本仓库与 go_router 均不使用 `Navigator.replace`；
+  实测 `pushReplacement` 走的是 `didPush` + `didRemove`，不进该分支）。
+
+**测试**：`unread_marker_test.dart` 新增 `ack gate` 组 4 例（后台不 ack / 回前台补 ack；被覆盖
+不 ack / 可见后补 ack；只清自己的激活；token 守卫不误清新持有者）；`background_notify_test.dart`
+新增「后台终态通知保留到回前台」；`conversation_route_visibility_test.dart` 新增 widget 级可见性
+用例（不透明页覆盖 → 解除激活，pop → 恢复；bottom sheet 不算盖住；弹层未关时其上再 push 不透明页
+→ 解除激活，pop → 恢复）。
+
+**核对**：`scripts/analyze.sh` 零 issue；`flutter test` 864 全过。三轮独立评审（reviewer subagent，
+含活体与单元探针）：
+
+| 轮次 | 发现 | 处置 |
+|---|---|---|
+| 1 | 3 项非阻塞：弹层被 `ModalRoute.isCurrent` 误判为「不在看」；`dispose` 无条件清空误清下层；文档一处漏改（+ nits） | 改不透明判据、加所有权 token、补文档 |
+| 2 | 1 项 🟡：弹层未关时从其内 push 不透明页会漏判（框架 `RouteObserver` 只通知紧邻下方路由，正反两向都漏） | 改自维护路由栈的全栈求值观察者，测试锁定 |
+| 3 | 4 项 🟢：补记语义（嵌套 navigator）、`unsubscribe` 不清 `_covered` 的残留、修订节轮次记录 | 前两项已改（含类注释约束），轮次记录本条 |
+| 4 | 复核报告（press review）：1 项行为范围待确认 + 5 项 nit | 范围已裁定（2026-10-16：同一会话的文件页 / diff **不 ack**；通知抑制仍只看详情页可见性，该场景照发——与本次实现一致）；nit 处置：token 判据收紧为「持有者对不上即不动」（消除无 token 清除的静默失效陷阱）、落盘改微任务让出导航帧（`_flushDraftOffFrame`）、观察者陈旧栈 / 未知路由补记 / `didReplace` 迁移三项记入「已知偏差」 |
+
+四轮均无阻塞（blocking）项；第 3 轮复核确认第 2 轮 🟡 已根治（新用例在旧实现上必失败）。
 
 

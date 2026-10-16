@@ -219,6 +219,68 @@ void main() {
     });
   });
 
+  group('ack gate (current route + foreground)', () {
+    test('backgrounding does not ack; returning to the foreground acks',
+        () async {
+      store.upsertSessionForTesting(_session('s1', idle: 300));
+      store.setActiveConversation('s1');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(client.viewCalls, [_viewCall('s1', 300)]);
+
+      store.setAppForeground(false);
+      store.upsertSessionForTesting(_session('s1', idle: 400));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(client.viewCalls, [_viewCall('s1', 300)],
+          reason: 'a backgrounded app must not ack');
+      expect(store.isSessionUnread('s1'), isTrue);
+
+      store.setAppForeground(true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(client.viewCalls, [_viewCall('s1', 300), _viewCall('s1', 400)]);
+      expect(store.isSessionUnread('s1'), isFalse);
+    });
+
+    test('a covered conversation does not ack until it is visible again',
+        () async {
+      store.upsertSessionForTesting(_session('s1', idle: 300));
+      store.setActiveConversation('s1');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      store.clearActiveConversationIf('s1');
+
+      store.upsertSessionForTesting(_session('s1', idle: 500));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(client.viewCalls, [_viewCall('s1', 300)],
+          reason: 'another page on top must not ack');
+      expect(store.isSessionUnread('s1'), isTrue);
+
+      store.setActiveConversation('s1');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(client.viewCalls, [_viewCall('s1', 300), _viewCall('s1', 500)]);
+      expect(store.isSessionUnread('s1'), isFalse);
+    });
+
+    test('leaving a covered page only clears its own activation', () {
+      store.setActiveConversation('s2');
+      store.clearActiveConversationIf('s1');
+      expect(store.activeConversationId, 's2');
+    });
+
+    test('a token-guarded clear never clobbers a newer holder', () {
+      final oldPage = Object();
+      final newPage = Object();
+      store.setActiveConversation('s1', token: oldPage);
+      store.clearActiveConversationIf('s1', token: oldPage);
+      expect(store.activeConversationId, isNull);
+
+      store.setActiveConversation('s1', token: newPage);
+      store.clearActiveConversationIf('s1', token: oldPage);
+      expect(store.activeConversationId, 's1',
+          reason: 'a replaced page must not clear the new page activation');
+      store.clearActiveConversationIf('s1', token: newPage);
+      expect(store.activeConversationId, isNull);
+    });
+  });
+
   group('merge discipline', () {
     test('a stale snapshot does not regress an optimistic viewed', () {
       store.upsertSessionForTesting(_session('s1', idle: 300));

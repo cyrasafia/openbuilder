@@ -42,6 +42,35 @@ OpencodeEvent _ev(String type, String sid, [Map<String, dynamic>? props]) =>
       properties: {'sessionID': sid, ...?props},
     );
 
+class _AckClient extends OpencodeClient {
+  _AckClient()
+      : super(dioFor(const ConnectionProfile(
+          id: 't',
+          name: 'test',
+          address: 'http://127.0.0.1:9',
+          username: 'opencode',
+          password: '',
+        )));
+  final viewCalls = <MapEntry<String, int>>[];
+  SessionModel? meta;
+
+  @override
+  Future<void> markSessionViewed(String sessionId, int idle) async {
+    viewCalls.add(MapEntry(sessionId, idle));
+  }
+
+  @override
+  Future<SessionModel> sessionMeta(String sessionId) async => meta!;
+}
+
+SessionModel _sessionWithIdle(String id, int idle) => SessionModel.fromJson({
+      'id': id,
+      'projectID': 'p1',
+      'location': {'directory': '/dirA'},
+      'title': 't',
+      'time': {'updated': 1000, 'idle': idle},
+    });
+
 class _FakeBackend extends KeepaliveBackend {
   final starts = <int>[];
   final updates = <int>[];
@@ -175,6 +204,36 @@ void main() {
       store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
       expect(NotificationService.hasPendingSlots, isTrue);
       store.onEventForTesting(_ev('session.viewed', 's1', {'idle': 2000}));
+      expect(NotificationService.hasPendingSlots, isFalse);
+      store.dispose();
+    });
+
+    test('background settle keeps the notification until the user returns',
+        () async {
+      final client = _AckClient();
+      final store = ServerStore()
+        ..client = client
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      store.setActiveConversation('s1');
+      store.setAppForeground(false);
+      client.meta = _sessionWithIdle('s1', 2000);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(NotificationService.hasPendingSlots, isTrue);
+      expect(client.viewCalls, isEmpty,
+          reason: 'a backgrounded app must not ack, or its own viewed echo '
+              'cancels the completion notification');
+      expect(store.isSessionUnread('s1'), isTrue);
+
+      store.setAppForeground(true);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(client.viewCalls.length, 1);
+      expect(client.viewCalls.single.key, 's1');
+      expect(client.viewCalls.single.value, 2000);
+      store.onEventForTesting(
+          _ev('session.viewed', 's1', <String, dynamic>{'idle': 2000}));
       expect(NotificationService.hasPendingSlots, isFalse);
       store.dispose();
     });

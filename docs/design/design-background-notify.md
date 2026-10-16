@@ -135,6 +135,8 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 事件到达时若 `appForeground && activeSessionId == hostSid` → **不发**。用户正停留在会话详情页看直播，通知是噪音。`hostSid`：普通事件取 sid；权限/问题卡取 `_cardHostSessionId(sid)`（卡上浮父会话，与现有卡路由一致）。其余情况（前台但停留在别的会话/列表、后台）照发。
 
+> 2026-10-15 口径对齐：`activeSessionId` 的语义收窄为「详情页**可见**」，判据 = **上方不存在不透明（opaque）路由**（`appRouteObserver` 全栈求值 + `RouteAware`，见 `design/v2/design-unread-marker.md` §4.2）。两层含义：①被文件列表 / 详情 / diff 等页面（`PageRoute.opaque == true`）盖住时不再算「停留在详情页」，此时照发通知（原口径下会被误抑制）；②bottom sheet / dialog / popup menu（`PopupRoute.opaque == false`）不算盖住——用户仍在看详情页，通知仍被抑制。注意判据是「上方**是否存在**不透明路由」，不是「紧邻上方是否不透明」：弹层未关时其上再 push 文件页同样解除激活（S17d）。
+
 #### 清除时机表
 
 | # | 触发 | 动作 | 挂点 |
@@ -149,6 +151,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 补充规则：
 
 - 断连/登出**不清**卡槽：卡是待办提醒，保留（点通知 → 打开 app → 重连处理）。
+- 规则 3 的 `session.viewed` 语义严格是**他端已读**。本端 ack 也带服务端回声，因此本端 ack 必须不出现在「用户没在看」的时刻——由 ack 口径收窄（详情页当前可见 ∧ 前台）保证（2026-10-15 关联修订；此前「后台跑完 = 本端 ack → 回声自清通知」是完成通知一闪即消的根因）。
 - `session.viewed` 直接清完成槽不做水位线比较：对端只有 viewed < idle 时才会 POST（陈旧水位线到达属罕见竞态，接受）。
 - 本设计**取代**上一版「resume 即清完成通知」：per-session 规则更精确，不误清未看会话的提醒。
 
@@ -191,6 +194,9 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | S15 | 点完成通知进 app → 进入该会话详情页 | 该会话两槽清除；FGS 常驻条目按 busy 状态维持或消失 |
 | S16 | 两会话同时各有一张权限卡（后台） | 两条独立卡槽通知并存；各自解决各自消失 |
 | S17 | 停留在会话 A 详情页（前台）：A 完成 / A 出卡 | 均不发通知（门控抑制）；此时 B 完成 → B 照发 |
+| S17b | 会话 A 详情页被文件页 / diff 盖住（前台）：A 完成 | 照发通知（`activeSessionId` 已随「可见」解除激活）；回到 A 详情页时按规则 1 清。**2026-10-16 用户裁定**：该场景（同一会话自己的文件页 / diff）**不 ack**（未读保留）；通知抑制仍只看详情页可见性，故照发 |
+| S17c | 会话 A 详情页上开着模型选择器 / dialog（前台）：A 完成 | 不发通知（弹层 `opaque == false`，不算盖住，`activeSessionId` 仍为 A） |
+| S17d | A 详情页上开着任务详情 sheet，sheet 内点文件链接 push 文件页：A 完成 | 照发通知（上方存在不透明路由即解除激活，与中间是否夹着弹层无关）；pop 回 sheet → 重新算「可见」，按规则 1 清 |
 | S18 | 后台中他端打开并读了会话 X → `session.viewed` 到达 | X 的完成通知清除 |
 | S19 | 后台中他端删除会话 X → `session.deleted` 到达 | X 的两槽通知清除 |
 | S20 | 后台断连（如服务器重启） | 卡槽通知保留（待办提醒）；下次打开 app 重连后处理 |
@@ -218,7 +224,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - **D6 pause 计时 30s→25s 且双平台统一**：iOS 断言 ~30s 到期前留 5s 收尾；Android 缓存进程窗口远大于此，25s 无代价。统一值简化代码。
 - **D7 streaming→0 进 3min lingering（前台/后台统一），到期停**：停下的瞬间恰是通知开始需要 `session.viewed` / 答卡信号的时刻；宽限窗兜住「完成即读」「出卡快答」两条常见路径，到期即停兜住电池与 6h 预算。「通知/卡存活多久就保活多久」= 常驻空闲保活，否决。流断开期间的他端动作由重连补账兜底（§2.6 两级清除）。teardown 从后台执行合法（非 FGS 启动）。
 - **D8 OEM 杀进程为已知风险**：不做自启、白名单引导（P0 范围外；FGS 在原生 Android 上已是平台给的最大保障）。
-- **D9 通知发送按「当前会话可见性」门控（原「不门控」立场被产品需求推翻）**：`appForeground && activeSessionId == hostSid` 时抑制——用户正看该会话直播，通知纯噪音。门控信号复用 store 现有 `_foreground` + `_activeSessionId`，不新增状态。
+- **D9 通知发送按「当前会话可见性」门控（原「不门控」立场被产品需求推翻）**：`appForeground && activeSessionId == hostSid` 时抑制——用户正看该会话直播，通知纯噪音。门控信号复用 store 现有 `_foreground` + `_activeSessionId`，不新增状态。**2026-10-15 口径收窄**：`activeSessionId` 语义由「详情页在栈内」改为「详情页可见 = 未被不透明路由盖住」（`appRouteObserver`，`RouteAware` 驱动），故「被文件页 / diff 盖住时跑完」由抑制改为照发（S17b），「弹层盖住时跑完」仍抑制（S17c）；`appForeground` 维度不变。
 - **D10 口径 getter 放 store、pause 决策放 MainShell、状态机放 controller**：store 出数据（`streamingSessionCount`/`pendingCardHostCount`），MainShell 管生命周期跳转，controller 独占 watching/lingering 状态机；三者职责不交叉。
 - **D11 槽位粒度：完成按会话、卡按卡所属会话（child），六条清除规则 + 看过即清（§2.6）**：卡槽不取上浮 host——同父会话多并行 subagent 各挂卡时（design-subagent-background），按 host 分槽会互相覆盖且误清（BN-R2）。清除挂点全部复用现有信号：`setActiveConversation`（本端看过，经 pending 集合展开 host 名下卡槽）、`session.viewed`（**他端已读**——SSE 事件已存在且已有 handler）、卡解决三事件（他端答卡，事件原生携带卡所属 sessionID）、`session.deleted`（他端删除）、手划（系统默认）。补账统一走 `getActiveNotifications()`（双端，BN-R1）。取代早先「完成通知全局单条 + resume 即清」草案：per-session 规则不误清未看会话，且支持多会话并发提醒。（**通道正交声明，2026-10-15**：槽位模型基于 per-session 哈希通知 id，与承载通道无关——通道收敛为 `tasks` 单通道后（design-notification-channels）多通知并存与全部清除规则不变。）
 - **D20 FGS 常驻通知前台隐藏、退后台展示（2026-10-14 用户需求）**：前台时用户就在看 app，`Watching` 条目是噪音。实现为降级/重升：启动仍守 D2（前台 streaming 0→N，`startForegroundService` + 每次 delivery 必 `startForeground`——start 型 delivery 受 5s 约束，update 型为后台刷新文案所需，BN-R22 分述），随后前台 `stopForeground(REMOVE)` 隐藏，退后台（started 计数 1→0，onStop 派发中同步执行）`startForeground` 重升。**计数权威在 `OpenBuilderApplication`（进程起点维护静态 started 计数），service onCreate 取种子——BN-R20 修启动竞态**（delivery 晚于 onStop 派发时 service 建于后台，自设「前台」初值会误判、FGS 刚建即降级、约 1 分钟被系统停止，打穿主场景）。重升时刻落在官方豁免「app transitions from a user-visible state」（restrictions-bg-start 豁免清单第一条）内，仍 try/catch 兜底（失败不崩溃，但降级终点是 keepalive 死亡——service 约 1 分钟内被系统停止、SSE/完成通知失效，BN-R21）。备选「退后台才 `startForegroundService`」被否决：D2 立场维持（不赌豁免窗口的通道往返时机），且现行方案 Dart 侧零改动。副产物：前台隐藏期不计 dataSync 6h/24h 预算。
@@ -369,3 +375,21 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 结论：可以合入，**零问题**（无阻塞 / 无非阻塞 / 无 nit 改动建议）。逐项核实记录：Kotlin 通道前移链路成立（同进程 Application 必先于 service；`CHANNEL_ID` const 跨类引用合法；import 无残留）；in-flight 去重同步段内完成「查—建—登记」无 await 穿插窗口、`.ignore()` 正确处理孤儿 future；弹窗挂起期 rise 两种唤醒顺序微任务级推演无重复启动；`_permDenied` 复位位置（granted 分支内、`_streaming` 检查前）语义正确；deny 无 rise 到达时由持久化 `notifPermAsked` 兜底等价；`_send()` 接入点在全部 guard 之后且不阻塞主流程；4 例测试断言与实现语义一致。14/14 测试 + analyze 零 issue。
 
 两条过程观察（不构成改动建议，记录在案）：① `onUserPromptSent()` granted==null 分支静默返回、无日志——与 `_tryStart` 的 unknown 日志分支不对称，仅影响调试可观测性，路径罕见；② `_tryStart` 不提前检查 `_permDenied` 即调 `requestPermission()`——既有行为且正是 BN-R23 手动重开自愈的前提，属刻意设计。
+### 修订（2026-10-15，外部依赖变更：ack 口径收窄）
+
+> 非本设计自身缺陷，而是它依赖的上游信号变了口径。现场病灶：Android 后台完成通知「一闪即消」。
+
+`session.viewed` 在本设计中是「他端已读」信号（规则 3 / D11）。本端 ack 同样经服务端带回声，故本端 ack 一旦在「用户没在看」时发出，完成通知就会被自己的回声撤掉。旧 ack 口径（详情页在栈内即 ack，且不判前后台）恰好让「后台跑完」走了这条路：
+
+1. 退后台只置 `_foreground = false`，`_activeSessionId` 不清 → 终态消费里补拉 `sessionMeta` 落库 → `maybeMarkViewed` 通过 → 后台 `POST /view`；
+2. 服务端广播 `session.viewed` → 规则 3 无条件清完成槽 → 通知发出后约百毫秒被撤。
+
+修复落在上游（`design/v2/design-unread-marker.md` §4.2：ack 门控 = 详情页可见（未被不透明路由盖住）∧ 前台），本设计仅同步口径与场景：
+
+| 位置 | 同步内容 |
+|---|---|
+| §2.6 发送门控 | 补 `activeSessionId` = 详情页可见（opaque 过滤；弹层不算盖住）的口径注记 |
+| §2.6 补充规则 | 补「规则 3 严格为他端已读，本端 ack 不得在没在看时发生」 |
+| §2.6 清除表规则 3 / D11 | 不改（语义恢复字面含义，无需改） |
+| S17b / S17c / S17d（新增） | 被文件页 / diff 盖住 → 照发；弹层盖住 → 仍抑制；弹层未关时其上再 push 页面 → 照发（全栈求值） |
+| D9 | 补 2026-10-15 可见性口径收窄说明 |

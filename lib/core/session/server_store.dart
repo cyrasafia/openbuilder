@@ -45,7 +45,13 @@ class ServerStore extends ChangeNotifier {
 
   bool get appForeground => _foreground;
 
-  void setAppForeground(bool v) => _foreground = v;
+  void setAppForeground(bool v) {
+    if (_foreground == v) return;
+    _foreground = v;
+    if (!v) return;
+    final sid = _activeSessionId;
+    if (sid != null) maybeMarkViewed(sid);
+  }
 
   bool _suppressNotify(String hostSid) =>
       _foreground && _activeSessionId == hostSid;
@@ -98,6 +104,7 @@ class ServerStore extends ChangeNotifier {
   DateTime? _lastFullRefreshAt;
 
   String? _activeSessionId;
+  Object? _activeOwner;
   final Map<String, int> _contentWatermarks = {};
   final Set<String> _staleSessionIds = {};
   final Set<String> _livePreviewSids = {};
@@ -797,14 +804,39 @@ class ServerStore extends ChangeNotifier {
     return false;
   }
 
-  void setActiveConversation(String? sid) {
+  /// [token] 为该次激活的持有者（详情页 state 持有的不透明令牌）。同 id 页面被替换重建时，
+  /// 旧页面的兜底清除不得清掉新页面的激活态——[clearActiveConversationIf] 按 token 判定。
+  void setActiveConversation(String? sid, {Object? token}) {
+    final prev = _activeSessionId;
+    if (prev != null && prev != sid) {
+      final leaving = _conversations[prev];
+      if (leaving != null) _flushDraftOffFrame(leaving);
+    }
     _activeSessionId = sid;
+    // 最后一个设置者持有（不继承旧持有者，避免「无 token 设置后旧 token 仍把持」的滞留）
+    _activeOwner = token;
     if (sid != null) {
       _sse?.reconnectNow();
       maybeMarkViewed(sid);
       _cancelNotificationsForHost(sid);
     }
   }
+
+  /// 离开可见会话时落盘草稿（补 `_pauseWork` 只保活跃会话的缺口）。让出导航帧：整表落盘含全量
+  /// 消息映射，不进导航回调的同步段（微任务在帧回调返回后执行，且不留挂起计时器）。
+  static void _flushDraftOffFrame(ConversationStore conv) {
+    scheduleMicrotask(() => unawaited(conv.persistDraft()));
+  }
+
+  /// 只清自己：当前激活的不是 [sid]，或该激活的持有者不是 [token]（同 id 的页面被替换重建后，
+  /// 旧 state 的兜底清除不得清掉新 state 的激活）时，一律不动。
+  void clearActiveConversationIf(String sid, {Object? token}) {
+    if (_activeSessionId != sid) return;
+    if (!identical(_activeOwner, token)) return;
+    setActiveConversation(null);
+  }
+
+  String? get activeConversationId => _activeSessionId;
 
   void _cancelNotificationsForHost(String sid) {
     unawaited(NotificationService.cancelSessionAll(sid));
@@ -830,6 +862,7 @@ class ServerStore extends ChangeNotifier {
   }
 
   void maybeMarkViewed(String sid) {
+    if (!_foreground) return;
     if (_activeSessionId != sid) return;
     final s = sessionById(sid);
     if (s == null) return;
