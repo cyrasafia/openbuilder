@@ -28,8 +28,8 @@ P0 做三件事：
 
 busy 判定单一真相源仍是 `ServerStore._statusMap`（`busy | retry`，含子会话——design-subagent-background），但观察需求拆成两个口径：
 
-- **streaming**：busy 会话中**无待决卡**的（真在产出事件、可能以 settle 收尾 → 触发完成通知）——**只有它驱动后台保活**。
-- **卡阻塞**：busy 但挂有待决卡（permission/form）——运行被阻塞，不产出流式事件，唯一有价值的信号是「他端答卡」，用 3min lingering 覆盖后即停，不为它保持 SSE（卡不一定及时处理，长连接损害续航）。
+- **streaming**：busy 会话中**无待决卡**的（真在产出事件、可能以 settle 收尾 → 触发完成通知）——**只有它驱动后台保活**。计数**只数顶层会话**（2026-10-17 修订，按 subtask 语义）：父 busy 期间其子会话的运行属于同一任务（折叠，不重复计数）；子会话的运行**不反哺**父计数——父 idle 时其子会话一律不计；**孤儿-only 运行（仅 idle 父的子会话在跑，如独立后台任务）不驱动 FGS**——count=0 即停，不做持续监听（用户裁定：独立后台任务不需要保活观察；其完成本就不发通知，子会话 settle 不进完成通知路径）。
+- **卡阻塞**：busy 但挂有待决卡（permission/form）——运行被阻塞，不产出流式事件。卡不驱动保活：出卡即 streaming−1，count 归零则 FGS **立即停**（2026-10-17 修订，撤销原 3min lingering——宽限窗会让 watcher 与完成/卡通知并存）。
 
 该 map 由 SSE 事件 + 对账探针共同维护，已经过 design-session-sync-gating 九轮评审，直接复用。
 
@@ -37,7 +37,7 @@ busy 判定单一真相源仍是 `ServerStore._statusMap`（`busy | retry`，含
 
 | 平台 | 有 streaming 会话（busy ∧ 无待决卡） | 卡阻塞 / 无运行中会话 |
 |------|--------------|--------------|
-| Android（已连接） | **不 pause**；SSE 保持；FGS 常驻直到 streaming→0 进入 lingering | 25s 后 pause（现状行为）；lingering 窗内（3min）例外——见 §2.4 |
+| Android（已连接） | **不 pause**；SSE 保持；FGS 常驻到 streaming→0 **即停**（2026-10-17 修订：无 lingering；停时在后台则同时 pause SSE） | 25s 后 pause（现状行为） |
 | iOS | 断言窗口内观察，**25s 后 pause**（断言 ~30s 到期前优雅收尾） | 25s 后 pause |
 | Web | 不引入任何平台能力 | 现状不变 |
 
@@ -57,32 +57,29 @@ busy 判定单一真相源仍是 `ServerStore._statusMap`（`busy | retry`，含
 
 ### 2.4 状态模型
 
-#### FGS 生命周期
+#### FGS 生命周期（2026-10-17 修订：lingering 撤销）
 
 ```
 stopped ──(streaming 0→N ∧ Android ∧ !kIsWeb ∧ connected ∧ 通知权限已授予)──▶ watching
-watching ──(streaming→0：settle 完成或出卡阻塞)──▶ lingering（3min 计时；FGS+SSE 保持）
-lingering ──(streaming 再起：retry / 卡被答复后运行恢复 / 他端新 run)──▶ watching
-lingering ──(3min 到期 ∨ 通知槽全空 ∨ 断连/登出)──▶ stopped
-watching/lingering ──(onTimeout ∨ onTaskRemoved)──▶ stopped
+watching ──(streaming→0：settle 完成或出卡阻塞)──▶ stopped（即停；后台则同时 pause SSE）
+watching ──(onTimeout ∨ onTaskRemoved ∨ 断连/登出)──▶ stopped
 ```
 
-口径定义（§2.1）：`streaming` = `_statusMap` 中 busy|retry **且**该会话（或其卡路由 host）无待决 permission/form。**卡不驱动保活**——出卡即 streaming−1：
+口径定义（§2.1）：`streaming` = `_statusMap` 中 busy|retry **且**该会话（或其卡路由 host）无待决 permission/form。**卡不驱动保活**——出卡即 streaming−1，归零即停：
 
-- 出卡时通知已发出（§2.6 门控除外），SSE 继续在线的唯一增量价值是「他端答卡→清通知」；3min 窗覆盖常见快答路径，到期即停，不为可能数小时不处理的卡保持长连接（**续航优先**）。
-- lingering 窗内卡被答复（本端或他端）→ 该会话回 streaming → 回 watching，运行收尾仍受保护（快答链路零损失）。
-- lingering 对前台/后台统一（不按生命周期分支）：统一状态机更简单，前台多挂 ≤3min 的代价可忽略；好处是「前台出卡 → 用户随后退后台」仍受剩余窗口保护。
-- **接受的限制**（D2 同族）：lingering 到期停后，卡被答复、运行恢复 streaming、直至 settle——期间流已断，无完成通知；下次前台对账补状态。通知层面由 §2.6 两级清除兜底。
+- 出卡时通知已发出（§2.6 门控除外），停表不损失已发通知；不为「他端答卡」保持长连接（2026-10-17 修订：原 3min lingering 撤销，避免 watcher 与完成/卡通知并存）。
+- **接受的损失**（D2 同族）：即停后流断，`session.viewed`（他端已读）与答卡事件不再实时到达——他端已读可能无法实时清除完成通知，由本端进页清除（规则 1）与 resume 补账兜底；他端答卡后运行恢复直至 settle 的完成通知缺失，下次前台对账补状态。
+- 停后再起（retry / 他端新 run / 答卡恢复）且 app 在后台：无法重启 FGS（Android 12+ 后台启动限制，D2），观察缺失直至回前台由 `_onForeground` 补启。
 - 启动点**只在** streaming 0→N 转变（用户发送 prompt 或本端答卡恢复运行，两者都发生在前台，规避 Android 12+ FGS 后台启动限制）。resume 对账发现 streaming（S13）也补启动（前台）。
-- 拒绝过权限（`notifPermDenied` 持久化标志）→ 不启动 FGS，pause 走 idle 路径（无通知能力时后台观察无用户价值）。
+- 拒绝过权限（未授权）→ 不启动 FGS，pause 走 idle 路径（无通知能力时后台观察无用户价值）。
 
 #### 通知可见性：前台隐藏、退后台展示（2026-10-14 增补，D20）
 
-FGS 常驻通知（`Watching N sessions`）**仅在 app 退后台时展示**；用户就在前台看 app 时该条目是噪音，隐藏。实现为降级/重升（demote/promote），纯 Kotlin 侧，Dart/通道协议零改动：
+FGS 常驻通知（「N 个后台任务运行中」，D25）**仅在 app 退后台时展示**；用户就在前台看 app 时该条目是噪音，隐藏。实现为降级/重升（demote/promote），纯 Kotlin 侧，Dart/通道协议零改动：
 
 - `onStartCommand` 每次 delivery 都先 `startForeground(...)`（满足 `startForegroundService` 的 5s 约束），若 app 在前台随即 `stopForeground(STOP_FOREGROUND_REMOVE)` 隐藏——post 与 remove 在同一次消息处理内完成，无可感知闪烁。
 - 计数权威在 `OpenBuilderApplication`（进程 `onCreate` 即注册 `ActivityLifecycleCallbacks` 维护静态 started 计数，从进程起点准确——BN-R20：`startForegroundService` 的 delivery 可能晚于 onStop 派发达数百毫秒（豁免窗内仍会成功），service 内自设「前台」初值会在该竞态下把后台误判为前台——FGS 刚建即降级隐藏，后台普通 started service 约 1 分钟被系统停止，恰打穿「发完 prompt 立即退后台」主场景）。Service 在 `onCreate` 从权威计数取种子并自注册回调：计数 1→0（退后台，onStop 派发中同步）→ `startForeground(...)` 重升展示；0→1（回前台）→ `stopForeground` 隐藏。`onDestroy` 注销回调。
-- 退后台时刻的重升落在官方后台启动 FGS 豁免「**app transitions from a user-visible state**」（restrictions-bg-start 豁免清单第一条）内；仍以 try/catch 兜底——若被拒（OEM 变体等）不崩溃，但降级终点是 keepalive 死亡（BN-R21 修正原「无通知观察」表述）：service 沦为后台 app 的普通 started service，约 1 分钟内被系统停止，SSE 与完成通知随之失效；Dart `_fgsOn` 滞留 true 无即时自愈，靠前台 streaming 再变化或 lingering 到期路径恢复。原生 Android 12+ 不应触发。
+- 退后台时刻的重升落在官方后台启动 FGS 豁免「**app transitions from a user-visible state**」（restrictions-bg-start 豁免清单第一条）内；仍以 try/catch 兜底——若被拒（OEM 变体等）不崩溃，但降级终点是 keepalive 死亡（BN-R21 修正原「无通知观察」表述）：service 沦为后台 app 的普通 started service，约 1 分钟内被系统停止，SSE 与完成通知随之失效；Dart `_fgsOn` 滞留 true 无即时自愈，靠 streaming 再变化路径恢复（含 streaming→0 即停，2026-10-17 起 linger 已撤销）。原生 Android 12+ 不应触发。
 - 隐藏期间 service 为普通 started service：app 在前台时进程本就是 top，无保活需求；dataSync 的 6h/24h 预算只计 FGS 状态时长，前台隐藏期不消耗（预算副产物收益）。
 
 #### iOS 断言生命周期
@@ -100,12 +97,12 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 1. `ServerStore`：加 `streamingSessionCount` getter（口径见 §2.1，实现为私有 `_isCardBlocked`：own-key + host 维度）；加 `setAppForeground(bool)`（维护 `_foreground`，与 `pause()/resume()` 解耦——busy 跳过 pause 的路径下前台标志仍须翻转，供 §2.6 发送门控使用）；通知发送点（`notifyRunComplete`/`notifyPermission`/`notifyQuestion` 调用处）加门控：`_foreground && _activeSessionId == hostSid` 时跳过；`setActiveConversation`、`session.viewed`、`session.deleted`、三个卡解决分支挂对应清除调用。
 2. `MainShell.didChangeAppLifecycleState`：
-   - `paused/inactive`：`serverStore.setAppForeground(false)`；`_pauseTimer` 改 25s（inactive 仍 armed，现状语义保持）。**仅 `paused` 时** `IosBgTask.begin`（iOS，BN-R3 口径：inactive 涵盖通知中心/控制中心等前台瞬态，跟随 begin 会制造断言循环；与 §2.4 一致）。到期回调：`Android ∧ !kIsWeb ∧ KeepaliveController.observationActive`（= 已授权 ∧（`_fgsOn` ∨ lingering），D5 第二次修订后口径——原 `!permDenied ∧ (streamingSessionCount > 0 ∨ lingering)` 公式随 `_permDenied` 退役废止）→ 跳过 pause（SSE 保持，后续由 controller 在 lingering 到期时统一 teardown）；否则 `serverStore.pause()`；iOS 分支 pause 后 `IosBgTask.end`。
+   - `paused/inactive`：`serverStore.setAppForeground(false)`；`_pauseTimer` 改 25s（inactive 仍 armed，现状语义保持）。**仅 `paused` 时** `IosBgTask.begin`（iOS，BN-R3 口径：inactive 涵盖通知中心/控制中心等前台瞬态，跟随 begin 会制造断言循环；与 §2.4 一致）。到期回调：`Android ∧ !kIsWeb ∧ KeepaliveController.observationActive`（= 已授权 ∧ `_fgsOn`，**2026-10-17 修订**：lingering 撤销；D5 第二次修订后口径——原 `!permDenied ∧ (streamingSessionCount > 0 ∨ lingering)` 公式随 `_permDenied` 退役废止）→ 跳过 pause（SSE 保持；streaming→0 时 controller 即停并自带后台 pause）；否则 `serverStore.pause()`；iOS 分支 pause 后 `IosBgTask.end`。
    - `resumed`：`serverStore.setAppForeground(true)` + 取消计时器 + `IosBgTask.end` + 现有 `resume()`。
    - `detached`：`IosBgTask.end`。
 3. `KeepaliveController`：
    - `onUserPromptSent()`（2026-10-15 增补，D5 修订）：发送动作入口——conversation `_send()` guard 通过后 fire-and-forget 调用，立即请求权限（**发消息即弹**：发送时刻用户必然在前台注视 app；原 0→N 时机经 prompt HTTP 往返 + 服务端调度后 busy 事件才到达，「发完即走」时弹窗落在退后台边缘、不可见）；授权成功补 `_tryStart()`（覆盖弹窗挂起期间 busy 已上升的顺序）；iOS/Web `_backend` 为空直接 no-op。
-   - `init()`：`serverStore.addListener(_onStoreChanged)`；`_onStoreChanged` 差分 `streamingSessionCount`，0→N 时（app 处于 resumed，经 `WidgetsBinding.instance.lifecycleState` 判定）`_tryStart`（**2026-10-15 第二次修订，design-notification-channels CH-5：rise 只做只读 `notificationsEnabled()` 检查、不再触发权限弹窗**——弹窗只绑定发送动作，他端任务等无本地发送路径不问；未授权（从未问过或拒绝过）不启 FGS）；N 变化时 `updateCount`；→0 时进入 **lingering**（3min 计时，期间 streaming 再起则取消计时回 watching；状态机对前台/后台统一）；到期或通知槽全空时 `stop`；`!connected` 立即 `stop`（前台 stop 只停 FGS，SSE 交由 MainShell 现有逻辑；后台 stop 同时 `serverStore.pause()`）。
+   - `init()`：`serverStore.addListener(_onStoreChanged)`；`_onStoreChanged` 差分 `streamingSessionCount`，0→N 时（app 处于 resumed，经 `WidgetsBinding.instance.lifecycleState` 判定）`_tryStart`（**2026-10-15 第二次修订，design-notification-channels CH-5：rise 只做只读 `notificationsEnabled()` 检查、不再触发权限弹窗**——弹窗只绑定发送动作，他端任务等无本地发送路径不问；未授权（从未问过或拒绝过）不启 FGS）；N 变化时 `updateCount`；→0 时**立即 `stop`**（2026-10-17 修订：无 lingering——前台 stop 只停 FGS，SSE 交由 MainShell 现有逻辑；后台 stop 同时 `serverStore.pause()`）；`!connected` 立即 `stop`。`observationActive` = 已授权 ∧ `_fgsOn`。
    - 权限请求用持久化一次性标志 `notifPermAsked`（shared_preferences），避免重复打扰；拒绝后本进程周期内不再请求；`requestAndroidPermissionIfNeeded` 并发去重（in-flight 共享，防读到「已问过 ∧ 未授权」中间态）。
    - `resume()` 对账完成回调挂 `NotificationService.reconcileStale()`：按 §2.6 两级清除做重连补账。
 4. `NotificationService`：
@@ -153,11 +150,20 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - 断连/登出**不清**卡槽：卡是待办提醒，保留（点通知 → 打开 app → 重连处理）。
 - 规则 3 的 `session.viewed` 语义严格是**他端已读**。本端 ack 也带服务端回声，因此本端 ack 必须不出现在「用户没在看」的时刻——由 ack 口径收窄（详情页当前可见 ∧ 前台）保证（2026-10-15 关联修订；此前「后台跑完 = 本端 ack → 回声自清通知」是完成通知一闪即消的根因）。
 - `session.viewed` 直接清完成槽不做水位线比较：对端只有 viewed < idle 时才会 POST（陈旧水位线到达属罕见竞态，接受）。
+- 规则 3 依赖 SSE 在线：streaming→0 即停后（§2.4）该事件不再到达，他端已读**可能无法实时清除完成通知**（2026-10-17 接受的损失）——由本端进页（规则 1）与 resume 补账兜底。
 - 本设计**取代**上一版「resume 即清完成通知」：per-session 规则更精确，不误清未看会话的提醒。
+
+#### 单会话单通知不变式（2026-10-17 增补，D24）
+
+同一 host 会话在通知抽屉里**至多一条**：完成/失败通知与权限/问题卡通知互斥，后到替换先到。
+
+- **settle 发完成通知前**，先清该 host 名下全部待决卡通知（own-key + 上浮 child 展开，`_cancelHostCards`）——覆盖「他端答卡后任务又完成，卡通知残留与完成通知并存」及「run 结束时仍挂未决卡」两种形态。
+- **发卡通知前**（`permission.asked` / `form.created` / REST 重建三处），先清该 host 的完成槽（`cancelSessionRun(host)`）——新一轮运行的问题/报错提醒替换上一轮未读的完成通知。
+- 卡与卡之间**不互斥**：同 host 多个并行 subagent 各挂待决卡时仍各自成槽（BN-R2 语义保持）。
 
 #### 两级清除：他端已读 / 他端答卡（流断开兜底）
 
-规则 2 与规则 3 的信号都依赖 SSE 在线。lingering 窗外的「他端动作」补**重连补账**路径：
+规则 2 与规则 3 的信号都依赖 SSE 在线。即停后（流已断）的「他端动作」补**重连补账**路径：
 
 - 所有事件通知 `show` 时携带 `payload: sid`（P1 通知点击路由已兑现，D23）。
 - 每次 `resume()` 对账完成后：查活跃通知（双端统一 `getActiveNotifications()`——flutter_local_notifications 18.0.1 支持 iOS 10+ 与 Android 6+。**勿用** iOS `getPendingNotificationRequests`：它只含已调度未送达项，对已送达条目是 no-op（BN-R1）），按 payload 取 sid：
@@ -168,7 +174,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 ### 2.7 UI
 
-- FGS 常驻通知：标题 `Open Builder`，正文单数 `Watching 1 session` / 复数 `Watching N sessions`（正文维持英文，后续可选本地化——正文与通道名是独立决策，见 design-notification-channels §2.4）。通道「后台任务状态监控 / Background task monitoring」（名/说经原生 string resources 本地化，进程启动按 locale 快照重提），importance `MIN`——**状态栏零图标、不弹横幅、条目沉抽屉底部（D21）**，完成通知因此成为状态栏唯一的会话运行信号。**仅退后台时展示，前台隐藏（§2.4 通知可见性，D20）。** 点击唤起 app（D22）：回 main shell 当前所在页，唤起即触发 D20 前台隐藏、条目自动消失；不路由具体会话（多会话无单一目标；完成/卡通知的点击路由见 D23）。
+- FGS 常驻通知：标题 `Open Builder`，正文**「N 个后台任务运行中」**（原生 plurals 本地化：`values`/`values-zh` 的 `keepalive_running_tasks`，2026-10-17 修订 D25——原英文 `Watching N sessions` 语义模糊；新文案明确分工：**运行中的任务归 watcher，暂停/完成的任务归 `tasks` 通道**）。通道「后台任务状态监控 / Background task monitoring」（名/说经原生 string resources 本地化，进程启动按 locale 快照重提），importance `LOW`（**2026-10-17 修订，D21**：无声、状态栏有图标、无横幅；MIN 不是可选项——NMS 的 FGS importance floor 会把 MIN/NONE 强制持久化为 LOW，见 `ref/ref-miui-notification-icon.md`，直接声明有效值）。**仅退后台时展示，前台隐藏（§2.4 通知可见性，D20）。** 点击唤起 app（D22）：回 main shell 当前所在页，唤起即触发 D20 前台隐藏、条目自动消失；不路由具体会话（多会话无单一目标；完成/卡通知的点击路由见 D23）。
 - 权限请求时机 = 发送 prompt 的动作本身（`_send()` guard 通过即触发，发消息即弹——2026-10-15 修订，D5）。系统弹窗即商品本身的价值说明，不加自定义预弹窗（v1）。
 - 完成通知升级为 heads-up 后与权限/问题卡视觉一致。
 - 不加设置开关（不做的事 §4）。
@@ -177,7 +183,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 | # | 场景 | 期望 |
 |---|------|------|
-| S1 | Android：发送 prompt → 立即退后台 → 8 分钟后完成 | 收到 heads-up 完成通知；期间通知栏有常驻 `Watching 1 session(s)`；完成后进入 3min lingering（收他端已读信号），到期常驻条目消失、SSE pause |
+| S1 | Android：发送 prompt → 立即退后台 → 8 分钟后完成 | 收到 heads-up 完成通知；期间通知栏有常驻「N 个后台任务运行中」；完成即刻 FGS 停 + SSE pause，常驻条目消失 |
 | S2 | Android：busy 中滑掉任务卡 | `onTaskRemoved` → 服务停、常驻条目消失；不再收通知（用户意图，接受） |
 | S3 | Android：busy 中系统回收 / OEM 杀进程 | 已知风险，接受（D8）；下次打开靠对账恢复 |
 | S4 | Android：连续运行 >6h（dataSync 预算耗尽） | `onTimeout` → 优雅停 + 日志；SSE 断（进程或随服务重要性下降被回收）；不做自动续命 |
@@ -189,7 +195,7 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | S10 | iOS：快速切出又切回（<25s） | 计时器取消、断言释放、SSE 不断（现状 30s 宽限语义保持，仅缩为 25s） |
 | S11 | Web / 桌面调试运行 | 不触达任何平台通道；行为同现状 |
 | S12 | 权限/问题卡在后台到达（Android busy 窗口内） | 现有 permission/question 通知照常工作（方案 a 复用 SSE 的天然优势） |
-| S13 | resume 时对账发现有 streaming 会话（此前 app 断开） | 补启 FGS（前提：权限已授权——rise 只读检查、**不弹窗**，D5 第二次修订；从未发过消息的安装不启）；矩阵行为并入 S1。仅发现待决卡而无 streaming → 不启（卡只吃 lingering，且此刻已过窗） |
+| S13 | resume 时对账发现有 streaming 会话（此前 app 断开） | 补启 FGS（前提：权限已授权——rise 只读检查、**不弹窗**，D5 第二次修订；从未发过消息的安装不启）；矩阵行为并入 S1。仅发现待决卡而无 streaming → 不启（卡不驱动保活，2026-10-17 修订后出卡即停、无宽限窗） |
 | S14 | 后台中他端答了权限卡 → `permission.replied` 到达 | 该会话卡槽被精确清除；并存的其他会话卡通知不受影响 |
 | S15 | 点完成通知进 app → 进入该会话详情页 | 该会话两槽清除；FGS 常驻条目按 busy 状态维持或消失 |
 | S16 | 两会话同时各有一张权限卡（后台） | 两条独立卡槽通知并存；各自解决各自消失 |
@@ -200,15 +206,17 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | S18 | 后台中他端打开并读了会话 X → `session.viewed` 到达 | X 的完成通知清除 |
 | S19 | 后台中他端删除会话 X → `session.deleted` 到达 | X 的两槽通知清除 |
 | S20 | 后台断连（如服务器重启） | 卡槽通知保留（待办提醒）；下次打开 app 重连后处理 |
-| S21 | 完成 → lingering 窗内他端已读 | `session.viewed` 实时到达 → 完成通知清除 → 通知槽空、提前结束 lingering |
-| S22 | 完成 → lingering 到期停 → 10 分钟后他端已读 | 无实时清除（流已断，接受）；用户下次打开 app，resume 补账按 viewed 水位线清除该完成通知 |
-| S23 | lingering 窗内 retry.scheduled / 他端发起新 run | 取消 lingering 计时，回 watching，继续保护 |
-| S24 | 出卡 → 3min 内无人处理 | lingering 到期 → FGS 停 + SSE pause（续航优先）；卡通知保留在抽屉（待办）；他端稍后答卡 → 下次打开 app 由补账清除 |
-| S25 | 出卡 → 40s 后他端答卡（lingering 窗内） | 卡通知实时清除（tier-1）；该会话回 streaming → 回 watching，后续完成仍受保护 |
-| S26 | lingering 已停后他端答卡 → 运行恢复 streaming → settle | 流已断：无完成通知（D2 同族限制，接受）；下次前台对账补状态与补账清卡通知 |
+| S21 | 完成后他端已读（本端仍在线的窄窗内） | `session.viewed` 到达 → 完成通知实时清除；即停后到达的已读不实时清（接受，规则 1/补账兜底） |
+| S22 | 完成即停 → 10 分钟后他端已读 | 无实时清除（流已断，接受）；用户下次打开 app，resume 补账按 viewed 水位线清除该完成通知 |
+| S23 | 停后再起（retry.scheduled / 他端发起新 run）且 app 在后台 | 无法重启 FGS（Android 12+ 后台启动限制，D2）；回前台时 `_onForeground` 补启，期间观察缺失（接受） |
+| S24 | 出卡 → 无人处理 | 出卡即 streaming−1 → FGS 立即停 + SSE pause；卡通知保留在抽屉（待办）；他端稍后答卡 → 下次打开 app 由补账清除 |
+| S25 | 出卡 → 40s 后他端答卡（app 在前台，SSE 在线） | 卡通知实时清除（tier-1）；该会话回 streaming → 前台则重启 FGS 继续保护 |
+| S26 | 停后他端答卡 → 运行恢复 streaming → settle | 流已断：无完成通知（D2 同族限制，接受）；下次前台对账补状态与补账清卡通知 |
+| S34 | 会话挂卡后 run 结束（他端答卡事件未达或卡仍未决） | settle 的完成通知替换该 host 名下全部卡通知（D24：单会话单通知；含上浮 child 卡） |
+| S35 | 完成通知未读时该会话又发起新 run 并出卡 | 新卡通知替换未读的完成通知（D24：最新状态胜出） |
 | S27 | 同一父会话下两个并行 subagent 各挂 ask 卡（后台，BN-R2） | 两卡分属不同 child sessionID → 两条独立卡槽并存；他端答其一 → 仅清对应卡槽，另一条不受影响 |
-| S28 | 前台运行中（streaming，D20） | 无 `Watching` 常驻条目；退后台出现（抽屉底部、状态栏无图标，D21）；回前台即时消失；期间 FGS 生命周期不受可见性切换影响 |
-| S29 | 前台运行中锁屏（D20） | 锁屏触发 onStop → 计数 1→0 → 常驻条目出现于抽屉底部、状态栏无图标（等价退后台）；解锁回前台 → 消失 |
+| S28 | 前台运行中（streaming，D20） | 无常驻条目；退后台出现（状态栏有图标，D21 2026-10-17 修订后 LOW；条目沉抽屉下部）；回前台即时消失；期间 FGS 生命周期不受可见性切换影响 |
+| S29 | 前台运行中锁屏（D20） | 锁屏触发 onStop → 计数 1→0 → 常驻条目出现（等价退后台）；解锁回前台 → 消失 |
 | S30 | 后台点击 `Watching` 常驻通知（D22） | app 唤起回前台（main shell 当前所在页）；计数 0→1 → 条目经 D20 自动消失；FGS 生命周期不受影响，resumed 走既有 `resume()` 对账 |
 | S31 | 从未请求过权限：发送 prompt → 弹窗立即出现（用户在前台注视 app）→ 授权 → 退后台 | 弹窗时机不依赖 busy 事件（D5 修订）；弹窗挂起期间 busy 已上升时，rise 的 `_tryStart` 只读检查不通过即跳过（无中毒面），`onUserPromptSent` 授权后补启恰好启动一次 FGS；拒绝则 `notifPermAsked` 标志兜底不再打扰（rise 不再请求，D5 第二次修订） |
 | S32 | app 存活（前台/后台）时点击完成/卡通知（D23） | `onDidReceiveNotificationResponse` 携 payload=sid → 归一卡宿主（subagent 卡 payload 是 child id，卡在父会话）→ push `/session/<host>`；进页触发看过即清（D11）清掉该通知；同会话双击在 800ms 防抖窗内被吞，不同会话连点互不影响；sid 未知（已删/他服务器残留）不 push |
@@ -218,19 +226,22 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 
 - **D1 用 a 形态（FGS 空壳 + Dart 观察）而非 c 形态（原生 watcher）**：P0 改动最小；权限/问题卡通知天然工作（S12）；滑卡失效由 `onTaskRemoved` 显式接受（S2）。c 形态留给 P2 且须先解决「原生侧权限卡通知」复杂度。
 - **D2 FGS 启动点只在 streaming 0→N（前台）**：Android 12+ 后台启动 FGS 受限且无「退后台宽限」豁免；pause 时刻启动不可靠，不赌。启动契机天然存在：新 run 必经「用户发送 prompt」（前台），本端答卡恢复运行也发生在前台。
-- **D3 streaming 与卡阻塞拆口径（含子会话）**：`streamingSessionCount` = busy|retry ∧ 无待决卡，扫全量 `_statusMap`（含 `_childSessions` 中的 id）。只有 streaming 驱动保活；卡阻塞只吃 3min lingering（卡可能数小时无人处理，长连接损害续航）。
+- **D3 streaming 与卡阻塞拆口径（含子会话）**：`streamingSessionCount` = busy|retry ∧ 无待决卡，扫全量 `_statusMap`（含 `_childSessions` 中的 id）。只有 streaming 驱动保活；卡阻塞不驱动保活（**2026-10-17 修订**：原「卡阻塞只吃 3min lingering」随 D7 撤销——出卡即 streaming−1、归零即停）。（**2026-10-17 第二次修订（主会话口径）**：只数顶层会话——父 busy 期间其子会话的运行属于同一任务（subtask 语义，折叠不重复计数）；子会话的运行**不反哺**父计数，父 idle 时其子会话（孤儿）一律不计、不驱动 FGS；**孤儿-only 运行不保活**（→ count=0 → FGS 停，不做持续监听，用户裁定）。动机：watcher 显示「N 个后台任务运行中」被 subagent 撑大（父+子=2、3…），用户感知只有一个任务。代价（接受）：独立后台任务（design-subagent-background 命令型/工具型）在无顶层 run 并行时无观察——其 ask 卡通知仅在其他顶层 run 驱动的观察窗内到达，完成本就不发通知（settle 守卫 `!isChildSession`）。已知窗口（评审记录，接受）：`session.created` 因断连缺口未达、reconcile 补注册前，busy 会话被瞬时计为顶层——count 闪变 +1、极端时一次 FGS start/stop churn，补注册后自愈；不做保守跳过——「未注册即跳过」会把错失 `session.created` 的真顶层 run 也跳掉，漏保活/漏通知的损失更大。）
 - **D4 完成通道 importance low→high**：完成是用户等待型事件，应 heads-up。~~已知降级路径：老安装若已注册 `agent_complete` 通道（importance 只能降不能升），保持 silent——多数安装因 BN-0a 从未成功 post 过，通道大概率未注册，实际影响面接近零~~（**现场翻车 2026-10-14**：插件在 `show()` 时即建通道——权限只拦 `notify()` 不拦 `createNotificationChannel`，老安装的 `agent_complete` 通道早已以 low 注册，升级后 high 被系统忽略、完成通知静默不可见。真机实测确认。因**当前无其他用户**，裁定不换通道 id、不做启动清理——本机经 v2 中间版本/卸载重装已重置，`agent_complete` 将以 high 新建；若未来有存量用户再启用「换新 id + 删除残留」方案。`_show` 补成功/失败日志保留——原 `.catchError` 黑洞）。
 - **D5 权限请求时机**：有上下文（用户刚下达任务），优于冷启动时无上下文弹窗。~~首次 streaming 转变~~（**2026-10-15 现场反馈修订**：0→N 的 busy 信号经 SSE 往返延迟数秒，「发完即走」主场景下弹窗恰落在退后台边缘、用户已看不到）→ 改为**发送动作本身**触发：`_send()` fire-and-forget `KeepaliveController.onUserPromptSent()`，授权成功补 `_tryStart`；rise 路径保留兜底询问（S13 等无本地发送路径）；`requestAndroidPermissionIfNeeded` 加 **in-flight 去重**——弹窗挂起期间的并发调用共享同一次用户答复，防止后来者读到「已问过 ∧ 未授权」中间态把 `_permDenied` 误钉死（否则用户授权后 FGS 也永不启动）。（**2026-10-15 第二次修订，design-notification-channels CH-5**：rise 兜底询问移除——弹窗只绑定发送动作，未发消息/他端 run 不弹，弹窗目的对用户自明；`_tryStart` 改只读 `notificationsEnabled()` 检查，`_permDenied` 粘滞标志退役（`observationActive` = 已授权 ∧（`_fgsOn` ∨ lingering），系统设置手动重开通知即恢复）；损失面 = 从未发过消息的安装收不到他端发起任务的完成通知，接受。）
 - **D6 pause 计时 30s→25s 且双平台统一**：iOS 断言 ~30s 到期前留 5s 收尾；Android 缓存进程窗口远大于此，25s 无代价。统一值简化代码。
-- **D7 streaming→0 进 3min lingering（前台/后台统一），到期停**：停下的瞬间恰是通知开始需要 `session.viewed` / 答卡信号的时刻；宽限窗兜住「完成即读」「出卡快答」两条常见路径，到期即停兜住电池与 6h 预算。「通知/卡存活多久就保活多久」= 常驻空闲保活，否决。流断开期间的他端动作由重连补账兜底（§2.6 两级清除）。teardown 从后台执行合法（非 FGS 启动）。
+- **D7 streaming→0 进 3min lingering（前台/后台统一），到期停**：停下的瞬间恰是通知开始需要 `session.viewed` / 答卡信号的时刻；宽限窗兜住「完成即读」「出卡快答」两条常见路径，到期即停兜住电池与 6h 预算。「通知/卡存活多久就保活多久」= 常驻空闲保活，否决。流断开期间的他端动作由重连补账兜底（§2.6 两级清除）。teardown 从后台执行合法（非 FGS 启动）。（**2026-10-17 撤销**：streaming→0 即停、无宽限窗。原因：完成/卡通知发出后 watcher 再驻留 3min，会让同一会话同时存在两条通知（watcher + 完成通知），语义混淆；「完成即读」「出卡快答」两条路径的实时清除改为接受缺失——本端进页清除与 resume 补账兜底。电池与 6h 预算的收益顺带保留。）
 - **D8 OEM 杀进程为已知风险**：不做自启、白名单引导（P0 范围外；FGS 在原生 Android 上已是平台给的最大保障）。
 - **D9 通知发送按「当前会话可见性」门控（原「不门控」立场被产品需求推翻）**：`appForeground && activeSessionId == hostSid` 时抑制——用户正看该会话直播，通知纯噪音。门控信号复用 store 现有 `_foreground` + `_activeSessionId`，不新增状态。**2026-10-15 口径收窄**：`activeSessionId` 语义由「详情页在栈内」改为「详情页可见 = 未被不透明路由盖住」（`appRouteObserver`，`RouteAware` 驱动），故「被文件页 / diff 盖住时跑完」由抑制改为照发（S17b），「弹层盖住时跑完」仍抑制（S17c）；`appForeground` 维度不变。
-- **D10 口径 getter 放 store、pause 决策放 MainShell、状态机放 controller**：store 出数据（`streamingSessionCount`/`pendingCardHostCount`），MainShell 管生命周期跳转，controller 独占 watching/lingering 状态机；三者职责不交叉。
-- **D11 槽位粒度：完成按会话、卡按卡所属会话（child），六条清除规则 + 看过即清（§2.6）**：卡槽不取上浮 host——同父会话多并行 subagent 各挂卡时（design-subagent-background），按 host 分槽会互相覆盖且误清（BN-R2）。清除挂点全部复用现有信号：`setActiveConversation`（本端看过，经 pending 集合展开 host 名下卡槽）、`session.viewed`（**他端已读**——SSE 事件已存在且已有 handler）、卡解决三事件（他端答卡，事件原生携带卡所属 sessionID）、`session.deleted`（他端删除）、手划（系统默认）。补账统一走 `getActiveNotifications()`（双端，BN-R1）。取代早先「完成通知全局单条 + resume 即清」草案：per-session 规则不误清未看会话，且支持多会话并发提醒。（**通道正交声明，2026-10-15**：槽位模型基于 per-session 哈希通知 id，与承载通道无关——通道收敛为 `tasks` 单通道后（design-notification-channels）多通知并存与全部清除规则不变。）
+- **D10 口径 getter 放 store、pause 决策放 MainShell、状态机放 controller**：store 出数据（`streamingSessionCount`），MainShell 管生命周期跳转，controller 独占 watching 状态机（2026-10-17 起 linger 撤销）；三者职责不交叉。
+- **D11 槽位粒度：完成按会话、卡按卡所属会话（child），六条清除规则 + 看过即清（§2.6）**：卡槽不取上浮 host——同父会话多并行 subagent 各挂卡时（design-subagent-background），按 host 分槽会互相覆盖且误清（BN-R2）。清除挂点全部复用现有信号：`setActiveConversation`（本端看过，经 pending 集合展开 host 名下卡槽）、`session.viewed`（**他端已读**——SSE 事件已存在且已有 handler）、卡解决三事件（他端答卡，事件原生携带卡所属 sessionID）、`session.deleted`（他端删除）、手划（系统默认）。补账统一走 `getActiveNotifications()`（双端，BN-R1）。取代早先「完成通知全局单条 + resume 即清」草案：per-session 规则不误清未看会话，且支持多会话并发提醒。（**通道正交声明，2026-10-15**：槽位模型基于 per-session 哈希通知 id，与承载通道无关——通道收敛为 `tasks` 单通道后（design-notification-channels）多通知并存与全部清除规则不变。）（**2026-10-17 修订，D24**：并存范围收窄为「卡与卡」——完成/卡互斥、单会话单通知，见 §2.6 单会话单通知不变式。）
 - **D20 FGS 常驻通知前台隐藏、退后台展示（2026-10-14 用户需求）**：前台时用户就在看 app，`Watching` 条目是噪音。实现为降级/重升：启动仍守 D2（前台 streaming 0→N，`startForegroundService` + 每次 delivery 必 `startForeground`——start 型 delivery 受 5s 约束，update 型为后台刷新文案所需，BN-R22 分述），随后前台 `stopForeground(REMOVE)` 隐藏，退后台（started 计数 1→0，onStop 派发中同步执行）`startForeground` 重升。**计数权威在 `OpenBuilderApplication`（进程起点维护静态 started 计数），service onCreate 取种子——BN-R20 修启动竞态**（delivery 晚于 onStop 派发时 service 建于后台，自设「前台」初值会误判、FGS 刚建即降级、约 1 分钟被系统停止，打穿主场景）。重升时刻落在官方豁免「app transitions from a user-visible state」（restrictions-bg-start 豁免清单第一条）内，仍 try/catch 兜底（失败不崩溃，但降级终点是 keepalive 死亡——service 约 1 分钟内被系统停止、SSE/完成通知失效，BN-R21）。备选「退后台才 `startForegroundService`」被否决：D2 立场维持（不赌豁免窗口的通道往返时机），且现行方案 Dart 侧零改动。副产物：前台隐藏期不计 dataSync 6h/24h 预算。
-- **D21 `watching` 通道 importance LOW→MIN：状态栏零图标，`Watching` 对用户的可见面降到平台允许的最低（2026-10-15 用户需求）**：MIN 通知无状态栏图标、不弹横幅、沉抽屉最底部——完成通知成为状态栏唯一的运行相关信号。**平台硬约束：FGS 通知无法完全移除**——`startForeground` 强制附带通知，Android 13+ 另有 FGS 任务管理器（「Active apps」）列表，均不可绕过；MIN 是官方给的最低档。与 D20 正交（MIN 管状态栏图标与排序，D20 管前台抽屉条目存否），两者叠加。与 D4 同坑：通道 importance 创建后粘滞（应用不可改，仅用户可），老安装的 `watching` 仍为 LOW——状态栏图标继续出现，需卸载重装或手动在通知设置改「最小化」重置；因当前无其他用户，沿用 D4 裁定不换通道 id、不做启动清理。完成/权限/问题卡通知独立通道，不受影响。
+- **D21 `watching` 通道 importance LOW→MIN：状态栏零图标，`Watching` 对用户的可见面降到平台允许的最低（2026-10-15 用户需求）**：MIN 通知无状态栏图标、不弹横幅、沉抽屉最底部——完成通知成为状态栏唯一的运行相关信号。**平台硬约束：FGS 通知无法完全移除**——`startForeground` 强制附带通知，Android 13+ 另有 FGS 任务管理器（「Active apps」）列表，均不可绕过；MIN 是官方给的最低档。与 D20 正交（MIN 管状态栏图标与排序，D20 管前台抽屉条目存否），两者叠加。与 D4 同坑：通道 importance 创建后粘滞（应用不可改，仅用户可），老安装的 `watching` 仍为 LOW——状态栏图标继续出现，需卸载重装或手动在通知设置改「最小化」重置；因当前无其他用户，沿用 D4 裁定不换通道 id、不做启动清理。完成/权限/问题卡通知独立通道，不受影响。（**2026-10-17 修订**：MIN→LOW，接受状态栏图标常驻。依据 `ref/ref-miui-notification-icon.md`：FGS importance floor 会把 MIN/NONE 强制持久化为 LOW（AOSP `NotificationManagerService#enqueueNotificationInternal` + CTS 双测），MIN 从未被尊重——真机 0.10.1+137 卸载重装实测确认；「抽屉有条目 + 状态栏零图标」对 FGS 通知在 Android 上不可达，双通道均显示图标为最终形态。原「老安装 LOW 粘滞」的顾虑随之消失：LOW 即目标值。）
 - **D22 FGS 通知点击唤起 app（2026-10-15 用户需求）**：`setContentIntent(PendingIntent.getActivity → MainActivity，NEW_TASK|SINGLE_TOP，IMMUTABLE|UPDATE_CURRENT)`——PendingIntent 直达 activity，非 trampoline，Android 12 通知蹦床禁令（不允许 service/receiver 中转 startActivity）不适用。唤起后 `ActivityLifecycleCallbacks` 计数 0→1 自动走 D20 前台隐藏 → 条目即时消失，无需 autoCancel（ongoing 条目本不走点击即清）。冷启动无需处理：FGS 随进程存亡，通知存在即进程在。不路由具体会话——多会话并行时无单一目标，落在 main shell 当前所在页；完成/卡通知的点击路由已实施（D23）。
 - **D23 完成/卡通知点击定向跳转会话详情页（2026-10-16 用户需求，原 §6 待办提前实施）**：插件 `initialize` 注册 `onDidReceiveNotificationResponse`（payload=sid，§2.6 预留兑现）→ `openSessionFromNotification`（app_router.dart，与 `popToServerManagement` 同层的顶层函数）imperative push `/session/<sid>`，与列表点进一致；进页即走 D11 看过即清。**payload 归一到卡宿主（card host）**：subagent 卡通知的 payload 是卡所属 child 会话 id（design-subagent-background §D6——卡上浮父会话显示/回复，child 页面没有卡），导航前经 `cardHostSessionIdOf` 归一到顶层 host 再 push——直达可答卡页面；run-complete payload 恒为顶层会话（`!isChildSession` 守卫），归一幂等。**show 时 payload 不改**——`reconcileStale`/`getActiveNotifications` 槽位匹配依赖原始 child sid。**未知会话丢弃**：归一后 `sessionById(host) == null`（他端已删 / 残留他服务器的托盘通知）不 push、留在当前页。**双路径互斥性经插件 18.0.1 双端源码核实**：Android warm tap = `onNewIntent` → channel invoke，terminated 启动只在 `getNotificationAppLaunchDetails()`（activity launch intent）；iOS warm tap = delegate → channel invoke，terminated 时 `_launchNotificationResponseDict` 仅经 launch-details 暴露、`initialize` 不回放回调——冷热两路径不双发。冷启动处理在 main() 首帧后 `consumeLaunchNotification()` 一次消费：等 `serverStore.connected` 再 push（ConversationScreen 的 unavailable 分支不随 store 通知 setState 重建，未连接直跳会搁浅在「会话不可用」），上限 10s 超时丢弃。双击防抖 800ms **按 sid 分键**（同会话双击吞掉，不同会话连点互不影响）：`currentConfiguration.uri` 不反映 imperative matches（popToServerManagement 教训），不能做路径去重；防抖钟 `notificationTapClock` 可注入（测试）。FGS `Watching` 常驻通知维持 D22 不路由——多会话并行无单一目标。
+
+- **D24 单会话单通知不变式（2026-10-17 用户需求）**：同一 host 会话在抽屉里至多一条通知——settle 发完成通知前清该 host 名下全部卡槽（含上浮 child 展开），发卡通知前清该 host 完成槽；卡与卡不互斥（BN-R2 并行 subagent 语义保持）。动机：他端答卡后任务又完成（或报错/问题），完成通知与残留卡通知并存会让同一会话出现两条提醒、用户无法分辨最新状态。落地见 §2.6 单会话单通知不变式，覆盖 `permission.asked` / `form.created` / REST 重建三个发卡入口与 `execution.succeeded/failed/interrupted` 发完成入口（失败与完成共用完成槽）。
+- **D25 watcher 文案改为「N 个后台任务运行中」（2026-10-17 用户需求）**：原 `Watching N sessions` 语义模糊（「会话」≠「任务」，且与完成通知的归属不清）。新文案明确分工：**运行中的任务归 watcher（`watching` 通道，LOW），暂停/完成的任务归完成通知（`tasks` 通道，HIGH 横幅）**。计数即 `streamingSessionCount`（顶层口径，D3 2026-10-17 第二次修订：只数顶层会话，子会话折叠，孤儿-only 运行不驱动）——卡阻塞会话不在「运行中」计数内，与出卡即停的 §2.4 状态机自洽。经原生 plurals 本地化（`keepalive_running_tasks`）。
 
 ## 5. 接口展望（P1/P2 预留，不实施）
 
@@ -393,3 +404,20 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | §2.6 清除表规则 3 / D11 | 不改（语义恢复字面含义，无需改） |
 | S17b / S17c / S17d（新增） | 被文件页 / diff 盖住 → 照发；弹层盖住 → 仍抑制；弹层未关时其上再 push 页面 → 照发（全栈求值） |
 | D9 | 补 2026-10-15 可见性口径收窄说明 |
+
+### 修订（2026-10-17，设计调整：去 lingering + 双通道档位定格 + 单会话单通知 + watcher 文案）
+
+前置调研：`ref/ref-miui-notification-icon.md`（FGS importance floor 机制 + 小米通知机制）。用户四项指令：①watcher 通道改 LOW；②完成通知保持 HIGH；③去掉 lingering（接受他端已读可能无法实时清除完成通知）；④一个会话最多同时一条通知；⑤watcher 文案改为「N 个后台任务运行中」。
+
+| 位置 | 修订内容 |
+|---|---|
+| §2.1 / §2.2 / §2.4 | lingering（3min 宽限窗）整体撤销：streaming→0（settle 或出卡阻塞）即停 FGS，后台则同时 pause SSE；`observationActive` = 已授权 ∧ `_fgsOn` |
+| §2.5(3) | `_onStoreChanged` →0 立即 `stop`；删除 linger 计时/槽空提前停逻辑（`hasPendingSlots` 保留为测试观察器） |
+| §2.6 增补 | 单会话单通知不变式（D24）+ 规则 3 实时清除依赖 SSE 在线的损失声明 |
+| §2.7 / D25 | watcher 文案「N 个后台任务运行中」（原生 plurals 本地化）；通道名/说微调 |
+| D21 修订 | `watching` importance MIN→LOW：floor 之下 MIN 无意义且会被强制持久化为 LOW，直接声明有效值；接受状态栏图标常驻（双通道均显示图标为最终形态，用户裁定） |
+| D7 / S1 / S21-S26 | linger 语义撤销与场景重写；新增 S34/S35（完成↔卡互斥） |
+| D24（新增） | 单会话单通知不变式：完成/卡互斥、后到替换先到、卡与卡不互斥 |
+| D3 第二次修订 / §2.1 / D25 | **主会话口径**：只数顶层会话（子会话按 subtask 语义折叠进 host 任务，不单独计数）；孤儿-only 运行不驱动 FGS（count=0 即停，不做持续监听）——修复「subagent 把 N 个后台任务撑大」；代价：独立后台任务无观察窗（其完成本就不发通知） |
+
+接受的损失（用户明示）：即停后 `session.viewed` / 答卡事件不再实时到达——他端已读可能清不掉完成通知（进页清除 + resume 补账兜底）；停后再起且在后台无法重启 FGS（D2 既有限制）。

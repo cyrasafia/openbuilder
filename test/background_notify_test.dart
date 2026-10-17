@@ -168,14 +168,42 @@ void main() {
       store.upsertSessionForTesting(_childSession('c1', 'p1'));
       store.onEventForTesting(_ev('session.execution.started', 'p1'));
       store.onEventForTesting(_ev('session.execution.started', 'c1'));
-      expect(store.streamingSessionCount, 2);
+      expect(store.streamingSessionCount, 1,
+          reason: 'a child of a running parent folds into the parent task');
       store.onEventForTesting(
           _ev('permission.asked', 'c1', {'id': 'perm2', 'action': 'bash'}));
       expect(store.streamingSessionCount, 0,
           reason: 'card floats to host p1; both runs are blocked');
       store.onEventForTesting(
           _ev('permission.replied', 'c1', {'requestID': 'perm2'}));
-      expect(store.streamingSessionCount, 2);
+      expect(store.streamingSessionCount, 1);
+      store.dispose();
+    });
+
+    test('children never count; only running top-level sessions do', () {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('p1'));
+      store.upsertSessionForTesting(_session('p2'));
+      store.upsertSessionForTesting(_childSession('c1', 'p1'));
+      store.upsertSessionForTesting(_childSession('c2', 'p1'));
+      store.upsertSessionForTesting(_childSession('c3', 'p2'));
+      store.onEventForTesting(_ev('session.execution.started', 'p1'));
+      expect(store.streamingSessionCount, 1);
+      store.onEventForTesting(_ev('session.execution.started', 'c1'));
+      store.onEventForTesting(_ev('session.execution.started', 'c2'));
+      expect(store.streamingSessionCount, 1,
+          reason: 'children of the running p1 fold into its task');
+      store.onEventForTesting(_ev('session.execution.started', 'c3'));
+      expect(store.streamingSessionCount, 1,
+          reason: 'an orphan child (idle parent) never counts and never '
+              'drives the FGS');
+      store.onEventForTesting(_ev('session.execution.succeeded', 'p1'));
+      expect(store.streamingSessionCount, 0,
+          reason: 'orphan-only runs do not keep the keepalive alive');
+      store.onEventForTesting(_ev('session.execution.started', 'p2'));
+      expect(store.streamingSessionCount, 1);
       store.dispose();
     });
   });
@@ -283,24 +311,107 @@ void main() {
       expect(NotificationService.hasPendingSlots, isFalse);
       store.dispose();
     });
+
+    test('settle replaces the host card notification (one slot per session)',
+        () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      store.setAppForeground(false);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.onEventForTesting(
+          _ev('permission.asked', 's1', {'id': 'perm1', 'action': 'bash'}));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(NotificationService.debugHasCardSlot('s1'), isTrue);
+      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue);
+      expect(NotificationService.debugHasCardSlot('s1'), isFalse,
+          reason: 'the run-complete notification replaces the card '
+              'notification of the same session');
+      store.dispose();
+    });
+
+    test('card notification replaces the previous run-complete notification',
+        () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      store.setAppForeground(false);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.onEventForTesting(
+          _ev('permission.asked', 's1', {'id': 'perm1', 'action': 'bash'}));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(NotificationService.debugHasCardSlot('s1'), isTrue);
+      expect(NotificationService.debugHasRunSlot('s1'), isFalse,
+          reason: 'a fresh card notification replaces the unread run-complete '
+              'notification of the same session');
+      store.dispose();
+    });
+
+    test('late child adoption replaces the host run-complete notification',
+        () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('p1'));
+      store.setAppForeground(false);
+      NotificationService.debugSeedSlot(run: 'p1');
+      expect(NotificationService.debugHasRunSlot('p1'), isTrue);
+
+      // Card on an unregistered child, then the child registers (REST
+      // rebuild / SSE race) — adoption floats the card and must replace the
+      // host's unread run-complete notification (D24).
+      store.onEventForTesting(
+          _ev('permission.asked', 'c1', {'id': 'perm3', 'action': 'bash'}));
+      store.upsertSessionForTesting(_childSession('c1', 'p1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(NotificationService.debugHasCardSlot('c1'), isTrue);
+      expect(NotificationService.debugHasRunSlot('p1'), isFalse);
+      store.dispose();
+    });
+
+    test('host settle replaces a child card notification', () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('p1'));
+      store.upsertSessionForTesting(_childSession('c1', 'p1'));
+      store.setAppForeground(false);
+      store.onEventForTesting(_ev('session.execution.started', 'p1'));
+      store.onEventForTesting(_ev('session.execution.started', 'c1'));
+      store.onEventForTesting(
+          _ev('permission.asked', 'c1', {'id': 'perm2', 'action': 'bash'}));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(NotificationService.debugHasCardSlot('c1'), isTrue);
+      store.onEventForTesting(_ev('session.execution.succeeded', 'p1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(NotificationService.debugHasRunSlot('p1'), isTrue);
+      expect(NotificationService.debugHasCardSlot('c1'), isFalse,
+          reason: 'cards floating to host p1 are replaced by its run-complete '
+              'notification');
+      store.dispose();
+    });
   });
 
   group('KeepaliveController', () {
     tearDown(() {
       KeepaliveController.I.disposeForTesting();
-      KeepaliveController.lingerWindow = const Duration(minutes: 3);
-      KeepaliveController.lingerTickInterval = const Duration(seconds: 15);
     });
 
-    test('streaming rise starts FGS; drop to zero lingers then stops', () async {
+    test('streaming rise starts FGS; drop to zero stops immediately', () async {
       final store = ServerStore()
         ..client = _fakeClient()
         ..connected = true;
       store.upsertSessionForTesting(_session('s1'));
       final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
-      KeepaliveController.lingerWindow = const Duration(milliseconds: 80);
-      KeepaliveController.lingerTickInterval = const Duration(milliseconds: 10);
 
       store.onEventForTesting(_ev('session.execution.started', 's1'));
       await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -309,55 +420,31 @@ void main() {
 
       NotificationService.debugSeedSlot(run: 's1');
       store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
-      expect(KeepaliveController.I.lingering, isTrue);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(KeepaliveController.I.lingering, isFalse);
+      expect(KeepaliveController.I.observationActive, isFalse);
       expect(backend.stops, 1);
       store.dispose();
     });
 
-    test('streaming rise during linger cancels the stop', () async {
+    test('streaming rise after a stop re-starts the FGS', () async {
       final store = ServerStore()
         ..client = _fakeClient()
         ..connected = true;
       store.upsertSessionForTesting(_session('s1'));
       final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
-      KeepaliveController.lingerWindow = const Duration(milliseconds: 80);
-      KeepaliveController.lingerTickInterval = const Duration(milliseconds: 10);
 
       store.onEventForTesting(_ev('session.execution.started', 's1'));
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(backend.starts, [1]);
 
-      NotificationService.debugSeedSlot(run: 's1');
       store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
-      expect(KeepaliveController.I.lingering, isTrue);
-      store.onEventForTesting(_ev('session.execution.started', 's1'));
-      expect(KeepaliveController.I.lingering, isFalse);
-      expect(backend.updates, [1]);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      expect(backend.stops, 0);
-      store.dispose();
-    });
-
-    test('empty slots stop lingering early', () async {
-      final store = ServerStore()
-        ..client = _fakeClient()
-        ..connected = true;
-      store.upsertSessionForTesting(_session('s1'));
-      store.setActiveConversation('s1');
-      final backend = _FakeBackend();
-      KeepaliveController.I.init(store: store, backend: backend);
-      KeepaliveController.lingerWindow = const Duration(milliseconds: 80);
-      KeepaliveController.lingerTickInterval = const Duration(milliseconds: 10);
+      expect(backend.stops, 1);
 
       store.onEventForTesting(_ev('session.execution.started', 's1'));
       await Future<void>.delayed(const Duration(milliseconds: 20));
-      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-      expect(KeepaliveController.I.lingering, isFalse);
-      expect(backend.stops, 1);
+      expect(backend.starts, [1, 1]);
+      expect(backend.updates, isEmpty);
+      expect(KeepaliveController.I.observationActive, isTrue);
       store.dispose();
     });
 

@@ -1,4 +1,7 @@
 <resources>
     <string name="keepalive_channel_name">后台任务状态监控</string>
-    <string name="keepalive_channel_desc">会话在后台运行时显示常驻状态</string>
+    <string name="keepalive_channel_desc">后台任务运行期间显示常驻状态</string>
+    <plurals name="keepalive_running_tasks">
+        <item quantity="other">%d 个后台任务运行中</item>
+    </plurals>
 </resources>

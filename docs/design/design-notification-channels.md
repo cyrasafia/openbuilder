@@ -30,7 +30,7 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 ### 2.1 核心思路
 
 1. **通道收敛为两条**：
-   - `watching`（保留 id）——「后台任务状态监控」：FGS 常驻状态，IMPORTANCE_MIN 不变（D21）；
+   - `watching`（保留 id）——「后台任务状态监控」：FGS 常驻状态，`IMPORTANCE_LOW`（**2026-10-17 修订，D21**：原 MIN 会被 AOSP FGS importance floor 强制持久化为 LOW，MIN 从未被尊重——直接声明有效值，见 `ref/ref-miui-notification-icon.md`）；
    - `tasks`（**新 id**，合并 `agent_complete`/`permission`/`question`）——「后台任务完成通知」：HIGH/heads-up 不变（D4）；三条旧通道在 `init()` 删除迁移。
 2. **命名取主场景**：「任务完成」而非「完成/失败/操作」——完成是主场景，失败、授权、问题是异常场景；简化描述方便用户理解，异常场景不进名字。
 3. **名字与说明多语言**：`tasks` 经 Flutter l10n 解析、每次 `show()` 随当前 locale 重提（插件每次 show 都重提交通道，与正文同款机制）；`watching` 经 Android 原生 string resources、进程启动时按 locale 快照。
@@ -42,9 +42,9 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 |----|----------------------|------------------|
 | 中文名 | 后台任务状态监控 | 后台任务完成通知 |
 | 英文名 | Background task monitoring | Background task completion |
-| 中文说明 | 会话在后台运行时显示常驻状态 | 任务完成或需要授权、问题处理时提醒 |
-| 英文说明 | Shown while sessions run in the background | Alerts when a task finishes or needs your decision |
-| importance | MIN（不变） | HIGH（不变） |
+| 中文说明 | 后台任务运行期间显示常驻状态 | 任务完成或需要授权、问题处理时提醒 |
+| 英文说明 | A persistent entry is shown while background tasks run | Alerts when a task finishes or needs your decision |
+| importance | LOW（2026-10-17 修订，原 MIN） | HIGH（不变） |
 | 名/说解析 | Kotlin `getString(R.string.…)`（原生多语言资源） | Flutter l10n（`_loc()`，正文同款） |
 | 创建/更新点 | `OpenBuilderApplication.onCreate`（进程启动快照） | 每次 `show()`（随当前 locale 重提） |
 | 删除迁移 | 无 | `init()` 删 `agent_complete` / `permission` / `question` |
@@ -55,7 +55,7 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
    - 删 `_permissionChannel` / `_questionChannel`；`_agentChannel`（const）替换为 `_taskChannel()` 方法——`AndroidNotificationDetails('tasks', <本地化名>, importance/priority high, description: <本地化说明>)`；
    - `init()` 增加迁移（仅 Android）：`_plugin.deleteNotificationChannel(...)` 删三条旧通道，幂等（不存在为 no-op）；
    - 权限 API 拆分：`requestAndroidPermissionIfNeeded()`（**弹窗**，仅 `onUserPromptSent` 调用，in-flight 去重保留）与新增只读 `notificationsEnabled()`（`areNotificationsEnabled()`，不弹窗）。
-2. `KeepaliveController._tryStart`：`backend.requestPermission()` 改为只读检查；未授权 → 返回不启 FGS；`_permDenied` 粘滞标志退役——`observationActive` 口径改为「已授权 ∧（`_fgsOn` ∨ lingering）」，已授权状态由只读检查与发送时答复缓存。**附带收益**：拒绝过授权的用户在系统设置手动重开通知后，下一次 `_tryStart` 只读检查即恢复（现行 `_permDenied` 进程内粘滞、需重启 app）。
+2. `KeepaliveController._tryStart`：`backend.requestPermission()` 改为只读检查；未授权 → 返回不启 FGS；`_permDenied` 粘滞标志退役——`observationActive` 口径改为「已授权 ∧（`_fgsOn` ∨ lingering）」（**2026-10-17 修订**：lingering 撤销，现口径为「已授权 ∧ `_fgsOn`」，见 design-background-notify 同日修订），已授权状态由只读检查与发送时答复缓存。**附带收益**：拒绝过授权的用户在系统设置手动重开通知后，下一次 `_tryStart` 只读检查即恢复（现行 `_permDenied` 进程内粘滞、需重启 app）。
 3. `OpenBuilderApplication.ensureKeepaliveChannel()`：名字/说明改用 `getString(R.string.…)` + `setDescription(...)`；补 `values/strings.xml` 与 `values-zh/strings.xml`；**去掉现有 `getNotificationChannel(CHANNEL_ID) == null` 判空守卫，每次 `onCreate` 无条件重提 `createNotificationChannel`**——同 id 重提时行为参数被系统忽略、名/说以当前 locale 更新；保留守卫则通道存在即跳过，名字永远停在首装语言，NC-7 静默失效（CR-1）。
 4. l10n：arb 增 `notifChannelTasksName` / `notifChannelTasksDesc` 两组 key（英/中）。
 5. `onUserPromptSent()` 不变（唯一弹窗路径 + 授权成功补 `_tryStart`）。
@@ -67,7 +67,7 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 - `tasks` 名/说更新时机 = 下一次 `show()`：app 内语言切换后，已存在通道的名字要等下一次任务通知才更新——可接受。
 - `watching` 名/说快照于进程启动（原生资源按当时 locale 解析）：app 内语言切换不跟随（原生侧不读 Flutter locale 存储），下次进程启动生效——可接受，文档明示。
 - 系统语言切换不监听 `ACTION_LOCALE_CHANGED` 主动重建：概率低，进程重启自然覆盖。
-- FGS 常驻通知**正文**（`Watching N sessions`）维持英文不本地化：正文与通道名是独立决策；如需本地化走原生 plurals，列后续可选。
+- FGS 常驻通知**正文**已本地化（**2026-10-17 修订 D25**）：「N 个后台任务运行中 / N background tasks running」，原生 plurals（`keepalive_running_tasks`，`values`/`values-zh`）——原 `Watching N sessions` 语义模糊，且与完成通知的归属不清。
 
 ### 2.5 UI
 
@@ -109,7 +109,7 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 - `watching` 跟随 app 内语言实时切换（原生读 Flutter locale 收益不成比例，进程重启覆盖）。
 - 监听系统 `ACTION_LOCALE_CHANGED` 重建通道。
 - 为「从未发过消息」的他端任务补授权询问路径（CH-5 明示牺牲）。
-- FGS 常驻通知正文（`Watching N sessions`）本地化（后续可选，原生 plurals）。
+- ~~FGS 常驻通知正文（`Watching N sessions`）本地化（后续可选，原生 plurals）。~~（**2026-10-17 已做**，见 §2.4 修订。）
 
 ## 6. 对 design-background-notify.md 的修订点（实施时同步）
 
@@ -159,3 +159,11 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 |------|----------|------|------|
 | CR-4 | §2.5(2) 公式改 `observationActive` + 废止说明；§6 补列 | design-background-notify.md、本文 §6 | ✅ |
 | CR-5 | 提交包含两个新资源文件 | 提交操作 | ✅ |
+
+### 修订（2026-10-17，watching 定格 LOW + 正文本地化）
+
+| 位置 | 修订内容 |
+|---|---|
+| §2.1 / §2.2 | `watching` importance MIN→LOW：AOSP FGS importance floor 会把 MIN/NONE 强制持久化为 LOW（`NotificationManagerService#enqueueNotificationInternal` + CTS `testEnqueuedBlockedNotifications_appBlockedChannelForegroundService`），MIN 从未被尊重；真机（小米，0.10.1+137 卸载重装）实测状态栏图标照常出现。直接声明有效值 LOW（无声、有图标、无横幅），接受双通道均显示图标。证据链见 `ref/ref-miui-notification-icon.md` |
+| §2.4 / §5 | FGS 正文本地化为 plurals「N 个后台任务运行中」（D25），原「维持英文」决策撤销 |
+| 关联 | design-background-notify.md 2026-10-17 修订（去 lingering、D24 单会话单通知不变式、S34/S35） |

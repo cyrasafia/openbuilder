@@ -1,4 +1,8 @@
 <resources>
     <string name="keepalive_channel_name">Background task monitoring</string>
-    <string name="keepalive_channel_desc">Shown while sessions run in the background.</string>
+    <string name="keepalive_channel_desc">A persistent entry is shown while background tasks run.</string>
+    <plurals name="keepalive_running_tasks">
+        <item quantity="one">%d background task running</item>
+        <item quantity="other">%d background tasks running</item>
+    </plurals>
 </resources>

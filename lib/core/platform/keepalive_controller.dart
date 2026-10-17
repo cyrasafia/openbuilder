@@ -30,8 +30,6 @@ class KeepaliveController with WidgetsBindingObserver {
 
   static final KeepaliveController I = KeepaliveController._();
   static const _tag = 'Keepalive';
-  static Duration lingerWindow = const Duration(minutes: 3);
-  static Duration lingerTickInterval = const Duration(seconds: 15);
 
   bool _initialized = false;
   ServerStore? _store;
@@ -40,15 +38,10 @@ class KeepaliveController with WidgetsBindingObserver {
   bool _fgsOn = false;
   bool _startInFlight = false;
   bool _permGranted = false;
-  DateTime? _lingerStartedAt;
-  Timer? _lingerTimer;
 
   ServerStore get _activeStore => _store ?? serverStore;
 
-  bool get lingering => _lingerStartedAt != null;
-
-  bool get observationActive =>
-      _backend != null && _permGranted && (_fgsOn || lingering);
+  bool get observationActive => _backend != null && _permGranted && _fgsOn;
 
   void init({ServerStore? store, KeepaliveBackend? backend}) {
     if (_initialized) return;
@@ -88,7 +81,6 @@ class KeepaliveController with WidgetsBindingObserver {
     final store = _activeStore;
     final n = store.streamingSessionCount;
     if (!store.connected) {
-      _teardownLinger();
       unawaited(_stop());
       _streaming = n;
       return;
@@ -97,7 +89,6 @@ class KeepaliveController with WidgetsBindingObserver {
     final wasZero = _streaming == 0;
     _streaming = n;
     if (n > 0) {
-      _teardownLinger();
       if (wasZero && !_fgsOn) {
         final state = WidgetsBinding.instance.lifecycleState;
         if (state == null || state == AppLifecycleState.resumed) {
@@ -107,7 +98,7 @@ class KeepaliveController with WidgetsBindingObserver {
         unawaited(backend.updateCount(n));
       }
     } else if (_fgsOn) {
-      _enterLinger();
+      unawaited(_stop());
     }
   }
 
@@ -132,39 +123,10 @@ class KeepaliveController with WidgetsBindingObserver {
       }
       _fgsOn = true;
       AppLogger.I.i(_tag, 'watching streaming=$_streaming');
-      if (_streaming <= 0) _enterLinger();
+      if (_streaming <= 0) unawaited(_stop());
     } finally {
       _startInFlight = false;
     }
-  }
-
-  void _enterLinger() {
-    if (!_fgsOn) return;
-    _lingerStartedAt ??= DateTime.now();
-    _lingerTimer?.cancel();
-    _lingerTimer =
-        Timer.periodic(lingerTickInterval, (_) => _lingerTickFn());
-    _lingerTickFn();
-    AppLogger.I.i(_tag, 'linger start (streaming=0, cards may be pending)');
-  }
-
-  void _lingerTickFn() {
-    final startedAt = _lingerStartedAt;
-    if (startedAt == null) return;
-    final elapsed = DateTime.now().difference(startedAt);
-    final slotsEmpty = !NotificationService.hasPendingSlots;
-    if (slotsEmpty || elapsed >= lingerWindow) {
-      AppLogger.I.i(
-          _tag, 'linger end (${slotsEmpty ? 'slots empty' : 'expired'})');
-      _teardownLinger();
-      unawaited(_stop());
-    }
-  }
-
-  void _teardownLinger() {
-    _lingerTimer?.cancel();
-    _lingerTimer = null;
-    _lingerStartedAt = null;
   }
 
   Future<void> _stop() async {
@@ -183,7 +145,6 @@ class KeepaliveController with WidgetsBindingObserver {
 
   @visibleForTesting
   void disposeForTesting() {
-    _teardownLinger();
     _activeStore.removeListener(_onStoreChanged);
     WidgetsBinding.instance.removeObserver(this);
     _store = null;

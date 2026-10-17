@@ -105,7 +105,8 @@ class KeepaliveService : Service() {
     }
 
     private fun buildNotification(count: Int): Notification {
-        val text = if (count == 1) "Watching 1 session" else "Watching $count sessions"
+        val text =
+            resources.getQuantityString(R.plurals.keepalive_running_tasks, count, count)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Open Builder")

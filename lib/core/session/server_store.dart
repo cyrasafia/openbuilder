@@ -76,6 +76,7 @@ class ServerStore extends ChangeNotifier {
     for (final e in _statusMap.entries) {
       final t = e.value.type;
       if (t != 'busy' && t != 'retry') continue;
+      if (isChildSession(e.key)) continue;
       if (_isCardBlocked(e.key)) continue;
       n++;
     }
@@ -840,6 +841,12 @@ class ServerStore extends ChangeNotifier {
 
   void _cancelNotificationsForHost(String sid) {
     unawaited(NotificationService.cancelSessionAll(sid));
+    _cancelHostCards(sid);
+  }
+
+  /// 单会话单通知不变式的一半：同一 host 会话在通知抽屉里至多一条
+  /// （完成/失败与权限/问题卡互斥，后到替换先到，D24）。
+  void _cancelHostCards(String sid) {
     for (final p in _pendingPermissions.values) {
       if (_cardHostSessionId(p.sessionID) == sid) {
         unawaited(NotificationService.cancelCard(p.sessionID));
@@ -2091,6 +2098,7 @@ class ServerStore extends ChangeNotifier {
           if (wasBusy) {
             AppLogger.I.i(_tag, 'execution settled ${ev.type} $sid2');
             if (!isChildSession(sid2) && !_suppressNotify(sid2)) {
+              _cancelHostCards(sid2);
               unawaited(NotificationService.notifyRunComplete(
                       sid2, sessionById(sid2)?.title)
                   .catchError((_) {}));
@@ -2366,6 +2374,7 @@ class ServerStore extends ChangeNotifier {
           AppLogger.I.i(_tag,
               'SSE form.created sid=${f.sessionID} fid=${f.id} host=$host');
           if (!_suppressNotify(host)) {
+            unawaited(NotificationService.cancelSessionRun(host));
             unawaited(NotificationService.notifyQuestion(
                     f.sessionID, sessionById(host)?.title, f.title)
                 .catchError((_) {}));
@@ -2395,6 +2404,7 @@ class ServerStore extends ChangeNotifier {
         AppLogger.I.i(_tag,
             'SSE permission.asked sid=${p.sessionID} pid=${p.id} host=$host');
         if (!_suppressNotify(host)) {
+          unawaited(NotificationService.cancelSessionRun(host));
           unawaited(NotificationService.notifyPermission(
                   p.sessionID, sessionById(host)?.title, p)
               .catchError((_) {}));
@@ -2787,11 +2797,13 @@ class ServerStore extends ChangeNotifier {
       form = entry;
     }
     if (perm != null && !_suppressNotify(hostSid)) {
+      unawaited(NotificationService.cancelSessionRun(hostSid));
       unawaited(NotificationService.notifyPermission(
               perm.sessionID, sessionById(hostSid)?.title, perm)
           .catchError((_) {}));
     }
     if (form != null && !_suppressNotify(hostSid)) {
+      unawaited(NotificationService.cancelSessionRun(hostSid));
       unawaited(NotificationService.notifyQuestion(
               form.sessionID, sessionById(hostSid)?.title, form.title)
           .catchError((_) {}));

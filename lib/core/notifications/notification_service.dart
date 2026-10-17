@@ -28,6 +28,7 @@ class NotificationService {
   static final Set<String> _pendingRun = {};
   static final Set<String> _pendingCards = {};
 
+  @visibleForTesting
   static bool get hasPendingSlots =>
       _pendingRun.isNotEmpty || _pendingCards.isNotEmpty;
 
@@ -261,6 +262,13 @@ class NotificationService {
     if (run != null) _pendingRun.add(run);
     if (card != null) _pendingCards.add(card);
   }
+
+  @visibleForTesting
+  static bool debugHasRunSlot(String sid) => _pendingRun.contains(sid);
+
+  @visibleForTesting
+  static bool debugHasCardSlot(String cardSid) =>
+      _pendingCards.contains(cardSid);
 
   @visibleForTesting
   static void debugMarkInitialized() {

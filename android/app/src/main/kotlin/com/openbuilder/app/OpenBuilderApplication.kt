@@ -43,13 +43,18 @@ class OpenBuilderApplication : Application() {
     /// settings are frozen at first creation (ignored on re-submit), while
     /// name/description update to the current locale — a guard would pin the
     /// name to the install-time language (CR-1).
+    ///
+    /// LOW (2026-10-17, D21 revision): silent, status bar icon, no heads-up.
+    /// Anything below LOW is not a real choice for an FGS channel — NMS forces
+    /// MIN/NONE up to LOW and persists it ("FGS importance floor"), so the app
+    /// declares the effective value itself instead of relying on the floor.
     private fun ensureKeepaliveChannel() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(
                 KeepaliveService.CHANNEL_ID,
                 getString(R.string.keepalive_channel_name),
-                NotificationManager.IMPORTANCE_MIN
+                NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = getString(R.string.keepalive_channel_desc)
             }
