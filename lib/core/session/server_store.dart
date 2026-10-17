@@ -819,7 +819,7 @@ class ServerStore extends ChangeNotifier {
     if (sid != null) {
       _sse?.reconnectNow();
       maybeMarkViewed(sid);
-      _cancelNotificationsForHost(sid);
+      cancelNotificationsForHost(sid);
     }
   }
 
@@ -839,7 +839,9 @@ class ServerStore extends ChangeNotifier {
 
   String? get activeConversationId => _activeSessionId;
 
-  void _cancelNotificationsForHost(String sid) {
+  /// 该会话两槽清除（完成槽 + host 名下全部卡槽）。公开供通知点击揭示路径补
+  /// 「看过即清」——跳过 push 后没有页面进入事件，规则 1 的清除须显式执行。
+  void cancelNotificationsForHost(String sid) {
     unawaited(NotificationService.cancelSessionAll(sid));
     _cancelHostCards(sid);
   }

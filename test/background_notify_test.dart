@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
@@ -133,6 +134,26 @@ class _MutablePermBackend extends _FakeBackend {
 
   @override
   Future<bool> notificationsEnabled() async => perm == true;
+}
+
+class _GateStartBackend extends _FakeBackend {
+  final gate = Completer<void>();
+
+  @override
+  Future<void> start(int count) {
+    super.start(count);
+    return gate.future;
+  }
+}
+
+class _PauseSpyStore extends ServerStore {
+  int pauses = 0;
+
+  @override
+  Future<void> pause() {
+    pauses++;
+    return super.pause();
+  }
 }
 
 void main() {
@@ -403,6 +424,9 @@ void main() {
   group('KeepaliveController', () {
     tearDown(() {
       KeepaliveController.I.disposeForTesting();
+      KeepaliveController.armTimeout = const Duration(seconds: 15);
+      TestWidgetsFlutterBinding.instance
+          .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     });
 
     test('streaming rise starts FGS; drop to zero stops immediately', () async {
@@ -525,6 +549,142 @@ void main() {
       expect(backend.permRequests, 0);
       expect(backend.starts, isEmpty);
       expect(KeepaliveController.I.observationActive, isFalse);
+      store.dispose();
+    });
+
+    test('prompt-sent starts the watcher before the busy rise (armed)',
+        () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      await KeepaliveController.I.onUserPromptSent();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1],
+          reason: 'send time is guaranteed foreground; the watcher must not '
+          'wait for the busy event');
+      expect(KeepaliveController.I.observationActive, isTrue);
+
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1], reason: 'the rise must not start twice');
+      expect(backend.updates, [1]);
+      store.dispose();
+    });
+
+    test('armed watcher stops when no run materializes', () async {
+      KeepaliveController.armTimeout = const Duration(milliseconds: 60);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      await KeepaliveController.I.onUserPromptSent();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1]);
+
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(backend.stops, 1);
+      expect(KeepaliveController.I.observationActive, isFalse);
+      store.dispose();
+    });
+
+    test('armed watcher follows the run lifecycle and expiry is a no-op',
+        () async {
+      KeepaliveController.armTimeout = const Duration(milliseconds: 60);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      await KeepaliveController.I.onUserPromptSent();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1]);
+
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.updates, [1]);
+
+      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
+      expect(backend.stops, 1);
+
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(backend.stops, 1,
+          reason: 'arm expiry after the run already settled must not re-fire');
+      expect(KeepaliveController.I.observationActive, isFalse);
+      store.dispose();
+    });
+
+    test('rise while inactive (notification shade) starts the FGS', () async {
+      final binding = TestWidgetsFlutterBinding.instance;
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1],
+          reason: 'inactive keeps the activity visible; a background FGS '
+          'start is still allowed by the system');
+      store.dispose();
+    });
+
+    test('rise while hidden (stopped) does not start the FGS', () async {
+      final binding = TestWidgetsFlutterBinding.instance;
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, isEmpty,
+          reason: 'onStop dispatched means a background FGS start would be '
+          'rejected (D2); the trailing lifecycle reset lives in tearDown '
+          '(post-dispose) so the observer cannot re-enter');
+      store.dispose();
+    });
+
+    test('arm expiry racing the in-flight start still stops; background '
+        'stop pauses', () async {
+      KeepaliveController.armTimeout = const Duration(milliseconds: 50);
+      final store = _PauseSpyStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _GateStartBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      final sent = KeepaliveController.I.onUserPromptSent();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1], reason: 'armed start fires before busy');
+      store.setAppForeground(false);
+
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      backend.gate.complete();
+      await sent;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(backend.stops, 1,
+          reason: 'the timer expired while start was in flight; the '
+          'post-start recheck must read timer isActive (not a captured '
+          'flag) and stop');
+      expect(KeepaliveController.I.observationActive, isFalse);
+      expect(store.pauses, 1, reason: 'a background stop also pauses SSE');
       store.dispose();
     });
   });

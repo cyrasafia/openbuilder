@@ -316,8 +316,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     if (route == null || identical(route, _route)) return;
     if (_route != null) appRouteObserver.unsubscribe(this);
     _route = route;
-    // subscribe 按当前可见性回放一次 didPush / didPushNext（可见性变化的后续回调由观察者广播）
-    appRouteObserver.subscribe(this, route);
+    // subscribe 按当前可见性回放一次 didPush / didPushNext（可见性变化的后续回调由观察者广播）；
+    // sessionPageId 登记进观察者的会话页注册表，供通知点击去重（D23 揭示语义）
+    appRouteObserver.subscribe(this, route, sessionPageId: widget.sessionId);
   }
 
   @override

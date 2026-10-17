@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'app_state.dart';
 import 'core/connection/connection_profile.dart';
 import 'core/connection/connection_store.dart';
 import 'core/logging/app_logger.dart';
@@ -91,12 +92,39 @@ void resetNotificationTapDebounce() {
 DateTime Function() notificationTapClock = DateTime.now;
 final Map<String, DateTime> _lastNotificationTapAt = {};
 
-/// Push the conversation page for a tapped notification (payload = session
-/// id). Returns whether a push happened; taps on the same session within the
-/// debounce window are swallowed — `currentConfiguration.uri` can't dedupe
-/// because it does not reflect imperative (pushed) matches.
+/// Open the conversation page for a tapped notification (payload = session
+/// id). Returns whether the tap was handled. A page for that session already
+/// in the navigator stack is REVEALED — covering routes are popped, and an
+/// already-visible page stays put (tapping the completion notification right
+/// after backgrounding from that very page must not stack a second copy);
+/// the session's notifications are cleared on the spot (§2.6 rule 1) because
+/// skipping the push skips setActiveConversation's clear. The in-stack check
+/// goes through the page registry on [appRouteObserver] —
+/// `currentConfiguration.uri` can't dedupe because it does not reflect
+/// imperative (pushed) matches; a stale registry entry self-heals via the
+/// fallback push after the pop loop. Fresh pushes still swallow taps on the
+/// same session within the debounce window.
 bool openSessionFromNotification(GoRouter router, String sid) {
   if (sid.isEmpty) return false;
+  if (appRouteObserver.hasSessionPage(sid)) {
+    serverStore.cancelNotificationsForHost(sid);
+    // Each pop strictly reduces the root stack (direct Navigator pops bypass
+    // PopScope, which only intercepts maybePop/system back), so the loop
+    // terminates on its own; the cap only stops a hypothetical future
+    // interceptor that swallows pops outright.
+    var pops = 0;
+    while (router.canPop() &&
+        serverStore.activeConversationId != sid &&
+        pops < 64) {
+      router.pop();
+      pops++;
+    }
+    if (serverStore.activeConversationId != sid) {
+      router.push('/session/$sid');
+    }
+    AppLogger.I.i('Router', 'notification tap → reveal /session/$sid pops=$pops');
+    return true;
+  }
   final now = notificationTapClock();
   final last = _lastNotificationTapAt[sid];
   if (last != null && now.difference(last) < const Duration(milliseconds: 800)) {

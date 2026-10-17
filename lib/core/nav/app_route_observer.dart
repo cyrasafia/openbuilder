@@ -19,9 +19,15 @@ class AppRouteObserver extends NavigatorObserver {
   final Map<Route<dynamic>, Set<RouteAware>> _subscribers = {};
   final List<Route<dynamic>> _stack = [];
   final Set<Route<dynamic>> _covered = {};
+  final Map<Route<dynamic>, String> _sessionPages = {};
 
-  void subscribe(RouteAware routeAware, Route<dynamic> route) {
+  /// [sessionPageId]：该路由是某会话的详情页时登记（ConversationScreen 订阅时传入），
+  /// 供 [hasSessionPage] 判定「栈内是否已有该会话的页面」——`currentConfiguration.uri`
+  /// 不反映 imperative match，通知点击去重只能走注册表（design-background-notify D23）。
+  void subscribe(RouteAware routeAware, Route<dynamic> route,
+      {String? sessionPageId}) {
     _subscribers.putIfAbsent(route, () => <RouteAware>{}).add(routeAware);
+    if (sessionPageId != null) _sessionPages[route] = sessionPageId;
     // 兜底：路由不在栈内时按栈顶记账。生产不会走到（observer 通知先于页面首帧 build），
     // 它服务未注册本观察者的 harness（如各 widget 测试自建 GoRouter）——那类页面因此恒判可见。
     if (!_stack.contains(route)) _stack.add(route);
@@ -34,6 +40,12 @@ class AppRouteObserver extends NavigatorObserver {
     }
   }
 
+  /// 栈内是否已有该会话的详情页。注册表条目随路由出栈 / 移除 / 替换 / 页面注销同步清理；
+  /// 导航器整棵拆除（不走 pop / remove）时与 `_stack` 同样保留陈旧条目——生产只有一棵
+  /// 常驻导航器，消费方（通知点击揭示）带兜底 push 自愈。
+  bool hasSessionPage(String sid) =>
+      _stack.any((r) => _sessionPages[r] == sid);
+
   void unsubscribe(RouteAware routeAware) {
     final emptied = <Route<dynamic>>[];
     for (final entry in _subscribers.entries) {
@@ -43,6 +55,7 @@ class AppRouteObserver extends NavigatorObserver {
     for (final route in emptied) {
       _subscribers.remove(route);
       _covered.remove(route);
+      _sessionPages.remove(route);
     }
   }
 
@@ -71,6 +84,8 @@ class AppRouteObserver extends NavigatorObserver {
     if (subscribers != null) {
       _subscribers.putIfAbsent(newRoute, () => <RouteAware>{}).addAll(subscribers);
     }
+    final sessionPageId = _sessionPages.remove(oldRoute);
+    if (sessionPageId != null) _sessionPages[newRoute] = sessionPageId;
     if (_covered.remove(oldRoute)) _covered.add(newRoute);
     _recompute();
   }
@@ -78,6 +93,7 @@ class AppRouteObserver extends NavigatorObserver {
   void _forget(Route<dynamic> route) {
     _stack.remove(route);
     _covered.remove(route);
+    _sessionPages.remove(route);
     final subscribers = _subscribers.remove(route);
     if (subscribers != null) {
       for (final routeAware in subscribers.toList()) {
@@ -118,4 +134,12 @@ class AppRouteObserver extends NavigatorObserver {
 
   static bool _covers(Route<dynamic> route) =>
       route is TransitionRoute ? route.opaque : true;
+
+  @visibleForTesting
+  void debugReset() {
+    _subscribers.clear();
+    _stack.clear();
+    _covered.clear();
+    _sessionPages.clear();
+  }
 }

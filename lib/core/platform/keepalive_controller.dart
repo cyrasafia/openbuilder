@@ -31,6 +31,9 @@ class KeepaliveController with WidgetsBindingObserver {
   static final KeepaliveController I = KeepaliveController._();
   static const _tag = 'Keepalive';
 
+  @visibleForTesting
+  static Duration armTimeout = const Duration(seconds: 15);
+
   bool _initialized = false;
   ServerStore? _store;
   KeepaliveBackend? _backend;
@@ -38,6 +41,7 @@ class KeepaliveController with WidgetsBindingObserver {
   bool _fgsOn = false;
   bool _startInFlight = false;
   bool _permGranted = false;
+  Timer? _armTimer;
 
   ServerStore get _activeStore => _store ?? serverStore;
 
@@ -61,8 +65,19 @@ class KeepaliveController with WidgetsBindingObserver {
     final granted = await backend.requestPermission();
     if (granted == true) {
       _permGranted = true;
+      _arm();
       unawaited(_tryStart());
     }
+  }
+
+  void _arm() {
+    _armTimer?.cancel();
+    _armTimer = Timer(armTimeout, () {
+      if (_fgsOn && _streaming <= 0) {
+        AppLogger.I.i(_tag, 'armed watch expired without a run');
+        unawaited(_stop());
+      }
+    });
   }
 
   @override
@@ -91,7 +106,9 @@ class KeepaliveController with WidgetsBindingObserver {
     if (n > 0) {
       if (wasZero && !_fgsOn) {
         final state = WidgetsBinding.instance.lifecycleState;
-        if (state == null || state == AppLifecycleState.resumed) {
+        if (state == null ||
+            state == AppLifecycleState.resumed ||
+            state == AppLifecycleState.inactive) {
           unawaited(_tryStart());
         }
       } else if (_fgsOn) {
@@ -113,9 +130,10 @@ class KeepaliveController with WidgetsBindingObserver {
         AppLogger.I.w(_tag, 'notifications not granted, no keepalive');
         return;
       }
-      if (_streaming <= 0) return;
+      if (_streaming <= 0 && !(_armTimer?.isActive ?? false)) return;
+      final count = _streaming > 0 ? _streaming : 1;
       try {
-        await backend.start(_streaming);
+        await backend.start(count);
       } on PlatformException {
         return;
       } on MissingPluginException {
@@ -123,7 +141,9 @@ class KeepaliveController with WidgetsBindingObserver {
       }
       _fgsOn = true;
       AppLogger.I.i(_tag, 'watching streaming=$_streaming');
-      if (_streaming <= 0) unawaited(_stop());
+      if (_streaming <= 0 && !(_armTimer?.isActive ?? false)) {
+        unawaited(_stop());
+      }
     } finally {
       _startInFlight = false;
     }
@@ -147,6 +167,8 @@ class KeepaliveController with WidgetsBindingObserver {
   void disposeForTesting() {
     _activeStore.removeListener(_onStoreChanged);
     WidgetsBinding.instance.removeObserver(this);
+    _armTimer?.cancel();
+    _armTimer = null;
     _store = null;
     _backend = null;
     _fgsOn = false;

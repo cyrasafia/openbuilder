@@ -60,8 +60,10 @@ busy 判定单一真相源仍是 `ServerStore._statusMap`（`busy | retry`，含
 #### FGS 生命周期（2026-10-17 修订：lingering 撤销）
 
 ```
-stopped ──(streaming 0→N ∧ Android ∧ !kIsWeb ∧ connected ∧ 通知权限已授予)──▶ watching
+stopped ──(streaming 0→N ∧ Android ∧ !kIsWeb ∧ connected ∧ 通知权限已授予 ∧ 前台(resumed∨inactive))──▶ watching
+stopped ──(发送动作武装启动 ∧ Android ∧ !kIsWeb ∧ connected ∧ 已授权)──▶ watching（D26：发送时刻必在前台）
 watching ──(streaming→0：settle 完成或出卡阻塞)──▶ stopped（即停；后台则同时 pause SSE）
+watching ──(武装窗到期 ∧ streaming==0：run 未成立)──▶ stopped（后台则同时 pause SSE；D26/S39）
 watching ──(onTimeout ∨ onTaskRemoved ∨ 断连/登出)──▶ stopped
 ```
 
@@ -70,7 +72,7 @@ watching ──(onTimeout ∨ onTaskRemoved ∨ 断连/登出)──▶ stopped
 - 出卡时通知已发出（§2.6 门控除外），停表不损失已发通知；不为「他端答卡」保持长连接（2026-10-17 修订：原 3min lingering 撤销，避免 watcher 与完成/卡通知并存）。
 - **接受的损失**（D2 同族）：即停后流断，`session.viewed`（他端已读）与答卡事件不再实时到达——他端已读可能无法实时清除完成通知，由本端进页清除（规则 1）与 resume 补账兜底；他端答卡后运行恢复直至 settle 的完成通知缺失，下次前台对账补状态。
 - 停后再起（retry / 他端新 run / 答卡恢复）且 app 在后台：无法重启 FGS（Android 12+ 后台启动限制，D2），观察缺失直至回前台由 `_onForeground` 补启。
-- 启动点**只在** streaming 0→N 转变（用户发送 prompt 或本端答卡恢复运行，两者都发生在前台，规避 Android 12+ FGS 后台启动限制）。resume 对账发现 streaming（S13）也补启动（前台）。
+- 启动点（2026-10-17 D26 修订）：**首选发送动作武装启动**（`onUserPromptSent` 授权后 arm，15s 窗口内跳过 streaming 检查——发送时刻必在前台，S1「发完即走」不依赖 busy 事件竞速）；streaming 0→N rise 次之（须前台 resumed∨inactive——inactive 时 activity 仍可见，系统允许 FGS 启动；paused/hidden 维持 D2 禁止）；resume 对账发现 streaming（S13）也补启动（前台）。
 - 拒绝过权限（未授权）→ 不启动 FGS，pause 走 idle 路径（无通知能力时后台观察无用户价值）。
 
 #### 通知可见性：前台隐藏、退后台展示（2026-10-14 增补，D20）
@@ -101,8 +103,8 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
    - `resumed`：`serverStore.setAppForeground(true)` + 取消计时器 + `IosBgTask.end` + 现有 `resume()`。
    - `detached`：`IosBgTask.end`。
 3. `KeepaliveController`：
-   - `onUserPromptSent()`（2026-10-15 增补，D5 修订）：发送动作入口——conversation `_send()` guard 通过后 fire-and-forget 调用，立即请求权限（**发消息即弹**：发送时刻用户必然在前台注视 app；原 0→N 时机经 prompt HTTP 往返 + 服务端调度后 busy 事件才到达，「发完即走」时弹窗落在退后台边缘、不可见）；授权成功补 `_tryStart()`（覆盖弹窗挂起期间 busy 已上升的顺序）；iOS/Web `_backend` 为空直接 no-op。
-   - `init()`：`serverStore.addListener(_onStoreChanged)`；`_onStoreChanged` 差分 `streamingSessionCount`，0→N 时（app 处于 resumed，经 `WidgetsBinding.instance.lifecycleState` 判定）`_tryStart`（**2026-10-15 第二次修订，design-notification-channels CH-5：rise 只做只读 `notificationsEnabled()` 检查、不再触发权限弹窗**——弹窗只绑定发送动作，他端任务等无本地发送路径不问；未授权（从未问过或拒绝过）不启 FGS）；N 变化时 `updateCount`；→0 时**立即 `stop`**（2026-10-17 修订：无 lingering——前台 stop 只停 FGS，SSE 交由 MainShell 现有逻辑；后台 stop 同时 `serverStore.pause()`）；`!connected` 立即 `stop`。`observationActive` = 已授权 ∧ `_fgsOn`。
+   - `onUserPromptSent()`（2026-10-15 增补，D5 修订）：发送动作入口——conversation `_send()` guard 通过后 fire-and-forget 调用，立即请求权限（**发消息即弹**：发送时刻用户必然在前台注视 app；原 0→N 时机经 prompt HTTP 往返 + 服务端调度后 busy 事件才到达，「发完即走」时弹窗落在退后台边缘、不可见）；授权成功补 `_tryStart()`（覆盖弹窗挂起期间 busy 已上升的顺序）；iOS/Web `_backend` 为空直接 no-op。（**2026-10-17 D26 增补：授权后 `_arm()` 武装**——15s 窗口内 `_tryStart` 跳过 `_streaming <= 0` 早退、count 取 `max(1, _streaming)`，启动点真正落到发送时刻；窗口内 streaming 仍 0（发送失败/秒完成）→ 停；首次授权弹窗 granted 后同样武装启动，「授权后毫秒级退后台」残余窗口同步收窄。）
+   - `init()`：`serverStore.addListener(_onStoreChanged)`；`_onStoreChanged` 差分 `streamingSessionCount`，0→N 时（app 处于 resumed ∨ inactive，经 `WidgetsBinding.instance.lifecycleState` 判定——**2026-10-17 D26 修订**：原仅 resumed，拉通知栏等通知（Flutter 3.13+ 焦点丢失即 inactive）会把 rise 吞掉；inactive 时 activity 仍可见，不属 Android 12+ 后台启动限制；paused/hidden 维持禁止）`_tryStart`（**2026-10-15 第二次修订，design-notification-channels CH-5：rise 只做只读 `notificationsEnabled()` 检查、不再触发权限弹窗**——弹窗只绑定发送动作，他端任务等无本地发送路径不问；未授权（从未问过或拒绝过）不启 FGS）；N 变化时 `updateCount`；→0 时**立即 `stop`**（2026-10-17 修订：无 lingering——前台 stop 只停 FGS，SSE 交由 MainShell 现有逻辑；后台 stop 同时 `serverStore.pause()`）；`!connected` 立即 `stop`。`observationActive` = 已授权 ∧ `_fgsOn`。
    - 权限请求用持久化一次性标志 `notifPermAsked`（shared_preferences），避免重复打扰；拒绝后本进程周期内不再请求；`requestAndroidPermissionIfNeeded` 并发去重（in-flight 共享，防读到「已问过 ∧ 未授权」中间态）。
    - `resume()` 对账完成回调挂 `NotificationService.reconcileStale()`：按 §2.6 两级清除做重连补账。
 4. `NotificationService`：
@@ -214,6 +216,10 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | S26 | 停后他端答卡 → 运行恢复 streaming → settle | 流已断：无完成通知（D2 同族限制，接受）；下次前台对账补状态与补账清卡通知 |
 | S34 | 会话挂卡后 run 结束（他端答卡事件未达或卡仍未决） | settle 的完成通知替换该 host 名下全部卡通知（D24：单会话单通知；含上浮 child 卡） |
 | S35 | 完成通知未读时该会话又发起新 run 并出卡 | 新卡通知替换未读的完成通知（D24：最新状态胜出） |
+| S36 | 停留在会话 A 详情页（前台或退后台）→ 点 A 的完成/卡通知；A 被文件页 / 他会话页盖住时同点（D23 去重修复） | 不叠第二层 A 页：已可见 → 原地不动 + 清 A 两槽（规则 1 显式补账）；被盖住 / 压底 → pop 上方路由（文件容器整页出栈——直接 pop 不经 `popDisposition`，PopScope 拦不住）直至原 A 页可见——栈内恒单实例 |
+| S37 | 发送 prompt 后立即退后台（busy 事件晚于退后台到达，D26） | 发送时刻已武装启动 FGS → watcher 常驻显示；busy 到达后 `updateCount` 校正——S1 兑现，不依赖事件竞速 |
+| S38 | 发送后拉下通知栏等待（inactive，D26） | rise 在 inactive 到达 → FGS 照常启动（门控放宽）；watcher 出现在通知栏 |
+| S39 | 发送失败 / run 未成立（武装窗 15s 内 streaming 恒 0，D26） | 武装到期停 FGS；后台则同时 pause（等价 idle 路径），无常驻空 watcher |
 | S27 | 同一父会话下两个并行 subagent 各挂 ask 卡（后台，BN-R2） | 两卡分属不同 child sessionID → 两条独立卡槽并存；他端答其一 → 仅清对应卡槽，另一条不受影响 |
 | S28 | 前台运行中（streaming，D20） | 无常驻条目；退后台出现（状态栏有图标，D21 2026-10-17 修订后 LOW；条目沉抽屉下部）；回前台即时消失；期间 FGS 生命周期不受可见性切换影响 |
 | S29 | 前台运行中锁屏（D20） | 锁屏触发 onStop → 计数 1→0 → 常驻条目出现（等价退后台）；解锁回前台 → 消失 |
@@ -238,10 +244,11 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 - **D20 FGS 常驻通知前台隐藏、退后台展示（2026-10-14 用户需求）**：前台时用户就在看 app，`Watching` 条目是噪音。实现为降级/重升：启动仍守 D2（前台 streaming 0→N，`startForegroundService` + 每次 delivery 必 `startForeground`——start 型 delivery 受 5s 约束，update 型为后台刷新文案所需，BN-R22 分述），随后前台 `stopForeground(REMOVE)` 隐藏，退后台（started 计数 1→0，onStop 派发中同步执行）`startForeground` 重升。**计数权威在 `OpenBuilderApplication`（进程起点维护静态 started 计数），service onCreate 取种子——BN-R20 修启动竞态**（delivery 晚于 onStop 派发时 service 建于后台，自设「前台」初值会误判、FGS 刚建即降级、约 1 分钟被系统停止，打穿主场景）。重升时刻落在官方豁免「app transitions from a user-visible state」（restrictions-bg-start 豁免清单第一条）内，仍 try/catch 兜底（失败不崩溃，但降级终点是 keepalive 死亡——service 约 1 分钟内被系统停止、SSE/完成通知失效，BN-R21）。备选「退后台才 `startForegroundService`」被否决：D2 立场维持（不赌豁免窗口的通道往返时机），且现行方案 Dart 侧零改动。副产物：前台隐藏期不计 dataSync 6h/24h 预算。
 - **D21 `watching` 通道 importance LOW→MIN：状态栏零图标，`Watching` 对用户的可见面降到平台允许的最低（2026-10-15 用户需求）**：MIN 通知无状态栏图标、不弹横幅、沉抽屉最底部——完成通知成为状态栏唯一的运行相关信号。**平台硬约束：FGS 通知无法完全移除**——`startForeground` 强制附带通知，Android 13+ 另有 FGS 任务管理器（「Active apps」）列表，均不可绕过；MIN 是官方给的最低档。与 D20 正交（MIN 管状态栏图标与排序，D20 管前台抽屉条目存否），两者叠加。与 D4 同坑：通道 importance 创建后粘滞（应用不可改，仅用户可），老安装的 `watching` 仍为 LOW——状态栏图标继续出现，需卸载重装或手动在通知设置改「最小化」重置；因当前无其他用户，沿用 D4 裁定不换通道 id、不做启动清理。完成/权限/问题卡通知独立通道，不受影响。（**2026-10-17 修订**：MIN→LOW，接受状态栏图标常驻。依据 `ref/ref-miui-notification-icon.md`：FGS importance floor 会把 MIN/NONE 强制持久化为 LOW（AOSP `NotificationManagerService#enqueueNotificationInternal` + CTS 双测），MIN 从未被尊重——真机 0.10.1+137 卸载重装实测确认；「抽屉有条目 + 状态栏零图标」对 FGS 通知在 Android 上不可达，双通道均显示图标为最终形态。原「老安装 LOW 粘滞」的顾虑随之消失：LOW 即目标值。）
 - **D22 FGS 通知点击唤起 app（2026-10-15 用户需求）**：`setContentIntent(PendingIntent.getActivity → MainActivity，NEW_TASK|SINGLE_TOP，IMMUTABLE|UPDATE_CURRENT)`——PendingIntent 直达 activity，非 trampoline，Android 12 通知蹦床禁令（不允许 service/receiver 中转 startActivity）不适用。唤起后 `ActivityLifecycleCallbacks` 计数 0→1 自动走 D20 前台隐藏 → 条目即时消失，无需 autoCancel（ongoing 条目本不走点击即清）。冷启动无需处理：FGS 随进程存亡，通知存在即进程在。不路由具体会话——多会话并行时无单一目标，落在 main shell 当前所在页；完成/卡通知的点击路由已实施（D23）。
-- **D23 完成/卡通知点击定向跳转会话详情页（2026-10-16 用户需求，原 §6 待办提前实施）**：插件 `initialize` 注册 `onDidReceiveNotificationResponse`（payload=sid，§2.6 预留兑现）→ `openSessionFromNotification`（app_router.dart，与 `popToServerManagement` 同层的顶层函数）imperative push `/session/<sid>`，与列表点进一致；进页即走 D11 看过即清。**payload 归一到卡宿主（card host）**：subagent 卡通知的 payload 是卡所属 child 会话 id（design-subagent-background §D6——卡上浮父会话显示/回复，child 页面没有卡），导航前经 `cardHostSessionIdOf` 归一到顶层 host 再 push——直达可答卡页面；run-complete payload 恒为顶层会话（`!isChildSession` 守卫），归一幂等。**show 时 payload 不改**——`reconcileStale`/`getActiveNotifications` 槽位匹配依赖原始 child sid。**未知会话丢弃**：归一后 `sessionById(host) == null`（他端已删 / 残留他服务器的托盘通知）不 push、留在当前页。**双路径互斥性经插件 18.0.1 双端源码核实**：Android warm tap = `onNewIntent` → channel invoke，terminated 启动只在 `getNotificationAppLaunchDetails()`（activity launch intent）；iOS warm tap = delegate → channel invoke，terminated 时 `_launchNotificationResponseDict` 仅经 launch-details 暴露、`initialize` 不回放回调——冷热两路径不双发。冷启动处理在 main() 首帧后 `consumeLaunchNotification()` 一次消费：等 `serverStore.connected` 再 push（ConversationScreen 的 unavailable 分支不随 store 通知 setState 重建，未连接直跳会搁浅在「会话不可用」），上限 10s 超时丢弃。双击防抖 800ms **按 sid 分键**（同会话双击吞掉，不同会话连点互不影响）：`currentConfiguration.uri` 不反映 imperative matches（popToServerManagement 教训），不能做路径去重；防抖钟 `notificationTapClock` 可注入（测试）。FGS `Watching` 常驻通知维持 D22 不路由——多会话并行无单一目标。
+- **D23 完成/卡通知点击定向跳转会话详情页（2026-10-16 用户需求，原 §6 待办提前实施）**：插件 `initialize` 注册 `onDidReceiveNotificationResponse`（payload=sid，§2.6 预留兑现）→ `openSessionFromNotification`（app_router.dart，与 `popToServerManagement` 同层的顶层函数）imperative push `/session/<sid>`，与列表点进一致；进页即走 D11 看过即清。**payload 归一到卡宿主（card host）**：subagent 卡通知的 payload 是卡所属 child 会话 id（design-subagent-background §D6——卡上浮父会话显示/回复，child 页面没有卡），导航前经 `cardHostSessionIdOf` 归一到顶层 host 再 push——直达可答卡页面；run-complete payload 恒为顶层会话（`!isChildSession` 守卫），归一幂等。**show 时 payload 不改**——`reconcileStale`/`getActiveNotifications` 槽位匹配依赖原始 child sid。**未知会话丢弃**：归一后 `sessionById(host) == null`（他端已删 / 残留他服务器的托盘通知）不 push、留在当前页。**双路径互斥性经插件 18.0.1 双端源码核实**：Android warm tap = `onNewIntent` → channel invoke，terminated 启动只在 `getNotificationAppLaunchDetails()`（activity launch intent）；iOS warm tap = delegate → channel invoke，terminated 时 `_launchNotificationResponseDict` 仅经 launch-details 暴露、`initialize` 不回放回调——冷热两路径不双发。冷启动处理在 main() 首帧后 `consumeLaunchNotification()` 一次消费：等 `serverStore.connected` 再 push（ConversationScreen 的 unavailable 分支不随 store 通知 setState 重建，未连接直跳会搁浅在「会话不可用」），上限 10s 超时丢弃。双击防抖 800ms **按 sid 分键**（同会话双击吞掉，不同会话连点互不影响）：`currentConfiguration.uri` 不反映 imperative matches（popToServerManagement 教训），不能做路径去重；防抖钟 `notificationTapClock` 可注入（测试）。FGS `Watching` 常驻通知维持 D22 不路由——多会话并行无单一目标。（**2026-10-17 修订（去重缺陷修复）**：点按通知时目标会话详情页**已在导航栈内 → 不再二次 push**——原行为在「停留在详情页退后台 → 点完成通知」主路径叠出同会话两层详情页。改为**揭示（reveal）**语义：pop 上方路由直至原页可见（`activeConversationId == sid` 命中即停；弹层等非不透明路由不挡揭示、也不被揭开）；已可见则原地不动——栈内恒单实例。栈内判定走 `appRouteObserver` 会话页注册表（ConversationScreen 订阅时登记 route→sid，pop/remove/replace/注销同步清理）——`currentConfiguration.uri` 不反映 imperative match，路径去重不可行（前述既有教训）。跳过 push 即丢失规则 1 的进页清除，揭示分支显式补 `cancelNotificationsForHost`（ServerStore 原私有方法公开化）。pop 循环带上界 64：`router.pop()` 直达 `NavigatorState.pop`，对 page-based 路由不查 `popDisposition`——PopScope（`canPop:false`）只拦 `maybePop` / 系统返回、拦不住直接 pop，文件容器作为整页一次出栈（内层 navigator 一并丢弃，`handleBack` 不经此路径）；每次 pop 严格减根栈深、循环自然终止，上界纯为防「未来真正吞掉 pop 的拦截器」；注册表陈旧条目由 pop 到底后的兜底 push 自愈。防抖收窄为只作用于 push 路径——揭示路径幂等无需防抖。新增 S36。）
 
 - **D24 单会话单通知不变式（2026-10-17 用户需求）**：同一 host 会话在抽屉里至多一条通知——settle 发完成通知前清该 host 名下全部卡槽（含上浮 child 展开），发卡通知前清该 host 完成槽；卡与卡不互斥（BN-R2 并行 subagent 语义保持）。动机：他端答卡后任务又完成（或报错/问题），完成通知与残留卡通知并存会让同一会话出现两条提醒、用户无法分辨最新状态。落地见 §2.6 单会话单通知不变式，覆盖 `permission.asked` / `form.created` / REST 重建三个发卡入口与 `execution.succeeded/failed/interrupted` 发完成入口（失败与完成共用完成槽）。
 - **D25 watcher 文案改为「N 个后台任务运行中」（2026-10-17 用户需求）**：原 `Watching N sessions` 语义模糊（「会话」≠「任务」，且与完成通知的归属不清）。新文案明确分工：**运行中的任务归 watcher（`watching` 通道，LOW），暂停/完成的任务归完成通知（`tasks` 通道，HIGH 横幅）**。计数即 `streamingSessionCount`（顶层口径，D3 2026-10-17 第二次修订：只数顶层会话，子会话折叠，孤儿-only 运行不驱动）——卡阻塞会话不在「运行中」计数内，与出卡即停的 §2.4 状态机自洽。经原生 plurals 本地化（`keepalive_running_tasks`）。
+- **D26 启动点前移至发送动作（武装 watch）+ rise 门控放宽 inactive（2026-10-17 用户现场反馈：后台后 watcher 弹不出来）**：根因——`_tryStart` 的 `_streaming <= 0` 早退使 `onUserPromptSent` 的补启在 busy 未涨时空转，FGS 实际启动点落在 busy 事件到达时刻，且 rise 门控要求 `resumed`；发送后快速退后台（S1 主场景「发完即走」）或拉下通知栏等通知（Flutter 3.13+ 焦点丢失即报 `inactive`）时 busy 事件落在非 resumed → rise 被吞 → FGS 从未启动 → watcher 不出现、25s 后 pause 断流——S1 断言（「发送 → 立即退后台 → 期间通知栏有常驻」）实际兑现不了，设计-实现缺口。「有时候」= 离开速度 vs 服务端 busy 延迟的竞速（本地快服务器窗口小、远程大）。修复：① **arm-at-send**——`onUserPromptSent` 授权后 `_arm()`：15s 武装窗内 `_tryStart` 跳过 `_streaming <= 0` 早退、count 取 `max(1, _streaming)`（武装期 watcher 显示「1 个后台任务运行中」——任务已提交、busy 未涨的间隙，通常 <1s，run 起来后 `updateCount` 校正）；窗内 streaming 仍 0（发送失败 / 秒完成）→ 停（后台则同时 pause，等价 idle 路径）；BN-R11 的 start 后复查以「武装已失效」收窄（武装期不即停，且复查读 `_armTimer.isActive` 而非捕获值，堵「await 间隙到期→_fgsOn 滞留 true」竞态）。② **rise 门控 `null ∨ resumed ∨ inactive`**——inactive（拉通知栏 / 分屏 / 退后台手势进行中）activity 仍可见（Android onPause 未到 onStop），进程仍 TOP，不属 Android 12+ 后台 FGS 启动限制；paused/hidden（onStop 已派发）维持禁止（D2）。残余（接受，D5 同族）：`requestPermission` 答复的 await 间隙（毫秒级）内退后台仍可能丢首次 FGS；慢启动 run（busy 事件 >15s 才到且 app 已后台）武装到期即停并 pause——busy 此后不可达，回前台对账才恢复。他端发起的 run 不受 arm 惠及（无本地发送动作），但 inactive 放宽同步覆盖其前台过渡竞态；后台期间他端新 run 仍不可启动（D2 硬限制，S23）。
 
 ## 5. 接口展望（P1/P2 预留，不实施）
 
@@ -421,3 +428,25 @@ paused 事件 → IosBgTask.begin("sse-pause-window") → 持有 id
 | D3 第二次修订 / §2.1 / D25 | **主会话口径**：只数顶层会话（子会话按 subtask 语义折叠进 host 任务，不单独计数）；孤儿-only 运行不驱动 FGS（count=0 即停，不做持续监听）——修复「subagent 把 N 个后台任务撑大」；代价：独立后台任务无观察窗（其完成本就不发通知） |
 
 接受的损失（用户明示）：即停后 `session.viewed` / 答卡事件不再实时到达——他端已读可能清不掉完成通知（进页清除 + resume 补账兜底）；停后再起且在后台无法重启 FGS（D2 既有限制）。
+
+### 修订（2026-10-17，缺陷修复：通知点击叠双页）
+
+现场反馈：停留在会话详情页退后台，点完成通知再进 app，出现两层同会话详情页。根因：`openSessionFromNotification` 无条件 push；800ms 防抖只吞连击，`currentConfiguration.uri` 不反映 imperative match（D23 既有教训）无法做路径去重。
+
+| 位置 | 修订内容 |
+|---|---|
+| D23 / S36（新增） | 揭示（reveal）语义：栈内命中不二次 push——已可见原地不动并显式补规则 1 清除；被盖住 / 压底 pop 上方路由揭示原页，栈内恒单实例 |
+| 配套组件 | `AppRouteObserver` 会话页注册表（`subscribe(sessionPageId:)` / `hasSessionPage` / `debugReset`）；`ServerStore.cancelNotificationsForHost` 公开化（原私有 `_cancelNotificationsForHost`） |
+| 防抖收窄 | 800ms 按 sid 分键防抖只作用于 push 路径——揭示路径幂等无需防抖 |
+| 测试 | `notification_tap_route_test` +3：可见命中不叠页、可见命中清完成槽、压底揭示单实例；防抖用例改走「pop 退回列表后窗口内重击」路径 |
+
+### 修订（2026-10-17，缺陷修复：后台后 watcher 不出现（S1 竞态））
+
+现场反馈：有时候 app 退后台后 FGS 常驻通知（watcher）弹不出来。定位：Kotlin 侧（BN-R20 种子 / D20 显隐 / 重升豁免）核对无洞——通知「弹不出来」是 FGS 根本没启动，不是启动了没显示；根因在 Dart 侧启动点错位 + rise 门控过严（详见 D26）。
+
+| 位置 | 修订内容 |
+|---|---|
+| §2.4 / §2.5(3) / D26（新增）/ S37-S39（新增） | arm-at-send（发送动作武装启动，15s 窗、`max(1, count)`、到期无 run 即停）+ rise 门控放宽 `inactive`（paused/hidden 维持 D2 禁止） |
+| `keepalive_controller.dart` | `onUserPromptSent` 授权后 `_arm()`；`_tryStart` 武装期跳过 streaming 早退、start 后复查读 `_armTimer.isActive`（堵 await 间隙到期竞态）；`disposeForTesting` 清理 timer |
+| 测试 | `background_notify_test` +6：武装启动先于 busy、无 run 到期停、run 生命周期 + 到期 no-op、inactive rise 启动、hidden rise 仍禁止、到期竞态在途 start 仍停 + 后台 pause（`_PauseSpyStore`）；lifecycle 用例回置统一移组 tearDown（dispose 后派发，防 `_onForeground` 续体跨 dispose 滞留 `_fgsOn`） |
+| 既有用例兼容 | S31 弹窗竞态用例（rise 在弹窗期只读检查不过 → granted 后单次启动）、manual re-enable、never-granted 均不变通过 |
