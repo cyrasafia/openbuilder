@@ -27,6 +27,7 @@ import '../../core/attachments/attachment_pipeline.dart';
 import '../../core/attachments/file_ref.dart';
 import '../../core/attachments/image_data_cache.dart';
 import '../../core/net/net_error.dart';
+import '../../core/platform/keepalive_controller.dart';
 import '../../core/nav/app_route_observer.dart';
 import '../../core/logging/perf_probe.dart';
 import '../../core/session/conversation_store.dart';
@@ -1653,6 +1654,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     if (conv == null || client == null) return;
     if (conv.workspaceMissing) return;
     serverStore.ensureSseForSession(widget.sessionId);
+    KeepaliveController.I.armOnUserPromptSent();
     final session = serverStore.sessionById(widget.sessionId);
     final directory = session?.directory;
     final pendingSnapshot = List<_PendingItem>.from(_pending);
@@ -3945,6 +3947,7 @@ class _PermissionCardState extends State<_PermissionCard> {
 
   Future<void> _respond(String response) async {
     setState(() => _replying = true);
+    KeepaliveController.I.armOnCardReplied();
     try {
       await widget.store.respondPermission(widget.permission, response);
     } catch (e) {
@@ -4157,6 +4160,7 @@ class _FormCardState extends State<_FormCard> {
 
   Future<void> _reply() async {
     setState(() => _replying = true);
+    KeepaliveController.I.armOnCardReplied();
     try {
       await widget.store.replyForm(widget.form, _buildAnswer());
     } catch (e) {
@@ -4176,6 +4180,7 @@ class _FormCardState extends State<_FormCard> {
 
   Future<void> _reject() async {
     setState(() => _replying = true);
+    KeepaliveController.I.armOnCardReplied();
     try {
       await widget.store.cancelForm(widget.form);
     } catch (e) {

@@ -64,7 +64,13 @@ class KeepaliveController with WidgetsBindingObserver {
   /// of racing the busy event (D26 arm-at-send, S37). Pure arming — the
   /// permission request lives on the settings toggle (D29); no-op when the
   /// toggle is off (D27) or the backend is unsupported.
-  void armOnUserPromptSent() {
+  void armOnUserPromptSent() => _armAndStart();
+
+  /// Card-answer hook: answering a blocking permission / question card resumes
+  /// the run, so it shares the send-action arming (D26, D33). Same no-op rules.
+  void armOnCardReplied() => _armAndStart();
+
+  void _armAndStart() {
     final backend = _backend;
     if (backend == null || !_toggleOn) return;
     _arm();

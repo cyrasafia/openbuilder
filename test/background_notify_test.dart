@@ -1,8 +1,9 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:open_builder/app_state.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
@@ -12,6 +13,10 @@ import 'package:open_builder/core/session/server_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/domain/models.dart';
+import 'package:open_builder/features/conversation/conversation_screen.dart';
+import 'package:open_builder/l10n/gen/app_localizations.dart';
+import 'package:open_builder/ui/theme.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
       id: 't',
@@ -121,6 +126,55 @@ Dio _backfillDio() => Dio(BaseOptions(
       receiveTimeout: const Duration(milliseconds: 1),
     ));
 
+class _SendRecordingClient extends OpencodeClient {
+  _SendRecordingClient()
+      : super(dioFor(const ConnectionProfile(
+          id: 't',
+          name: 'test',
+          address: 'http://127.0.0.1:9',
+          username: 'opencode',
+          password: '',
+        )));
+  final prompts = <String>[];
+  final permissionReplies = <String>[];
+
+  @override
+  Future<MessagesPage> messagesPage(
+    String sessionId, {
+    required int limit,
+    String? cursor,
+  }) async =>
+      const MessagesPage([], null, null);
+
+  @override
+  Future<List<SessionModel>> sessionsForDirectory(
+    String directory, {
+    int limit = 1000,
+  }) async =>
+      const [];
+
+  @override
+  Future<void> respondPermission(
+    String sessionId,
+    String permissionId,
+    String response,
+  ) async {
+    permissionReplies.add('$permissionId:$response');
+  }
+
+  @override
+  Future<Map<String, dynamic>> prompt(
+    String sessionId, {
+    required String text,
+    List<Map<String, dynamic>> files = const [],
+    List<Map<String, dynamic>> skills = const [],
+    Duration? sendTimeout,
+  }) async {
+    prompts.add(text);
+    return <String, dynamic>{};
+  }
+}
+
 class _FakeBackend extends KeepaliveBackend {
   final starts = <int>[];
   final updates = <int>[];
@@ -163,6 +217,27 @@ class _PauseSpyStore extends ServerStore {
     pauses++;
     return super.pause();
   }
+}
+
+Future<void> _pumpConversation(WidgetTester tester, String sid) async {
+  final router = GoRouter(
+    initialLocation: '/session/$sid',
+    routes: [
+      GoRoute(
+        path: '/session/:id',
+        builder: (_, s) =>
+            ConversationScreen(sessionId: s.pathParameters['id']!),
+      ),
+    ],
+  );
+  await tester.pumpWidget(MaterialApp.router(
+    theme: AppTheme.light,
+    darkTheme: AppTheme.dark,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    routerConfig: router,
+  ));
+  await tester.pump(const Duration(milliseconds: 600));
 }
 
 void main() {
@@ -772,6 +847,9 @@ void main() {
       KeepaliveController.armTimeout = const Duration(seconds: 15);
       TestWidgetsFlutterBinding.instance
           .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      serverStore.connected = false;
+      serverStore.client = null;
+      serverStore.resetForTesting();
     });
 
     test('streaming rise starts FGS; drop to zero stops immediately', () async {
@@ -914,6 +992,40 @@ void main() {
       store.dispose();
     });
 
+    test('arm while the toggle is off does not start the FGS', () async {
+      taskCompleteNotify.value = false;
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      KeepaliveController.I.armOnUserPromptSent();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, isEmpty,
+          reason: 'the opt-in switch is the master gate (D27): a send action '
+          'must not start the watcher while it is off');
+      expect(KeepaliveController.I.observationActive, isFalse);
+      store.dispose();
+    });
+
+    test('card reply arms the watcher before the resumed run rises', () async {
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(_session('s1'));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      KeepaliveController.I.armOnCardReplied();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(backend.starts, [1],
+          reason: 'answering a card is a user action in the foreground, so the '
+          'watch must start then (D33) — not when the resumed run goes busy');
+      expect(KeepaliveController.I.observationActive, isTrue);
+      store.dispose();
+    });
+
     test('armed watcher stops when no run materializes', () async {
       KeepaliveController.armTimeout = const Duration(milliseconds: 60);
       final store = ServerStore()
@@ -1024,6 +1136,92 @@ void main() {
       expect(KeepaliveController.I.observationActive, isFalse);
       expect(store.pauses, 1, reason: 'a background stop also pauses SSE');
       store.dispose();
+    });
+
+    testWidgets('conversation send arms the watcher before the busy rise',
+        (tester) async {
+      KeepaliveController.armTimeout = const Duration(milliseconds: 100);
+      SharedPreferences.setMockInitialValues({});
+      const sid = 'arm-send-1';
+      final client = _SendRecordingClient();
+      serverStore.client = client;
+      serverStore.connected = true;
+      serverStore.upsertSessionForTesting(_session(sid));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: serverStore, backend: backend);
+
+      await _pumpConversation(tester, sid);
+
+      await tester.enterText(find.byType(TextField), 'hi');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+
+      expect(client.prompts, ['hi']);
+      expect(backend.starts, [1],
+          reason: 'the send action must arm the FGS while the app is still '
+          'foreground (D26); the busy race is not allowed to decide');
+
+      final binding = TestWidgetsFlutterBinding.instance;
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      serverStore.onEventForTesting(_ev('session.execution.started', sid));
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(backend.starts, [1], reason: 'the rise must not start twice');
+      expect(backend.updates, [1]);
+      expect(KeepaliveController.I.observationActive, isTrue,
+          reason: 'a busy event landing after the app goes background keeps '
+          'the armed watcher alive instead of bouncing off the lifecycle gate');
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 5));
+    });
+
+    testWidgets('answering a permission card arms the watcher',
+        (tester) async {
+      KeepaliveController.armTimeout = const Duration(milliseconds: 100);
+      SharedPreferences.setMockInitialValues({});
+      const sid = 'arm-card-1';
+      final client = _SendRecordingClient();
+      serverStore.client = client;
+      serverStore.connected = true;
+      serverStore.upsertSessionForTesting(_session(sid));
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: serverStore, backend: backend);
+
+      await _pumpConversation(tester, sid);
+
+      serverStore.onEventForTesting(
+          _ev('permission.asked', sid, {'id': 'perm1', 'action': 'bash'}));
+      await tester.pump(const Duration(milliseconds: 50));
+
+      final allowOnce = find.text('Once');
+      expect(allowOnce, findsOneWidget);
+      await tester.ensureVisible(allowOnce);
+      await tester.tap(allowOnce);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+
+      expect(client.permissionReplies, ['perm1:once']);
+      expect(backend.starts, [1],
+          reason: 'answering the card is a user action in the foreground; the '
+          'resumed run must not race the lifecycle gate (D33)');
+
+      final binding = TestWidgetsFlutterBinding.instance;
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      serverStore.onEventForTesting(_ev('session.execution.started', sid));
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(backend.starts, [1], reason: 'the rise must not start twice');
+      expect(backend.updates, [1]);
+      expect(KeepaliveController.I.observationActive, isTrue,
+          reason: 'the resumed run going busy after the app backgrounds keeps '
+          'the armed watcher alive');
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 5));
     });
   });
 }

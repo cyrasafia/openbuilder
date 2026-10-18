@@ -62,18 +62,18 @@ busy 判定单一真相源仍是 `ServerStore._statusMap`（`busy | retry`，含
 
 ```
 stopped ──(streaming 0→N ∧ Android ∧ !kIsWeb ∧ connected ∧ 通知权限已授予 ∧ 前台(resumed∨inactive) ∧ 开关开（D27）)──▶ watching
-stopped ──(发送动作武装启动 ∧ Android ∧ !kIsWeb ∧ connected ∧ 已授权 ∧ 开关开（D27）)──▶ watching（D26：发送时刻必在前台）
+stopped ──(用户动作武装启动（发送 / 卡答复，D26/D33） ∧ Android ∧ !kIsWeb ∧ connected ∧ 已授权 ∧ 开关开（D27）)──▶ watching（动作时刻必在前台）
 watching ──(streaming→0：settle 完成或出卡阻塞)──▶ stopped（即停；后台则同时 pause SSE）
 watching ──(武装窗到期 ∧ streaming==0：run 未成立)──▶ stopped（后台则同时 pause SSE；D26/S39）
 watching ──(onTimeout ∨ onTaskRemoved ∨ 断连/登出)──▶ stopped
 ```
 
-口径定义（§2.1）：`streaming` = `_statusMap` 中 busy|retry **且**该会话（或其卡路由 host）无待决 permission/form。**卡不驱动保活**——出卡即 streaming−1，归零即停：
+口径定义（§2.1）：`streaming` = `_statusMap` 中 busy|retry **且**该会话（或其卡路由 host）无待决 permission/form。**卡不驱动保活**——出卡即 streaming−1，归零即停（D33 的卡答复武装由**用户动作**驱动，不是「卡状态」驱动，不违反本口径）：
 
 - 出卡时通知已发出（§2.6 门控除外），停表不损失已发通知；不为「他端答卡」保持长连接（2026-10-17 修订：原 3min lingering 撤销，避免 watcher 与完成/卡通知并存）。
 - **接受的损失**（D2 同族）：即停后流断，`session.viewed`（他端已读）与答卡事件不再实时到达——他端已读可能无法实时清除完成通知，由本端进页清除（规则 1）与 resume 补账兜底；他端答卡后运行恢复直至 settle 的完成通知缺失，下次前台对账补状态。
-- 停后再起（retry / 他端新 run / 答卡恢复）且 app 在后台：无法重启 FGS（Android 12+ 后台启动限制，D2），观察缺失直至回前台由 `_onForeground` 补启。
-- 启动点（2026-10-17 D26 修订）：**首选发送动作武装启动**（`onUserPromptSent` 授权后 arm，15s 窗口内跳过 streaming 检查——发送时刻必在前台，S1「发完即走」不依赖 busy 事件竞速）；streaming 0→N rise 次之（须前台 resumed∨inactive——inactive 时 activity 仍可见，系统允许 FGS 启动；paused/hidden 维持 D2 禁止）；resume 对账发现 streaming（S13）也补启动（前台）。
+- 停后再起（retry / 他端新 run / 他端答卡恢复）且 app 在后台：无法重启 FGS（Android 12+ 后台启动限制，D2），观察缺失直至回前台由 `_onForeground` 补启。**本端答卡**受 D33 武装保护。
+- 启动点（2026-10-17 D26 修订）：**首选用户动作武装启动**（`armOnUserPromptSent()` 在发送时刻、`armOnCardReplied()` 在卡答复动作时刻（POST 前）`_arm()`，15s 窗口内跳过 streaming 检查——动作时刻必在前台，S1「发完即走」与答卡后切后台都不依赖 busy 事件竞速）；streaming 0→N rise 次之（须前台 resumed∨inactive——inactive 时 activity 仍可见，系统允许 FGS 启动；paused/hidden 维持 D2 禁止）；resume 对账发现 streaming（S13）也补启动（前台）。
 - 拒绝过权限（未授权）→ 不启动 FGS，pause 走 idle 路径（无通知能力时后台观察无用户价值）。
 - **开关关闭（默认，D27 2026-10-18）→ 本状态机整体不激活**：controller 不驱动任何 FGS 启停，后台行为回「25s pause」。开关运行时打开：等价一次 0→N——前台立即 `_tryStart`，后台等 `_onForeground`（D2 后台启动限制不变）；开关运行时关闭：`stop`（在后台则同时 pause SSE）。
 
@@ -98,7 +98,7 @@ FGS 常驻通知（「N 个后台任务运行中」，D25）**仅在 app 退后�
    - `resumed`：`serverStore.setAppForeground(true)` + 取消计时器 + ~~`IosBgTask.end`~~ + 现有 `resume()`。
    - `detached`：~~`IosBgTask.end`~~（随 D28 删除）。
 3. `KeepaliveController`：
-   - `armOnUserPromptSent()`（**2026-10-18 rebase 合流改造**：原 `onUserPromptSent`（2026-10-15 增补，D5 修订）在授权移至设置开关（D29）后改造为**纯武装**——不请求权限；开关关（默认，D27）或 iOS/Web `_backend` 为空直接 no-op）：发送动作入口——conversation `_send()` guard 通过后 fire-and-forget 调用。（**2026-10-17 D26 增补：`_arm()` 武装**——15s 窗口内 `_tryStart` 跳过 `_streaming <= 0` 早退、count 取 `max(1, _streaming)`，启动点真正落到发送时刻（S1「发完即走」不依赖 busy 事件竞速）；窗口内 streaming 仍 0（发送失败/秒完成）→ 停（S39）；原「首次授权弹窗 granted 后同样武装启动、收窄授权后毫秒级退后台残余」随授权移出发送路径废止——开关流程授予权限时无并发 run 提交，`_onToggleChanged` 自带启动路径。）
+   - `armOnUserPromptSent()` / `armOnCardReplied()`（**2026-10-18 rebase 合流改造**：原 `onUserPromptSent`（2026-10-15 增补，D5 修订）在授权移至设置开关（D29）后改造为**纯武装**——不请求权限；开关关（默认，D27）或 iOS/Web `_backend` 为空直接 no-op）：本地用户动作入口，共用一个私有 `_armAndStart()`。发送入口——conversation `_send()` guard 通过后 fire-and-forget 调用；卡答复入口——权限卡 `_respond`、问题卡 `_reply`/`_reject` 在 **POST 之前**调用（D33：答卡恢复的 run 与发送同样会撞 busy 竞速；前置武装与 `_send()` 同构，失败代价仅 15s 空 watcher）。（**2026-10-17 D26 增补：`_arm()` 武装**——15s 窗口内 `_tryStart` 跳过 `_streaming <= 0` 早退、count 取 `max(1, _streaming)`，启动点真正落到用户动作时刻（S1「发完即走」不依赖 busy 事件竞速）；窗口内 streaming 仍 0（发送失败/秒完成）→ 停（S39）；原「首次授权弹窗 granted 后同样武装启动、收窄授权后毫秒级退后台残余」随授权移出发送路径废止——开关流程授予权限时无并发 run 提交，`_onToggleChanged` 自带启动路径。）
    - `init()`：`serverStore.addListener(_onStoreChanged)`；`_onStoreChanged` 差分 `streamingSessionCount`，0→N 时（app 处于 resumed ∨ inactive，经 `WidgetsBinding.instance.lifecycleState` 判定——**2026-10-17 D26 修订**：原仅 resumed，拉通知栏等通知（Flutter 3.13+ 焦点丢失即 inactive）会把 rise 吞掉；inactive 时 activity 仍可见，不属 Android 12+ 后台启动限制；paused/hidden 维持禁止；**开关关则整体不激活（D27 2026-10-18）**）`_tryStart`（**2026-10-15 第二次修订，design-notification-channels CH-5：rise 只做只读 `notificationsEnabled()` 检查、不再触发权限弹窗**）；N 变化时 `updateCount`；→0 时**立即 `stop`**（2026-10-17 修订：无 lingering——前台 stop 只停 FGS，SSE 交由 MainShell 现有逻辑；后台 stop 同时 `serverStore.pause()`）；`!connected` 立即 `stop`。`observationActive` = 已授权 ∧ `_fgsOn`。
    - ~~权限请求用持久化一次性标志 `notifPermAsked`（shared_preferences），避免重复打扰；拒绝后本进程周期内不再请求~~（**D29 2026-10-18 退役**：开关是显式用户意图，每次开都请求）；`requestAndroidPermissionIfNeeded` 并发去重（in-flight 共享）保留。
    - `resume()` 对账完成回调挂 `NotificationService.reconcileStale()`：按 §2.6 两级清除做重连补账。
@@ -113,7 +113,7 @@ FGS 常驻通知（「N 个后台任务运行中」，D25）**仅在 app 退后�
 8. `AndroidManifest.xml`：`FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` 权限；`<service android:name=".KeepaliveService" android:foregroundServiceType="dataSync" android:exported="false"/>`。
 9. **2026-10-18 修订（D27-D30，任务完成通知 opt-in 化）**：
    - `app_state.dart`：新增 `ValueNotifier<bool> taskCompleteNotify`（默认 false，SharedPreferences key `taskCompleteNotify`，照 `showThinking` 模式在 `initSettings` 加载与自动保存）。
-   - `KeepaliveController`：激活前提扩为「开关 ∧ Android ∧ 权限」——挂 `taskCompleteNotify` listener：关 → `stop` 并不再响应 store 变化；开 → 若 `streamingSessionCount > 0` 且 resumed 立即 `_tryStart`。`onUserPromptSent()` **退役**（D29：请求绑定开关动作，conversation `_send()` 调用点删除）；`notifPermAsked` 一次性标志退役（开关拨动是显式意图，每次开都请求，无疲劳面）。
+   - `KeepaliveController`：激活前提扩为「开关 ∧ Android ∧ 权限」——挂 `taskCompleteNotify` listener：关 → `stop` 并不再响应 store 变化；开 → 若 `streamingSessionCount > 0` 且 resumed 立即 `_tryStart`。`onUserPromptSent()` 改名为 **`armOnUserPromptSent()`**（D29：权限请求部分退役——请求绑定开关动作；**武装部分保留**，conversation `_send()` 调用点同样保留，见 §2.5(3) 与 D26）；`notifPermAsked` 一次性标志退役（开关拨动是显式意图，每次开都请求，无疲劳面）。
    - `NotificationService`：`notifyRunComplete` 门控 `taskCompleteNotify.value`；`notifyPermission`/`notifyQuestion` **同闸**——开关语义「开=有通知，关=无通知」，完成/卡、前台/后台一律随开关（用户裁定 2026-10-18：开关未开即从未请求过权限，通知本就弹不出来，分开处理徒增语义分支）。**门控只看开关值、不做平台判定**（实现口径）：非 Android 平台设置项不存在、持久化值恒 false，平台隔离（D27）由开关可达性达成，无需重复判定；iOS no-op 由此自然成立。`init()` 非 Android 平台整体 no-op（BN-R34：`InitializationSettings` 缺 iOS 设置时插件 `initialize` 在 iOS 目标抛 `ArgumentError`，会打穿 `main()` 启动——平台门控顺带移除了 iOS 权限请求，`_initialized` 恒 false 的下游早退均安全）。
    - 设置页（`settings_tab.dart`「客户端」区）：`ListTile` + `trailing: Switch`「任务完成通知」（与 showThinking 同款；仅 `!kIsWeb && Platform.isAndroid` 显示；副标题「任务完成或需要处理时通知（需通知权限与后台联网）」）。打开流程：`requestAndroidPermissionIfNeeded()` → 拒绝/取消 → 开关回弹关 + SnackBar「未授予通知权限」；授权 → 弹省电引导对话框（D29）→ [去设置] 深链 `ACTION_APPLICATION_DETAILS_SETTINGS` / [知道了]。已授权状态再拨开：请求 API 即时短路返回（无系统弹窗）→ 直接弹省电对话框（S43）。
    - `MainShell`：移除 `IosBgTask.begin/end` 三处调用；`ios_bg_task.dart` 与 AppDelegate `bg_task` 通道删除。
@@ -239,6 +239,7 @@ FGS 常驻通知（「N 个后台任务运行中」，D25）**仅在 app 退后�
 | S48 | 补发后迟到的 settle 事件到达（或反之） | 恰好一次：两路先到者消化 statusMap，后到者 wasBusy/差分为 false → no-op（「无 idle 不补」面除外：merge 消化 busy 但被 idle 门拦下时，迟到事件亦不发——落在 D31 接受清单内） |
 | S49 | 断网期间出问题/授权卡，他端未读（host viewed == null，或 viewed < owner 消息水位——卡出现后没再打开过） | 重连 backfill 差分发现新 pending 卡 → **补卡通知**（D24 先清 host 完成槽；toggle/suppress 门照旧）——run 挂起中、无 settle，完成补发不适用，卡补发补位 |
 | S50 | 断网期间出卡，他端已读（viewed ≥ owner 消息水位，卡出现后打开过）或已操作（答卡） | 不补——已读由消息水位判据拦下；已操作则 backfill 查无 pending，天然不触发（残留卡通知由既有补账清除）。（**边界（BN-R49）**：`POST /view` 只能推进到某次 idle 时刻，卡挂起期 run busy、`idle` 停在上次 settle，本 run 消息水位恒晚于它 → `viewed ≥ at` 在挂起期**结构性不可达**，「已读不补」实际仅 settle 后仍 pending 的卡可达；挂起期「他端看过未答」会补一条冗余通知——本端在看的场景由 suppress/进页即清兜底，冗余面每卡一次且特性 opt-in 默认关，接受） |
+| S51 | 前台答卡（权限 once/always/reject、问题提交/取消）后立即切后台 | 答卡动作时刻即武装（D33，POST 前），FGS 已在前台启动；切后台通知栏出现「1 个后台任务运行中」，run 恢复的 busy 落在 `paused` 也不影响（已在链）。反向：答卡 POST 失败（含 404 已解决被吞）/run 秒结束 → 武装窗 15s 到期即停（S39 同族；前台 D20 隐藏，仅这 15s 内退后台可见） |
 
 ## 4. 关键设计决策
 
@@ -246,7 +247,7 @@ FGS 常驻通知（「N 个后台任务运行中」，D25）**仅在 app 退后�
 - **D2 FGS 启动点只在 streaming 0→N（前台）**：Android 12+ 后台启动 FGS 受限且无「退后台宽限」豁免；pause 时刻启动不可靠，不赌。启动契机天然存在：新 run 必经「用户发送 prompt」（前台），本端答卡恢复运行也发生在前台。
 - **D3 streaming 与卡阻塞拆口径（含子会话）**：`streamingSessionCount` = busy|retry ∧ 无待决卡，扫全量 `_statusMap`（含 `_childSessions` 中的 id）。只有 streaming 驱动保活；卡阻塞不驱动保活（**2026-10-17 修订**：原「卡阻塞只吃 3min lingering」随 D7 撤销——出卡即 streaming−1、归零即停）。（**2026-10-17 第二次修订（主会话口径）**：只数顶层会话——父 busy 期间其子会话的运行属于同一任务（subtask 语义，折叠不重复计数）；子会话的运行**不反哺**父计数，父 idle 时其子会话（孤儿）一律不计、不驱动 FGS；**孤儿-only 运行不保活**（→ count=0 → FGS 停，不做持续监听，用户裁定）。动机：watcher 显示「N 个后台任务运行中」被 subagent 撑大（父+子=2、3…），用户感知只有一个任务。代价（接受）：独立后台任务（design-subagent-background 命令型/工具型）在无顶层 run 并行时无观察——其 ask 卡通知仅在其他顶层 run 驱动的观察窗内到达，完成本就不发通知（settle 守卫 `!isChildSession`）。已知窗口（评审记录，接受）：`session.created` 因断连缺口未达、reconcile 补注册前，busy 会话被瞬时计为顶层——count 闪变 +1、极端时一次 FGS start/stop churn，补注册后自愈；不做保守跳过——「未注册即跳过」会把错失 `session.created` 的真顶层 run 也跳掉，漏保活/漏通知的损失更大。）
 - **D4 完成通道 importance low→high**：完成是用户等待型事件，应 heads-up。~~已知降级路径：老安装若已注册 `agent_complete` 通道（importance 只能降不能升），保持 silent——多数安装因 BN-0a 从未成功 post 过，通道大概率未注册，实际影响面接近零~~（**现场翻车 2026-10-14**：插件在 `show()` 时即建通道——权限只拦 `notify()` 不拦 `createNotificationChannel`，老安装的 `agent_complete` 通道早已以 low 注册，升级后 high 被系统忽略、完成通知静默不可见。真机实测确认。因**当前无其他用户**，裁定不换通道 id、不做启动清理——本机经 v2 中间版本/卸载重装已重置，`agent_complete` 将以 high 新建；若未来有存量用户再启用「换新 id + 删除残留」方案。`_show` 补成功/失败日志保留——原 `.catchError` 黑洞）。
-- **D5 权限请求时机**：有上下文（用户刚下达任务），优于冷启动时无上下文弹窗。~~首次 streaming 转变~~（**2026-10-15 现场反馈修订**：0→N 的 busy 信号经 SSE 往返延迟数秒，「发完即走」主场景下弹窗恰落在退后台边缘、用户已看不到）→ 改为**发送动作本身**触发：`_send()` fire-and-forget `KeepaliveController.onUserPromptSent()`，授权成功补 `_tryStart`；rise 路径保留兜底询问（S13 等无本地发送路径）；`requestAndroidPermissionIfNeeded` 加 **in-flight 去重**——弹窗挂起期间的并发调用共享同一次用户答复，防止后来者读到「已问过 ∧ 未授权」中间态把 `_permDenied` 误钉死（否则用户授权后 FGS 也永不启动）。（**2026-10-15 第二次修订，design-notification-channels CH-5**：rise 兜底询问移除——弹窗只绑定发送动作，未发消息/他端 run 不弹，弹窗目的对用户自明；`_tryStart` 改只读 `notificationsEnabled()` 检查，`_permDenied` 粘滞标志退役（`observationActive` = 已授权 ∧（`_fgsOn` ∨ lingering），系统设置手动重开通知即恢复）；损失面 = 从未发过消息的安装收不到他端发起任务的完成通知，接受。）（**2026-10-18 第三次修订，D28**：请求绑定「设置页开关打开」动作——`onUserPromptSent` 与发送触发退役、`notifPermAsked` 退役，拒绝 → 开关回弹关；语义重述见 D27/D29、场景 S40-S44。）
+- **D5 权限请求时机**：有上下文（用户刚下达任务），优于冷启动时无上下文弹窗。~~首次 streaming 转变~~（**2026-10-15 现场反馈修订**：0→N 的 busy 信号经 SSE 往返延迟数秒，「发完即走」主场景下弹窗恰落在退后台边缘、用户已看不到）→ 改为**发送动作本身**触发：`_send()` fire-and-forget `KeepaliveController.onUserPromptSent()`，授权成功补 `_tryStart`；rise 路径保留兜底询问（S13 等无本地发送路径）；`requestAndroidPermissionIfNeeded` 加 **in-flight 去重**——弹窗挂起期间的并发调用共享同一次用户答复，防止后来者读到「已问过 ∧ 未授权」中间态把 `_permDenied` 误钉死（否则用户授权后 FGS 也永不启动）。（**2026-10-15 第二次修订，design-notification-channels CH-5**：rise 兜底询问移除——弹窗只绑定发送动作，未发消息/他端 run 不弹，弹窗目的对用户自明；`_tryStart` 改只读 `notificationsEnabled()` 检查，`_permDenied` 粘滞标志退役（`observationActive` = 已授权 ∧（`_fgsOn` ∨ lingering），系统设置手动重开通知即恢复）；损失面 = 从未发过消息的安装收不到他端发起任务的完成通知，接受。）（**2026-10-18 第三次修订，D28**：权限请求绑定「设置页开关打开」动作——原 `onUserPromptSent` 的请求部分随发送触发退役（武装部分改名为 `armOnUserPromptSent()`，`_send()` 调用点保留，见 D26）、`notifPermAsked` 退役，拒绝 → 开关回弹关；语义重述见 D27/D29、场景 S40-S44。）
 - **D6 pause 计时 30s→25s 且双平台统一**：iOS 断言 ~30s 到期前留 5s 收尾；Android 缓存进程窗口远大于此，25s 无代价。统一值简化代码。（**2026-10-18 D28 注**：iOS 断言理由已随 D28 失效；25s 值显式保留——开关关与 iOS 均为无条件 25s pause。）
 - **D7 streaming→0 进 3min lingering（前台/后台统一），到期停**：停下的瞬间恰是通知开始需要 `session.viewed` / 答卡信号的时刻；宽限窗兜住「完成即读」「出卡快答」两条常见路径，到期即停兜住电池与 6h 预算。「通知/卡存活多久就保活多久」= 常驻空闲保活，否决。流断开期间的他端动作由重连补账兜底（§2.6 两级清除）。teardown 从后台执行合法（非 FGS 启动）。（**2026-10-17 撤销**：streaming→0 即停、无宽限窗。原因：完成/卡通知发出后 watcher 再驻留 3min，会让同一会话同时存在两条通知（watcher + 完成通知），语义混淆；「完成即读」「出卡快答」两条路径的实时清除改为接受缺失——本端进页清除与 resume 补账兜底。电池与 6h 预算的收益顺带保留。）
 - **D8 OEM 杀进程为已知风险**：不做自启、白名单引导（P0 范围外；FGS 在原生 Android 上已是平台给的最大保障）。
@@ -267,6 +268,7 @@ FGS 常驻通知（「N 个后台任务运行中」，D25）**仅在 app 退后�
 - **D30 省电策略引导对话框（2026-10-18 用户需求）**：权限授予成功后弹引导（每次 off→on 都弹）：正文「任务完成通知需要后台联网。请在系统设置中将本应用的省电策略设为无限制，否则退出 app 后会收不到消息。」+ [去设置] 深链 `ACTION_APPLICATION_DETAILS_SETTINGS`（MIUI 应用详情页含省电策略入口）+ [知道了]。依据：MIUI 实测——应用智能省电对 FGS app 仍施加网络分级（MiuiNetworkPolicy 按 uidState）与进程冻结（GreezeManager，`isFreezeExempt=false`），设「无限制」后恢复（证据链见修订 2026-10-18 平台限制小节）。
 - **D31 S26 补发：对账差分补偿完成通知（2026-10-18，MIUI 断流盲区实测驱动）**：`_mergeStatus`（对账把服务端 `activeSessions()` 真相写回 `_statusMap` 的唯一汇合点，bootstrap / refreshList / 第三调用全覆盖）新增差分——**我方 busy|retry ∧ 对账后非 busy**（缺席即 idle、`outcome==failed` 保留为 error）即为「settle 事件落在盲区」的补偿触发。门控镜像 settle handler：顶层会话（`!isChildSession`）∧ **未读**（`isSessionUnread`，viewed ≥ idle 不补——他端已读则通知无价值，镜像 `reconcileStale` 完成槽规则；**未读水位线为唯一时效界，2026-10-18 用户裁定移除原 10min 窗**——「用户是否已知道」由 viewed 单一真相决定，时间不是）∧ 非前台观看（`_suppressNotify`）∧ 开关开（`notifyRunComplete` 自带闸）；发前 `_cancelHostCards`（D24 不变式）。**快照竞态守卫（BN-R42）**：`_busySince[sid]`（本地时钟记录「获知运行中」的时刻：started/retry 事件写入、merge 对 merged-busy 补记、settle/merge 清理/修剪）∧ `snapshotBeforeMs`（`activeSessions()` 发起时刻，两调用点随取随传）——busy 在快照之后才获知（SSE 事件与 GET 响应跨 TCP 连接重排）则跳过该 sid，防「run 刚启动即收到完成通知」误报；纯本地时钟无跨钟偏差面。**恰好一次**：事件与对账都以 `_statusMap` 为准——先到者消化状态（事件置 idle / 对账清 busy），后到者 wasBusy/差分为 false → no-op，无重复通知（「无 idle 不补」面除外，见 S48）。**不覆盖（明示）**：冷启动——`_statusMap` 不持久化（缓存只存 projects/sessions/水位线），进程死亡后差分为空集（S47）；已读、无 idle 时间、子会话（本就不发）。
 - **D32 卡补发：盲区问题/授权卡的 backfill 差分补偿（2026-10-18 用户需求：「问题/授权本身也是要发通知的」）**：与 D31 完成补发对称——**触发**：`_backfillPermissions`/`_backfillForms` 的 prev/next 差分，新发现 pending 卡（id ∉ prev）即「卡到达落在断流盲区」（backfill 挂点 refreshList 末尾 + resume/connect 补账全覆盖；`_backfillSids` = busy ∪ 卡集合，挂起会话在服务端仍报 busy 故必被扫到）。**已读判据（关键，BN-R45 修正）**：卡模型无时间戳、`isSessionUnread` 的 idle 在挂起期为空、**session 级 `time.streamed` 不存在于 v2 契约**（spec `additionalProperties:false` + 50 会话实测 + design-session-activity-time 佐证；初版误用致判据整体失效）——改用 **owner 会话的消息级水位**：`latestMessageSummary(owner)`（`GET /session/{id}/message?limit=1` 的 max(created, streamed, completed)，busy 探针同源）≈ 卡到达时刻，与 **host** 的 `viewed` 配对（用户看的是 host 页——subagent 卡上浮场景 owner=child、viewed=host，BN-R47）：未读 = `viewed == null ∨ viewed < watermark`；已读 = `viewed ≥ watermark`；水位拉取失败/无消息 → 保守视为已读（不扰）。（**边界（BN-R49）**：`viewed` 只能推进到 idle 时刻而挂起期 idle 冻结在上次 settle、早于本 run 消息水位——「已读」分支在挂起期结构性不可达，仅 settle 后仍 pending 的卡可达；「他端看过未答」的冗余补发每卡一次，接受。）**门控**：`_suppressNotify`（前台观看）∧ toggle（`notifyPermission`/`notifyQuestion` 自带 D27 闸）；发前 `cancelSessionRun(host)`（D24 发卡清完成槽，完成/卡互斥）。**恰好一次（BN-R46 补第三偏序）**：事件与 backfill 以 pending 集合为单源——①事件先于快照（prev 含 id）→ backfill 跳过；②backfill 先于事件 → 事件侧 `known`（同 id 已在集合）跳过通知只更新状态；③**事件落在 fetch 窗口内**（prev 快照后、merge 前，live 已通知）→ 替换 pending 前捕获 `liveArrived`（当前集合 ∖ prev），retro 循环跳过。**不补的面**：已操作（答卡 → 无 pending，天然不触发）；已读；host 会话模型未知；消息水位不可得。
+- **D33 卡答复武装（2026-10-18 用户现场反馈：发送后触发卡、答卡再切后台，watching 不展示）**：D26 武装原先只挂发送动作，答卡恢复 run 的 busy 事件同样落在 paused → rise 被吞 → FGS 不启动。`KeepaliveController` 增 `armOnCardReplied()`，与 `armOnUserPromptSent()` 共用 `_armAndStart()`（纯武装；开关关 D27 或 `_backend` 为空 no-op；15s 窗、`_armTimer.isActive` 复查不变）；conversation 三个答复入口在 **POST 之前**武装（与 `_send()` 同构，动作时刻必在前台）——权限卡 `_respond`（once/always/reject）、问题卡 `_reply`（提交）与 `_reject`（取消）。取消语义按工具返回推断为「`QuestionTool.CancelledError`（The user dismissed this question）→ 工具结束、run 继续」，未活体实测；即使实际中止 run，代价也只是 ≤15s 空 watcher。**接受的残余**：答复 POST 失败/404 已被吞、run 秒结束 → 武装窗 15s 到期即停（S39 同族，前台 D20 隐藏，仅这 15s 内退后台可见）；弱网下 POST 往返期间退后台不影响——武装已在发出请求前完成。
 
 ## 5. 接口展望（P1/P2 预留，不实施）
 
@@ -492,7 +494,7 @@ FGS 常驻通知（「N 个后台任务运行中」，D25）**仅在 app 退后�
 |---|---|
 | §2.1 / §2.2 / §2.4 | FGS 状态机增加「开关开」前置条件；开关关（默认）状态机不激活，后台回 25s pause |
 | §2.4 iOS 断言生命周期 | 退役（D28）：`IosBgTask` 与 MainShell 调用、AppDelegate `bg_task` 通道移除 |
-| §2.5(9) | 方法拆分增补：`taskCompleteNotify` ValueNotifier + 存储、controller 激活条件、`onUserPromptSent`/`notifPermAsked` 退役、通知门控、设置页开关与省电对话框 |
+| §2.5(9) | 方法拆分增补：`taskCompleteNotify` ValueNotifier + 存储、controller 激活条件、`onUserPromptSent` 改名为 `armOnUserPromptSent()`（权限请求部分退役，**武装保留且 `_send()` 调用点保留**，D26）/ `notifPermAsked` 退役、通知门控、设置页开关与省电对话框 |
 | §2.7 | 权限请求时机第三次修订（D29，绑定开关动作）；设置开关条目与省电引导对话框（D30） |
 | §3 | 新增 S40-S44 |
 | §4 | 新增 D27-D30 |
@@ -509,9 +511,21 @@ main 同窗口合入的「FGS 发送动作武装启动 + rise 门控放宽 inact
 |---|---|
 | 编号让位 | main 已占用 D26（武装启动）与 S36-S39（揭示去重/武装/inactive/武装到期）；本修订 D26-D29 顺移为 **D27-D30**、S36-S40 顺移为 **S40-S44**。7-9 次评审记录（BN-R28..R40）内的旧编号按本表映射解读 |
 | `onUserPromptSent` → `armOnUserPromptSent()` | D26 武装机制（15s 窗、`max(1, count)`、到期无 run 即停、`_armTimer.isActive` 复查）**完整保留**；权限请求部分随 D29 移除——纯武装、开关关（D27）或未授权时 no-op。D26 原残余「`requestPermission` 答复间隙丢首次 FGS」随授权移至开关而消失 |
+| conversation `_send()` 调用点 | **保留**（`KeepaliveController.I.armOnUserPromptSent()`，guard 通过后 fire-and-forget 调用）。2026-10-18 回归修复：合流时该调用点随权限请求一并误删，D26 武装在 app 侧永不触发，S1「发完即走」再次失守（发送后立即切后台，busy 事件落在 paused → rise 被吞 → FGS 从未启动 → watching 通知不展示） |
 | rise 门控 `null ∨ resumed ∨ inactive` | 保留（D26），受开关门控（D27）——开关关时状态机整体不激活，放宽无意义 |
 | 测试 | main 武装六用例保留并改调 `armOnUserPromptSent`；S31 弹窗竞态 / manual re-enable / never-granted 三用例随 D29 授权模型移除；开关门控四用例（本修订新增）并存——全局 setUp 设 `taskCompleteNotify.value = true` 维持两类用例的前置 |
 | D23 揭示去重 / `appRouteObserver` 注册表 | main 单侧改动，无交叠，原样保留 |
+
+### 修订（2026-10-18，用户动作武装补齐：发送调用点回归 + 卡答复 D33）
+
+> 状态：**已实现**（`main` 0.10.3+142 之后未提交改动）。两条现场反馈同源——D26 的武装入口只存在于发送路径，且该调用点在 rebase 合流时被误删。
+
+| 位置 | 修订内容 |
+|---|---|
+| §2.4 / §4 | 新增 **D33**（卡答复武装）；§2.4 启动点改写为「用户动作武装启动」；§3 新增 **S51**（答卡后立即切后台） |
+| `conversation_screen.dart` | `_send()` guard 后恢复 `armOnUserPromptSent()`（回归修复）；`_PermissionCardState._respond`、`_FormCardState._reply`/`_reject` 在 POST 前调 `armOnCardReplied()` |
+| `keepalive_controller.dart` | 两个公开入口共用私有 `_armAndStart()`（武装 + 启动），语义与 no-op 规则不变 |
+| 测试 | `background_notify_test` 新增：发送武装 widget 用例（真实 `ConversationScreen`）、权限卡答复武装 widget 用例、`armOnCardReplied` 单元用例、开关关时武装 no-op 用例 |
 
 ### 修订（2026-10-18，S26 补发实施：对账差分补偿完成通知）
 
