@@ -18,9 +18,6 @@ class KeepaliveBackend {
 
   Future<void> stop() => AndroidKeepalive.stop();
 
-  Future<bool?> requestPermission() =>
-      NotificationService.requestAndroidPermissionIfNeeded();
-
   Future<bool> notificationsEnabled() =>
       NotificationService.notificationsEnabled();
 }
@@ -41,11 +38,13 @@ class KeepaliveController with WidgetsBindingObserver {
   bool _fgsOn = false;
   bool _startInFlight = false;
   bool _permGranted = false;
+  bool _toggleOn = false;
   Timer? _armTimer;
 
   ServerStore get _activeStore => _store ?? serverStore;
 
-  bool get observationActive => _backend != null && _permGranted && _fgsOn;
+  bool get observationActive =>
+      _backend != null && _permGranted && _fgsOn;
 
   void init({ServerStore? store, KeepaliveBackend? backend}) {
     if (_initialized) return;
@@ -56,18 +55,20 @@ class KeepaliveController with WidgetsBindingObserver {
     _backend = backend ?? KeepaliveBackend();
     WidgetsBinding.instance.addObserver(this);
     _activeStore.addListener(_onStoreChanged);
+    _toggleOn = taskCompleteNotify.value;
+    taskCompleteNotify.addListener(_onToggleChanged);
     _streaming = _activeStore.streamingSessionCount;
   }
 
-  Future<void> onUserPromptSent() async {
+  /// Send-action hook: arm the watch so the FGS starts at send time instead
+  /// of racing the busy event (D26 arm-at-send, S37). Pure arming — the
+  /// permission request lives on the settings toggle (D29); no-op when the
+  /// toggle is off (D27) or the backend is unsupported.
+  void armOnUserPromptSent() {
     final backend = _backend;
-    if (backend == null) return;
-    final granted = await backend.requestPermission();
-    if (granted == true) {
-      _permGranted = true;
-      _arm();
-      unawaited(_tryStart());
-    }
+    if (backend == null || !_toggleOn) return;
+    _arm();
+    unawaited(_tryStart());
   }
 
   void _arm() {
@@ -90,6 +91,22 @@ class KeepaliveController with WidgetsBindingObserver {
     unawaited(_tryStart());
   }
 
+  void _onToggleChanged() {
+    final on = taskCompleteNotify.value;
+    if (on == _toggleOn) return;
+    _toggleOn = on;
+    if (!on) {
+      unawaited(_stop());
+      return;
+    }
+    _streaming = _activeStore.streamingSessionCount;
+    if (_streaming <= 0) return;
+    final state = WidgetsBinding.instance.lifecycleState;
+    if (state == null || state == AppLifecycleState.resumed) {
+      unawaited(_tryStart());
+    }
+  }
+
   void _onStoreChanged() {
     final backend = _backend;
     if (backend == null) return;
@@ -103,6 +120,7 @@ class KeepaliveController with WidgetsBindingObserver {
     if (n == _streaming) return;
     final wasZero = _streaming == 0;
     _streaming = n;
+    if (!_toggleOn) return;
     if (n > 0) {
       if (wasZero && !_fgsOn) {
         final state = WidgetsBinding.instance.lifecycleState;
@@ -121,7 +139,7 @@ class KeepaliveController with WidgetsBindingObserver {
 
   Future<void> _tryStart() async {
     final backend = _backend;
-    if (backend == null || _fgsOn || _startInFlight) return;
+    if (backend == null || !_toggleOn || _fgsOn || _startInFlight) return;
     _startInFlight = true;
     try {
       final enabled = await backend.notificationsEnabled();
@@ -130,7 +148,10 @@ class KeepaliveController with WidgetsBindingObserver {
         AppLogger.I.w(_tag, 'notifications not granted, no keepalive');
         return;
       }
-      if (_streaming <= 0 && !(_armTimer?.isActive ?? false)) return;
+      if (!_toggleOn ||
+          (_streaming <= 0 && !(_armTimer?.isActive ?? false))) {
+        return;
+      }
       final count = _streaming > 0 ? _streaming : 1;
       try {
         await backend.start(count);
@@ -166,6 +187,7 @@ class KeepaliveController with WidgetsBindingObserver {
   @visibleForTesting
   void disposeForTesting() {
     _activeStore.removeListener(_onStoreChanged);
+    taskCompleteNotify.removeListener(_onToggleChanged);
     WidgetsBinding.instance.removeObserver(this);
     _armTimer?.cancel();
     _armTimer = null;
@@ -174,6 +196,7 @@ class KeepaliveController with WidgetsBindingObserver {
     _fgsOn = false;
     _startInFlight = false;
     _permGranted = false;
+    _toggleOn = false;
     _initialized = false;
   }
 }

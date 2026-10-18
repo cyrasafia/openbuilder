@@ -52,9 +52,9 @@ void main() {
     wireServerStore();
     NotificationService.onSessionNotificationTap = _openSessionFromNotification;
     await NotificationService.init();
-    KeepaliveController.I.init();
     await SystemFontWeight.init();
     await initSettings();
+    KeepaliveController.I.init();
     if (kDebugMode || kProfileMode) PerfProbe.I.start();
     runApp(const OpenBuilderApp());
     _appStarted = true;

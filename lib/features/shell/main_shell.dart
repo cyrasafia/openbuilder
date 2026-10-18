@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
-import '../../core/platform/ios_bg_task.dart';
 import '../../core/platform/keepalive_controller.dart';
 import '../../ui/l10n_ext.dart';
 
@@ -44,9 +43,6 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       case AppLifecycleState.inactive:
         _foreground = false;
         serverStore.setAppForeground(false);
-        if (state == AppLifecycleState.paused) {
-          unawaited(IosBgTask.begin('sse-pause-window'));
-        }
         _pauseTimer?.cancel();
         _pauseTimer = Timer(const Duration(seconds: 25), _onPauseTimer);
         break;
@@ -55,11 +51,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         serverStore.setAppForeground(true);
         _pauseTimer?.cancel();
         _pauseTimer = null;
-        unawaited(IosBgTask.end());
         unawaited(serverStore.resume());
-        break;
-      case AppLifecycleState.detached:
-        unawaited(IosBgTask.end());
         break;
       default:
         break;
@@ -73,8 +65,7 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
         KeepaliveController.I.observationActive) {
       return;
     }
-    unawaited(
-        serverStore.pause().whenComplete(() => unawaited(IosBgTask.end())));
+    unawaited(serverStore.pause());
   }
 
   @override

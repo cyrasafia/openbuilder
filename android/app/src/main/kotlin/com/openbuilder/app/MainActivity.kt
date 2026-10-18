@@ -26,6 +26,7 @@ class MainActivity : FlutterActivity() {
     private val filesChannel = "com.openbuilder.app/files"
     private val passkeyChannel = "com.openbuilder.app/passkey"
     private val keepaliveChannel = "com.openbuilder.app/keepalive"
+    private val settingsChannel = "com.openbuilder.app/settings"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -142,6 +143,25 @@ class MainActivity : FlutterActivity() {
                             result.success(null)
                         } catch (e: Exception) {
                             result.error("stop_failed", e.message, null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, settingsChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "openAppDetails" -> {
+                        try {
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:$packageName")
+                                )
+                            )
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("open_failed", e.message, null)
                         }
                     }
                     else -> result.notImplemented()

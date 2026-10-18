@@ -51,6 +51,12 @@ Locale resolveActiveLocale() {
 
 final ValueNotifier<bool> showThinking = ValueNotifier(false);
 
+/// Android-only opt-in gate for all local notifications (completion + cards,
+/// foreground + background — design-background-notify D26/D28). Off Android
+/// the settings entry does not exist, so the value stays false and iOS/web
+/// never notify (D27).
+final ValueNotifier<bool> taskCompleteNotify = ValueNotifier(false);
+
 /// Refresh when connected; when offline (e.g. showing cached data after a
 /// failed bootstrap) attempt a reconnect instead. Returns whether data is
 /// live afterwards so callers can surface failure feedback.
@@ -107,6 +113,10 @@ Future<void> initSettings() async {
   if (showThinkingVal != null) {
     showThinking.value = showThinkingVal;
   }
+  final taskNotifyVal = prefs.getBool('taskCompleteNotify');
+  if (taskNotifyVal != null) {
+    taskCompleteNotify.value = taskNotifyVal;
+  }
   serverStore.reasoningVisibleInPreview = showThinking.value;
   serverStore.activeLoc = lookupAppLocalizations(resolveActiveLocale());
   themeMode.addListener(() => prefs.setInt('themeMode', themeMode.value.index));
@@ -135,6 +145,9 @@ Future<void> initSettings() async {
   );
   showThinking.addListener(
     () => serverStore.reasoningVisibleInPreview = showThinking.value,
+  );
+  taskCompleteNotify.addListener(
+    () => prefs.setBool('taskCompleteNotify', taskCompleteNotify.value),
   );
 }
 

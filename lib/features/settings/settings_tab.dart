@@ -12,6 +12,7 @@ import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/net/dio_factory.dart';
 import '../../core/net/net_error.dart';
+import '../../core/notifications/notification_service.dart';
 import '../../data/api/opencode_client.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -27,11 +28,13 @@ class SettingsTab extends StatefulWidget {
 
 class _SettingsTabState extends State<SettingsTab> {
   static const _filesChannel = MethodChannel('com.openbuilder.app/files');
+  static const _settingsChannel = MethodChannel('com.openbuilder.app/settings');
 
   bool _checking = false;
   HealthInfo? _health;
   Object? _error;
   String _appVersion = '';
+  bool _taskNotifyBusy = false;
 
   @override
   void initState() {
@@ -215,6 +218,16 @@ class _SettingsTabState extends State<SettingsTab> {
                     onChanged: (v) => setState(() => showThinking.value = v),
                   ),
                 ),
+                if (!kIsWeb && Platform.isAndroid)
+                  ListTile(
+                    leading: const Icon(Icons.notifications_outlined),
+                    title: Text(loc.settingsTaskNotify),
+                    subtitle: Text(loc.settingsTaskNotifyHint),
+                    trailing: Switch(
+                      value: taskCompleteNotify.value,
+                      onChanged: _taskNotifyBusy ? null : _onTaskNotifyToggled,
+                    ),
+                  ),
               ]),
               _section(loc.settingsLogsSection, [
                 ListTile(
@@ -239,6 +252,52 @@ class _SettingsTabState extends State<SettingsTab> {
         },
       ),
     );
+  }
+
+  Future<void> _onTaskNotifyToggled(bool v) async {
+    if (!v) {
+      setState(() => taskCompleteNotify.value = false);
+      return;
+    }
+    setState(() => _taskNotifyBusy = true);
+    final granted = await NotificationService.requestAndroidPermissionIfNeeded();
+    if (!mounted) return;
+    setState(() => _taskNotifyBusy = false);
+    if (granted != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l(context).settingsTaskNotifyPermDenied)),
+      );
+      return;
+    }
+    setState(() => taskCompleteNotify.value = true);
+    await _showBatteryGuideDialog();
+  }
+
+  Future<void> _showBatteryGuideDialog() async {
+    final goSettings = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l(ctx).settingsTaskNotifyBatteryTitle),
+        content: Text(l(ctx).settingsTaskNotifyBatteryBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l(ctx).settingsTaskNotifyGotIt),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l(ctx).settingsTaskNotifyGoSettings),
+          ),
+        ],
+      ),
+    );
+    if (goSettings == true) await _openAppDetails();
+  }
+
+  Future<void> _openAppDetails() async {
+    try {
+      await _settingsChannel.invokeMethod<void>('openAppDetails');
+    } catch (_) {}
   }
 
   void _showExportRangeSheet() {

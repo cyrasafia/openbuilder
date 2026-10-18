@@ -1084,6 +1084,7 @@ class ServerStore extends ChangeNotifier {
       _childSessions.clear();
       _childrenByParent.clear();
       _statusMap.clear();
+      _busySince.clear();
       _ghostSessionIds.clear();
       _ghostSessionDirs.clear();
       _lastGhostWarmSweepAt = null;
@@ -1327,9 +1328,11 @@ class ServerStore extends ChangeNotifier {
       _diffStaleSessions(sessions, full: true, busySids: _busySids());
       _sessions = sessions;
       _markGhostSessions(ghostIds, ghostDirsById);
+      final snapBefore = DateTime.now().millisecondsSinceEpoch;
       final active = await _fetchActiveStatuses();
       if (active != null) {
-        _mergeStatus(fresh: active, sessions: sessions);
+        _mergeStatus(fresh: active, sessions: sessions,
+            snapshotBeforeMs: snapBefore);
         unawaited(_probeBusyMessageTimes());
       }
       _inferWorkspaceForNewProjects();
@@ -1350,6 +1353,7 @@ class ServerStore extends ChangeNotifier {
   void _mergeStatus({
     required Map<String, SessionStatusValue> fresh,
     required List<SessionModel> sessions,
+    int? snapshotBeforeMs,
   }) {
     final merged = Map.of(fresh);
     final failedOutcome = <String>{};
@@ -1372,9 +1376,68 @@ class ServerStore extends ChangeNotifier {
       if (fresh.containsKey(sid)) continue;
       merged[sid] = const SessionStatusValue('error');
     }
+    final retro = _retroSettledSids(merged);
     _statusMap
       ..clear()
       ..addAll(merged);
+    if (retro.isNotEmpty) {
+      _retroNotifySettled(retro, sessions, snapshotBeforeMs);
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    _busySince.removeWhere(
+        (id, _) => merged[id]?.type != 'busy' && merged[id]?.type != 'retry');
+    for (final e in merged.entries) {
+      if (e.value.type == 'busy' || e.value.type == 'retry') {
+        _busySince.putIfAbsent(e.key, () => nowMs);
+      }
+    }
+  }
+
+  /// Sids we believed busy/retry that the reconciled server truth says are
+  /// no longer running — the settle event was missed (S26 blind window).
+  Set<String> _retroSettledSids(Map<String, SessionStatusValue> merged) {
+    final out = <String>{};
+    _statusMap.forEach((id, v) {
+      final t = v.type;
+      if (t != 'busy' && t != 'retry') return;
+      final m = merged[id]?.type ?? 'idle';
+      if (m == 'busy' || m == 'retry') return;
+      out.add(id);
+    });
+    return out;
+  }
+
+  /// S26 补发: post the completion notification for runs that settled while
+  /// unseen (disconnect blind window). The unread watermark is the only
+  /// staleness bound (user ruling 2026-10-18: read → skip, unread → post);
+  /// the toggle gate lives in notifyRunComplete.
+
+  /// Local-clock timestamp of when each sid was learned to be running —
+  /// guards the snapshot race (SSE started-event processed after the
+  /// activeSessions() snapshot was taken but before the merge lands; the
+  /// stale snapshot would read as a retro settle for a just-started run).
+  final Map<String, int> _busySince = {};
+
+  void _retroNotifySettled(
+      Set<String> sids, List<SessionModel> sessions, int? snapshotBeforeMs) {
+    final byId = {for (final s in sessions) s.id: s};
+    for (final sid in sids) {
+      if (isChildSession(sid)) continue;
+      final learnedAt = _busySince[sid];
+      if (learnedAt != null &&
+          snapshotBeforeMs != null &&
+          learnedAt > snapshotBeforeMs) {
+        continue;
+      }
+      final s = byId[sid] ?? sessionById(sid);
+      if (s == null) continue;
+      if (!isSessionUnread(sid)) continue;
+      if (_suppressNotify(sid)) continue;
+      AppLogger.I.i(_tag, 'retro run-complete $sid (settled while unseen)');
+      _cancelHostCards(sid);
+      unawaited(
+          NotificationService.notifyRunComplete(sid, s.title).catchError((_) {}));
+    }
   }
 
   void _onConvReconciledStatus(String sid, String status) {
@@ -1555,6 +1618,7 @@ class ServerStore extends ChangeNotifier {
       _unghostRecovered(sessions);
       final ghostIds =
           _detectGhostSessionIds(_sessions, sessions, newProjects, worktreesByDir);
+      final snapBefore = DateTime.now().millisecondsSinceEpoch;
       final active = await _fetchActiveStatuses();
       _projects = newProjects;
       _diffStaleSessions(sessions,
@@ -1571,7 +1635,8 @@ class ServerStore extends ChangeNotifier {
           s.id: s.directory,
       });
       if (active != null) {
-        _mergeStatus(fresh: active, sessions: sessions);
+        _mergeStatus(fresh: active, sessions: sessions,
+            snapshotBeforeMs: snapBefore);
         if (_sseLive || force) unawaited(_probeBusyMessageTimes());
       }
       _inferWorkspaceForNewProjects();
@@ -1685,12 +1750,18 @@ class ServerStore extends ChangeNotifier {
           isResolved: _recentlyResolvedPermissions.containsKey);
       final changed = _pendingPermissions.length != next.length ||
           !_pendingPermissions.keys.toSet().containsAll(next.keys);
+      final permLiveArrived = {
+        for (final p in _pendingPermissions.values)
+          if (!prev.values.any((q) => q.id == p.id)) p.id,
+      };
       _pendingPermissions
         ..clear()
         ..addAll(next);
       if (changed) {
         notifyListeners();
       }
+      await _notifyRetroPermissions(
+          prev: prev, next: next, liveArrived: permLiveArrived);
       await _backfillForms();
     } finally {
       _backfillInFlight = false;
@@ -1741,11 +1812,85 @@ class ServerStore extends ChangeNotifier {
         isResolved: _recentlyResolvedForms.containsKey);
     final changed = _pendingForms.length != next.length ||
         !_pendingForms.keys.toSet().containsAll(next.keys);
+    final formLiveArrived = {
+      for (final id in _pendingForms.keys)
+        if (!prev.containsKey(id)) id,
+    };
     _pendingForms
       ..clear()
       ..addAll(next);
     if (changed) {
       notifyListeners();
+    }
+    await _notifyRetroForms(
+        prev: prev, next: next, liveArrived: formLiveArrived);
+  }
+
+  /// Retro-card read gate: the card is a part of the owner session's message
+  /// stream, so the message-level watermark (max of created/streamed/
+  /// completed — same source as the busy probe) approximates the card
+  /// arrival. A host view at/after that watermark means the card was seen;
+  /// no view, or an older view, means unseen. (BN-R45: session-level
+  /// time.streamed does not exist in the v2 contract — the watermark must
+  /// come from GET /session/{id}/message.)
+  Future<bool> _cardUnseenForRetro(String ownerSid, String host) async {
+    final s = sessionById(host);
+    if (s == null) return false;
+    final viewed = s.viewed;
+    if (viewed == null) return true;
+    final c = client;
+    if (c == null) return false;
+    try {
+      final at = (await c.latestMessageSummary(ownerSid)).at;
+      if (at == null) return false;
+      return viewed < at;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// S26 retro cards: permission/question cards that arrived during the
+  /// disconnect blind window are re-discovered by the backfill — post their
+  /// notification for unseen ones (user ruling 2026-10-18: read or already
+  /// answered → skip; the answered case never reaches here — the backfill
+  /// finds no pending card for it). [liveArrived] carries ids that arrived
+  /// via SSE inside the fetch window (after the prev snapshot): the live
+  /// handler already notified those (BN-R46).
+  Future<void> _notifyRetroPermissions({
+    required Map<String, Permission> prev,
+    required Map<String, Permission> next,
+    required Set<String> liveArrived,
+  }) async {
+    final prevIds = {for (final p in prev.values) p.id};
+    for (final p in next.values) {
+      if (prevIds.contains(p.id) || liveArrived.contains(p.id)) continue;
+      final host = _cardHostSessionId(p.sessionID);
+      if (_suppressNotify(host)) continue;
+      if (!await _cardUnseenForRetro(p.sessionID, host)) continue;
+      AppLogger.I.i(_tag, 'retro card ${p.sessionID} pid=${p.id} host=$host');
+      unawaited(NotificationService.cancelSessionRun(host));
+      unawaited(NotificationService.notifyPermission(
+              p.sessionID, sessionById(host)?.title, p)
+          .catchError((_) {}));
+    }
+  }
+
+  Future<void> _notifyRetroForms({
+    required Map<String, FormInfo> prev,
+    required Map<String, FormInfo> next,
+    required Set<String> liveArrived,
+  }) async {
+    final prevIds = prev.keys.toSet();
+    for (final f in next.values) {
+      if (prevIds.contains(f.id) || liveArrived.contains(f.id)) continue;
+      final host = _cardHostSessionId(f.sessionID);
+      if (_suppressNotify(host)) continue;
+      if (!await _cardUnseenForRetro(f.sessionID, host)) continue;
+      AppLogger.I.i(_tag, 'retro card ${f.sessionID} fid=${f.id} host=$host');
+      unawaited(NotificationService.cancelSessionRun(host));
+      unawaited(NotificationService.notifyQuestion(
+              f.sessionID, sessionById(host)?.title, f.title)
+          .catchError((_) {}));
     }
   }
 
@@ -1915,9 +2060,11 @@ class ServerStore extends ChangeNotifier {
     required Map<String, SessionStatusValue> fresh,
     required List<SessionModel> sessions,
     bool fetched = true,
+    int? snapshotBeforeMs,
   }) {
     if (!fetched) return;
-    _mergeStatus(fresh: fresh, sessions: sessions);
+    _mergeStatus(fresh: fresh, sessions: sessions,
+        snapshotBeforeMs: snapshotBeforeMs);
   }
 
   @visibleForTesting
@@ -2074,6 +2221,8 @@ class ServerStore extends ChangeNotifier {
         if (sid1 != null) {
           if (_statusMap[sid1]?.type == 'busy') return;
           _statusMap[sid1] = const SessionStatusValue('busy');
+          _busySince.putIfAbsent(
+              sid1, () => DateTime.now().millisecondsSinceEpoch);
           _conversations[sid1]?.setStatus('busy');
           _scheduleCacheSave();
         }
@@ -2089,6 +2238,7 @@ class ServerStore extends ChangeNotifier {
               ? const SessionStatusValue('error')
               : const SessionStatusValue('idle');
           _statusMap[sid2] = settled;
+          _busySince.remove(sid2);
           _conversations[sid2]?.setStatus(settled.type);
           _scheduleCacheSave();
           final shutdownInterrupt = ev.type == 'session.execution.interrupted' &&
@@ -2119,6 +2269,8 @@ class ServerStore extends ChangeNotifier {
           final message = error is Map ? error['message']?.toString() : null;
           if (_statusMap[sid3]?.type != 'retry') {
             _statusMap[sid3] = SessionStatusValue('retry', message: message);
+            _busySince.putIfAbsent(
+                sid3, () => DateTime.now().millisecondsSinceEpoch);
             _scheduleCacheSave();
           }
           _conversations[sid3]?.onRetryScheduled(
@@ -2370,12 +2522,13 @@ class ServerStore extends ChangeNotifier {
         final formRaw = ev.properties['form'];
         if (formRaw is Map) {
           final f = FormInfo.fromJson(formRaw.cast<String, dynamic>());
+          final known = _pendingForms.containsKey(f.id);
           _pendingForms[f.id] = f;
           final host = _cardHostSessionId(f.sessionID);
           _conversations[host]?.onForm(f);
           AppLogger.I.i(_tag,
               'SSE form.created sid=${f.sessionID} fid=${f.id} host=$host');
-          if (!_suppressNotify(host)) {
+          if (!known && !_suppressNotify(host)) {
             unawaited(NotificationService.cancelSessionRun(host));
             unawaited(NotificationService.notifyQuestion(
                     f.sessionID, sessionById(host)?.title, f.title)
@@ -2400,12 +2553,13 @@ class ServerStore extends ChangeNotifier {
         break;
       case 'permission.asked':
         final p = Permission.fromJson(ev.properties);
+        final known = _pendingPermissions[p.sessionID]?.id == p.id;
         _pendingPermissions[p.sessionID] = p;
         final host = _cardHostSessionId(p.sessionID);
         _conversations[host]?.onPermission(p);
         AppLogger.I.i(_tag,
             'SSE permission.asked sid=${p.sessionID} pid=${p.id} host=$host');
-        if (!_suppressNotify(host)) {
+        if (!known && !_suppressNotify(host)) {
           unawaited(NotificationService.cancelSessionRun(host));
           unawaited(NotificationService.notifyPermission(
                   p.sessionID, sessionById(host)?.title, p)
@@ -2911,6 +3065,7 @@ class ServerStore extends ChangeNotifier {
     _childSessions.clear();
     _childrenByParent.clear();
     _statusMap.clear();
+    _busySince.clear();
     _ghostSessionIds.clear();
     _ghostSessionDirs.clear();
     _lastGhostWarmSweepAt = null;

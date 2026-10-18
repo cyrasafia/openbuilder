@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app_state.dart';
 import '../../domain/models.dart';
@@ -21,7 +20,6 @@ class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
   static const _tag = 'Notif';
-  static const _permAskedKey = 'notifPermAsked';
 
   static void Function(String sessionId)? onSessionNotificationTap;
 
@@ -38,11 +36,10 @@ class NotificationService {
 
   static Future<void> init() async {
     if (_initialized) return;
-    if (kIsWeb) return;
+    if (kIsWeb || !Platform.isAndroid) return;
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const iosInit = DarwinInitializationSettings();
     await _plugin.initialize(
-      const InitializationSettings(android: androidInit, iOS: iosInit),
+      InitializationSettings(android: androidInit),
       onDidReceiveNotificationResponse: (response) {
         final sid = response.payload;
         if (sid != null && sid.isNotEmpty) {
@@ -50,14 +47,6 @@ class NotificationService {
         }
       },
     );
-    // iOS 14.2+ requires an explicit permissions request to trigger the
-    // system authorization prompt; the Info.plist key alone is not enough.
-    final ios = _plugin
-        .resolvePlatformSpecificImplementation<
-            IOSFlutterLocalNotificationsPlugin>();
-    if (ios != null) {
-      await ios.requestPermissions(alert: true, badge: true, sound: true);
-    }
     // Migration: legacy channels merged into 'tasks' (design-notification-
     // channels); deleting also drops their unread tray notifications.
     final android = _plugin.resolvePlatformSpecificImplementation<
@@ -103,10 +92,7 @@ class NotificationService {
         id,
         title,
         body,
-        NotificationDetails(
-          android: channel,
-          iOS: DarwinNotificationDetails(),
-        ),
+        NotificationDetails(android: channel),
         payload: payload,
       );
       AppLogger.I.d(_tag, 'posted id=$id channel=${channel.channelId}');
@@ -120,6 +106,7 @@ class NotificationService {
   /// Notify that an agent run completed (session went busy → idle).
   static Future<void> notifyRunComplete(
       String sid, String? sessionTitle) async {
+    if (!taskCompleteNotify.value) return;
     if (!_initialized) await init();
     if (!_initialized) return;
     final loc = await _loc();
@@ -144,6 +131,7 @@ class NotificationService {
   /// Notify that a permission request is awaiting the user's response.
   static Future<void> notifyPermission(
       String cardSid, String? sessionTitle, Permission p) async {
+    if (!taskCompleteNotify.value) return;
     if (!_initialized) await init();
     if (!_initialized) return;
     final loc = await _loc();
@@ -168,6 +156,7 @@ class NotificationService {
   /// Notify that a question is awaiting the user's answer.
   static Future<void> notifyQuestion(
       String cardSid, String? sessionTitle, String? header) async {
+    if (!taskCompleteNotify.value) return;
     if (!_initialized) await init();
     if (!_initialized) return;
     final loc = await _loc();
@@ -238,15 +227,12 @@ class NotificationService {
     if (android == null) return null;
     final enabled = await android.areNotificationsEnabled();
     if (enabled == true) return true;
-    final prefs = await SharedPreferences.getInstance();
-    if (prefs.getBool(_permAskedKey) ?? false) return false;
-    await prefs.setBool(_permAskedKey, true);
     final granted = await android.requestNotificationsPermission();
     return granted ?? false;
   }
 
-  /// Read-only check: never shows the permission dialog (design-notification-
-  /// channels CH-5 — the dialog is only tied to the send action).
+  /// Read-only check: never shows the permission dialog (design-background-
+  /// notify D28 — the dialog is only tied to the settings toggle).
   static Future<bool> notificationsEnabled() async {
     if (kIsWeb || !Platform.isAndroid) return true;
     if (!_initialized) await init();

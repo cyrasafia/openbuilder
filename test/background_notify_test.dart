@@ -1,14 +1,16 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_builder/app_state.dart';
 import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
 import 'package:open_builder/core/notifications/notification_service.dart';
 import 'package:open_builder/core/platform/keepalive_controller.dart';
 import 'package:open_builder/core/session/server_store.dart';
-import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
+import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/domain/models.dart';
 
 OpencodeClient _fakeClient() => OpencodeClient(dioFor(const ConnectionProfile(
@@ -72,6 +74,53 @@ SessionModel _sessionWithIdle(String id, int idle) => SessionModel.fromJson({
       'time': {'updated': 1000, 'idle': idle},
     });
 
+SessionModel _sessionFull(
+  String id, {
+  int? idle,
+  int? viewed,
+  String? outcome,
+  String? parentID,
+}) =>
+    SessionModel.fromJson({
+      'id': id,
+      'projectID': 'p1',
+      'location': {'directory': '/dirA'},
+      'title': 't-$id',
+      'outcome': outcome,
+      'parentID': parentID,
+      'time': {
+        'updated': 1000,
+        'idle': ?idle,
+        'viewed': ?viewed,
+      },
+    });
+
+class _CardBackfillClient extends OpencodeClient {
+  final Future<List<Permission>> Function(String sessionId)? permissions;
+  final Future<List<FormInfo>> Function(String sessionId)? forms;
+  final Future<LatestMessageSummary> Function(String sessionId)? latestMessages;
+  _CardBackfillClient({this.permissions, this.forms, this.latestMessages})
+      : super(_backfillDio());
+
+  @override
+  Future<List<Permission>> sessionPermissions(String sessionId) async =>
+      await (permissions?.call(sessionId) ?? Future.value(const []));
+
+  @override
+  Future<List<FormInfo>> sessionForms(String sessionId) async =>
+      await (forms?.call(sessionId) ?? Future.value(const []));
+
+  @override
+  Future<LatestMessageSummary> latestMessageSummary(String sessionId) async =>
+      await (latestMessages?.call(sessionId) ??
+          Future.value(const LatestMessageSummary()));
+}
+
+Dio _backfillDio() => Dio(BaseOptions(
+      connectTimeout: const Duration(milliseconds: 1),
+      receiveTimeout: const Duration(milliseconds: 1),
+    ));
+
 class _FakeBackend extends KeepaliveBackend {
   final starts = <int>[];
   final updates = <int>[];
@@ -93,47 +142,7 @@ class _FakeBackend extends KeepaliveBackend {
   }
 
   @override
-  Future<bool?> requestPermission() async => true;
-
-  @override
   Future<bool> notificationsEnabled() async => true;
-}
-
-class _GatePermBackend extends KeepaliveBackend {
-  final starts = <int>[];
-  final grant = Completer<bool?>();
-  int permRequests = 0;
-
-  @override
-  Future<void> start(int count) async {
-    starts.add(count);
-  }
-
-  @override
-  Future<void> updateCount(int count) async {}
-
-  @override
-  Future<void> stop() async {}
-
-  @override
-  Future<bool?> requestPermission() {
-    permRequests++;
-    return grant.future;
-  }
-
-  @override
-  Future<bool> notificationsEnabled() async =>
-      grant.isCompleted && await grant.future == true;
-}
-
-class _MutablePermBackend extends _FakeBackend {
-  bool? perm = true;
-
-  @override
-  Future<bool?> requestPermission() async => perm;
-
-  @override
-  Future<bool> notificationsEnabled() async => perm == true;
 }
 
 class _GateStartBackend extends _FakeBackend {
@@ -162,6 +171,7 @@ void main() {
     NotificationService.debugMarkInitialized();
     NotificationService.debugFakeShow = true;
     NotificationService.debugResetSlots();
+    taskCompleteNotify.value = true;
   });
 
   group('streamingSessionCount', () {
@@ -421,6 +431,341 @@ void main() {
     });
   });
 
+  group('S26 retro completion notify', () {
+    test('blind-window settle is retro-notified on reconcile', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', idle: now - 60000);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      store.mergeStatusForTesting(fresh: {}, sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(store.statusOf('s1').type, 'idle');
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue,
+          reason: 'the settle event was missed; the reconcile flip must '
+          'post the completion notification');
+      store.dispose();
+    });
+
+    test('stale finish is still notified when unread', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', idle: now - 2 * 60 * 60 * 1000);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      store.mergeStatusForTesting(fresh: {}, sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(store.statusOf('s1').type, 'idle');
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue,
+          reason: 'user ruling 2026-10-18: the unread watermark is the only '
+          'staleness bound — no time window');
+      store.dispose();
+    });
+
+    test('already-read session is not notified', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final idle = now - 60000;
+      final s1 = _sessionFull('s1', idle: idle, viewed: idle);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      store.mergeStatusForTesting(fresh: {}, sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasRunSlot('s1'), isFalse,
+          reason: 'viewed >= idle means nobody needs the reminder');
+      store.dispose();
+    });
+
+    test('session without idle time is skipped', () async {
+      final s1 = _sessionFull('s1');
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      store.mergeStatusForTesting(fresh: {}, sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasRunSlot('s1'), isFalse);
+      store.dispose();
+    });
+
+    test('child sessions are skipped', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final p1 = _sessionFull('p1');
+      final c1 = _sessionFull('c1', idle: now - 60000, parentID: 'p1');
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(p1);
+      store.upsertSessionForTesting(c1);
+      store.onEventForTesting(_ev('session.execution.started', 'c1'));
+
+      store.mergeStatusForTesting(fresh: {}, sessions: [p1, c1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasRunSlot('c1'), isFalse);
+      store.dispose();
+    });
+
+    test('failed outcome is retro-notified (error settle)', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', idle: now - 60000, outcome: 'failed');
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      store.mergeStatusForTesting(fresh: {}, sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(store.statusOf('s1').type, 'error');
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue,
+          reason: 'failure shares the completion slot (D24)');
+      store.dispose();
+    });
+
+    test('late settle event after the retro notify stays single', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', idle: now - 60000);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.mergeStatusForTesting(fresh: {}, sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue);
+
+      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue,
+          reason: 'wasBusy is false after the reconcile flip — the event '
+          'handler must not re-notify');
+      store.dispose();
+    });
+
+    test('event-first settle then reconcile does not retro-notify', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', idle: now - 60000);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
+      NotificationService.debugResetSlots();
+
+      store.mergeStatusForTesting(fresh: {}, sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasRunSlot('s1'), isFalse,
+          reason: 'the diff only fires for sids still believed busy — the '
+          'event already settled the map');
+      store.dispose();
+    });
+
+    test('retry retained by the reconcile is not retro-notified', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', idle: now - 60000);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.onEventForTesting(_ev('session.retry.scheduled', 's1', {
+        'error': {'message': 'x'}
+      }));
+
+      store.mergeStatusForTesting(
+          fresh: {'s1': const SessionStatusValue('retry')},
+          sessions: [s1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(store.statusOf('s1').type, 'retry',
+          reason: 'the retention branch keeps the local retry');
+      expect(NotificationService.debugHasRunSlot('s1'), isFalse);
+      store.dispose();
+    });
+
+    test('snapshot race: busy learned after the snapshot is not notified',
+        () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', idle: now - 60000);
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      final snapBefore = DateTime.now().millisecondsSinceEpoch - 1000;
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      store.mergeStatusForTesting(
+          fresh: {}, sessions: [s1], snapshotBeforeMs: snapBefore);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(store.statusOf('s1').type, 'idle');
+      expect(NotificationService.debugHasRunSlot('s1'), isFalse,
+          reason: 'SSE started-event processed after the activeSessions '
+          'snapshot was taken — the snapshot idle predates the run');
+
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.mergeStatusForTesting(
+          fresh: {},
+          sessions: [s1],
+          snapshotBeforeMs: DateTime.now().millisecondsSinceEpoch + 1000);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasRunSlot('s1'), isTrue,
+          reason: 'busy learned before the snapshot was taken — a true '
+          'blind window still notifies');
+      store.dispose();
+    });
+  });
+
+  group('S26 retro card notify', () {
+    Permission makePerm(String sid, String pid) =>
+        Permission(id: pid, sessionID: sid, action: 'bash');
+
+    test('blind-window permission card is retro-notified when unseen',
+        () async {
+      final s1 = _sessionFull('s1');
+      final store = ServerStore()
+        ..client = _CardBackfillClient(
+            permissions: (sid) async => [makePerm(sid, 'p1')])
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      await store.backfillPermissionsForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasCardSlot('s1'), isTrue,
+          reason: 'the card arrived during the blind window and nobody has '
+          'ever viewed the session');
+      store.dispose();
+    });
+
+    test('viewed at/after the card watermark is not notified', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', viewed: now);
+      final store = ServerStore()
+        ..client = _CardBackfillClient(
+            permissions: (sid) async => [makePerm(sid, 'p1')],
+            latestMessages: (sid) async =>
+                Future.value(LatestMessageSummary(at: now - 60000)))
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      await store.backfillPermissionsForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasCardSlot('s1'), isFalse,
+          reason: 'a view at/after the message watermark means the card was '
+          'seen');
+      store.dispose();
+    });
+
+    test('viewed before the card watermark is notified', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final s1 = _sessionFull('s1', viewed: now - 120000);
+      final store = ServerStore()
+        ..client = _CardBackfillClient(
+            permissions: (sid) async => [makePerm(sid, 'p1')],
+            latestMessages: (sid) async =>
+                Future.value(LatestMessageSummary(at: now - 60000)))
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      await store.backfillPermissionsForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasCardSlot('s1'), isTrue,
+          reason: 'the last view predates the card — it is unseen');
+      store.dispose();
+    });
+
+    test('already-known card is not re-notified by the backfill', () async {
+      final s1 = _sessionFull('s1');
+      final store = ServerStore()
+        ..client = _CardBackfillClient(
+            permissions: (sid) async => [makePerm(sid, 'p1')])
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+      store.onEventForTesting(_ev('permission.asked', 's1',
+          {'id': 'p1', 'action': 'bash'}));
+      NotificationService.debugResetSlots();
+
+      await store.backfillPermissionsForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasCardSlot('s1'), isFalse,
+          reason: 'the live event already notified; prev contains p1');
+      store.dispose();
+    });
+
+    test('live event inside the backfill window is not re-notified',
+        () async {
+      final s1 = _sessionFull('s1');
+      final perm = makePerm('s1', 'p1');
+      var fetched = false;
+      final store = ServerStore()
+        ..client = _CardBackfillClient(permissions: (sid) async {
+          fetched = true;
+          return [perm];
+        })
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      final backfill = store.backfillPermissionsForTesting();
+      while (!fetched) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      store.onEventForTesting(_ev('permission.asked', 's1',
+          {'id': 'p1', 'action': 'bash'}));
+      NotificationService.debugResetSlots();
+      await backfill;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasCardSlot('s1'), isFalse,
+          reason: 'the live handler notified inside the fetch window; the '
+          'retro loop must skip liveArrived ids (BN-R46)');
+      store.dispose();
+    });
+
+    test('answered elsewhere finds no pending card', () async {
+      final s1 = _sessionFull('s1');
+      final store = ServerStore()
+        ..client = _CardBackfillClient(permissions: (sid) async => [])
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      await store.backfillPermissionsForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasCardSlot('s1'), isFalse);
+      store.dispose();
+    });
+
+    test('blind-window question (form) card is retro-notified', () async {
+      final s1 = _sessionFull('s1');
+      final form = FormInfo(
+          id: 'f1', sessionID: 's1', title: 'pick one', fields: const []);
+      final store = ServerStore()
+        ..client = _CardBackfillClient(forms: (sid) async => [form])
+        ..connected = true;
+      store.upsertSessionForTesting(s1);
+      store.onEventForTesting(_ev('session.execution.started', 's1'));
+
+      await store.backfillQuestionsForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(NotificationService.debugHasCardSlot('s1'), isTrue);
+      store.dispose();
+    });
+  });
+
   group('KeepaliveController', () {
     tearDown(() {
       KeepaliveController.I.disposeForTesting();
@@ -472,81 +817,75 @@ void main() {
       store.dispose();
     });
 
-    test('onUserPromptSent is a no-op when unsupported', () async {
-      await KeepaliveController.I.onUserPromptSent();
-    });
-
-    test('prompt-sent grant starts FGS once even if rise raced the dialog',
-        () async {
+    test('toggle off by default: streaming rise never starts FGS', () async {
+      taskCompleteNotify.value = false;
       final store = ServerStore()
         ..client = _fakeClient()
         ..connected = true;
       store.upsertSessionForTesting(_session('s1'));
-      final backend = _GatePermBackend();
+      final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
 
-      final sent = KeepaliveController.I.onUserPromptSent();
       store.onEventForTesting(_ev('session.execution.started', 's1'));
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-      expect(backend.starts, isEmpty);
-
-      backend.grant.complete(true);
-      await sent;
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-      expect(backend.starts, [1]);
-      expect(KeepaliveController.I.observationActive, isTrue);
-      store.dispose();
-    });
-
-    test('prompt-sent deny disables observation', () async {
-      final store = ServerStore()
-        ..client = _fakeClient()
-        ..connected = true;
-      store.upsertSessionForTesting(_session('s1'));
-      final backend = _GatePermBackend();
-      backend.grant.complete(false);
-      KeepaliveController.I.init(store: store, backend: backend);
-
-      await KeepaliveController.I.onUserPromptSent();
-      store.onEventForTesting(_ev('session.execution.started', 's1'));
-      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(backend.starts, isEmpty);
       expect(KeepaliveController.I.observationActive, isFalse);
       store.dispose();
     });
 
-    test('manual re-enable then prompt-sent restores observation', () async {
+    test('toggling on while streaming starts the FGS', () async {
+      taskCompleteNotify.value = false;
       final store = ServerStore()
         ..client = _fakeClient()
         ..connected = true;
       store.upsertSessionForTesting(_session('s1'));
-      final backend = _MutablePermBackend()..perm = false;
+      final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
 
       store.onEventForTesting(_ev('session.execution.started', 's1'));
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-      expect(KeepaliveController.I.observationActive, isFalse);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(backend.starts, isEmpty);
 
-      backend.perm = true;
-      await KeepaliveController.I.onUserPromptSent();
-      await Future<void>.delayed(const Duration(milliseconds: 10));
+      taskCompleteNotify.value = true;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(backend.starts, [1]);
       expect(KeepaliveController.I.observationActive, isTrue);
       store.dispose();
     });
 
-    test('never-granted install: rise never requests permission (no dialog)',
-        () async {
+    test('toggling off while watching stops the FGS', () async {
       final store = ServerStore()
         ..client = _fakeClient()
         ..connected = true;
       store.upsertSessionForTesting(_session('s1'));
-      final backend = _GatePermBackend();
+      final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
 
       store.onEventForTesting(_ev('session.execution.started', 's1'));
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-      expect(backend.permRequests, 0);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(backend.starts, [1]);
+
+      taskCompleteNotify.value = false;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(backend.stops, 1);
+      expect(KeepaliveController.I.observationActive, isFalse);
+
+      store.onEventForTesting(_ev('session.execution.succeeded', 's1'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(backend.stops, 1, reason: 'store changes stay inert while off');
+      store.dispose();
+    });
+
+    test('toggle on without streaming does not start', () async {
+      taskCompleteNotify.value = false;
+      final store = ServerStore()
+        ..client = _fakeClient()
+        ..connected = true;
+      final backend = _FakeBackend();
+      KeepaliveController.I.init(store: store, backend: backend);
+
+      taskCompleteNotify.value = true;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(backend.starts, isEmpty);
       expect(KeepaliveController.I.observationActive, isFalse);
       store.dispose();
@@ -561,7 +900,7 @@ void main() {
       final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
 
-      await KeepaliveController.I.onUserPromptSent();
+      KeepaliveController.I.armOnUserPromptSent();
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(backend.starts, [1],
           reason: 'send time is guaranteed foreground; the watcher must not '
@@ -584,7 +923,7 @@ void main() {
       final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
 
-      await KeepaliveController.I.onUserPromptSent();
+      KeepaliveController.I.armOnUserPromptSent();
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(backend.starts, [1]);
 
@@ -604,7 +943,7 @@ void main() {
       final backend = _FakeBackend();
       KeepaliveController.I.init(store: store, backend: backend);
 
-      await KeepaliveController.I.onUserPromptSent();
+      KeepaliveController.I.armOnUserPromptSent();
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(backend.starts, [1]);
 
@@ -670,14 +1009,13 @@ void main() {
       final backend = _GateStartBackend();
       KeepaliveController.I.init(store: store, backend: backend);
 
-      final sent = KeepaliveController.I.onUserPromptSent();
+      KeepaliveController.I.armOnUserPromptSent();
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(backend.starts, [1], reason: 'armed start fires before busy');
       store.setAppForeground(false);
 
       await Future<void>.delayed(const Duration(milliseconds: 60));
       backend.gate.complete();
-      await sent;
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(backend.stops, 1,
           reason: 'the timer expired while start was in flight; the '

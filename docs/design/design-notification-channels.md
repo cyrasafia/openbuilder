@@ -54,11 +54,11 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 1. `NotificationService`：
    - 删 `_permissionChannel` / `_questionChannel`；`_agentChannel`（const）替换为 `_taskChannel()` 方法——`AndroidNotificationDetails('tasks', <本地化名>, importance/priority high, description: <本地化说明>)`；
    - `init()` 增加迁移（仅 Android）：`_plugin.deleteNotificationChannel(...)` 删三条旧通道，幂等（不存在为 no-op）；
-   - 权限 API 拆分：`requestAndroidPermissionIfNeeded()`（**弹窗**，仅 `onUserPromptSent` 调用，in-flight 去重保留）与新增只读 `notificationsEnabled()`（`areNotificationsEnabled()`，不弹窗）。
+   - 权限 API 拆分：`requestAndroidPermissionIfNeeded()`（弹窗；~~仅 `onUserPromptSent` 调用~~ **2026-10-18 第三次修订**：仅设置页「任务完成通知」开关打开动作调用，见 design-background-notify D28；in-flight 去重保留）与新增只读 `notificationsEnabled()`（`areNotificationsEnabled()`，不弹窗）。
 2. `KeepaliveController._tryStart`：`backend.requestPermission()` 改为只读检查；未授权 → 返回不启 FGS；`_permDenied` 粘滞标志退役——`observationActive` 口径改为「已授权 ∧（`_fgsOn` ∨ lingering）」（**2026-10-17 修订**：lingering 撤销，现口径为「已授权 ∧ `_fgsOn`」，见 design-background-notify 同日修订），已授权状态由只读检查与发送时答复缓存。**附带收益**：拒绝过授权的用户在系统设置手动重开通知后，下一次 `_tryStart` 只读检查即恢复（现行 `_permDenied` 进程内粘滞、需重启 app）。
 3. `OpenBuilderApplication.ensureKeepaliveChannel()`：名字/说明改用 `getString(R.string.…)` + `setDescription(...)`；补 `values/strings.xml` 与 `values-zh/strings.xml`；**去掉现有 `getNotificationChannel(CHANNEL_ID) == null` 判空守卫，每次 `onCreate` 无条件重提 `createNotificationChannel`**——同 id 重提时行为参数被系统忽略、名/说以当前 locale 更新；保留守卫则通道存在即跳过，名字永远停在首装语言，NC-7 静默失效（CR-1）。
 4. l10n：arb 增 `notifChannelTasksName` / `notifChannelTasksDesc` 两组 key（英/中）。
-5. `onUserPromptSent()` 不变（唯一弹窗路径 + 授权成功补 `_tryStart`）。
+5. ~~`onUserPromptSent()` 不变（唯一弹窗路径 + 授权成功补 `_tryStart`）~~（**2026-10-18 退役**：请求改绑设置开关，唯一弹窗路径为开关打开；授权成功后由开关流程直接 `_tryStart`——见 design-background-notify D28/§2.5(9)。）
 
 ### 2.4 迁移与边界
 
@@ -86,13 +86,13 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 | NC-1 | 首次安装、未发消息 | 系统设置仅 `watching` 一条（进程启动建）；`tasks` 待首次 show 建；无授权弹窗 |
 | NC-2 | 存量安装（三条旧通道） | 升级首启后旧三条消失（其通知随删），`tasks` 待首次 show 以 HIGH 新建 |
 | NC-3 | 本端从未发过消息（未授权）：他端发起 run、本端前台发现 | **无授权弹窗**；`_tryStart` 只读检查未授权 → 不启 FGS → 25s pause；该任务无完成通知（接受，CH-5） |
-| NC-4 | 本端已授权（曾发过消息）：他端发起 run | rise `_tryStart` 只读检查通过 → FGS 照常 → 完成通知照常（**不损失**——损失面仅限从未授权的安装） |
+| NC-4 | 本端已授权（曾发过消息）：他端发起 run | rise `_tryStart` 只读检查通过 → FGS 照常 → 完成通知照常（**不损失**——损失面仅限从未授权的安装）（**2026-10-18 前提增补：还需开关开（D26）**——开关关则无 FGS 无通知，S36） |
 | NC-5 | 拒绝授权后，用户去系统设置手动开启通知 | 下一次 `_tryStart` 只读检查恢复 → FGS 恢复（优于现行 `_permDenied` 进程粘滞） |
 | NC-6 | app 内语言切换后下一次任务通知 | `tasks` 通道名/说明以新语言重提更新；与正文语言一致 |
 | NC-7 | 系统语言切换 + 进程重启 | `watching` 名/说明以新语言重建快照；`tasks` 于下次 show 更新 |
 | NC-8 | 授权弹窗挂起期间快速二次发送 | in-flight 去重共享同一次答复；不双弹 |
 | NC-9 | 权限卡/问题卡后台到达 | 与完成通知同走 `tasks` 通道（heads-up 视觉不变）；槽位 id 与清除规则不变——S16/S27 多卡并存、精确清除语义保持 |
-| NC-10 | 主路径回归：发送 → 前台弹窗 → 授权 → 退后台 | FGS 启动、`tasks` 通道以当前 locale 创建、完成通知 heads-up（问题 1/2 修复链路不受影响） |
+| NC-10 | ~~主路径回归：发送 → 前台弹窗 → 授权 → 退后台~~（**2026-10-18 D28**：主路径改为「设置页开关打开 → 授权 → 省电对话框」，发送不再触发弹窗） | FGS 启动、`tasks` 通道以当前 locale 创建、完成通知 heads-up——前提开关开（S38）；开关关时发送即退后台为 S36（无 FGS 无通知） |
 
 ## 4. 关键设计决策
 
@@ -167,3 +167,13 @@ Android 通道的唯一实际作用：让用户在系统设置里按类别独立
 | §2.1 / §2.2 | `watching` importance MIN→LOW：AOSP FGS importance floor 会把 MIN/NONE 强制持久化为 LOW（`NotificationManagerService#enqueueNotificationInternal` + CTS `testEnqueuedBlockedNotifications_appBlockedChannelForegroundService`），MIN 从未被尊重；真机（小米，0.10.1+137 卸载重装）实测状态栏图标照常出现。直接声明有效值 LOW（无声、有图标、无横幅），接受双通道均显示图标。证据链见 `ref/ref-miui-notification-icon.md` |
 | §2.4 / §5 | FGS 正文本地化为 plurals「N 个后台任务运行中」（D25），原「维持英文」决策撤销 |
 | 关联 | design-background-notify.md 2026-10-17 修订（去 lingering、D24 单会话单通知不变式、S34/S35） |
+
+### 修订（2026-10-18，授权时机第三次修订 + iOS 退役）
+
+> 状态：**已实现**（与 design-background-notify 2026-10-18 修订同批）。
+
+| 位置 | 修订内容 |
+|---|---|
+| §2.1(4) / CH-5 | 授权请求从「发送动作」改为「设置页任务完成通知开关打开」动作（design-background-notify D27/D29）：发送不再触发任何权限请求，`onUserPromptSent` 与 `notifPermAsked` 标志退役；`requestAndroidPermissionIfNeeded` 已授权短路与 in-flight 去重保留（幂等）；拒绝 → 开关回弹关。CH-5 原损失面（从未发消息的安装收不到他端任务通知）被开关模型取代——默认关即默认无后台通知，打开是显式选择 |
+| NC-3 / NC-4 / NC-8 / NC-10 | 场景语义随开关模型更新（详见 design-background-notify S40-S44） |
+| iOS | 通知能力整体退役（design-background-notify D28）：`init()` 不再请求 iOS 通知权限、`notify*` 在 iOS no-op——本设计的通道收敛范围收窄为 Android-only |

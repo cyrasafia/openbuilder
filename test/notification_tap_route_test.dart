@@ -128,6 +128,7 @@ void main() {
     expect(openSessionFromNotification(router, 's1'), isTrue);
     await tester.pumpAndSettle();
 
+    taskCompleteNotify.value = true;
     await NotificationService.notifyRunComplete('s1', null);
     expect(NotificationService.debugHasRunSlot('s1'), isTrue);
 
