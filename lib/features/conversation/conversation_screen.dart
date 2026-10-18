@@ -2886,12 +2886,33 @@ class _SubagentPanelState extends State<_SubagentPanel>
   /// 触发）。收起即重置：面板无错误态渲染，再展开是 REST 失败后的
   /// 唯一重试入口。
   String? _loadedChildId;
+  String? _resolvedChildId;
 
   Object get _expansionStorageKey => 'subagent_expanded:${widget.part.id}';
+
+  String? _resolveChildId() {
+    final part = widget.part;
+    final metaSid = part.childSessionId;
+    if (metaSid != null) return metaSid;
+    final description = part.toolInput?['description']?.toString() ?? '';
+    return serverStore
+        .findChildSession(widget.parentSessionId, description: description)
+        ?.id;
+  }
+
+  void _onServerStoreChanged() {
+    if (!mounted || !_expanded) return;
+    final id = _resolveChildId();
+    if (id == _resolvedChildId) return;
+    setState(() {
+      _resolvedChildId = id;
+    });
+  }
 
   @override
   void initState() {
     super.initState();
+    serverStore.addListener(_onServerStoreChanged);
     _expanded =
         PageStorage.maybeOf(
           context,
@@ -2910,6 +2931,7 @@ class _SubagentPanelState extends State<_SubagentPanel>
 
   @override
   void dispose() {
+    serverStore.removeListener(_onServerStoreChanged);
     _ctrl.dispose();
     super.dispose();
   }
@@ -2944,16 +2966,14 @@ class _SubagentPanelState extends State<_SubagentPanel>
     final status = part.toolStatus ?? '';
 
     // 子会话 ID 来源（design-subagent-status §D3）：
-    // 1. tool.state.metadata.sessionId（running/completed 后 server 写入）
+    // 1. tool.state.metadata.sessionID（subagent）/ sessionId（task）
     // 2. 降级：findChildSession 按 parentID + description 启发式匹配
-    final metaSid = part.toolMetadata?['sessionId']?.toString();
     final description = part.toolInput?['description']?.toString() ?? '';
-    final subagentType = part.toolInput?['subagent_type']?.toString() ?? '';
-    final childSessionId = (metaSid != null && metaSid.isNotEmpty)
-        ? metaSid
-        : serverStore
-            .findChildSession(widget.parentSessionId, description: description)
-            ?.id;
+    final agentType = part.toolInput?['agent']?.toString() ??
+        part.toolInput?['subagent_type']?.toString() ??
+        '';
+    final childSessionId = _resolveChildId();
+    _resolvedChildId = childSessionId;
 
     // 展开挂载后触发 REST 快照（SSE 已累积则 store 内部跳过）。post-frame
     // 执行 store 变更（不在 build 期间通知），随后 setState 让 body 拿到
@@ -2970,8 +2990,8 @@ class _SubagentPanelState extends State<_SubagentPanel>
       });
     }
 
-    final agentLabel = subagentType.isNotEmpty
-        ? subagentType[0].toUpperCase() + subagentType.substring(1)
+    final agentLabel = agentType.isNotEmpty
+        ? agentType[0].toUpperCase() + agentType.substring(1)
         : loc.convDefaultTitle;
     final summary = switch (status) {
       'completed' => (part.toolTitle?.isNotEmpty ?? false)

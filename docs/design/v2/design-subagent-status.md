@@ -15,10 +15,12 @@
 主 agent 通过 `task` 工具启动 subagent（子会话）。`task` 工具是一个特殊的
 tool part：
 
-- `part.tool === "task"`
-- `part.state.input.subagent_type`：agent 类型（如 explore / general）
+- `part.tool === "task"` / `"subagent"`
+- `part.state.input.subagent_type`（`task`）/ `part.state.input.agent`（`subagent`）：
+  agent 类型（如 explore / general / reviewer）
 - `part.state.input.description`：任务描述
-- `part.state.metadata.sessionId`：子会话 ID（运行后由 server 写入 metadata）
+- `part.state.metadata.sessionId`（`task`）/ `metadata.sessionID`（`subagent`，
+  v2.0.26 实测）：子会话 ID（运行后由 server 写入 metadata）
 
 子会话（`Session.parentID` 指向父会话）与父会话共享同一 directory，因此其
 SSE 事件（`message.part.updated`、`message.updated` 等）会通过现有目录闸门
@@ -69,12 +71,29 @@ SSE 事件（`message.part.updated`、`message.updated` 等）会通过现有目
 
 子会话 ID 来源优先级：
 
-1. `tool.state.metadata.sessionId`（running/completed 后 server 写入）——
+1. `tool.state.metadata.sessionID`（`subagent`）/ `sessionId`（`task`，
+   running/completed 后 server 写入）——**双键都要读**，统一收口在
+   `DisplayPart.childSessionId`（getter，空串过滤；`_partClaimsChild` 与面板共用）；
    需 `DisplayPart.toolMetadata` 字段（`DisplayPart.from` / `onPartUpdated` /
    `_mergeParts` / 缓存存取全链路补齐）
 2. 降级：`ServerStore.findChildSession(parentSessionId, description)` 按
    `parentID` 匹配 + title 前缀消歧（server title 派生自 task description），
    created 最新优先
+
+> **2026-10-18 修订（已实现，见 [`todo-subagent-not-ready.md`](../../todo/todo-subagent-not-ready.md)）**：
+> v2.0.26 实测 `subagent` 工具写 `metadata.sessionID`，旧 `task` 写
+> `metadata.sessionId`；面板此前只读小写键，导致新版 subagent 恒走降级路径。
+> 另实测事件顺序为 `session.tool.input.started` / `session.tool.called` **先于**
+> `session.created`，首次 build 时子会话可能尚未进入 `_childSessions`；而
+> `ServerStore` 通知不触发消息列表重建，晚注册不会让面板自愈。
+>
+> 最终决策：`_SubagentPanelState` 自持 `serverStore` 订阅（initState 注册 /
+> dispose 注销），`_expanded` 时才对通知做解析，只有解析出的 childSessionId
+> 变化才 `setState`（id 不变的高频流式通知直接返回）；`build` 是
+> `_resolvedChildId` 的唯一权威写入点。未采用 `_SubagentBody` 外层
+> `ListenableBuilder`——那会让每次 ServerStore 通知重绘整个面板。
+> agent 标题同时兼容双 input 键：`toolInput['agent']`（`subagent`）/
+> `subagent_type`（`task`）。
 
 首次展开时触发 `ServerStore.loadChildSessionMessages(childSessionId)`：
 `ensureConversation` + `conv.load()`（REST 快照）。与 `conversationFor` 的
@@ -177,15 +196,17 @@ FooterPanel——按原 sid 路由到子会话 conv 等于无处显示，运行�
   本地通知，子会话（subagent）完成时父会话仍在跑，逐个弹「运行完成」是
   噪音——此前 `sessionById` 对子会话返回 null，通知以默认标题误弹（存量
   问题，本次以 `_childSessions` 命中与否加 guard 修掉）。
-- **metadata.sessionId 时序**：tool part 初始 pending/running 时 metadata
-  可能尚无 sessionId。展开后无 sessionId 时面板显示「子会话未就绪」；父消息
-  的后续 part 事件会触发缓存失效 → 面板重建 → 重新计算 childSessionId。一旦
-  completed，metadata.sessionId 必定存在。
+- **metadata sessionID 时序**：tool part 初始 pending/running 时 metadata
+  可能尚无 sessionId。展开后无 sessionId 时面板显示「子会话未就绪」；只有父
+  消息还有后续 part 事件时才会触发缓存失效 → 面板重建 → 重新计算
+  childSessionId。已完成消息不再有事件，面板不会自行重建（2026-10-18 实测
+  事件顺序：tool.input/called 先于 session.created），需订阅 serverStore 兜底。
+  一旦 completed，`metadata.sessionID`（`subagent`）/ `metadata.sessionId`
+  （`task`）必定存在。
 - **REST 快照跳过**：见 D3，`conv.messages` 非空即跳过 REST。
 - **加载 id 记录**：`_loadedChildId` ref 记录**已触发 id** 而非布尔——
-  childSessionId 漂移（启发式命中在先 → metadata.sessionId 到达切换）时对
-  新 id 重新触发；收起即重置，再展开是 REST 失败后的重试入口（面板无错误
-  态渲染）。
+  childSessionId 漂移（启发式命中在先 → metadata 到达切换）时对新 id 重新
+  触发；收起即重置，再展开是 REST 失败后的重试入口（面板无错误态渲染）。
 - **store 副作用时机**：REST 触发放在 `addPostFrameCallback` 并随后补一次
   `setState`——conv 创建本身不通知 store，不补这一帧 `_SubagentBody` 会
   拿不到 conv 挂 `ListenableBuilder` 而停在「加载中」。
@@ -194,7 +215,7 @@ FooterPanel——按原 sid 路由到子会话 conv 等于无处显示，运行�
   server 端窗口足够覆盖）。
 - **启发式匹配局限**（已知取舍）：description 前缀匹配不上时回退「该父会话
   最新创建的子会话」——父会话并发跑多个 task 时可能挂到别的任务的子会话
-  （metadata.sessionId 权威路径不受影响）。
+  （metadata 权威路径不受影响）。
 
 ## 不做的事
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -745,6 +746,189 @@ void main() {
       expect(file.fileUrl, 'data:image/png;base64,AAAA');
       expect(file.filename, 'a.png');
       expect(file.fileMime, 'image/png');
+    });
+  });
+
+  group('cache round-trip keeps tool part identity', () {
+    test('tool part id survives save/load and reconcile does not duplicate',
+        () async {
+      final conv = _conv('s1', PageMockClient(const []));
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'call_1', 'bash');
+      conv.onToolInputEnded('m1', 'call_1', '{"command":"ls"}');
+      conv.onToolCalled('m1', 'call_1', {'command': 'ls'}, false);
+      conv.onToolSuccess('m1', 'call_1', [
+        const ToolContentItem(type: 'text', text: 'ok'),
+      ]);
+      conv.onStepEnded('m1', finish: 'stop');
+      await conv.saveCacheForTest();
+
+      final cached =
+          jsonDecode((await _cache.read('conv/s1'))!) as Map<String, dynamic>;
+      final cachedContent =
+          ((cached['messages'] as List).single as Map)['content'] as List;
+      expect((cachedContent.single as Map)['id'], 'call_1',
+          reason: 'cache must store the raw tool call id');
+
+      final restored = _conv('s1', PageMockClient([
+        assistantMsg(
+          id: 'm1',
+          content: [
+            toolPart(
+              id: 'call_1',
+              name: 'bash',
+              input: {'command': 'ls'},
+              output: 'ok',
+            ),
+          ],
+          finish: 'stop',
+        ),
+      ]));
+      await restored.loadCacheForTest();
+      expect(
+        restored.messages.single.parts.map((p) => p.id),
+        ['m1_tool_call_1'],
+        reason: 'cache must not re-prefix an already prefixed tool part id',
+      );
+
+      restored.onToolSuccess('m1', 'call_1', [
+        const ToolContentItem(type: 'text', text: 'ok'),
+      ]);
+      expect(
+        restored.messages.single.parts.where((p) => p.type == 'tool').single.id,
+        'm1_tool_call_1',
+        reason: 'live tool event must update the cached part, not add a new one',
+      );
+
+      await restored.reconcile();
+      final tools =
+          restored.messages.single.parts.where((p) => p.type == 'tool');
+      expect(tools.length, 1,
+          reason: 'reconcile snapshot must merge, not duplicate, tool parts');
+      expect(tools.single.id, 'm1_tool_call_1');
+    });
+
+    test('live tool event after cache load updates the same part', () async {
+      final conv = _conv('s1', PageMockClient(const []));
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'call_1', 'bash');
+      conv.onToolCalled('m1', 'call_1', {'command': 'ls'}, false);
+      await conv.saveCacheForTest();
+
+      final restored = _conv('s1', _fakeClient());
+      await restored.loadCacheForTest();
+      expect(restored.messages.single.parts.single.toolStatus, 'running');
+
+      restored.onToolSuccess('m1', 'call_1', [
+        const ToolContentItem(type: 'text', text: 'ok'),
+      ]);
+      final tools =
+          restored.messages.single.parts.where((p) => p.type == 'tool');
+      expect(tools.length, 1);
+      expect(tools.single.id, 'm1_tool_call_1');
+      expect(tools.single.toolStatus, 'completed');
+      expect(tools.single.toolOutput, 'ok');
+    });
+
+    test('reconcile terminal status overrides stale cached running tool',
+        () async {
+      final conv = _conv('s1', PageMockClient(const []));
+      conv.onStepStarted('m1');
+      conv.onToolInputStarted('m1', 'call_1', 'bash');
+      conv.onToolCalled('m1', 'call_1', {'command': 'ls'}, false);
+      await conv.saveCacheForTest();
+
+      final restored = _conv('s1', PageMockClient([
+        assistantMsg(
+          id: 'm1',
+          content: [
+            toolPart(
+              id: 'call_1',
+              name: 'bash',
+              input: {'command': 'ls'},
+              output: 'ok',
+            ),
+          ],
+          finish: 'stop',
+        ),
+      ]));
+      await restored.loadCacheForTest();
+      expect(restored.messages.single.parts.single.toolStatus, 'running');
+
+      await restored.reconcile();
+      final tools =
+          restored.messages.single.parts.where((p) => p.type == 'tool');
+      expect(tools.length, 1);
+      expect(tools.single.toolStatus, 'completed');
+      expect(tools.single.toolOutput, 'ok');
+    });
+
+    test('reconcile stale running snapshot does not downgrade local completed',
+        () async {
+      final conv = _conv('s1', PageMockClient([
+        assistantMsg(
+          id: 'm1',
+          content: [
+            toolPart(
+              id: 'call_1',
+              name: 'bash',
+              input: {'command': 'ls'},
+              status: 'running',
+            ),
+          ],
+          finish: 'tool-calls',
+        ),
+      ]));
+      conv.onStepStarted('m1');
+      conv.onToolCalled('m1', 'call_1', {'command': 'ls'}, false);
+      conv.onToolSuccess('m1', 'call_1', [
+        const ToolContentItem(type: 'text', text: 'ok'),
+      ]);
+
+      await conv.reconcile();
+      final tools = conv.messages.single.parts.where((p) => p.type == 'tool');
+      expect(tools.length, 1);
+      expect(tools.single.toolStatus, 'completed');
+      expect(tools.single.toolOutput, 'ok');
+    });
+
+    test('legacy double-prefixed cache id is normalized on load', () async {
+      await _cache.write(
+        'conv/s1',
+        jsonEncode({
+          'v': 2,
+          'messages': [
+            {
+              'id': 'm1',
+              'type': 'assistant',
+              'time': {'created': 1100},
+              'agent': 'build',
+              'content': [
+                {
+                  'type': 'tool',
+                  'id': 'm1_tool_m1_tool_call_1',
+                  'name': 'bash',
+                  'state': {
+                    'status': 'completed',
+                    'input': {'command': 'ls'},
+                    'content': [
+                      {'type': 'text', 'text': 'ok'},
+                    ],
+                  },
+                },
+              ],
+              'finish': 'stop',
+            },
+          ],
+        }),
+      );
+
+      final restored = _conv('s1', _fakeClient());
+      await restored.loadCacheForTest();
+      final tools =
+          restored.messages.single.parts.where((p) => p.type == 'tool');
+      expect(tools.length, 1);
+      expect(tools.single.id, 'm1_tool_call_1');
     });
   });
 

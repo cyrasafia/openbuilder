@@ -58,6 +58,14 @@ class DisplayPart {
     this.source,
   });
 
+  String? get childSessionId {
+    for (final key in const ['sessionID', 'sessionId']) {
+      final v = toolMetadata?[key]?.toString();
+      if (v != null && v.isNotEmpty) return v;
+    }
+    return null;
+  }
+
   String get toolSummary {
     if (tool == null) return '';
     final input = toolInput;
@@ -388,9 +396,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   bool _partClaimsChild(DisplayPart p, String childId, String? childTitle) {
-    final sid = p.toolMetadata?['sessionID']?.toString() ??
-        p.toolMetadata?['sessionId']?.toString();
-    if (sid == childId) return true;
+    if (p.childSessionId == childId) return true;
     final inputSid = p.toolInput?['sessionID']?.toString();
     if (inputSid == childId) return true;
     if (p.toolStatus == 'streaming' || p.toolStatus == 'running') {
@@ -1106,7 +1112,11 @@ class ConversationStore extends ChangeNotifier {
         // 快照的默认 settled 盖成 true——否则流中对账会让在流尾段
         // Markdown↔纯文本来回重排。SSE 没见过的 part（sp==null）仍用快照值。
         merged.settled = sp.settled;
-        if (sp.toolStatus != null) merged.toolStatus = sp.toolStatus;
+        if (sp.toolStatus != null &&
+            _toolStatusRank(sp.toolStatus) >=
+                _toolStatusRank(merged.toolStatus)) {
+          merged.toolStatus = sp.toolStatus;
+        }
         if (sp.toolTitle != null) merged.toolTitle = sp.toolTitle;
         if (sp.toolOutput != null) merged.toolOutput = sp.toolOutput;
         if (sp.toolError != null) merged.toolError = sp.toolError;
@@ -1218,7 +1228,7 @@ class ConversationStore extends ChangeNotifier {
             'providerID': m.modelProvider ?? '',
           };
         }
-        raw['content'] = m.parts.map((p) => _partToJson(p)).toList();
+        raw['content'] = m.parts.map((p) => _partToJson(p, m.id)).toList();
         if (m.finish != null) raw['finish'] = m.finish;
         if (m.cost != 0) raw['cost'] = m.cost;
         if (m.error != null) raw['error'] = m.error;
@@ -1255,7 +1265,7 @@ class ConversationStore extends ChangeNotifier {
     return '';
   }
 
-  Map<String, dynamic> _partToJson(DisplayPart p) {
+  Map<String, dynamic> _partToJson(DisplayPart p, String mid) {
     if (p.type == 'tool') {
       final state = <String, dynamic>{
         'status': p.toolStatus ?? 'running',
@@ -1272,7 +1282,7 @@ class ConversationStore extends ChangeNotifier {
       }
       return {
         'type': 'tool',
-        'id': p.id,
+        'id': _toolCallId(mid, p.id),
         'name': p.tool ?? '',
         'state': state,
       };
@@ -1474,7 +1484,7 @@ class ConversationStore extends ChangeNotifier {
                 settled: true,
               ));
             case ToolContent():
-              m.parts.add(_toolPart('${e.id}_tool_${c.id}', c));
+              _upsertToolPart(m.parts, e.id, c.id, c);
           }
         }
         // 未完成消息的快照（预热/对账发现的新消息）：末位若为 text/reasoning
@@ -1567,6 +1577,42 @@ class ConversationStore extends ChangeNotifier {
         );
       case UnknownMessage():
         return null;
+    }
+  }
+
+  static String _toolCallId(String mid, String raw) {
+    final prefix = '${mid}_tool_';
+    var id = raw;
+    while (id.startsWith(prefix)) {
+      id = id.substring(prefix.length);
+    }
+    return id;
+  }
+
+  static String _toolPartId(String mid, String callId) =>
+      '${mid}_tool_${_toolCallId(mid, callId)}';
+
+  static int _toolStatusRank(String? status) => switch (status) {
+        'completed' || 'error' => 2,
+        'running' => 1,
+        _ => 0,
+      };
+
+  static void _upsertToolPart(
+      List<DisplayPart> parts, String mid, String callId, ToolContent c) {
+    final part = _toolPart(_toolPartId(mid, callId), c);
+    if (callId.isEmpty) {
+      parts.add(part);
+      return;
+    }
+    final idx = parts.indexWhere((p) => p.id == part.id);
+    if (idx == -1) {
+      parts.add(part);
+      return;
+    }
+    if (_toolStatusRank(part.toolStatus) >
+        _toolStatusRank(parts[idx].toolStatus)) {
+      parts[idx] = part;
     }
   }
 
@@ -1692,7 +1738,7 @@ class ConversationStore extends ChangeNotifier {
       _onContentDelta(mid, 'reasoning', ordinal, null, text);
 
   void onToolInputStarted(String mid, String callId, String name) {
-    final partId = '${mid}_tool_$callId';
+    final partId = _toolPartId(mid, callId);
     final msg = _findMessage(mid) ?? _ensureMessage(mid);
     var idx = msg.parts.indexWhere((x) => x.id == partId);
     if (idx == -1) {
@@ -1710,7 +1756,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   void onToolInputDelta(String mid, String callId, String delta) {
-    final partId = '${mid}_tool_$callId';
+    final partId = _toolPartId(mid, callId);
     final msg = _findMessage(mid);
     if (msg == null) return;
     final idx = msg.parts.indexWhere((x) => x.id == partId);
@@ -1723,7 +1769,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   void onToolInputEnded(String mid, String callId, String text) {
-    final partId = '${mid}_tool_$callId';
+    final partId = _toolPartId(mid, callId);
     final msg = _findMessage(mid);
     if (msg == null) return;
     final idx = msg.parts.indexWhere((x) => x.id == partId);
@@ -1742,7 +1788,7 @@ class ConversationStore extends ChangeNotifier {
 
   void onToolCalled(String mid, String callId, Map<String, dynamic>? input,
       bool? executed) {
-    final partId = '${mid}_tool_$callId';
+    final partId = _toolPartId(mid, callId);
     final msg = _findMessage(mid) ?? _ensureMessage(mid);
     var idx = msg.parts.indexWhere((x) => x.id == partId);
     DisplayPart dp;
@@ -1759,7 +1805,7 @@ class ConversationStore extends ChangeNotifier {
   }
 
   void onToolProgress(String mid, String callId, Map<String, dynamic>? metadata) {
-    final partId = '${mid}_tool_$callId';
+    final partId = _toolPartId(mid, callId);
     final msg = _findMessage(mid);
     if (msg == null) return;
     final idx = msg.parts.indexWhere((x) => x.id == partId);
@@ -1779,7 +1825,7 @@ class ConversationStore extends ChangeNotifier {
       {List<ToolContentItem>? content, Map<String, dynamic>? metadata}) {
     if (metadata != null && metadata.isNotEmpty) {
       final msg = _findMessage(mid);
-      final idx = msg?.parts.indexWhere((x) => x.id == '${mid}_tool_$callId') ?? -1;
+      final idx = msg?.parts.indexWhere((x) => x.id == _toolPartId(mid, callId)) ?? -1;
       if (idx >= 0) msg!.parts[idx].toolMetadata = metadata;
     }
     final msg = error['message']?.toString() ?? error.toString();
@@ -1790,7 +1836,7 @@ class ConversationStore extends ChangeNotifier {
 
   void _setToolCompleted(String mid, String callId, String status,
       {String? output, String? error}) {
-    final partId = '${mid}_tool_$callId';
+    final partId = _toolPartId(mid, callId);
     final msg = _findMessage(mid);
     if (msg == null) return;
     final idx = msg.parts.indexWhere((x) => x.id == partId);
@@ -1876,7 +1922,7 @@ class ConversationStore extends ChangeNotifier {
               settled: true,
             ));
           case ToolContent():
-            authoritative.add(_toolPart('${mid}_tool_${c.id}', c));
+            _upsertToolPart(authoritative, mid, c.id, c);
         }
       }
       final merged = _mergeParts(authoritative, existing.parts);
