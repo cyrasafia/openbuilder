@@ -12,9 +12,15 @@ class BinaryView extends StatefulWidget {
   final String? mimeType;
   final Uint8List? downloadedBytes;
 
-  /// Shown as a Download button when [downloadedBytes] is null (content not
-  /// fetched yet, e.g. an oversized probe that was cancelled). When null and
-  /// [downloadedBytes] is also null, the view degrades to a failure hint.
+  /// On-disk source for save/share/open when the content lives in the
+  /// download spool (resume downloader) instead of memory. Takes precedence
+  /// over [downloadedBytes].
+  final String? sourcePath;
+
+  /// Shown as a Download button when neither [sourcePath] nor
+  /// [downloadedBytes] is set (content not fetched yet, e.g. an oversized
+  /// probe that was cancelled). When null and both are null, the view
+  /// degrades to a failure hint.
   final VoidCallback? onDownload;
 
   const BinaryView({
@@ -22,6 +28,7 @@ class BinaryView extends StatefulWidget {
     required this.filename,
     this.mimeType,
     this.downloadedBytes,
+    this.sourcePath,
     this.onDownload,
   });
 
@@ -37,7 +44,8 @@ class _BinaryViewState extends State<BinaryView> {
   void didUpdateWidget(covariant BinaryView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.filename != widget.filename ||
-        oldWidget.downloadedBytes != widget.downloadedBytes) {
+        oldWidget.downloadedBytes != widget.downloadedBytes ||
+        oldWidget.sourcePath != widget.sourcePath) {
       _downloadedUri = null;
     }
   }
@@ -73,7 +81,9 @@ class _BinaryViewState extends State<BinaryView> {
   }
 
   Widget _footer() {
-    if (widget.downloadedBytes != null) return _actions();
+    if (widget.downloadedBytes != null || widget.sourcePath != null) {
+      return _actions();
+    }
     final onDownload = widget.onDownload;
     if (onDownload != null) {
       return FilledButton.icon(
@@ -129,6 +139,8 @@ class _BinaryViewState extends State<BinaryView> {
   }
 
   Future<File> _materializeFile() {
+    final src = widget.sourcePath;
+    if (src != null) return Future.value(File(src));
     return materializeExportFile(widget.filename, widget.downloadedBytes!);
   }
 
@@ -173,7 +185,10 @@ class _BinaryViewState extends State<BinaryView> {
   Future<void> _onShare() async {
     setState(() => _busy = _Action.share);
     try {
-      final file = await _materializeFile();
+      final src = widget.sourcePath;
+      final file = src != null
+          ? await copyExportFile(File(src), widget.filename)
+          : await _materializeFile();
       await shareExportFile(file);
     } catch (e) {
       AppLogger.I.w('BinaryView', 'share failed: $e');

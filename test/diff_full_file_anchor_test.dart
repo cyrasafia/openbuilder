@@ -1,8 +1,13 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_builder/app_state.dart';
+import 'package:open_builder/core/net/file_downloader.dart';
 import 'package:open_builder/core/session/file_browsing_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
@@ -76,13 +81,31 @@ class _MockClient extends OpencodeClient {
       ];
 
   @override
-  Future<StreamedFile> readFileStream({
+  Future<FileDownloadResult> downloadFile({
     required String directory,
     required String path,
-    void Function(int received, int total)? onProgress,
+    void Function(int resumedFrom, int received, int total)? onProgress,
     CancelToken? cancelToken,
   }) async =>
-      StreamedFile(type: 'text', mimeType: 'text/plain', text: _content);
+      _MemoryDownloadResult(
+        Uint8List.fromList(utf8.encode(_content)),
+        'text/plain',
+      );
+}
+
+class _MemoryDownloadResult extends FileDownloadResult {
+  final Uint8List _bytes;
+
+  _MemoryDownloadResult(this._bytes, String mime)
+      : super(
+          file: File('/nonexistent'),
+          mimeType: mime,
+          total: _bytes.length,
+          resumed: false,
+        );
+
+  @override
+  Future<Uint8List> readBytes() => Future.value(_bytes);
 }
 
 Dio _noopDio() => Dio(

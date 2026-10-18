@@ -150,6 +150,9 @@ Node 不受影响；chunked `HttpServerResponse.stream` 响应不受影响（周
 
 ## 后续待办：客户端断点续传
 
+> 设计文档：[`docs/design/v2/design-file-resume-download.md`](../design/v2/design-file-resume-download.md)（2026-10-15，含 v2.0.26 活体能力实测矩阵）。
+> 实现状态：**已实现**（2026-10-15，一轮设计评审 FR-1~7 全闭 + 一轮代码评审 B1/NB1/NB2 全闭；analyze 零 issue + 878 测试全过，含 19 个下载器专项测试与 localhost:15120 smoke；核对报告见 [`docs/review/review-file-resume-download.md`](../review/review-file-resume-download.md)，真机慢链路验收待远端 ≥ v2.0.26 后补）。
+
 服务端 `Range`/206 已就绪，客户端可实现分段续传：
 
 - 入口：`OpencodeClient.readFileStream`（FileViewScreen `_download` / `_FileExportDialog._run` 共用）。检测本地 partial 文件，带 `Range: bytes=<received>-` 重发。

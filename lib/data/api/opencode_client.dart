@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../core/net/file_downloader.dart';
 import '../../core/net/net_error.dart';
 import '../../core/net/raw_download.dart'
     if (dart.library.html) '../../core/net/raw_download_web.dart'
@@ -664,13 +665,28 @@ class OpencodeClient {
         r.headers.value('content-encoding'),
       );
       final mime = r.headers.value('content-type')?.split(';').first.trim();
-      if (body.length < _inlineParseLimit) {
+      if (body.length < kInlineParseLimit) {
         return parseStreamedFile((body, mime));
       }
       return compute(parseStreamedFile, (body, mime));
     } finally {
       raw.close(force: true);
     }
+  }
+
+  Future<FileDownloadResult> downloadFile({
+    required String directory,
+    required String path,
+    void Function(int resumedFrom, int received, int total)? onProgress,
+    CancelToken? cancelToken,
+  }) {
+    return fileDownloader.download(
+      dio: dio,
+      directory: directory,
+      path: path,
+      onProgress: onProgress,
+      cancelToken: cancelToken,
+    );
   }
 
   Future<List<FileNode>> findFiles({
@@ -753,7 +769,7 @@ class OpencodeClient {
   }
 }
 
-const int _inlineParseLimit = 500 * 1024;
+const int kInlineParseLimit = 500 * 1024;
 
 @visibleForTesting
 class DecodedMessagePage {
@@ -817,11 +833,10 @@ Future<String> _readBodyBounded(
 
 const int kVcsDiffContext = 3;
 
-@visibleForTesting
 StreamedFile parseStreamedFile((Uint8List, String?) args) {
   final body = args.$1;
   final mime = args.$2;
-  final type = _isTextMime(mime) ? 'text' : 'binary';
+  final type = isTextMime(mime) ? 'text' : 'binary';
   if (type == 'text') {
     return StreamedFile(
       type: type,
@@ -836,7 +851,7 @@ StreamedFile parseStreamedFile((Uint8List, String?) args) {
   );
 }
 
-bool _isTextMime(String? mime) {
+bool isTextMime(String? mime) {
   if (mime == null || mime.isEmpty) return true;
   final m = mime.toLowerCase();
   if (m.startsWith('text/')) return true;

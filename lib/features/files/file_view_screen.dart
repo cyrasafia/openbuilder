@@ -7,8 +7,10 @@ import 'package:flutter/material.dart';
 
 import '../../app_state.dart';
 import '../../core/logging/app_logger.dart';
+import '../../core/net/file_downloader.dart';
 import '../../core/net/net_error.dart';
 import '../../core/session/file_browsing_store.dart';
+import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 import '../../ui/theme.dart';
@@ -50,6 +52,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
   late final DownloadPolicy _policy = inferDownloadPolicy(widget.path);
 
   StreamedFile? _file;
+  FileDownloadResult? _diskFile;
   bool _downloading = false;
   double? _progress;
   Object? _error;
@@ -505,6 +508,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       _progress = null;
       _error = null;
       _file = null;
+      _diskFile = null;
       // Content is being replaced: drop the derived artifacts of the previous
       // body so a re-download can never mount stale spans/HTML (and any
       // in-flight pre-build is invalidated via the generation counters).
@@ -518,45 +522,100 @@ class _FileViewScreenState extends State<FileViewScreen> {
       _webviewRendered = false;
     });
     try {
-      _file = await c.readFileStream(
-        directory: widget.directory ?? '',
-        path: widget.path,
-        onProgress: (r, t) {
-          // Ignore progress from a superseded/cancelled download so it can't
-          // overwrite the active token's percentage (mirrors the finally guard).
-          if (_cancelToken != token) return;
-          if (!mounted) return;
-          if (_policy == DownloadPolicy.probe && !_forceDownload) {
-            // Cancel once the download clearly exceeds the threshold. We gate on
-            // both the announced total (Content-Length) and the bytes received so
-            // far: `total` may be -1/0 when the server omits Content-Length
-            // (chunked / HTTP2), in which case the received-bytes guard still
-            // caps the download. On native, `total` is the gzipped transfer size
-            // (raw_download keeps compression on); on web the browser owns
-            // decompression and reports decoded bytes — either way the guard
-            // bounds the real cost of previewing.
-            final knownTotal = t > 0 ? t : null;
-            if ((knownTotal != null && knownTotal > probeThreshold) ||
-                r > probeThreshold) {
-              // The finally block clears _downloading, which drops the UI into
-              // the binary-style preview with a Download button.
-              token.cancel();
-              return;
+      if (kIsWeb) {
+        _file = await c.readFileStream(
+          directory: widget.directory ?? '',
+          path: widget.path,
+          onProgress: (r, t) {
+            // Ignore progress from a superseded/cancelled download so it can't
+            // overwrite the active token's percentage (mirrors the finally guard).
+            if (_cancelToken != token) return;
+            if (!mounted) return;
+            if (_policy == DownloadPolicy.probe && !_forceDownload) {
+              // Cancel once the download clearly exceeds the threshold. We gate on
+              // both the announced total (Content-Length) and the bytes received so
+              // far: `total` may be -1/0 when the server omits Content-Length
+              // (chunked / HTTP2), in which case the received-bytes guard still
+              // caps the download. On native, `total` is the gzipped transfer size
+              // (raw_download keeps compression on); on web the browser owns
+              // decompression and reports decoded bytes — either way the guard
+              // bounds the real cost of previewing.
+              final knownTotal = t > 0 ? t : null;
+              if ((knownTotal != null && knownTotal > probeThreshold) ||
+                  r > probeThreshold) {
+                // The finally block clears _downloading, which drops the UI into
+                // the binary-style preview with a Download button.
+                token.cancel();
+                return;
+              }
             }
-          }
-          if (t > 0) {
-            final p = (r / t).clamp(0.0, 1.0);
-            if (p != _progress) setState(() => _progress = p);
-          }
-        },
-        cancelToken: token,
-      );
-      serverStore.fileBrowsing.cacheContent(
-        widget.sessionId,
-        widget.directory,
-        widget.path,
-        _file!,
-      );
+            if (t > 0) {
+              final p = (r / t).clamp(0.0, 1.0);
+              if (p != _progress) setState(() => _progress = p);
+            }
+          },
+          cancelToken: token,
+        );
+        serverStore.fileBrowsing.cacheContent(
+          widget.sessionId,
+          widget.directory,
+          widget.path,
+          _file!,
+        );
+      } else {
+        final result = await c.downloadFile(
+          directory: widget.directory ?? '',
+          path: widget.path,
+          onProgress: (resumedFrom, received, total) {
+            if (_cancelToken != token) return;
+            if (!mounted) return;
+            if (_policy == DownloadPolicy.probe && !_forceDownload) {
+              // Cumulative budget: prior spool bytes plus this request's bytes
+              // count against the probe threshold, so re-entering with an
+              // over-threshold partial never receives more bytes. `total` is
+              // the full representation size (content-length / content-range).
+              final knownTotal = total > 0 ? total : null;
+              if ((knownTotal != null && knownTotal > probeThreshold) ||
+                  resumedFrom + received > probeThreshold) {
+                token.cancel();
+                return;
+              }
+            }
+            if (total > 0) {
+              final p = ((resumedFrom + received) / total).clamp(0.0, 1.0);
+              if (p != _progress) setState(() => _progress = p);
+            }
+          },
+          cancelToken: token,
+        );
+        if (!mounted || _cancelToken != token) return;
+        if (_policy == DownloadPolicy.probe &&
+            !_forceDownload &&
+            result.total > probeThreshold) {
+          // Zero-transfer reuse (416) never fires a progress callback, so the
+          // probe gate above can't see it. Terminal check: keep oversized
+          // probed files out of memory; the Download button re-runs this with
+          // force and picks the completed spool up at no transfer cost.
+          return;
+        }
+        final mime = result.mimeType;
+        if (isTextMime(mime) ||
+            (mime != null && mime.startsWith('image/'))) {
+          final bytes = await result.readBytes();
+          if (!mounted || _cancelToken != token) return;
+          _file = bytes.length < kInlineParseLimit
+              ? parseStreamedFile((bytes, mime))
+              : await compute(parseStreamedFile, (bytes, mime));
+          serverStore.fileBrowsing.cacheContent(
+            widget.sessionId,
+            widget.directory,
+            widget.path,
+            _file!,
+          );
+        } else {
+          _diskFile = result;
+        }
+      }
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
         // Probe-induced cancellation is expected; the finally block drops the
@@ -767,6 +826,16 @@ class _FileViewScreenState extends State<FileViewScreen> {
         return const Center(child: CircularProgressIndicator());
       }
       return _contentDispatch();
+    }
+    if (_diskFile != null) {
+      if (!_routeTransitionDone || !_containerTransitionDone) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      return BinaryView(
+        filename: widget.path.split('/').last,
+        mimeType: _diskFile!.mimeType,
+        sourcePath: _diskFile!.file.path,
+      );
     }
     // No content and not downloading: a probe-cancelled oversized file or a
     // user-cancelled download. Present it like a binary file (icon + name +

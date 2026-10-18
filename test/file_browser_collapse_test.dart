@@ -1,11 +1,17 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_builder/app_state.dart';
+import 'package:open_builder/core/net/file_downloader.dart';
 import 'package:open_builder/core/session/file_browsing_store.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
+import 'package:open_builder/features/files/binary_view.dart';
 import 'package:open_builder/features/files/code_view.dart';
 import 'package:open_builder/features/files/file_browsing_container.dart';
 import 'package:open_builder/features/files/file_list_screen.dart';
@@ -19,12 +25,33 @@ class _DownloadMockClient extends OpencodeClient {
   final StreamedFile _file;
 
   @override
-  Future<StreamedFile> readFileStream({
+  Future<FileDownloadResult> downloadFile({
     required String directory,
     required String path,
-    void Function(int received, int total)? onProgress,
+    void Function(int resumedFrom, int received, int total)? onProgress,
     CancelToken? cancelToken,
-  }) async => _file;
+  }) async =>
+      _MemoryDownloadResult(
+        _file.isBinary
+            ? (_file.bytes ?? Uint8List(0))
+            : Uint8List.fromList(utf8.encode(_file.text ?? '')),
+        _file.mimeType,
+      );
+}
+
+class _MemoryDownloadResult extends FileDownloadResult {
+  final Uint8List _bytes;
+
+  _MemoryDownloadResult(this._bytes, String? mime)
+      : super(
+          file: File('/nonexistent'),
+          mimeType: mime,
+          total: _bytes.length,
+          resumed: false,
+        );
+
+  @override
+  Future<Uint8List> readBytes() => Future.value(_bytes);
 }
 
 Dio _noopDio() => Dio(
@@ -33,6 +60,24 @@ Dio _noopDio() => Dio(
     receiveTimeout: const Duration(milliseconds: 1),
   ),
 );
+
+class _OversizedMockClient extends OpencodeClient {
+  _OversizedMockClient() : super(_noopDio());
+
+  @override
+  Future<FileDownloadResult> downloadFile({
+    required String directory,
+    required String path,
+    void Function(int resumedFrom, int received, int total)? onProgress,
+    CancelToken? cancelToken,
+  }) async =>
+      _MemoryDownloadResult(
+        Uint8List.fromList(
+          List<int>.filled(2 * 1024 * 1024 + 1, 0x61),
+        ),
+        'text/plain',
+      );
+}
 
 GoRouter _buildTestRouter() {
   return GoRouter(
@@ -816,5 +861,34 @@ void main() {
     );
     await tester.pump();
     expect(tester.takeException(), isA<AssertionError>());
+  });
+
+  testWidgets('probe policy keeps an oversized completed download out of memory', (
+    tester,
+  ) async {
+    // Regression (NB1): the zero-transfer reuse path (416) finishes without
+    // a single progress callback, so the probe gate in onProgress never
+    // fires. The terminal check after downloadFile returns must keep a >1MiB
+    // probed file from being read back into memory: the screen settles on
+    // the binary-style preview with a Download button instead of a renderer.
+    serverStore.client = _OversizedMockClient();
+    final router = await _pumpApp(tester);
+    const sid = 'probe-oversized';
+    router.push('/session/$sid/files?directory=');
+    await _flush(tester);
+
+    final container = serverStore.fileBrowsing
+        .containerFor<FileBrowsingContainerState>(sid, '')!;
+    container.openFile('a/b/blob'); // no extension → probe policy
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsNothing,
+        reason: 'download settled, nothing may spin forever');
+    expect(find.byType(CodeView), findsNothing,
+        reason: 'oversized probed content must not reach a renderer');
+    expect(find.byType(BinaryView), findsOneWidget,
+        reason: 'the binary-style preview with a Download button shows');
   });
 }

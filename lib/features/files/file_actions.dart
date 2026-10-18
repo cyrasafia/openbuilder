@@ -9,7 +9,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../app_state.dart';
+import '../../core/net/file_downloader.dart';
 import '../../core/net/net_error.dart';
+import '../../data/api/opencode_client.dart';
+import '../../domain/models.dart';
 import '../../ui/l10n_ext.dart';
 
 const filesMethodChannel = MethodChannel('com.openbuilder.app/files');
@@ -46,6 +49,13 @@ Future<File> materializeExportFile(String filename, List<int> bytes) async {
   final file = File('${dir.path}/$filename');
   await file.writeAsBytes(bytes, flush: true);
   return file;
+}
+
+Future<File> copyExportFile(File src, String filename) async {
+  final dir = await _exportDir();
+  final dst = File('${dir.path}/$filename');
+  await src.copy(dst.path);
+  return dst;
 }
 
 Future<File> materializeTextExportFile(String filename, String text) async {
@@ -170,62 +180,38 @@ class _FileExportDialogState extends State<_FileExportDialog> {
       widget.directory,
       widget.path,
     );
+    FileDownloadResult? disk;
     if (f == null) {
-      final token = CancelToken();
-      _cancelToken = token;
-      try {
-        f = await c.readFileStream(
-          directory: widget.directory ?? '',
-          path: widget.path,
-          onProgress: (received, total) {
-            if (!mounted || _cancelToken != token || total <= 0) return;
-            final p = (received / total).clamp(0.0, 1.0);
-            if (p != _progress) setState(() => _progress = p);
-          },
-          cancelToken: token,
-        );
-        serverStore.fileBrowsing.cacheContent(
-          widget.sessionId,
-          widget.directory,
-          widget.path,
-          f,
-        );
-      } on DioException catch (e) {
-        _cancelToken = null;
-        if (e.type == DioExceptionType.cancel) {
-          if (mounted) Navigator.of(context).pop();
-          return;
-        }
-        if (mounted) {
-          setState(() {
-            _phase = _ExportPhase.failed;
-            _errorMsg = friendlyMessage(l(context), e);
-          });
-        }
-        return;
-      } catch (e) {
-        _cancelToken = null;
-        if (mounted) {
-          setState(() {
-            _phase = _ExportPhase.failed;
-            _errorMsg = friendlyMessage(l(context), e);
-          });
-        }
-        return;
+      if (kIsWeb) {
+        f = await _downloadWeb(c);
+      } else {
+        disk = await _downloadNative(c);
       }
-      _cancelToken = null;
+      if (f == null && disk == null) return;
     }
     if (!mounted) return;
     setState(() => _phase = _ExportPhase.acting);
     try {
-      final file = f.isBinary
-          ? await materializeExportFile(widget.filename, f.bytes ?? Uint8List(0))
-          : await materializeTextExportFile(widget.filename, f.text ?? '');
       if (widget.action == FileExportAction.saveToDevice) {
+        final String srcPath;
+        final String? mimeType;
+        if (disk != null) {
+          srcPath = disk.file.path;
+          mimeType = disk.mimeType;
+        } else {
+          final s = f!;
+          srcPath = (s.isBinary
+                  ? await materializeExportFile(
+                      widget.filename, s.bytes ?? Uint8List(0))
+                  : await materializeTextExportFile(
+                      widget.filename, s.text ?? ''))
+              .path;
+          mimeType = s.mimeType;
+        }
         await saveExportToDownloads(
-          srcPath: file.path,
+          srcPath: srcPath,
           displayName: widget.filename,
-          mimeType: f.mimeType,
+          mimeType: mimeType,
         );
         if (!mounted) return;
         final msg = l(context).fileDownloadSuccess;
@@ -233,6 +219,17 @@ class _FileExportDialogState extends State<_FileExportDialog> {
         Navigator.of(context).pop();
         messenger.showSnackBar(SnackBar(content: Text(msg)));
       } else {
+        final File file;
+        if (disk != null) {
+          file = await copyExportFile(disk.file, widget.filename);
+        } else {
+          final s = f!;
+          file = s.isBinary
+              ? await materializeExportFile(
+                  widget.filename, s.bytes ?? Uint8List(0))
+              : await materializeTextExportFile(
+                  widget.filename, s.text ?? '');
+        }
         await shareExportFile(file);
         if (!mounted) return;
         Navigator.of(context).pop();
@@ -244,6 +241,70 @@ class _FileExportDialogState extends State<_FileExportDialog> {
         _errorMsg = widget.action == FileExportAction.saveToDevice
             ? l(context).fileDownloadFailed(e.toString())
             : l(context).fileShareFailed(e.toString());
+      });
+    }
+  }
+
+  Future<StreamedFile?> _downloadWeb(OpencodeClient c) async {
+    final token = CancelToken();
+    _cancelToken = token;
+    try {
+      final f = await c.readFileStream(
+        directory: widget.directory ?? '',
+        path: widget.path,
+        onProgress: (received, total) {
+          if (!mounted || _cancelToken != token || total <= 0) return;
+          final p = (received / total).clamp(0.0, 1.0);
+          if (p != _progress) setState(() => _progress = p);
+        },
+        cancelToken: token,
+      );
+      _cancelToken = null;
+      serverStore.fileBrowsing.cacheContent(
+        widget.sessionId,
+        widget.directory,
+        widget.path,
+        f,
+      );
+      return f;
+    } catch (e) {
+      _handleDownloadError(e);
+      return null;
+    }
+  }
+
+  Future<FileDownloadResult?> _downloadNative(OpencodeClient c) async {
+    final token = CancelToken();
+    _cancelToken = token;
+    try {
+      final result = await c.downloadFile(
+        directory: widget.directory ?? '',
+        path: widget.path,
+        onProgress: (resumedFrom, received, total) {
+          if (!mounted || _cancelToken != token || total <= 0) return;
+          final p = ((resumedFrom + received) / total).clamp(0.0, 1.0);
+          if (p != _progress) setState(() => _progress = p);
+        },
+        cancelToken: token,
+      );
+      _cancelToken = null;
+      return result;
+    } catch (e) {
+      _handleDownloadError(e);
+      return null;
+    }
+  }
+
+  void _handleDownloadError(Object e) {
+    _cancelToken = null;
+    if (e is DioException && e.type == DioExceptionType.cancel) {
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _phase = _ExportPhase.failed;
+        _errorMsg = friendlyMessage(l(context), e);
       });
     }
   }
