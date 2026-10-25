@@ -109,6 +109,8 @@ class OpencodeClient {
     int limit = _defaultListLimit,
     String? search,
     String? parentID,
+    bool? archived,
+    bool filterArchived = true,
   }) async {
     final params = <String, dynamic>{'limit': limit};
     if (directory != null && directory.isNotEmpty) {
@@ -118,14 +120,15 @@ class OpencodeClient {
     if (subpath != null && subpath.isNotEmpty) params['subpath'] = subpath;
     if (search != null && search.isNotEmpty) params['search'] = search;
     if (parentID != null) params['parentID'] = parentID;
+    if (archived != null) params['archived'] = archived;
     final r = await dio.get<dynamic>('/api/session', queryParameters: params);
     final data = _asMap(r.data)['data'];
     final list = data is List ? data : const [];
-    return list
+    final rows = list
         .whereType<Map>()
         .map((e) => SessionModel.fromJson(e.cast<String, dynamic>()))
-        .where((s) => !s.isArchived)
         .toList();
+    return filterArchived ? rows.where((s) => !s.isArchived).toList() : rows;
   }
 
   Future<List<SessionModel>> sessionsForDirectory(String directory,
@@ -179,18 +182,23 @@ class OpencodeClient {
     );
   }
 
-  Future<Map<String, dynamic>> archiveSession(String sessionId) async {
+  Future<void> archiveSession(String sessionId) async {
+    await dio.patch<dynamic>(
+      '/api/session/$sessionId',
+      data: {'archived': true},
+    );
+  }
+
+  Future<void> promoteLegacyArchive(String sessionId) async {
     final r = await dio.get<dynamic>('/api/session/$sessionId');
     final meta = _dataMap(r.data)['metadata'];
     final merged = <String, dynamic>{
       if (meta is Map) ...meta.cast<String, dynamic>(),
-      'archivedAt': DateTime.now().millisecondsSinceEpoch,
-    };
+    }..remove('archivedAt');
     await dio.patch<dynamic>(
       '/api/session/$sessionId',
-      data: {'metadata': merged},
+      data: {'archived': true, 'metadata': merged},
     );
-    return merged;
   }
 
   Future<Map<String, SessionStatusValue>> activeSessions() async {

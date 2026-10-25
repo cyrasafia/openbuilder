@@ -273,6 +273,26 @@ class SessionModel {
 
   bool get isArchived => archived != null || metadataArchivedAt != null;
 
+  SessionModel withArchived(int? at) => SessionModel(
+        id: id,
+        projectID: projectID,
+        directory: directory,
+        title: title,
+        created: created,
+        updated: updated,
+        archived: at,
+        metadataArchivedAt: metadataArchivedAt,
+        parentID: parentID,
+        cost: cost,
+        tokens: tokens,
+        agent: agent,
+        model: model,
+        outcome: outcome,
+        idle: idle,
+        viewed: viewed,
+        subpath: subpath,
+      );
+
   SessionModel withMetadataArchivedAt(int? at) => SessionModel(
         id: id,
         projectID: projectID,

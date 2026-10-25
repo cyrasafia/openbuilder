@@ -448,6 +448,8 @@ class _FailingActiveClient extends OpencodeClient {
     int limit = 1000,
     String? search,
     String? parentID,
+    bool? archived,
+    bool filterArchived = true,
   }) async =>
       [];
 

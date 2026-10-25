@@ -106,7 +106,9 @@ class _ReconcileWarmClient extends OpencodeClient {
       String? subpath,
       int limit = 1000,
       String? search,
-      String? parentID}) async {
+      String? parentID,
+      bool? archived,
+      bool filterArchived = true}) async {
     return snapshot;
   }
 

@@ -1,6 +1,7 @@
 # 归档会话识别对齐（metadata.archivedAt 私约）
 
 > 状态：已实施（2026-09-29 识别读路径；2026-09-30 归档写路径落地）。上游依据：openbuilder-desktop `docs/design-v2-migration.md` D1 / V2D-1、`docs/plan-v2-protocol.md` M2。
+> **2026-10-25 修订（已实施）**：官方归档链路回归，私约迁回官方 API——见文末《迁回官方归档 API》。
 
 ## 问题
 
@@ -103,3 +104,96 @@ v1 时代会话详情菜单有「归档」项（`client.archive()` 写 `time.arc
 ## 评审意见
 
 （待追加）
+
+## 迁回官方归档 API（2026-10-25 修订，已实施）
+
+### 触发与契约面
+
+pin 升 2.1.3（契约审计见 openbuilder-desktop `docs/ref/ref-pin-bump-2.1.3.md`），官方归档三件套回归，D1 迁回条件（决策 4 备案的迁移触发点）成立：
+
+- `PATCH /api/session/:id` body `archived: boolean | null`——`true` 置 `time.archived`、`false` 清除，重复当前状态为 no-op（spec 描述原文）
+- `GET /api/session?archived=true|false` 服务端过滤
+- `session.archived` / `session.unarchived` 事件（durable，payload `{sessionID}`，信封带 `location`）
+
+活体验证（2026-10-25，本机 2.1.3，探针会话用后即删）：PATCH 置/清 204、过滤命中/排除吻合、双事件帧抓到；额外发现 **`session.archived` 事件的 `created` 恰等于 `time.archived` 值**（1792902550240 两处一致），事件侧可直接取权威时间戳；组合 PATCH（`archived` + `metadata` 同 body，spec 声明两属性）204 通过、他端 metadata 键保留。
+
+### 改动
+
+| 层 | 变化 |
+|---|---|
+| `OpencodeClient.archiveSession()` | GET 整包合并 + PATCH REPLACE → **单次 `PATCH {archived: true}`**，返回 void |
+| `OpencodeClient.promoteLegacyArchive()` | 新增：存量迁移写路径——GET 权威 metadata → 合并**去掉 `archivedAt`** → 组合 PATCH `{archived: true, metadata: merged}` |
+| `OpencodeClient.sessions()` | 加 `archived`（query 透传）与 `filterArchived`（默认 true，客户端双源过滤开关）两参 |
+| `ServerStore._fetchAllSessions()` | 改 `sessions(archived: false, filterArchived: false)`——服务端排除官方归档，marker-only 会话仍随行（其 `time.archived` 为 null 不过滤）；fire-and-forget `_backfillLegacyArchives` |
+| `ServerStore._backfillLegacyArchives()` | 新增：扫描 marker-only（`metadataArchivedAt != null && archived == null`）逐个 `promoteLegacyArchive`；**≥2.1.3 版本闸门**（`/api/info` 惰性探测 + 连接期缓存，旧服务器跳过防剥离 `archived` 字段静默清 marker）；in-flight 防重入，失败吞掉记日志下次重试 |
+| `ServerStore._onEvent` | 增 `session.archived` / `session.unarchived` 两 case；`session.metadata.updated` 接线保留（过渡期旧桌面端兼容） |
+| `ServerStore._applyArchiveFlag` / `_applyUnarchive` | 新增：archived 事件四象限镜像——已知→置/清（`withArchived` / 双清）；未知→归档方向忽略、取消归档方向回源 GET（同 metadata 四象限的「未知 + 无标记」分支） |
+| `SessionModel.withArchived(int?)` | 新增：显式设/清官方字段（绕开 copyWith 的 null=不变语义，与 `withMetadataArchivedAt` 同构） |
+
+写路径本地即时移除 + SSE 回声幂等零回源的既有模式不变：`archiveSession` 成功后本地 `_applyArchiveFlag(now)` 即时移除，随后 `session.archived` 回声命中「未知 → 忽略」象限。
+
+### 存量迁移设计（决策 5 裁定）
+
+**转正 + 清标记一步到位**：`promoteLegacyArchive` 在转正官方字段的同时清除 metadata 里的 `archivedAt`（REPLACE 语义整包合并，保留 `sessionId` 等他端键）。不清标记的后果：转正后的会话再被官方取消归档（`time.archived` 清除）时，残留 marker 会让双源判定误判为仍归档——会话在移动端永久不可见。清标记后状态收敛为纯官方单源，双源 getter 退化为无害过渡。
+
+- 挂点 `_fetchAllSessions`：bootstrap 与 `refreshListAndWorkingSse` 两路全覆盖，幂等可重试，与桌面端迁移策略兼容（两端任一跑过即收敛，另一端扫描为空 no-op）
+- 扫描对象是**未过滤原始列表**（`filterArchived: false`）：marker-only 会话被显示层过滤但必须在扫描里可见
+- 量级：实测约 13 条（2026-09-29 盘点），逐条串行 PATCH 可接受
+
+### 过渡期双读（决策 6 裁定）
+
+`isArchived` 双源 getter **保留**而非立即收敛单源：
+
+- 覆盖窗口——旧版桌面端仍写 marker、或存量迁移尚未跑完时，双读防漏网（与 2026-09-29 修复的原始问题同构）
+- `sessions()` 客户端过滤（`filterArchived` 默认 true）保留——同时是 2.0.x 服务器的兼容垫层（旧服务器忽略 `archived` 参数返回全量，客户端过滤兜底，行为与迁移前逐字节一致）
+- 终态：marker 集合 drained to empty 后，`metadataArchivedAt` 字段与双读可整体移除（后续清理项，不阻塞本次）
+
+### 场景验证（迁回后增量）
+
+| 场景 | 行为 |
+|---|---|
+| 移动端菜单归档 | 单次 `PATCH {archived:true}` → 本地即时移除（单次 notify）→ `session.archived` 回声未知象限忽略（零回源） |
+| 前台期间他端官方归档 | `session.archived` 事件（信封带会话目录，过目录闸门）→ 已知→移除；实时消失 |
+| 前台期间他端官方取消归档 | `session.unarchived` 事件 → 已知→双清恢复；未知（此前归档已移除）→回源 GET 取权威模型加回 |
+| 冷启动列表拉取 | `?archived=false` 服务端排除官方归档；marker-only 随行 → 显示层过滤 + 后台转正 |
+| 存量 marker-only 会话 | 首次 reconcile 后台转正（官方置位 + marker 清除），下次拉取走服务端过滤 |
+| 旧桌面端仍写 marker（过渡期） | `session.metadata.updated` 接线保留，实时生效；下次 reconcile 转正 |
+| 2.0.x 服务器 | 读路径：`archived` 参数被忽略 → 全量返回 → 客户端双源过滤兜底，行为与迁移前一致；写路径（backfill）：版本闸门跳过，marker 维持现状不动（旧服务器可能剥离未知 `archived` 字段——204 但只有 metadata REPLACE 生效，marker 被清而官方归档未置位，会话将复活进列表）；菜单归档（用户主动）：同样可能被剥离——本地移除后下次刷新复活，可见可恢复，接受为已知限制 |
+| subagent 子会话被官方归档 | `_applyArchiveFlag` 命中 `_childSessions` → `_upsertSession` 移除分支 → 摘卡 |
+| 双标存量（`time.archived` + marker 同存）被官方取消归档 | 移动端 backfill 判据含 `archived == null`，双标态不扫描、marker 残留；官方取消归档后变 marker-only → backfill 会**重新归档**（违背取消归档意图）。**跨端约束（决策 9）**：依赖桌面端迁移实现清 marker，见决策 9 |
+
+### 关键设计决策（迁回增补）
+
+5. **转正与清标记一步到位**：见「存量迁移设计」——只转正不清标记会给官方取消归档留永久误判坑；组合 PATCH 一次往返完成两件事。
+6. **双读过渡而非立即单源**：旧桌面端写 marker 的窗口期 + 存量迁移未完成的窗口期均需双读兜底；marker 集合清空后双读退化为无害，移除时机留给后续清理。
+7. **取消归档写路径仍不做**：官方 API 已支持（`archived: false`），但移动端仍无已归档会话列表面（产品决策未定，原「不做的事」维持）；读路径（`session.unarchived` 事件 + 回源）已就位，UI 入口后续随产品决策补。
+8. **存量迁移加版本闸门（AR-1）**：backfill 是自动且静默的服务端数据改写，旧服务器（<2.1.3）对 PATCH body 未知字段的行为未验证（可能 400 拒绝、也可能剥离后 204）——剥离结局是「marker 被清、官方归档未置位、会话复活」，无声且难归因。故 marker 非空时先惰性探测 `/api/info` 版本，≥2.1.3 才跑，否则跳过并记日志；探测结果连接期缓存（`disconnect()` 复位），无 marker 时零额外请求。菜单归档是用户主动操作、可见可恢复，不加闸门（已知限制，见场景表 2.0.x 行）。
+9. **双标残留路径裁定为跨端约束（AR2-1，不改代码）**：marker-only 状态面无法区分「从未归档」与「归档后官方取消、marker 残留」——若存在双标态（`time.archived` + marker）被官方取消归档，backfill 会误重新归档。核实桌面端代码（2026-10-25）：迁移未实施（todo-archive-official-api-migration 待办），现行**开 Tab = 清 marker**（`patchSessionArchive(null)` 删 `archivedAt` 键），双标态今天无生产者、路径不成立。**给桌面端迁移的约束**：官方写路径切换后，取消归档必须继续清 marker（或过渡期保留清 marker 逻辑直至 marker 集合 drained）——否则「旧 marker 会话 → 官方归档 → 官方取消归档」留下 marker-only，移动端 backfill 将重新归档。恢复路径存在：桌面端再开 Tab（现行逻辑清 marker）即解除。
+10. **`session.archived` 事件镜像 `updated` 为正确行为（AR2-3 活体翻案）**：评审质疑归档不 touch `time.updated` 会致本地背离——活体验证（2.1.3）归档**确实 touch**（`time.updated` 1792905082659 → 1792905083746，与事件 `created` 同毫秒），镜像与服务端一致，维持。
+
+### 不做的事（迁回后维持）
+
+- 取消归档 UI 入口（决策 7）
+- `Project.Time.archived` / `GET /api/project?archived=` 项目级归档面（桌面端同样不做，Keep Lean）
+- 对 v1 存量 `time.archived` 的任何清理（本就是官方字段，无需动）
+
+## 1次评审意见（迁回实现，2026-10-25）
+
+| 编号 | 严重度 | 问题 | 裁定 |
+|---|---|---|---|
+| AR-1 | 🟡 | 旧服务器（<2.1.3）可能剥离 PATCH body 未知 `archived` 字段——backfill 静默清 marker 而官方归档未置位，会话复活；设计文档 2.0.x 场景只论证了读路径 | **已修复**：`_archiveApiAvailable` 版本闸门（≥2.1.3，`/api/info` 惰性探测 + 连接期缓存 + `disconnect()` 复位），决策 8；2.0.x 写路径缺口入档场景表 |
+| AR-2 | 🟢 | `promoteLegacyArchive` GET→PATCH 窗口 lost update | 接受——与旧 `archiveSession` 同构的既有模式，一次性迁移 + 窗口极小（评审复审维持） |
+| AR-3 | 🟢 | AGENTS.md 索引行残留迁移前前瞻语「官方归档 API 回归后双端同迁」，与句首「已迁回」矛盾 | **已修复**：删尾句 |
+| AR-4 | 🟢 | 测试可选补强：in-flight 防重入、失败后 flag 复位重试、版本闸门 | **已补**：三用例（`backfill skips servers…` / `gate failure does not cache…` / `concurrent run is deduped…` / `swallows promote failures and retries…`，共四则） |
+
+评审另核实：组合 PATCH 后 `metadata.archivedAt` 确实从服务端消失（REPLACE 语义直接证据）、marker-only 会话随 `?archived=false` 返回（迁移扫描前提成立）、`session.archived` SSE 路径无 notify 缺口（`_onEvent` 尾部统一 notify）。
+
+## 2次评审意见（迁回实现复核，2026-10-25）
+
+| 编号 | 严重度 | 问题 | 裁定 |
+|---|---|---|---|
+| AR2-1 | 🟡 | backfill 可能把「marker 残留的已取消归档会话」重新归档——双标态（`time.archived` + marker）被官方取消归档后变 marker-only，判据无法与「待转正」区分 | **跨端约束入档，不改代码**：核实桌面端现行代码开 Tab = 清 marker（`patchSessionArchive(null)` 删键），双标态今天无生产者；给桌面端迁移立约束（决策 9），恢复路径存在（桌面端再开 Tab 即解除） |
+| AR2-2 | 🟢 | `_versionAtLeast` 对少于三段的版本号（"3"/"3.0"）误判返回 false，未来 3.x 服务器将跳过 backfill | **已修**：缺失段 pad 0（"3"→[3,0,0]→true） |
+| AR2-3 | 🟢 | `session.archived` 事件把 `updated` 镜像为归档时刻，服务端是否 touch `time.updated` 未验证 | **活体翻案**：归档确实 touch `time.updated`（与事件 `created` 同毫秒），镜像正确，维持（决策 10） |
+
+评审另核实：`_childSessions` 摘卡补位正确、`_onEvent` 尾部统一 notify 无缺口、`disconnect()` 复位、backfill 全路径异常捕获、2.0.x 读写路径限制均已入档。

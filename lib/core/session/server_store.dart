@@ -611,8 +611,8 @@ class ServerStore extends ChangeNotifier {
     final activeClient = client;
     if (activeClient == null) throw const KnownError(FriendlyErrorKind.notConnected);
     try {
-      final meta = await activeClient.archiveSession(sessionId);
-      _applyMetadataSnapshot(sessionId, meta);
+      await activeClient.archiveSession(sessionId);
+      _applyArchiveFlag(sessionId, DateTime.now().millisecondsSinceEpoch);
       notifyListeners();
     } catch (e) {
       throw OperationException('归档会话', cause: e);
@@ -1457,10 +1457,74 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<List<SessionModel>> _fetchAllSessions() async {
-    final list = await client!.sessions();
+    final list =
+        await client!.sessions(archived: false, filterArchived: false);
+    unawaited(_backfillLegacyArchives(list));
     final all = <String, SessionModel>{};
     _addSessions(all, list);
     return all.values.toList();
+  }
+
+  bool _legacyArchiveBackfillInFlight = false;
+  bool? _archiveApiSupported;
+
+  Future<bool> _archiveApiAvailable(OpencodeClient c) async {
+    final cached = _archiveApiSupported;
+    if (cached != null) return cached;
+    try {
+      final info = await c.health();
+      final ok = _versionAtLeast(info.version, 2, 1, 3);
+      _archiveApiSupported = ok;
+      if (!ok) {
+        AppLogger.I.w(
+            _tag, 'archive backfill skipped: server ${info.version} < 2.1.3');
+      }
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _versionAtLeast(String version, int ma, int mi, int pa) {
+    final parts = version.split('.');
+    final seq = <int>[];
+    for (var i = 0; i < 3; i++) {
+      if (i >= parts.length) {
+        seq.add(0);
+        continue;
+      }
+      final digits = RegExp(r'^\d+').firstMatch(parts[i])?.group(0);
+      final v = digits == null ? null : int.tryParse(digits);
+      if (v == null) return false;
+      seq.add(v);
+    }
+    if (seq[0] != ma) return seq[0] > ma;
+    if (seq[1] != mi) return seq[1] > mi;
+    return seq[2] >= pa;
+  }
+
+  Future<void> _backfillLegacyArchives(List<SessionModel> list) async {
+    final c = client;
+    if (c == null || _legacyArchiveBackfillInFlight) return;
+    final targets = [
+      for (final s in list)
+        if (s.archived == null && s.metadataArchivedAt != null) s.id,
+    ];
+    if (targets.isEmpty) return;
+    _legacyArchiveBackfillInFlight = true;
+    try {
+      if (!await _archiveApiAvailable(c)) return;
+      for (final sid in targets) {
+        try {
+          await c.promoteLegacyArchive(sid);
+          AppLogger.I.i(_tag, 'legacy archive promoted sid=$sid');
+        } catch (e) {
+          AppLogger.I.w(_tag, 'legacy archive promote failed sid=$sid: $e');
+        }
+      }
+    } finally {
+      _legacyArchiveBackfillInFlight = false;
+    }
   }
 
   static int _effectiveFresh(SessionModel s) =>
@@ -1991,6 +2055,10 @@ class ServerStore extends ChangeNotifier {
       _addSessions(out, list);
 
   @visibleForTesting
+  Future<void> backfillLegacyArchivesForTesting(List<SessionModel> list) =>
+      _backfillLegacyArchives(list);
+
+  @visibleForTesting
   Future<void> loadCacheForTesting(ConnectionProfile profile) async {
     _profile = profile;
     _cacheStore = FileCacheStore(profile.id);
@@ -2200,6 +2268,19 @@ class ServerStore extends ChangeNotifier {
         if (sidM != null && metaM is Map) {
           _applyMetadataSnapshot(sidM, metaM);
         }
+        break;
+      case 'session.archived':
+        final sidA = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidA, ev.created);
+        if (sidA != null) {
+          _applyArchiveFlag(
+              sidA, ev.created ?? DateTime.now().millisecondsSinceEpoch);
+        }
+        break;
+      case 'session.unarchived':
+        final sidU = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidU, ev.created);
+        if (sidU != null) _applyUnarchive(sidU);
         break;
       case 'session.permissions':
         _mirrorTimeUpdated(ev.properties['sessionID']?.toString(), ev.created);
@@ -2796,6 +2877,21 @@ class ServerStore extends ChangeNotifier {
     _upsertSession(s.withMetadataArchivedAt(v is num ? v.toInt() : null));
   }
 
+  void _applyArchiveFlag(String sid, int at) {
+    final s = sessionById(sid) ?? _childSessions[sid];
+    if (s == null) return;
+    _upsertSession(s.withArchived(at));
+  }
+
+  void _applyUnarchive(String sid) {
+    final s = sessionById(sid) ?? _childSessions[sid];
+    if (s == null) {
+      unawaited(_refreshSessionMeta(sid));
+      return;
+    }
+    _upsertSession(s.withArchived(null).withMetadataArchivedAt(null));
+  }
+
   void _upsertSession(SessionModel s) {
     final idx = _sessions.indexWhere((x) => x.id == s.id);
     _bumpLastActivity(s);
@@ -3069,6 +3165,8 @@ class ServerStore extends ChangeNotifier {
     _ghostSessionIds.clear();
     _ghostSessionDirs.clear();
     _lastGhostWarmSweepAt = null;
+    _legacyArchiveBackfillInFlight = false;
+    _archiveApiSupported = null;
     _lastMessage.clear();
     _lastActivityByKey.clear();
     _workspaceEnabled.clear();

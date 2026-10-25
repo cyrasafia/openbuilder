@@ -6,7 +6,7 @@
 >
 > 参考：桌面端（openbuilder-desktop）`docs/design/v2/design-sse-event-surface.md`（2026-10-07，事件 × 发布者 × 客户端消费三列审计矩阵 + 三层防御收敛策略，pin v2.0.18 源码核对）；本项目 `design-v2-migration.md` §SSE 事件契约变化（GA 事件全集记录，2026-09-28）。
 >
-> **升 pin 复核（2026-10-25，pin 2.0.18 → 2.1.3）**：按 §4 流程完成复核，全量 diff 见桌面端 ref-pin-bump-2.1.3 §4。结论：§2 矩阵结论全部维持——`worktree.ready/failed` 仍定义、仍无发布者（§2.4 记载冲突的复核义务完成，桌面端裁定维持）；`session.status`/`session.idle` 仍无发布者；`file.watcher.updated` 仍无定义。净变化 = 新增 `session.archived`/`session.unarchived`（durable，官方归档链路，本项目 `_onEvent` 暂无 case，属私约迁回待办）、移除 `session.compacted`/`question.*`/`ide.installed`（本项目 `session.compacted` 为 no-op case，成永久死分支，无害；余未消费）。
+> **升 pin 复核（2026-10-25，pin 2.0.18 → 2.1.3）**：按 §4 流程完成复核，全量 diff 见桌面端 ref-pin-bump-2.1.3 §4。结论：§2 矩阵结论全部维持——`worktree.ready/failed` 仍定义、仍无发布者（§2.4 记载冲突的复核义务完成，桌面端裁定维持）；`session.status`/`session.idle` 仍无发布者；`file.watcher.updated` 仍无定义。净变化 = 新增 `session.archived`/`session.unarchived`（durable，官方归档链路，已于 2026-10-25 接线——`_applyArchiveFlag`/`_applyUnarchive`，见 design-archive-metadata §迁回）、移除 `session.compacted`/`question.*`/`ide.installed`（本项目 `session.compacted` 为 no-op case，成永久死分支，无害；余未消费）。
 
 ## 1. 背景
 
