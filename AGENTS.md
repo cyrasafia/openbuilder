@@ -131,6 +131,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 - commit message 前缀：`feat:` / `fix:` / `ui:` / `docs:` / `perf:`
 - 分支合回 `main` 默认使用 squash merge（保持 main 历史线性、一个功能一个 commit）
 - **先评审后提交**：改完代码后须经 `/review` 评审；默认未经评审不提交，除非用户明确要求提交
+- **桌面项目只读**：`~/projects/my-tools/openbuilder-desktop` 仅作参考（对照桌面端行为 / 同名设计文档）；除非用户明确要求，不修改、不提交该仓库
 
 ## 前端样式约定
 
