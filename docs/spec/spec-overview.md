@@ -99,10 +99,10 @@ openbuilder/
 
 DTO 来自手写的 client；`domain/` 放精简的不可变模型 + `fromDto`。
 
-### 4.1 opencode 关键数据模型（来自 spec，v2.0.18）
+### 4.1 opencode 关键数据模型（来自 spec，2.1.3 pin——2026-10-25 升，变化审计见桌面端 ref-pin-bump-2.1.3）
 
 ```ts
-Project   = { id, canonical, vcs?, name?, icon?{url,override,color}, commands?{start}, time:{created,updated,active}, sandboxes[] }
+Project   = { id, canonical, vcs?, name?, icon?{url,override,color}, commands?{start}, time:{created,updated,active,archived?}, sandboxes[] }
 Session   = { id, projectID, location:{directory}, parentID?, title?, outcome?, time{created,updated,idle?,viewed?,archived?}, agent?, model?, cost, tokens, metadata? }
 Message   = tagged union by type: user | assistant | agent-switched | model-switched | location-switched |
             synthetic | system | skill | shell | compaction | idle
