@@ -4553,8 +4553,20 @@ class _FormCardState extends State<_FormCard> {
           hintText: f.placeholder ?? '',
           hintStyle: TextStyle(fontSize: 13, color: scheme.outline),
           isDense: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 4),
-          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 6,
+          ),
+          filled: true,
+          fillColor: scheme.surfaceContainerHighest,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide(color: scheme.tertiary),
+          ),
         ),
       ),
     );
