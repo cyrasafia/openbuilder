@@ -4,7 +4,9 @@
 > 状态：已实现，待评审
 > 权威设计：`../openbuilder-desktop/docs/design-worktree-branch-sync.md`（PC/移动
 > 双端同构——分支命名、撞名策略、删除保留规则一致；本文只记移动端落点与实测）
-> 关联：`design-worktree-remove-cleanup.md`（删除时序与定向清理，本文叠加分支清理）
+> 关联：`design-worktree-remove-cleanup.md`（删除时序与定向清理，本文叠加分支清理）、
+> `design-branch-diff-fork-base.md`（**2026-10-29 修订本文 §2.1 挂载命令**：
+> `switch -c` 增起点分支名，reflog 记录 fork 来源）
 
 ## 1. 问题
 
