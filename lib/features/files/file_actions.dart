@@ -239,8 +239,10 @@ class _FileExportDialogState extends State<_FileExportDialog> {
       setState(() {
         _phase = _ExportPhase.failed;
         _errorMsg = widget.action == FileExportAction.saveToDevice
-            ? l(context).fileDownloadFailed(e.toString())
-            : l(context).fileShareFailed(e.toString());
+            ? l(context)
+                .fileDownloadFailed(friendlyMessageOrDetail(l(context), e))
+            : l(context)
+                .fileShareFailed(friendlyMessageOrDetail(l(context), e));
       });
     }
   }

@@ -680,7 +680,12 @@ class _FileViewScreenState extends State<FileViewScreen> {
       AppLogger.I.w('FileViewScreen', 'saveToDownloads failed: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l(context).fileDownloadFailed(e.toString()))),
+        SnackBar(
+          content: Text(
+            l(context)
+                .fileDownloadFailed(friendlyMessageOrDetail(l(context), e)),
+          ),
+        ),
       );
     } finally {
       _exportBusy = false;
@@ -697,7 +702,11 @@ class _FileViewScreenState extends State<FileViewScreen> {
       AppLogger.I.w('FileViewScreen', 'share failed: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l(context).fileShareFailed(e.toString()))),
+        SnackBar(
+          content: Text(
+            l(context).fileShareFailed(friendlyMessageOrDetail(l(context), e)),
+          ),
+        ),
       );
     } finally {
       _exportBusy = false;

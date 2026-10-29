@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import '../connection/auth_code_client.dart';
 import '../connection/connection_profile.dart';
 import '../connection/connection_store.dart';
+import '../logging/app_logger.dart';
 
 /// Bearer lifecycle for oauth profiles: proactive refresh near expiry
 /// (single-flight shared across dio instances via a static map) and one 401
@@ -178,6 +179,47 @@ void copyInterceptors(Dio base, Dio copy) {
   }
 }
 
+class ApiErrorLogInterceptor extends Interceptor {
+  static const _loggedKey = 'ob_api_logged';
+
+  @override
+  void onError(DioException err, ErrorInterceptorHandler handler) {
+    final response = err.response;
+    if (err.type == DioExceptionType.badResponse && response != null) {
+      final req = err.requestOptions;
+      if (req.extra[_loggedKey] != true) {
+        req.extra[_loggedKey] = true;
+        AppLogger.I.w('Api', _describe(req, response));
+      }
+    }
+    handler.next(err);
+  }
+
+  static String _describe(RequestOptions req, Response<dynamic> resp) {
+    final query = {...req.queryParameters}..remove('auth_token');
+    final qs = query.isEmpty
+        ? ''
+        : '?${query.entries.map((e) => '${e.key}=${e.value}').join('&')}';
+    final uri = req.uri;
+    final base =
+        uri.hasScheme ? '${uri.scheme}://${uri.authority}${uri.path}' : uri.path;
+    return '${req.method} $base$qs -> ${resp.statusCode} ${_body(resp.data)}';
+  }
+
+  static String _body(dynamic data) {
+    String text;
+    if (data is Map && data['_tag'] != null) {
+      final msg = data['message'];
+      text = msg == null ? '${data['_tag']}' : '${data['_tag']} $msg';
+    } else {
+      text = data?.toString() ?? '';
+    }
+    text = text.replaceAll('\r', ' ').replaceAll('\n', ' ').trim();
+    if (text.length > 200) text = text.substring(0, 200);
+    return text;
+  }
+}
+
 /// Authorization headers for a profile — the single source shared by the dio
 /// factory and the SSE transports. Returned map content must be copied into a
 /// long-lived map by the caller (see ServerStore._sseHeaders). The Basic
@@ -268,5 +310,6 @@ Dio dioFor(ConnectionProfile p, {ConnectionStore? store}) {
       dio.interceptors.add(AuthTokenQueryInterceptor(p, store: store));
       break;
   }
+  dio.interceptors.add(ApiErrorLogInterceptor());
   return dio;
 }

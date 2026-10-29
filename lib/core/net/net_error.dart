@@ -98,3 +98,8 @@ String friendlyMessage(AppLocalizations l, Object e) {
     FriendlyErrorKind.generic => l.errorGeneric,
   };
 }
+
+String friendlyMessageOrDetail(AppLocalizations l, Object e) {
+  if (e is DioException || e is KnownError) return friendlyMessage(l, e);
+  return e.toString();
+}

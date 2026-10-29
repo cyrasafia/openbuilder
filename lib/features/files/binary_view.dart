@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/logging/app_logger.dart';
+import '../../core/net/net_error.dart';
 import '../../ui/l10n_ext.dart';
 import 'file_actions.dart';
 
@@ -159,7 +160,8 @@ class _BinaryViewState extends State<BinaryView> {
     } catch (e) {
       AppLogger.I.w('BinaryView', 'saveToDownloads failed: $e');
       if (!mounted) return;
-      _snack(l(context).fileDownloadFailed(e.toString()));
+      _snack(l(context)
+          .fileDownloadFailed(friendlyMessageOrDetail(l(context), e)));
     } finally {
       if (mounted) setState(() => _busy = null);
     }
@@ -176,7 +178,7 @@ class _BinaryViewState extends State<BinaryView> {
     } catch (e) {
       AppLogger.I.w('BinaryView', 'openFile failed: $e');
       if (!mounted) return;
-      _snack(l(context).fileOpenFailed(e.toString()));
+      _snack(l(context).fileOpenFailed(friendlyMessageOrDetail(l(context), e)));
     } finally {
       if (mounted) setState(() => _busy = null);
     }
@@ -193,7 +195,7 @@ class _BinaryViewState extends State<BinaryView> {
     } catch (e) {
       AppLogger.I.w('BinaryView', 'share failed: $e');
       if (!mounted) return;
-      _snack(l(context).fileShareFailed(e.toString()));
+      _snack(l(context).fileShareFailed(friendlyMessageOrDetail(l(context), e)));
     } finally {
       if (mounted) setState(() => _busy = null);
     }
