@@ -1,6 +1,6 @@
 # TODO: 问答卡（v2 form 体系）字段兼容缺失
 
-> 状态：移动端全部完成（P0/P1 + T2-T4）；桌面端 `custom` 对齐（T1）已完成 2026-10-29；新发现桌面端 hidden/external 缺键缺陷（T5 待办） ｜ 优先级：🔴 高（已修）/ 🟡 中（T5）
+> 状态：全部完成——移动端 P0/P1 + T2-T4 已修复；桌面端 `custom` 对齐（T1）与 hidden/external 补键（T5）均已完成 2026-10-29 ｜ 优先级：🔴 高（已修）
 > 来源：2026-10-01「问答类 question 卡片无法提交」调查（本地 v2.0.18 实测）
 
 ## 现象
@@ -138,11 +138,17 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 - **🟢 `totalSub` 简化**：`_ackOnly ? 1 : _steps.length` → `_steps.length`（计数器仅 `>1` 渲染，等价）。
 - **🟢 已知限制（不阻塞，留待后续）**：multiselect 数组 default 在 `FormFieldSpec.fromJson` 被 `join(',')` 归一、`_buildAnswer` 再 `split(',')` 还原——option 值本身含逗号时还原错误，服务端 `!custom` 校验不命中会 400（触发面：hidden+required+multiselect+default 值含逗号，极窄）。根修方向：`FormFieldSpec` 保留原始 List default。同理 `description`/`placeholder` 仍未参与 `==`（同 id 载荷仅这两项变化时 UI 不更新，既有行为，本次未扩）。
 
-## 待办
+## 已完成（桌面端）
 
-### T5（🟡）桌面端 hidden/external 剔除导致混合表单提交 400
+### T5（✅ 2026-10-29）桌面端 hidden/external 保留 + 补键
 
-移动端实测（2026-10-29，v2.0.26 活体，见上表）证明：`hidden + required` 缺键与 `external` 缺键均 400。桌面端 `toField`（`openbuilder-desktop` `src/shared/pending-requests.ts`）对两者无差别剔除、`buildFormAnswer` 不补键 → 含这两类字段的混合表单提交必现 400；全 hidden/external 卡被 `normalizeForm` 整卡丢弃 → 会话永久 pending。桌面端应比照移动端三层方案（模型保留 + UI 跳过 + answer 补键 + 无 default 降级 + 确认步）。
+`openbuilder-desktop` commit `d9a444d`（fix: 问题卡保留 hidden/external 并补键，消除混合表单提交 400，含 `ec3d3e8` 合并分支），与移动端三层方案同构落地：
+
+- **模型层保留**：`toField` 不再剔除；`PendingQuestionField` 增 `hidden`/`defaultValue`（**原始 JSON 形态** string/number/boolean/string[]——数组/数值直传，规避移动端 `join/split(',')` 逗号失真的已知限制）、`kind` 增 `external`；空卡守卫保留（全 hidden/external 卡不再剔成空）。
+- **UI 层跳过**：`formVisibleSteps` 返回可见步的**字段原下标**（步进序列与字段序列解耦，降级步进出不串位——比移动端按 key 键控更精细的等价实现）；`hidden+required+default 空` 经 `isDegradedField` 降级可见步（同 `_degraded`）；`Math.min` 步进钳制沿用。
+- **answer 层补键**：`buildFormAnswer` external 恒 `true`、hidden+required 发 `hiddenDefaultValue`（数值/数组直传、字符串按 kind 解析、NaN 兜底 0）、非 required 省键——逐条对应本 todo 实测矩阵；与移动端的分歧一处并已声明：integer 畸形小数 default 直传诚实失败（移动端 `int.tryParse → 0` 兜底，仅服务端自犯约束错误时触发）。
+- **确认步**：ack-only 卡单步确认文案 i18n `formExternalNotice`/`formAutoNotice` 与移动端 arb **逐字一致**；含 external 优先授权提示（`fields.some(kind === 'external')` 同移动端 `any(type == 'external')` 判定）。
+- 测试 +19（补键矩阵/可见步/降级判定/ack-only 确认/变短钳制），桌面端 vitest 1451/1451 全绿（本机复跑验证）；另记已知限制：`when` 条件字段不支持（inactive 发值 400/缺键放行，question 工具表单不带 when——移动端同样未处理，两端一致）。
 
 ## 验收标准（移动端全部达成）
 
@@ -151,6 +157,8 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 - 文本类字段输入后提交按钮即时可用。
 - T1（✅ 已达成 2026-10-29，桌面端 `595fd0c`）：桌面端与移动端对同一张问答卡行为一致（含 `custom`）。
 - T2/T3/T4（✅ 已达成 2026-10-29）：`flutter analyze --fatal-infos` 零 issue、`flutter test` 959/959 全绿，回归测试见 `test/form_card_field_parity_test.dart`；提交补键行为以 v2.0.26 活体实测矩阵为锚（required hidden typed default / external ack true / optional hidden 省键）。
+
+- T5（✅ 已达成 2026-10-29，桌面端 `d9a444d`）：桌面端与移动端对同一张混合字段表单行为一致（hidden/external 补键、降级、确认步、external 优先提示），桌面端 vitest 1451/1451。
 
 ## 附：字段类型对照
 
@@ -161,5 +169,5 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 | `multiselect` | **string[]**，`custom:false` 时须命中选项 | 多选 + 「其他」选项（选中展开输入，追加） | multiselect + 「其他」选项（选中展开输入，追加，T1 已对齐） |
 | `boolean` | boolean | 勾选（true/false） | boolean（UI 合成是/否） |
 | `number` / `integer` | number / integer | 数字输入，`tryParse ?? 0` | number 输入，`Number ?? 0` |
-| `external` | 缺键 400；ack `true` 204 | 不渲染；answer 恒补 `true`；全 external 卡走确认步（T2/T3 已修） | 剔除（缺键 400 缺陷，T5 待办） |
-| `hidden`（标志位） | 非 required 缺键 204；required 须非空值 | 不渲染；required 补 typed default、无 default 降级可见步；非 required 省键（T2 已修） | 剔除（required 缺键 400 缺陷，T5 待办） |
+| `external` | 缺键 400；ack `true` 204 | 不渲染；answer 恒补 `true`；全 external 卡走确认步（T2/T3 已修） | 不渲染；answer 恒补 `true`；确认步 + external 优先提示（T5 已修） |
+| `hidden`（标志位） | 非 required 缺键 204；required 须非空值 | 不渲染；required 补 typed default、无 default 降级可见步；非 required 省键（T2 已修） | 不渲染；required 补原始形态 default（无逗号失真）、无 default 降级可见步；非 required 省键（T5 已修） |
