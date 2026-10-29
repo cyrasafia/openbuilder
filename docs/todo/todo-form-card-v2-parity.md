@@ -1,6 +1,6 @@
 # TODO: 问答卡（v2 form 体系）字段兼容缺失
 
-> 状态：移动端 P0/P1 已修复（本次）；桌面端对齐 + hidden/external/required 待办 ｜ 优先级：🔴 高（已修）/ 🟡 中（剩余）
+> 状态：移动端 P0/P1 已修复；桌面端 `custom` 对齐（T1）已完成 2026-10-29；剩 hidden/external/required（T2-T4）待办 ｜ 优先级：🔴 高（已修）/ 🟡 中（剩余）
 > 来源：2026-10-01「问答类 question 卡片无法提交」调查（本地 v2.0.18 实测）
 
 ## 现象
@@ -65,9 +65,11 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 - 多选类问答卡**完全不可提交**（单块阻塞，非偶发）。
 - 单选类虽可提交，但 `custom` 自由输入缺失（问答工具所有字段 `custom:true`），选项外的自定义答案无处输入。
 - 文本类字段提交键不随输入刷新（独立健壮性缺陷）。
-- 桌面端（openbuilder-desktop）多选答案正确（数组），但同样**忽略 `custom`** → 与移动端行为需统一。
+- 桌面端（openbuilder-desktop）多选答案正确（数组），但同样**忽略 `custom`** → 与移动端行为需统一。（已于 2026-10-29 对齐，见下文 T1 完成记录）
 
-## 已完成修复（移动端，本仓）
+## 已完成修复
+
+### 移动端（本仓）
 
 `lib/features/conversation/conversation_screen.dart`，提交级改动：
 
@@ -83,17 +85,18 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 - `flutter test`：738/738 通过；
 - 实测：`{"q0":"Form","q1":["Diff"]}` → 204；`{"q0":"自由答案","q1":["Diff","note"]}` → 204（`custom:true` 放行选项外值）。
 
+### 桌面端对齐 `custom`（T1，2026-10-29）
+
+`openbuilder-desktop` commit `595fd0c`（feat: 问题卡支持自定义回答选项，对齐移动端 T1），与移动端同语义落地：
+
+- `toField`（`src/shared/pending-requests.ts`）透出 `custom: f.custom === true`；
+- 哨兵值 `CUSTOM_OPTION_VALUE = "\u0000custom"` 与移动端 `_kCustomOptionValue` **同值跨端同源**——仅存在于 UI 选中集合，`buildFormAnswer` 剥离并替换为自定义文本；
+- `QuestionCard`（`workspace.tsx`）：`select`/`multiselect` 且 `custom:true` 时选项列表末尾追加「其他」哨兵行（i18n `formCustomAnswer`，与移动端同文案「其他（自定义答案）」），选中才展开输入框；boolean/text/number 无 `custom` 契约面，不追加；
+- 步进门控：选项步选中哨兵须自定义文本非空方可前进/提交；
+- `buildFormAnswer`：`select` 选中哨兵时以自定义文本为答案；`multiselect` 将非空文本追加到选中数组（空则丢弃，防御——门控已保证非空）；
+- 回归测试：`pending-requests.test.ts` / `question-card.test.tsx` / `workspace-pending-shortcuts.test.tsx`。
+
 ## 待办
-
-### T1（🟡）桌面端对齐 `custom`
-
-`openbuilder-desktop` 当前忽略 `custom`：`src/shared/pending-requests.ts` 的 `toField()` 不携带 `custom`，`buildFormAnswer()` 无自定义分支；`src/renderer/src/components/workspace.tsx` 的 `QuestionCard` 只渲染选项列表。问答工具所有字段 `custom:true`，桌面端应比照移动端：
-
-- `toField` 透出 `custom`；
-- `QuestionCard` 在选项列表末尾追加「其他」选项行，与既有选项并列，选中时展开输入框；
-- `buildFormAnswer`：`select` 选中「其他」时以自定义文本为答案；`multiselect` 选中「其他」时把自定义文本追加到选中数组；未选中「其他」时忽略输入文本。
-
-> 移动端已先行落地，桌面端对齐后两端语义一致。
 
 ### T2（🟡）`hidden` 字段未过滤
 
@@ -112,7 +115,7 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 - 问答卡含 `multiselect` 字段时：选项正常显示、多选可勾选、提交成功（服务端 204、卡片消失）。
 - `custom:true` 字段可输入选项外答案并提交成功（`string` 单值 / `multiselect` 追加元素）；选中「其他」但输入为空时提交按钮保持禁用，未选中「其他」时输入文本被忽略。
 - 文本类字段输入后提交按钮即时可用。
-- T1：桌面端与移动端对同一张问答卡行为一致（含 `custom`）。
+- T1（✅ 已达成 2026-10-29，桌面端 `595fd0c`）：桌面端与移动端对同一张问答卡行为一致（含 `custom`）。
 - T2/T3/T4 按各自决策落地后，`flutter analyze --fatal-infos` 零 issue、`flutter test` 全绿，并补对应回归测试。
 
 ## 附：字段类型对照
@@ -120,8 +123,8 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 | `Form.Field` type | 服务端校验 | 移动端（本仓现状） | 桌面端（现状） |
 |-------------------|-----------|-------------------|---------------|
 | `string`（无 options） | string | 文本输入 | text |
-| `string` + options | string，`custom:false` 时须命中选项 | 单选 + 「其他」选项（选中展开输入） | select（**忽略 custom**，T1） |
-| `multiselect` | **string[]**，`custom:false` 时须命中选项 | 多选 + 「其他」选项（选中展开输入，追加） | multiselect（**忽略 custom**，T1） |
+| `string` + options | string，`custom:false` 时须命中选项 | 单选 + 「其他」选项（选中展开输入） | select + 「其他」选项（选中展开输入，T1 已对齐） |
+| `multiselect` | **string[]**，`custom:false` 时须命中选项 | 多选 + 「其他」选项（选中展开输入，追加） | multiselect + 「其他」选项（选中展开输入，追加，T1 已对齐） |
 | `boolean` | boolean | 勾选（true/false） | boolean（UI 合成是/否） |
 | `number` / `integer` | number / integer | 数字输入，`tryParse ?? 0` | number 输入，`Number ?? 0` |
 | `external` | —（独立授权流） | 误渲染为文本框（T3） | 剔除 |
