@@ -301,9 +301,9 @@ v2 的 TS 生态为 `packages/protocol`（Effect HttpApi 定义）+ `packages/sd
 | 项 | 优先级 | 说明 | 跟踪 |
 |----|--------|------|------|
 | 配对认证 | 🟡 | `POST /api/pair` + `GET /auth/connect/:code` 免密配对流未实现，当前仅 Basic / OAuth；**服务端已就绪**（v2.0.23 起进契约，桌面端附录 A2）——可排期 | 本文档 §认证 |
-| form 卡 `hidden` 字段过滤（T2） | 🟡 | `FormFieldSpec.hidden` 已解析未使用，隐藏字段仍被渲染 | `docs/todo/todo-form-card-v2-parity.md` |
-| form 卡 `external` 字段（T3） | 🟢 | MCP 授权流字段被误渲染为文本框；需决策剔除或提供「打开浏览器授权」入口 | 同上 |
-| form 卡 `required` 语义（T4） | 🟢 | `_stepAnswered` 对所有输入式字段强制非空，未按 `required` 区分 | 同上 |
+| form 卡 `hidden` 字段过滤（T2） | ✅ 已修复 2026-10-29 | hidden 保留于模型、UI 跳过、answer 层补键（required 发类型化 default、无 default 降级可见步、非 required 省键）；原跟踪文档 `todo-form-card-v2-parity.md` 完成后已删（git 历史可查） | 本仓 `0040167` |
+| form 卡 `external` 字段（T3） | ✅ 已修复 2026-10-29 | 决策：不渲染、answer 恒 ack `true`（实测 204）；全 hidden/external 卡渲染单步确认文案（external 优先）；原跟踪文档同上 | 本仓 `0040167` |
+| form 卡 `required` 语义（T4） | ✅ 已修复 2026-10-29 | `_stepAnswered` 文本分支改 `!required || 非空`，对齐桌面端；原跟踪文档同上 | 本仓 `0040167` |
 | v2 新端点接入 | 🟢 | 已接入：worktree 组、form 体系、shell 一次性命令、skill 列表、revert stage/commit。未接入：persistent-pty、websearch、rpc/plugin/mcp 组、`fs/write`、session `fork`/`move`/`stats`/`import`/`export`/`generate`/`environment`/`view`/`wait`/`log`/`instructions`/`entries`、`worktree/refresh`、`location/reload` 等——按需单独设计 | 本文档「不做的事」#5 |
 | OAuth 双端 WebView 回调投递验证 | 🟢 | 已关闭：验收 #1（Android cleartext / iOS ATS 下的回调投递）未验证，其余 6/7 已过；该 v1 OAuth 路线已随认证迁 v2 关闭，不再跟踪 | `docs/ref/ref-authelia-oauth-client.md` |
 | `session.created` 字段级合并 | 🔴 | 已核实本仓存在与桌面端同构的竞态：`_onEvent` 的 `session.created` 分支用事件骨架构出完整 `SessionModel`（title 缺省 `'Untitled'`），`_upsertSession` 对已有条目**整体替换**、无字段级合并，且该事件路径不回源刷新——POST 响应（完整 SessionInfo）先落地、SSE 回声后到时 agent/model/title 被顶掉。参照桌面端修法：事件缺失字段从本地回填、事件显式字段优先（零 REST 往返；桌面端点名否决了回源刷新方案） | openbuilder-desktop 同名文档 §SSE 与对账重设计 |
