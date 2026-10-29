@@ -827,7 +827,10 @@ void main() {
     test('blind-window question (form) card is retro-notified', () async {
       final s1 = _sessionFull('s1');
       final form = FormInfo(
-          id: 'f1', sessionID: 's1', title: 'pick one', fields: const []);
+          id: 'f1',
+          sessionID: 's1',
+          title: 'pick one',
+          fields: const [FormFieldSpec(key: 'q0', type: 'string')]);
       final store = ServerStore()
         ..client = _CardBackfillClient(forms: (sid) async => [form])
         ..connected = true;

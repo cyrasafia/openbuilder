@@ -1463,13 +1463,16 @@ class FormFieldSpec {
       other.type == type &&
       other.title == title &&
       other.required == required &&
+      other.hidden == hidden &&
+      other.defaultValue == defaultValue &&
       other.custom == custom &&
       other.options.length == options.length &&
       other.options.asMap().entries
           .every((e) => options[e.key] == e.value);
 
   @override
-  int get hashCode => Object.hash(key, type, title, required);
+  int get hashCode =>
+      Object.hash(key, type, title, required, hidden, defaultValue);
 }
 
 class FormInfo {

@@ -28,7 +28,10 @@ void main() {
   group('form backfill guard (_recentlyResolved)', () {
     test('resolved form is skipped on subsequent backfill', () async {
       final f1 = FormInfo(
-          id: 'frm_g1', sessionID: 's1', title: 'q', fields: const []);
+          id: 'frm_g1',
+          sessionID: 's1',
+          title: 'q',
+          fields: const [FormFieldSpec(key: 'q0', type: 'string')]);
       final client = _FormsMockClient(forms: [f1]);
       final store = ServerStore()..client = client;
       _markBusy(store, 's1');
@@ -56,7 +59,10 @@ void main() {
     test('guard expires after TTL, re-surfaces if still pending server-side',
         () async {
       final f1 = FormInfo(
-          id: 'frm_g2', sessionID: 's2', title: 'q', fields: const []);
+          id: 'frm_g2',
+          sessionID: 's2',
+          title: 'q',
+          fields: const [FormFieldSpec(key: 'q0', type: 'string')]);
       final client = _FormsMockClient(forms: [f1]);
       final store = ServerStore()..client = client;
       _markBusy(store, 's2');

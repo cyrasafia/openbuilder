@@ -39,7 +39,9 @@ void main() {
           'id': 'question-1',
           'sessionID': 'session-1',
           'title': 'proceed?',
-          'fields': [],
+          'fields': [
+            {'key': 'q0', 'type': 'string', 'title': 'proceed?'},
+          ],
         },
       },
     ));

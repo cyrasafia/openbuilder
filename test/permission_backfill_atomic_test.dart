@@ -61,7 +61,10 @@ void _askForm(ServerStore store, FormInfo f) =>
           'id': f.id,
           'sessionID': f.sessionID,
           'title': f.title,
-          'fields': const [],
+          'fields': [
+            for (final fld in f.fields)
+              {'key': fld.key, 'type': fld.type, 'title': fld.title},
+          ],
         },
       },
     ));
@@ -199,7 +202,11 @@ void main() {
     });
 
     test('SSE form.replied registers the resolved guard', () async {
-      final f1 = FormInfo(id: 'frm_1', sessionID: 's1', title: 'q', fields: const []);
+      final f1 = FormInfo(
+          id: 'frm_1',
+          sessionID: 's1',
+          title: 'q',
+          fields: const [FormFieldSpec(key: 'q0', type: 'string')]);
       final client = _BackfillMockClient(
         formsHandler: (_) async => [f1],
       );

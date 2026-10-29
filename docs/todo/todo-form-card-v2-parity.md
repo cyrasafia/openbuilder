@@ -1,6 +1,6 @@
 # TODO: 问答卡（v2 form 体系）字段兼容缺失
 
-> 状态：移动端 P0/P1 已修复；桌面端 `custom` 对齐（T1）已完成 2026-10-29；剩 hidden/external/required（T2-T4）待办 ｜ 优先级：🔴 高（已修）/ 🟡 中（剩余）
+> 状态：移动端全部完成（P0/P1 + T2-T4）；桌面端 `custom` 对齐（T1）已完成 2026-10-29；新发现桌面端 hidden/external 缺键缺陷（T5 待办） ｜ 优先级：🔴 高（已修）/ 🟡 中（T5）
 > 来源：2026-10-01「问答类 question 卡片无法提交」调查（本地 v2.0.18 实测）
 
 ## 现象
@@ -96,27 +96,61 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 - `buildFormAnswer`：`select` 选中哨兵时以自定义文本为答案；`multiselect` 将非空文本追加到选中数组（空则丢弃，防御——门控已保证非空）；
 - 回归测试：`pending-requests.test.ts` / `question-card.test.tsx` / `workspace-pending-shortcuts.test.tsx`。
 
+### 移动端 T2-T4（2026-10-29，分支 form-card-parity-rest）
+
+实现前先在本机 v2.0.26 活体实测服务端校验矩阵（`POST /api/session/{id}/form` 直建混合字段卡 + reply），结论推翻「字段剔除」直觉方案：
+
+| 场景（reply 缺该键） | 服务端响应 | 结论 |
+|----------------------|-----------|------|
+| `hidden` + `required` 缺键 / 空串 / 空数组 | 400 `Missing required form field` | **必须补键且非空**（空值等同缺失） |
+| `hidden`（非 required）缺键 | 204 | 可省略 |
+| `hidden` + `required` 发类型化 default（integer 7） | 204 | default 可代填 |
+| `external` 缺键 | 400 `External form field must be acknowledged` | **必须 acknowledge** |
+| `external` answer 发 `true` | 204 | ack = 布尔 `true` |
+
+即：**无差别剔除 hidden/external（桌面端现行做法）会让混合表单提交必现 400**——比「误渲染成文本框」更糟（提交死锁）。移动端据此采用三层拆分：
+
+1. **模型层保留**（`FormInfo.fromJson` 不过滤）：`_buildAnswer` 需要 hidden/external 的 key/default/type 补键；`server_store.dart` SSE `form.created` 与 backfill 两入口保留空字段卡守卫（`fields.isEmpty` 跳过 + SSE 侧日志）——spec `Form.Fields minItems:1` 保证正常不可达，纯防御 `_FormCard._field` 越界。
+2. **UI 层跳过**（`_FormCardState._steps`）：`type != 'external' && (!hidden || 降级)` 为可见步；步进/门控/计数全部基于 `_steps`。
+3. **answer 层补键**（`_buildAnswer`）：
+   - `external` → 恒发 `true`（ack，实测 204）；
+   - `hidden` 非 required → 不发键（实测 204）；
+   - `hidden` + required → 发类型化 `defaultValue`（integer/number 解析数值、boolean `'true'`、multiselect 按逗号拆数组、string 原文）；
+   - **降级**：`hidden + required + default 空` 的字段（服务端违约组合，任何空值兜底都会 400）在 `_steps` 中降级为可见步让用户填——唯一不死锁且诚实的路径；
+   - **全 hidden/external 卡**（`_steps` 空）：渲染单步确认文案（l10n `formExternalNotice` zh/en），提交即按上述规则补全部键——不做浏览器授权入口（external 是 MCP OAuth 授权流，loopback 回调在手机端本质不可完成；ack 让工具用已有凭据继续，优于会话卡死）。全非 required hidden 卡确认步提交空 `answer:{}` 亦实测 204。
+4. **T4（required 门控）**：`_stepAnswered` 文本分支改 `!f.required || 输入非空`，对齐桌面端 `!f.required || text.trim() !== ''`；选项式/布尔仍按「已选」门控不变。
+
+测试：
+
+- 新增 `test/form_card_field_parity_test.dart`（15 用例）：fromJson 保留 hidden/external 1 例、空字段卡 SSE/backfill 防御丢弃 2 例、widget 级 12 例（required/optional 门控 2、hidden/external 不渲染为步进 1、提交补键 2——required hidden 发 typed default（integer/boolean/number/multiselect 全类型覆盖）+ external ack true / optional hidden 不发键、无 default 降级可见步 1、全 external 卡确认步 + ack 提交 1、hidden+external 混合 ack-only 卡优先 external 提示 1、全 hidden 非 required 卡确认步 + 空 answer 提交 1、同 id 载荷步数变短钳制不崩溃 2——长度变短与属性变化双路径）；
+- 修 4 个既有测试的空字段 fixture（`question_backfill_guard` / `permission_backfill_atomic` / `agent_status_indicator` / `background_notify`）：原 fixture 偷懒用 `fields: const []` 构造卡，与空卡防御守卫冲突，补真实字段后测试意图不变；
+- `flutter analyze --fatal-infos` 零 issue；`flutter test` 959/959 通过。
+
+### 独立终审（2026-10-29，可以合入）
+
+零阻塞。独立核验：空卡守卫双入口覆盖完备（另两处 `onForm` 只读）、spec 佐证（`Form.Fields minItems:1` 纯防御、`MultiselectField` 强制 options、`ExternalField` 无 required/hidden 属性——恒 ack 语义一致）、`==` 变宽波及面（仅 `onForm` 替换判定）、无 spec pin 残留、DESIGN.md 字重合规。一条非阻塞已修：**ack-only 卡确认文案**原按 `_fields.first` 类型选择——`[hidden(required+default), external]` 混合卡 external 不在首位时显示「服务端自动处理」而非「外部授权」提示，口径不一致；改为 `_fields.any((x) => x.type == 'external')` 优先 external 提示，补混合卡回归用例。nit（multiselect 分支 `d.isEmpty` 死代码）保留为防御。
+
+### 复审修复（两轮评审，均已处理）
+
+- **🟡 `_step` 无钳制（三轮迭代）**：① 初版 `didUpdateWidget` 以 `oldWidget.form != widget.form` 为守卫钳制；② 三轮评审发现 `FormFieldSpec ==` 不比较 `hidden`/`defaultValue`——同 id 载荷**属性变化**（如给降级步补 `default` 使其退出 `_steps`）时 `==` 判定相等，守卫不触发仍会越界；且 `onForm` 的 `old == f` 跳过替换（conversation_store）会让 UI 整体不更新。③ 终版两处修复：`FormFieldSpec ==`/`hashCode` 补 `hidden` + `defaultValue`（`==` 波及面核验：`onForm` replace 判定、backfill changed 判定不用 `==`、FormInfo 不进缓存）；`didUpdateWidget` 改无条件幂等钳制（`_step >= _steps.length` 时钳到上界，对齐桌面端无条件 `Math.min`）。回归用例 2 条：载荷长度变短（3→1 字段）与属性变化（降级步补 default 退出）双路径。
+- **🟡 spec pin 搭车刷新**：`opencode_openapi_v2.json` 已 `git restore`（`gen_client.sh` 顺带刷新含三处无关上游变更——`background_compaction` / `/api/experimental/client-mcp` / `/api/debug/heap-dump`；按 design-sse-event-surface「升 pin 三步审计流程」应独立提交，本次防御守卫依据的 `minItems:1` 新旧 pin 一致无需刷新）。
+- **🟢 确认步文案拆分**：external 卡与全 hidden 卡各用一条 l10n（`formExternalNotice`「需在外部完成的授权步骤」/ `formAutoNotice`「由服务端自动处理的字段」），消除全 hidden 卡下的语义偏差。
+- **🟢 `totalSub` 简化**：`_ackOnly ? 1 : _steps.length` → `_steps.length`（计数器仅 `>1` 渲染，等价）。
+- **🟢 已知限制（不阻塞，留待后续）**：multiselect 数组 default 在 `FormFieldSpec.fromJson` 被 `join(',')` 归一、`_buildAnswer` 再 `split(',')` 还原——option 值本身含逗号时还原错误，服务端 `!custom` 校验不命中会 400（触发面：hidden+required+multiselect+default 值含逗号，极窄）。根修方向：`FormFieldSpec` 保留原始 List default。同理 `description`/`placeholder` 仍未参与 `==`（同 id 载荷仅这两项变化时 UI 不更新，既有行为，本次未扩）。
+
 ## 待办
 
-### T2（🟡）`hidden` 字段未过滤
+### T5（🟡）桌面端 hidden/external 剔除导致混合表单提交 400
 
-`FormFieldSpec.hidden` 已解析但 `_FormCard` 未使用，隐藏字段会被渲染。桌面端 `toField` 已 `if (f.hidden === true ...) return null`。移动端应同步剔除。
+移动端实测（2026-10-29，v2.0.26 活体，见上表）证明：`hidden + required` 缺键与 `external` 缺键均 400。桌面端 `toField`（`openbuilder-desktop` `src/shared/pending-requests.ts`）对两者无差别剔除、`buildFormAnswer` 不补键 → 含这两类字段的混合表单提交必现 400；全 hidden/external 卡被 `normalizeForm` 整卡丢弃 → 会话永久 pending。桌面端应比照移动端三层方案（模型保留 + UI 跳过 + answer 补键 + 无 default 降级 + 确认步）。
 
-### T3（🟢）`external` 字段类型不支持
-
-`Form.ExternalField`（`type:"external"` + `url`，MCP 授权流）在移动端落到 `else` → 被渲染成普通文本框，语义错误。桌面端直接剔除（范围外）。移动端需决策：剔除 f 或提供「打开浏览器授权」入口。
-
-### T4（🟢）`required` 语义未对齐
-
-`_stepAnswered` 对所有输入式字段强制非空，未区分 `required`；服务端仅在 `required` 时校验缺失。桌面端已按 `!f.required || text.trim() !== ''` 处理。移动端应对齐（选项式仍按「已选」门控）。
-
-## 验收标准
+## 验收标准（移动端全部达成）
 
 - 问答卡含 `multiselect` 字段时：选项正常显示、多选可勾选、提交成功（服务端 204、卡片消失）。
 - `custom:true` 字段可输入选项外答案并提交成功（`string` 单值 / `multiselect` 追加元素）；选中「其他」但输入为空时提交按钮保持禁用，未选中「其他」时输入文本被忽略。
 - 文本类字段输入后提交按钮即时可用。
 - T1（✅ 已达成 2026-10-29，桌面端 `595fd0c`）：桌面端与移动端对同一张问答卡行为一致（含 `custom`）。
-- T2/T3/T4 按各自决策落地后，`flutter analyze --fatal-infos` 零 issue、`flutter test` 全绿，并补对应回归测试。
+- T2/T3/T4（✅ 已达成 2026-10-29）：`flutter analyze --fatal-infos` 零 issue、`flutter test` 959/959 全绿，回归测试见 `test/form_card_field_parity_test.dart`；提交补键行为以 v2.0.26 活体实测矩阵为锚（required hidden typed default / external ack true / optional hidden 省键）。
 
 ## 附：字段类型对照
 
@@ -127,5 +161,5 @@ answer = {"q0":"Form","q1":["Diff","Subagent"]}  → HTTP 204
 | `multiselect` | **string[]**，`custom:false` 时须命中选项 | 多选 + 「其他」选项（选中展开输入，追加） | multiselect + 「其他」选项（选中展开输入，追加，T1 已对齐） |
 | `boolean` | boolean | 勾选（true/false） | boolean（UI 合成是/否） |
 | `number` / `integer` | number / integer | 数字输入，`tryParse ?? 0` | number 输入，`Number ?? 0` |
-| `external` | —（独立授权流） | 误渲染为文本框（T3） | 剔除 |
-| `hidden`（标志位） | — | 未过滤（T2） | 剔除 |
+| `external` | 缺键 400；ack `true` 204 | 不渲染；answer 恒补 `true`；全 external 卡走确认步（T2/T3 已修） | 剔除（缺键 400 缺陷，T5 待办） |
+| `hidden`（标志位） | 非 required 缺键 204；required 须非空值 | 不渲染；required 补 typed default、无 default 降级可见步；非 required 省键（T2 已修） | 剔除（required 缺键 400 缺陷，T5 待办） |

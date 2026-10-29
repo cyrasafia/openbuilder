@@ -1881,6 +1881,7 @@ class ServerStore extends ChangeNotifier {
       try {
         final pending = await c.sessionForms(sid);
         for (final f in pending) {
+          if (f.fields.isEmpty) continue;
           if (_recentlyResolvedForms.containsKey(f.id)) {
             AppLogger.I.i(_tag, 'backfill form skipped (recently resolved) sid=${f.sessionID} fid=${f.id}');
             continue;
@@ -2636,6 +2637,11 @@ class ServerStore extends ChangeNotifier {
         final formRaw = ev.properties['form'];
         if (formRaw is Map) {
           final f = FormInfo.fromJson(formRaw.cast<String, dynamic>());
+          if (f.fields.isEmpty) {
+            AppLogger.I.i(_tag,
+                'SSE form.created dropped (no fields) sid=${f.sessionID} fid=${f.id}');
+            break;
+          }
           final known = _pendingForms.containsKey(f.id);
           _pendingForms[f.id] = f;
           final host = _cardHostSessionId(f.sessionID);

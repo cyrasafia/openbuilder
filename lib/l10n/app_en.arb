@@ -261,6 +261,8 @@
   "submit": "Submit",
   "nextStep": "Next",
   "formCustomAnswer": "Other (custom answer)",
+  "formExternalNotice": "This form includes an authorization step that must be completed externally. Submit to acknowledge and continue.",
+  "formAutoNotice": "This form includes fields handled automatically by the server. Submit to acknowledge and continue.",
   "retryingMessage": "Retrying: {message}",
   "@retryingMessage": {"placeholders": {"message": {"type": "String"}}},
   "workspaceMissing": "This session's workspace no longer exists; messages can no longer be sent",

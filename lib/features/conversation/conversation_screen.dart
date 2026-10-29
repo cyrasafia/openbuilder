@@ -4123,7 +4123,17 @@ class _FormCardState extends State<_FormCard> {
 
   List<FormFieldSpec> get _fields => widget.form.fields;
 
-  FormFieldSpec get _field => _fields[_step];
+  bool _degraded(FormFieldSpec f) =>
+      f.hidden && f.required && (f.defaultValue ?? '').isEmpty;
+
+  List<FormFieldSpec> get _steps => [
+        for (final f in _fields)
+          if (f.type != 'external' && (!f.hidden || _degraded(f))) f,
+      ];
+
+  bool get _ackOnly => _steps.isEmpty;
+
+  FormFieldSpec get _field => _steps.isEmpty ? _fields.first : _steps[_step];
 
   void _toggle(String key, String value, bool multiselect) {
     setState(() {
@@ -4152,6 +4162,28 @@ class _FormCardState extends State<_FormCard> {
   Map<String, dynamic> _buildAnswer() {
     final answer = <String, dynamic>{};
     for (final f in _fields) {
+      if (f.type == 'external') {
+        answer[f.key] = true;
+        continue;
+      }
+      if (f.hidden && !_degraded(f)) {
+        if (f.required) {
+          final d = f.defaultValue ?? '';
+          switch (f.type) {
+            case 'integer':
+              answer[f.key] = int.tryParse(d) ?? 0;
+            case 'number':
+              answer[f.key] = double.tryParse(d) ?? 0;
+            case 'boolean':
+              answer[f.key] = d == 'true';
+            case 'multiselect':
+              answer[f.key] = d.isEmpty ? const <String>[] : d.split(',');
+            default:
+              answer[f.key] = d;
+          }
+        }
+        continue;
+      }
       final sel = _selected[f.key] ?? const <String>{};
       final useCustom = sel.contains(_kCustomOptionValue);
       if (f.type == 'multiselect') {
@@ -4219,6 +4251,7 @@ class _FormCardState extends State<_FormCard> {
   }
 
   bool get _stepAnswered {
+    if (_ackOnly) return true;
     final f = _field;
     final sel = _selected[f.key] ?? const <String>{};
     if (f.type == 'multiselect' || (f.type == 'string' && f.options.isNotEmpty)) {
@@ -4229,10 +4262,18 @@ class _FormCardState extends State<_FormCard> {
     if (f.type == 'boolean') {
       return _selected.containsKey(f.key);
     }
-    return _ctlFor(f.key).text.trim().isNotEmpty;
+    return !f.required || _ctlFor(f.key).text.trim().isNotEmpty;
   }
 
-  bool get _isLastStep => _step >= _fields.length - 1;
+  bool get _isLastStep => _step >= _steps.length - 1;
+
+  @override
+  void didUpdateWidget(covariant _FormCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_step >= _steps.length) {
+      _step = _steps.isEmpty ? 0 : _steps.length - 1;
+    }
+  }
 
   void _next() {
     if (_stepAnswered && !_isLastStep) {
@@ -4251,7 +4292,7 @@ class _FormCardState extends State<_FormCard> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final totalSub = _fields.length;
+    final totalSub = _steps.length;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -4355,6 +4396,24 @@ class _FormCardState extends State<_FormCard> {
 
   Widget _fieldBlock(FormFieldSpec f) {
     final scheme = Theme.of(context).colorScheme;
+    if (f.type == 'external' || (f.hidden && !_degraded(f))) {
+      final hasExternal = _fields.any((x) => x.type == 'external');
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 6),
+          Text(
+            hasExternal
+                ? l(context).formExternalNotice
+                : l(context).formAutoNotice,
+            style: TextStyle(
+              fontSize: 13,
+              color: scheme.onSurface,
+            ),
+          ),
+        ],
+      );
+    }
     final sel = _selected[f.key] ?? const <String>{};
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

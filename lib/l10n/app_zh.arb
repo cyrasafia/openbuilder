@@ -261,6 +261,8 @@
   "submit": "提交",
   "nextStep": "下一步",
   "formCustomAnswer": "其他（自定义答案）",
+  "formExternalNotice": "此表单包含需在外部完成的授权步骤，提交即确认继续。",
+  "formAutoNotice": "此表单包含由服务端自动处理的字段，提交即确认继续。",
   "retryingMessage": "重试中：{message}",
   "@retryingMessage": {"placeholders": {"message": {"type": "String"}}},
   "workspaceMissing": "该会话所在的工作区已不存在，无法继续发送消息",
