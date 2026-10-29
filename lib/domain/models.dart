@@ -1198,7 +1198,7 @@ class FileDiff {
   String get fileName => file.split('/').last;
 }
 
-enum DiffMode { uncommitted, branch, lastMessage }
+enum DiffMode { lastMessage, uncommitted, branch }
 
 class DiffLine {
   final String kind;
