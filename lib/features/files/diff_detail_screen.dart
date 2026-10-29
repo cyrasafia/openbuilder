@@ -20,6 +20,7 @@ class DiffDetailScreen extends StatefulWidget {
   final String? directory;
   final DiffMode mode;
   final String? messageID;
+  final String? base;
   const DiffDetailScreen({
     super.key,
     required this.sessionId,
@@ -27,6 +28,7 @@ class DiffDetailScreen extends StatefulWidget {
     this.directory,
     this.mode = DiffMode.uncommitted,
     this.messageID,
+    this.base,
   });
 
   @override
@@ -88,6 +90,7 @@ class _DiffDetailScreenState extends State<DiffDetailScreen> {
           directory: widget.directory,
           mode: widget.mode == DiffMode.branch ? 'branch' : 'working',
           messageID: widget.mode == DiffMode.lastMessage ? widget.messageID : null,
+          base: widget.mode == DiffMode.branch ? widget.base : null,
         );
         for (final d in diffs) {
           if (d.file == widget.path) {

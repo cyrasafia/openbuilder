@@ -194,8 +194,147 @@ void main() {
       await _flushBackground();
 
       expect(session.id, 'new-session');
-      // Single switch attempt, then degrade (no suffix retries on channel error).
-      expect(client.shellCalls.length, 1);
+      // symbolic-ref（fork 基准读取，通道异常被 _resolveForkBase 吞掉）+
+      // 单次 switch 尝试后降级（通道错误不做后缀重试）。
+      expect(
+        client.shellCalls.map((c) => c.command).toList(),
+        ['git symbolic-ref --short HEAD', 'git switch -c opencode/quiet-canyon'],
+      );
+    });
+
+    test('mounts from canonical current branch when worktree head matches',
+        () async {
+      const sha = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+      final client = _BranchMockClient()
+        ..createWorktreeResult =
+            const WorktreeInfo(directory: '/wt/quiet-canyon')
+        ..onShell = (command, cwd) {
+          if (command == 'git symbolic-ref --short HEAD' && cwd == _mainDir) {
+            return const ShellRunResult(0, 'dev\n');
+          }
+          if (command == 'git rev-parse HEAD dev' &&
+              cwd == '/wt/quiet-canyon') {
+            return ShellRunResult(0, '$sha\n$sha\n');
+          }
+          return const ShellRunResult(0, '');
+        };
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+
+      await store.createSessionInNewWorktree(_mainDir);
+      await _flushBackground();
+
+      expect(
+        client.shellCalls,
+        contains(const _ShellCall(
+            'git switch -c opencode/quiet-canyon dev', '/wt/quiet-canyon',
+            timeoutMs: 5000)),
+      );
+      final order = client.callOrder;
+      expect(order.indexOf('shell:git symbolic-ref --short HEAD'),
+          lessThan(order.indexOf('shell:git rev-parse HEAD dev')));
+      expect(order.indexOf('shell:git rev-parse HEAD dev'),
+          lessThan(order.indexOf('shell:git switch -c opencode/quiet-canyon dev')));
+    });
+
+    test('fork base degrades to bare switch when head moved (sha mismatch)',
+        () async {
+      final client = _BranchMockClient()
+        ..createWorktreeResult =
+            const WorktreeInfo(directory: '/wt/quiet-canyon')
+        ..onShell = (command, _) {
+          if (command == 'git symbolic-ref --short HEAD') {
+            return const ShellRunResult(0, 'dev\n');
+          }
+          if (command.startsWith('git rev-parse')) {
+            return const ShellRunResult(0, 'aaa\nbbb\n');
+          }
+          return const ShellRunResult(0, '');
+        };
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+
+      await store.createSessionInNewWorktree(_mainDir);
+      await _flushBackground();
+
+      final switchCmds = client.shellCalls
+          .map((c) => c.command)
+          .where((c) => c.startsWith('git switch -c'))
+          .toList();
+      expect(switchCmds, ['git switch -c opencode/quiet-canyon']);
+    });
+
+    test('fork base name with metacharacters is rejected by guard', () async {
+      final client = _BranchMockClient()
+        ..createWorktreeResult =
+            const WorktreeInfo(directory: '/wt/quiet-canyon')
+        ..onShell = (command, _) {
+          if (command == 'git symbolic-ref --short HEAD') {
+            return const ShellRunResult(0, 'evil;rm -rf\n');
+          }
+          return const ShellRunResult(0, '');
+        };
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+
+      await store.createSessionInNewWorktree(_mainDir);
+      await _flushBackground();
+
+      final switchCmds = client.shellCalls
+          .map((c) => c.command)
+          .where((c) => c.startsWith('git switch -c'))
+          .toList();
+      expect(switchCmds, ['git switch -c opencode/quiet-canyon']);
+      expect(client.shellCalls.every((c) => !c.command.contains('evil')),
+          isTrue);
+    });
+
+    test('detached canonical degrades to bare switch (no rev-parse)',
+        () async {
+      final client = _BranchMockClient()
+        ..createWorktreeResult =
+            const WorktreeInfo(directory: '/wt/quiet-canyon')
+        ..onShell = (command, _) {
+          if (command == 'git symbolic-ref --short HEAD') {
+            return const ShellRunResult(1, '');
+          }
+          return const ShellRunResult(0, '');
+        };
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+
+      await store.createSessionInNewWorktree(_mainDir);
+      await _flushBackground();
+
+      expect(
+        client.shellCalls.map((c) => c.command).toList(),
+        ['git symbolic-ref --short HEAD', 'git switch -c opencode/quiet-canyon'],
+      );
+    });
+
+    test('fork resolution failure does not block bare mount (degrade ladder)',
+        () async {
+      final client = _BranchMockClient()
+        ..createWorktreeResult =
+            const WorktreeInfo(directory: '/wt/quiet-canyon')
+        ..onShell = (command, _) {
+          if (command == 'git symbolic-ref --short HEAD') {
+            throw Exception('shell endpoint missing');
+          }
+          return const ShellRunResult(0, '');
+        };
+      final store = ServerStore()..client = client;
+      store.setProjectsForTesting([_project()]);
+
+      await store.createSessionInNewWorktree(_mainDir);
+      await _flushBackground();
+
+      expect(
+        client.shellCalls,
+        contains(const _ShellCall(
+            'git switch -c opencode/quiet-canyon', '/wt/quiet-canyon',
+            timeoutMs: 5000)),
+      );
     });
   });
 

@@ -68,6 +68,7 @@ class _MockClient extends OpencodeClient {
     String? directory,
     String? mode,
     String? messageID,
+    String? base,
     int? context,
   }) async =>
       [

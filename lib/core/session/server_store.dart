@@ -657,7 +657,8 @@ class ServerStore extends ChangeNotifier {
     }
     // 分支挂载不阻塞会话创建（design-worktree-branch-sync §2.2：挂载延迟
     // 不得推迟创建流程返回）；失败降级 detached + 日志，不回滚创建。
-    unawaited(_mountWorktreeBranch(c, worktree.directory));
+    unawaited(
+        _mountWorktreeBranch(c, worktree.directory, project.canonical));
     final SessionModel session;
     try {
       session = await c.createSession(
@@ -712,14 +713,18 @@ class ServerStore extends ChangeNotifier {
     return RegExp(r'^[a-z0-9][a-z0-9-]*$').hasMatch(base) ? base : null;
   }
 
-  /// 挂载 `opencode/{worktree-name}` 分支（design-worktree-branch-sync §2.2）：
-  /// `git switch -c` 单命令（跨 shell 可移植），exit 0 即成。失败先以
-  /// show-ref 判撞名（历史残留同名分支）→ 换 `<name>-<rand>` 后缀重试 ≤2；
-  /// 非撞名或 shell 通道异常（旧 v2 无 /api/shell/网络）→ 放弃，保持
+  /// 挂载 `opencode/{worktree-name}` 分支（design-worktree-branch-sync §2.1 /
+  /// design-branch-diff-fork-base §3.1 修订）：优先从 canonical 当前分支拉
+  /// （reflog 记 `Created from <base>`，供 /api/vcs/base 推断 fork 来源），
+  /// 前置任何失败只降级 base、仍执行现状 `switch -c`；`switch -c` exit 0 即成。
+  /// 失败先以 show-ref 判撞名（历史残留同名分支）→ 换 `<name>-<rand>` 后缀重试
+  /// ≤2；非撞名或 shell 通道异常（旧 v2 无 /api/shell/网络）→ 放弃，保持
   /// detached（server 默认态，日志留痕）——创建本身已成功，不回滚不报错。
-  Future<void> _mountWorktreeBranch(OpencodeClient c, String directory) async {
+  Future<void> _mountWorktreeBranch(
+      OpencodeClient c, String directory, String canonical) async {
     final base = _worktreeBranchBase(directory);
     if (base == null) return;
+    final fork = await _resolveForkBase(c, directory, canonical);
     final candidates = <String>['opencode/$base'];
     for (var i = 0; i < 2; i++) {
       final rand = Random().nextInt(1 << 24).toRadixString(36).padLeft(4, '0');
@@ -727,9 +732,11 @@ class ServerStore extends ChangeNotifier {
     }
     for (final branch in candidates) {
       try {
-        // 本地 server 的 git switch 是毫秒级——5s 超时已远超正常耗时
-        final created = await c.runShell('git switch -c $branch',
-            cwd: directory, timeoutMs: 5000);
+        // 本地 server 的 git 命令是毫秒级——5s 超时已远超正常耗时
+        final created = await c.runShell(
+            fork == null ? 'git switch -c $branch' : 'git switch -c $branch $fork',
+            cwd: directory,
+            timeoutMs: 5000);
         if (created.exit == 0) return;
         // 撞名才重试：分支已存在；其他 git 失败重试无意义
         final probe = await c.runShell(
@@ -742,6 +749,32 @@ class ServerStore extends ChangeNotifier {
       }
     }
     AppLogger.I.w(_tag, 'worktree 分支挂载失败，保持 detached: $directory');
+  }
+
+  /// fork 基准解析（design-branch-diff-fork-base §3.1）：读 canonical 当前
+  /// 分支名 → 守卫 → rev-parse 校验 worktree 起点 == base tip（防 canonical
+  /// 前移后 `switch -c <new> <base>` 把内容检出挪离服务端快照）。任何失败
+  /// （exit≠0 / 守卫不过 / 通道异常）只返回 null——降级为现状无起点挂载，
+  /// 不连坐挂载本身。
+  Future<String?> _resolveForkBase(
+      OpencodeClient c, String worktreeDir, String canonical) async {
+    if (canonical.isEmpty) return null;
+    try {
+      final head = await c.runShell('git symbolic-ref --short HEAD',
+          cwd: canonical, timeoutMs: 5000);
+      if (head.exit != 0) return null;
+      final name = head.output.trim();
+      if (!RegExp(r'^[A-Za-z0-9][A-Za-z0-9._/-]*$').hasMatch(name)) return null;
+      final parse = await c.runShell('git rev-parse HEAD $name',
+          cwd: worktreeDir, timeoutMs: 5000);
+      if (parse.exit != 0) return null;
+      final lines =
+          parse.output.trim().split('\n').map((l) => l.trim()).toList();
+      if (lines.length != 2 || lines[0] != lines[1]) return null;
+      return name;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 删除后分支清理（design-worktree-branch-sync §2.2 / §8 修订）：v2 DELETE

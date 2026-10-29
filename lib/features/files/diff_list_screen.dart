@@ -25,6 +25,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
   Object? _error;
   DiffMode _mode = DiffMode.uncommitted;
   String? _messageID;
+  String? _base;
   int _loadGen = 0;
 
 
@@ -78,8 +79,15 @@ class _DiffListScreenState extends State<DiffListScreen> {
       if (mode == DiffMode.lastMessage) {
         messageID = await _lastUserMessageId(c);
       }
+      // 分支模式的 review base 解析（design-branch-diff-fork-base §3.2）：
+      // reflog fork 来源优先，不可推断（503/异常/data null）降级不传 base
+      String? base;
+      if (mode == DiffMode.branch) {
+        base = (await c.vcsBase(directory: widget.directory))?.ref;
+      }
       if (gen != _loadGen) return;
       _messageID = messageID;
+      _base = base;
       if (mode == DiffMode.lastMessage && messageID == null) {
         _diffs = [];
         _error = const KnownError(FriendlyErrorKind.diffNoLastMessage);
@@ -89,6 +97,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
           directory: widget.directory,
           mode: mode == DiffMode.branch ? 'branch' : 'working',
           messageID: messageID,
+          base: mode == DiffMode.branch ? base : null,
         );
         if (gen != _loadGen) return;
         _diffs = diffs.where((d) => d.additions > 0 || d.deletions > 0).toList();
@@ -106,6 +115,7 @@ class _DiffListScreenState extends State<DiffListScreen> {
     setState(() {
       _mode = mode;
       _messageID = null;
+      _base = null;
       _loading = true;
     });
     _load();
@@ -262,7 +272,8 @@ class _DiffListScreenState extends State<DiffListScreen> {
             '?path=${Uri.encodeQueryComponent(d.file)}'
             '&directory=${Uri.encodeQueryComponent(widget.directory ?? '')}'
             '&mode=${_mode.name}'
-            '${_messageID != null ? '&messageID=${Uri.encodeQueryComponent(_messageID!)}' : ''}',
+            '${_messageID != null ? '&messageID=${Uri.encodeQueryComponent(_messageID!)}' : ''}'
+            '${_base != null ? '&base=${Uri.encodeQueryComponent(_base!)}' : ''}',
           ),
         );
       },

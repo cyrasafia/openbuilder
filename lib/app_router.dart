@@ -242,6 +242,7 @@ GoRouter buildRouter(ConnectionStore store) {
             directory: s.uri.queryParameters['directory'],
             mode: mode,
             messageID: s.uri.queryParameters['messageID'],
+            base: s.uri.queryParameters['base'],
           );
         },
       ),

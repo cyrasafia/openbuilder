@@ -30,6 +30,13 @@ class ShellRunResult {
   const ShellRunResult(this.exit, this.output);
 }
 
+class VcsBaseInfo {
+  final String name;
+  final String ref;
+  final String source;
+  const VcsBaseInfo({required this.name, required this.ref, required this.source});
+}
+
 class HealthInfo {
   final bool healthy;
   final String version;
@@ -607,6 +614,7 @@ class OpencodeClient {
     String? directory,
     String? mode,
     String? messageID,
+    String? base,
     int? context,
   }) async {
     final dir = directory != null && directory.isNotEmpty ? directory : null;
@@ -622,9 +630,34 @@ class OpencodeClient {
       'mode': mode ?? 'working',
       'context': context ?? kVcsDiffContext,
     };
+    if (base != null && base.isNotEmpty) params['base'] = base;
     if (dir != null) params.addAll(_locationQuery(dir));
     final r = await dio.get<dynamic>('/api/vcs/diff', queryParameters: params);
     return _diffListFrom(r.data);
+  }
+
+  /// GET /api/vcs/base 的 review base 解析（design-branch-diff-fork-base §3.2）：
+  /// 200 且 data 非空返回 ref（全名，如 refs/heads/iterate，可直接作为 diff 的
+  /// base 透传）；503 / 异常 / data 为 null（spec 合法形状——全新目录 provider
+  /// 未注册的秒级窗口）一律返回 null，调用方降级为不传 base。
+  Future<VcsBaseInfo?> vcsBase({String? directory}) async {
+    try {
+      final r = await dio.get<dynamic>(
+        '/api/vcs/base',
+        queryParameters: _locationQuery(directory),
+      );
+      final data = _asMap(r.data)['data'];
+      if (data is! Map) return null;
+      final ref = data['ref']?.toString() ?? '';
+      if (ref.isEmpty) return null;
+      return VcsBaseInfo(
+        name: data['name']?.toString() ?? '',
+        ref: ref,
+        source: data['source']?.toString() ?? '',
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<List<FileNode>> listFiles({
