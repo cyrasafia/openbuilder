@@ -46,15 +46,15 @@ agent 后台命令两套样式；性质相同却交互割裂。
 | C3 | 前台转后台同款：他端 `POST /api/session/:id/background` → part 转 completed + 同款 metadata；`input.background` 缺省（出生时是同步） | ③分流 `input.background !== true` |
 | C4 | `context.progress({shellID})` spawn 后即发；`session.tool.progress` 不持久化（REST running 态 metadata 为 `{}`） | 无直接消费（C2 兜底） |
 | C5 | 完成通知：`notifyWhenDone` 等 job 终态 → synthetic：metadata `{source:"shell", shellID, jobID?, state:"completed"\|"cancelled"\|"error", exit?, signal?, timeout?, truncated}`，text = `<shell id="…" state="…" command="…">…输出…</shell>`；`resume` 缺省 true → `execution.wake` 唤醒父会话 | 完成消息三态 + `timeout:true` 超时细分；label 三级兜底（description → text `<shell command="…">` → shellID，metadata 无 command） |
-| C6 | synthetic 走 inbox admission：SSE `session.inbox.enqueued`（`item.type == synthetic`）+ REST 消息快照 `type:"synthetic"` 条目（metadata 同） | 移动端 synthetic 原消息即载体（入消息流 + `_noticeMessage` 渲染），SSE/REST 天然按消息 id 去重——比桌面端 notices 表少一层 |
+| C6 | synthetic 走 inbox admission：SSE `session.inbox.enqueued`（`item.type == synthetic`）+ REST 消息快照 `type:"synthetic"` 条目（metadata 同）。**2.2.1 勘误（七次修订）**：inbox 事件的 metadata 嵌在 `item.payload.metadata`（非外层 `item.metadata`）；且 synthetic **滞留 inbox（`delivery:"steer"`）不即刻入 REST 消息列表**——下次 prompt 才 steer 投递成消息（2.0.26「快照即刻含」记载失效） | 移动端 synthetic 原消息即载体（live 经 `onInboxEnqueued` 物化入流 + `_noticeMessage` 渲染），SSE/REST 天然按消息 id 去重；**判据与物化都读 payload 嵌套**（七次修订修复：判据原读外层永不命中） |
 | C7 | REST 资源面：`GET /api/shell?location[directory]=`（**仅返回 running**）；`GET /api/shell/:id`（exited 记录内存 map FIFO 25 个淘汰最老，文件另 7 天清理）；`GET /api/shell/:id/output`（byte cursor 分页，默认 limit 64KB，响应 `{location, data:{output,cursor,size,truncated}}`）；`DELETE /api/shell/:id`（terminate + remove：杀进程 + 删记录 + **删输出文件**）。**全部端点 location-scoped——语义修正（2026-10-30 四轮评审活体仲裁）**：缺 `location[directory]` query 时 server **静默回落默认 location 解析**（不报错）——shell 归属默认域则 200 静默成功、归属其他域则 404（桌面端「恒 404」记载与四轮「200 回落」实测各带场景前提：前者 shell 在 worktree 域、后者在默认域，本次用 worktree 域 shell 复测缺 query 确得 404）；显式 location 与归属域不匹配 → 404（LocationNotFoundError）；id 格式非法 → 400；记录不存在 → 404（ShellNotFoundError）。body 的 `cwd` 不改变归属 location | 新封装一律显式带 directory query（**正确性前提**——漏带不响亮报错而静默错域：默认域 shell 误成功、跨域 shell 静默漏掉，比 404 更危险）；404 是输出空态判定面（400 一并归空态） |
 | C8 | shell 资源 metadata 恒带 `{sessionID}`（父会话 id） | list 后按它过滤归属 |
-| C9 | `session.shell.started/ended` 事件**仅用户 `!` 命令路径**发；agent 工具路径不发——运行态无事件，只有 REST 轮询 + C5 synthetic | 任务卡运行态 = REST list 对账 + synthetic 终态收敛 |
+| C9 | `session.shell.started/ended` 事件**仅用户 `!` 命令路径**发；agent 工具路径不发——运行态无事件，只有 REST 轮询 + C5 synthetic。**2.2.1 接入（七次修订）**：started/ended 从显式忽略改为消费——started 即插 ④ 开始行（原开始行要等 POST 返回对账，运行期迟到）+ list 对账；ended 触发 `reconcileConversation`（完成行落地 + 卡移除，兼提他端实时性） | 任务卡运行态 = REST list 对账 + synthetic 终态收敛；④ 开始行/完成落地由 shell.* 事件即时驱动 |
 | C10 | DELETE 后 synthetic 落 `state:"error"` + text `Shell.NotFoundError`；用户裁定（桌面端 2026-10-21）不做客户端归一成「取消」——他端停止与真失败不可分，语义修正推上游 | 同裁定照搬：停止后完成消息呈「失败」样式，接受 |
 | C11 | ④ `POST /api/session/:id/shell` **同步阻塞至命令完成**才返回 204，body 为空（无 shellID 可得）——2.0.26 活体（sleep 6 命令 POST 挂 6.1s）。**超时坑（六轮评审 B-2）**：dio 全局 `receiveTimeout: 20s`——命令 >20s 会抛 `DioExceptionType.receiveTimeout`（假失败面），调用方须覆盖更大超时并特判该异常（不回滚、转对账收敛） | 本端发送后本地合成入列不可行；返回即已完成，触发对账落地呈现；`client.shell` 覆盖 `receiveTimeout: 10min` + catchError 特判 |
 | C12 | ④ 的 shell 同经 `shell.create` 进 `/api/shell` 资源面，running 期间在 list 中，metadata = `{sessionID, background:true}`——2.0.26 活体。**② agent 后台派发实测 metadata 仅 `{sessionID}`（不带 `background` 键）——与前台 shell 同形**（六轮评审活体补测，B-1 根因）：list 端点对 ②③ 与前台**无判别面** | 任务卡 list 对账**天然覆盖 ④（`background:true` 判别）**；②③ 靠客户端已知集交叉判别、前台排除（B-1 修复，见任务卡运行态）；归属过滤（C8）同判 |
 | C13 | ④ 消息载体 = `type:"shell"` 条目：started 时创建（`status:"running"`，`time.created`）→ ended 时更新为终态（`time.completed`、**自带 `output`**——与 output 端点同形状 `{output, cursor, size, truncated}`）。**终态两种**：`status:"exited"`（带 `exit`）与 `status:"killed"`（**无 `exit` 键**；被 DELETE 中止，内嵌 `output.output` 是服务端哨兵串「Shell command output is no longer available.」非真实输出）——2.0.26 活体（复审轮补测）。SSE `session.shell.started/ended`（用户路径事件）在移动端事件面属显式忽略清单 | 入列/完成/输出全可 REST 对账重建；终态判据 = `status != "running"`；killed → 失败样式（C10 同 spirit）+ 查看落 Discarded 空态（D3）；消息内真实 `output` 仅 exited 条目可信 |
-| C14 | ④ 完成**无 synthetic**（2.0.26 活体：多条 `!` 命令消息列表仅 type:shell 条目、零 synthetic）——桌面端「他端 `!` 命令有 finished synthetic」的记载在 2.0.26 不成立（疑误归因 agent 路径 synthetic 或版本差异） | ④ 完成呈现的唯一持久载体 = ShellMessage 本体；不与 agent 路径的 synthetic 完成行冲突（双载体天然无重叠） |
+| C14 | ④ 完成**无 synthetic**（2.0.26 活体：多条 `!` 命令消息列表仅 type:shell 条目、零 synthetic）——桌面端「他端 `!` 命令有 finished synthetic」的记载在 2.0.26 不成立（疑误归因 agent 路径 synthetic 或版本差异）。**2.1.4/2.2.1 推翻（七次修订活体）**：④ 完成也发 synthetic（`session.inbox.enqueued`，`source:shell` + `state` + `exit`，`delivery:"steer"` 滞留 inbox）——与 agent 路径同形，「双载体零重叠」前提失效 | ④ 完成行**双载体去重**：终态 ShellMessage 与完成 synthetic 同 shellID 时只渲染 synthetic（`renderableMessages` 过滤，完成时刻排序正确）；ShellMessage 仅 SSE 缺口（无 synthetic）时兜底渲染 |
 | C15 | **agent 前台（同步）shell 运行期间同样在 `/api/shell` list 中**（携带父会话 sessionID、running）——六轮评审活体实证：list 并非只含后台；前台完成 part metadata 为 `{status:"completed", truncated, exit}` **无 shellID**、running 态 REST metadata 为 `{}`（C4），前台 shell 在 list 与 ②④ 无服务端区分 | B-1 修复输入：任务卡过滤 = `background:true ∨ shellID ∈ 已知后台集`（通知收录 = part 判据 / ④ ShellMessage——前台两者皆不命中，天然排除） |
 
 ## 识别模型
@@ -277,7 +277,7 @@ composer 不锁输入、不出 typing dots（后台命令不是父会话在思�
 | `session.tool.success` | 事件 `metadata` 并入 part（`onToolSuccess` 扩参数）；判据命中 → 插 `bg-shell-start`（②）/ `bg-shell-convert`（③）——`toolInput` 非 Map 时**一律不插**（②③同限，缺口序交 REST 对账重建，见识别模型）；同拍触发 list 对账（派发窗口 ~30ms metadata 可能未及写入，双保险） |
 | `session.inbox.enqueued`（synthetic + `source:"shell"`） | `onSynthetic` 物化入流（既有）；`_noticeMessage` 新分支渲染三态 + 超时（D2）；触发 list 对账移除任务卡条目 |
 | 本端 `!` 发送（非 SSE——`_send()` 的 `!` 分支） | POST 改 unawaited（C11 同步阻塞，客户端不等——决策 12）、**移除 `setStatus('busy')`**、`receiveTimeout` 覆盖 10min（B-2）；发送**后**延迟 ~800ms 拉一次 list 对账（shell 创建毫秒级即在列，C12——发送前拉必然 miss，NB-1 修复）；完成回调触发 `reconcileConversation`（消息 + list 双对账：完成行/入列行落地 + 任务卡移除——⑥号挂点）；`receiveTimeout`/`connectionTimeout` 特判不回滚（命令仍在跑，转 list 对账——B-2 修复），真错误走既有回滚链 |
-| 其余 | 无——`session.shell.started/ended`（用户路径事件，C9）维持显式忽略（对账节拍覆盖呈现；接入可提他端 `!` 实时性，记「不做的事」） |
+| 其余 | `session.shell.started/ended` **已接入（七次修订，原显式忽略推翻）**：started（④，`metadata.background:true` 守卫）→ 即插 `bg-shell-start` + list 对账；ended → `reconcileConversation`（消息 + list 双对账）。agent 工具路径不发此事件（C9），② 终态仍走 synthetic 挂点 |
 
 ## 任务卡运行态（list 对账）
 
@@ -346,7 +346,7 @@ kind 复用天然覆盖；回滚守卫按 id 前缀天然免疫（同 subagent �
 | 重启/重开详情页/对账拉起 | started/converted/finished 全量重建；任务卡按 list 重建 |
 | server 重启后查看输出 | 404 → 「输出不再可用（服务器已重启或过期清理）」 |
 | 后台命令运行 + 用户发消息 | 不受阻（父会话不锁输入） |
-| 他端 `!` 命令 | 运行中：list 对账入任务卡（可停止）+ 入列行（消息对账）；完成：ShellMessage 换皮完成行；实时性靠对账（无 SSE），记已知限制 |
+| 他端 `!` 命令 | 运行中：`shell.started` 事件即时入列行 + 任务卡（可停止）；完成：`shell.ended` 双对账落地完成行 + 移卡（七次修订——原「等下次对账」） |
 | 本端 `!` 命令（短命令） | 发送（不等待，C11）→ 任务卡一闪即消或直接跳过 → 完成回调对账 → 入列 + 完成两行；与②「转换后瞬间完成」同节拍 |
 | 本端 `!` 命令（长命令运行中） | 运行期间会话 idle、composer 可用可继续发消息（决策 12 移除 busy 置位——server 事实 idle）；任务卡入列（发送时 list 对账）可停止；停止 → 进程被杀 → POST 返回 → killed 完成「失败」行（C10 同语义）；自然完成 → POST 返回回调双对账 → 完成行 + 任务卡即时移除（⑥号挂点，无残留窗口） |
 | `!` 命令退出码非零 | 完成行呈「失败」样式（exit 判据，D2 ④ 分支） |
@@ -415,9 +415,7 @@ kind 复用天然覆盖；回滚守卫按 id 前缀天然免疫（同 subagent �
 - 不把 shell 任务并入 `sessionActivity` 家族聚合 / `streamingSessionCount`。
 - 不接后台 shell 进 FGS watcher / 完成系统通知（D6——通知域是会话任务
   口径，扩面收益低，另行跟进）。
-- 不接 `session.shell.started/ended` SSE 事件（④ 实时性优化）：对账节拍
-  已覆盖全部呈现（本端发送后对账 / 他端下次对账）；接入属增量优化，
-  随事件形状活体核对另行跟进。
+- 不接 `session.shell.started/ended` SSE 事件（④ 实时性优化）：~~对账节拍已覆盖~~ **已接入（七次修订推翻）**——见 C9/SSE 表。
 - 不动 `!` 发送入口与 server 同步语义（POST 阻塞至完成是 server 行为，
   C11）；**客户端不再等待**（2026-10-30 修订，见决策 12）；不做发送中的
   本地入列占位（无 shellID，C11）。
@@ -450,10 +448,7 @@ kind 复用天然覆盖；回滚守卫按 id 前缀天然免疫（同 subagent �
 - **输出 ANSI 转义原样呈现**：不着色、不清洗。
 - **多端并发**：他端 DELETE 后本端任务卡最长下次对账才移除（无事件）；
   他端停止的 404 走推测因文案（含「或」，不构成错误陈述）。
-- **④ 实时性缺口（对账节拍）**：`session.shell.started/ended`（用户路径，
-  C9）维持显式忽略——他端 `!` 命令的入列/完成/任务卡均等下次对账
-  （进页/重连/synthetic 后）落地；本端发送前后各触发一次（list + 消息）
-  对账。接入事件可提实时性，记「不做的事」。
+- **④ 实时性缺口（对账节拍）**：~~`session.shell.started/ended` 维持显式忽略~~ **已接入（七次修订推翻）**——开始/完成行与任务卡均由事件即时驱动；缺口仅剩 SSE 断连窗口（重连对账兜底）。
 - **④ 入列行与用户气泡信息重复**（nit 级，裁定保留）：`!` 命令本有
   `!cmd` 用户气泡在流内，入列行「已启动后台命令：cmd」是第三行重复
   信息（agent 路径无用户气泡故需要入列行）——保留为一致性取舍
@@ -673,3 +668,79 @@ success→reconcile 与 reconcile→reconcileShellTasks 顺序成立/SSE 缺口
 | 1 | 🟡 | ④ **自然完成**的任务卡移除缺对账挂点：五挂点（进页/重连/success/synthetic/停止后）无一命中——②③ 有 synthetic、④ 停止有「停止后」，本端 `!` 自然完成且停留页面时 `_shellsByParent` 残留到下次进页/重连（四轮 #4 同族残留：当时只修发送前入列、未修完成后移除）；且场景行「停留页面无新对账源，他端完成后」指代混乱（本端命令完成必然驱动 POST 返回回调，自相矛盾） | 已修：增**第六挂点**「本端 `!` POST 返回后」；SSE 表发送行完成回调改走 `reconcileConversation`（消息 + list 双对账，移除闭环）；场景行长命令行改自洽表述（自然完成 → 返回回调双对账即时移除，无残留窗口） |
 | 2 | 🟡 | AGENTS.md 关键文档索引缺条目（近期惯例设计文档与索引同 commit） | 已补：索引表 `design-shell-background` 行（四路径/判据/契约锚定/五轮评审摘要） |
 | 3 | nit | 「新封装与既有 `runShell` 都受此约束」与「`runShell` 不动/不在本设计范围」表述有张力——实意是同坑影响、本期不修 | 已修：改「既有 `runShell` 同受此坑影响——本期不修（既有代码边界）」 |
+
+### 七次修订（2026-10-30，实机测试两 bug——服务端已升 2.1.4/2.2.1，契约勘误）
+
+**触发**：实机测试后台 shell 发现两 bug——① agent 后台命令执行完后任务
+卡不消失、一直计时；② 用户 `!` 命令开始时不显示开始消息，结束后出现
+三条消息（开始/结束/再来一条，且顺序错乱）。服务器实测 **2.2.1**
+（`/api/info`；2.1.4 同形），设计原锚 2.0.26。
+
+**活体复验（2.2.1，专用探测会话 + 本会话自证 agent 路径）**：
+
+- **C14 被推翻**：④ 完成现在**也发 synthetic**——`session.inbox.enqueued`
+  （`item.payload.metadata = {source:"shell", shellID, state:"completed",
+  truncated, exit}`、`delivery:"steer"`）；且 **synthetic 滞留 inbox 不即刻
+  入 REST 消息列表**（`GET /inbox` 可见 pending，下次 prompt 才 steer 投递
+  成消息——投递后与 ShellMessage 同列）。完成消息双载体 =
+  ShellMessage（终态）+ synthetic → 客户端两行都渲染 → **三条**的根因 a。
+- **C6 形状修正**：inbox 事件 metadata 嵌在 `item.payload.metadata`
+  （非外层 `item.metadata`）——实现里 inbox 判据读外层 → 永不命中 →
+  完成时 `reconcileShellTasks` 不触发 → **② 卡残留计时**的根因
+  （`onInboxEnqueued` 物化路径本就读 payload 嵌套，完成行本身不缺）。
+- **C2 复验成立**（agent 路径，本会话自派 `background:true`）：派发即
+  `tool.success`（~1ms），事件与 REST part metadata 均为
+  `{status:"running", truncated, shellID}`、input parsed 且带
+  `background:true`；完成 synthetic 同走 inbox（C5/C6 事件面成立）。
+- **C7/C12/C15 复验成立**：list 仅 running、`?directory=` 不选 location
+  （静默回落默认域）、④ 运行期在列且 metadata 带 `background:true`、
+  agent 路径仅 `{sessionID}`；响应信封多了顶层 `location` 字段（`data`
+  兼容不破）。`?location[directory]=` 语法未变（探测中「空响应」为
+  curl `[]` glob 假象，`-g` 复测正常）。
+- **C9 复验成立 + 接入**：`session.shell.started/ended` 仅 ④ 发（agent
+  路径实测不发），事件 `data.shell` 为完整 ShellInfo（command/status/
+  metadata），started 即时、ended 带 exit+output。
+
+**修复**（三处代码 + 判据）：
+
+| # | bug | 根因 | 修复 |
+|---|---|---|---|
+| F-1 | ② 卡残留计时 | inbox 判据读 `item.metadata`（外层），2.2.1 形状嵌套在 `item.payload.metadata` → 完成无 list 对账 | `server_store` 判据改 payload 嵌套优先 + 外层兜底（旧形状） |
+| F-2 | ④ 三条消息 | C14 推翻 → 终态 ShellMessage 换皮行 + 完成 synthetic 双渲染 | `renderableMessages` 双载体去重：同 shellID 有完成 synthetic 时 ShellMessage 不入渲染列表（synthetic 优先——created=完成时刻，排序在开始行后）；SSE 缺口无 synthetic 时 ShellMessage 兜底 |
+| F-3 | ④ 开始行迟到 + 完成行排序 | 开始行原只由对账重建（POST 返回才落）；终态 ShellMessage created=派发时刻 + rank 0 → 排在开始行上方 | 消费 `session.shell.started`（`background:true` 守卫）即插 `bg-shell-start` + list 对账；`session.shell.ended` → `reconcileConversation` 双对账（兼提他端实时性，原「不做」推翻）；`_noticeRank` 把 `type:'shell'` 归 notice 层——同 created 下 id 序 `bg-` < `msg-`，开始行恒在完成行前 |
+
+**验证**：`analyze.sh` 零 issue；全量 `flutter test` 999 例通过
+（`shell_background_test.dart` 23 例：+6 回归——inbox payload 嵌套移卡
+（F-1）、双载体去重与排序（F-2，含 SSE 缺口兜底/运行中条目不双份）、
+`shell.started` 即时插行 + 非 background 守卫（F-3））。
+
+**遗留观察（不在本次范围）**：
+
+- ④ 乐观用户气泡无权威替换（2.2.1 实测 `!` 不产生服务端 user 消息，
+  消息列表仅 shell 条目）——气泡长期挂 optimistic 标记，行为既有，
+  未报告问题，另行跟进。
+- ② 完成 synthetic 滞留 inbox 期间若会话继续产出新消息，REST 窗口删除
+  理论上可误删已物化 synthetic（窗口内严格夹逼且未 steer 投递时）；
+  实际时序上「新消息出现」恰是 steer 投递驱动，竞态窗口毫秒级，接受。
+
+### 七次修订评审（2026-10-30，reviewer 子代理审查未提交改动）
+
+结论：**可合入**。逐条推演确认：去掉任一修复对应测试都会 fail；②③ 不受
+F-2 误伤（`dupBySynthetic` 只命中 `type=='shell'`，②③ 载体是 tool part）、
+running ShellMessage 不被过滤（与渲染层 shrink 正交）、synthetic shellID
+空串守卫；缓存一致性（过滤 render-only，`_messages`/持久化/预览/revert 不
+受影响；`_renderableVersion` 随 `_messagesVersion` 失效；被滤条目 widget
+缓存经 `_pruneMessageCaches` 清除）；`shell.ended` 对非打开会话经
+`_conversations[sid]` 空守卫零副作用；幂等（非 authoritative 已存在即
+skip）；同 created 毫秒碰撞排序确定性改善。3 🟢 + 2 nit：
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟢 | `shell.ended` → `reconcileConversation` 接线无测试（改回 return 测试不红） | 已补：ended 事件用例（消息对账落完成行/开始行 + list 对账移卡，fake `messagesPage`） |
+| 2 | 🟢 | switch 空 case 贯落：compaction 五 case 贯入 `shell.started` 处理体（守卫短路下行为等价，但埋刺） | 已修：compaction 组独立 `return` |
+| 3 | 🟢 | `shell.started/ended` 未调 `_mirrorTimeUpdated`（他端 `!` 会话列表排序滞后；非回归，一致性缺口） | 已修：两分支各补镜像 |
+| 4 | nit | `syntheticShellIds` 全量扫描与 `finishedShellIds` synthetic 半边同构、无版本缓存 | 接受：量级同阶（窗口 n），如在意可提同款缓存 getter |
+| 5 | nit | `ensureConversation` 对他端未开会话建 store（与既有事件处理器模式一致） | 接受：既有模式，非新类别 |
+
+**修复后验证**：`analyze.sh` 零 issue；全量 `flutter test` 1000 例通过
+（`shell_background_test.dart` 24 例）。

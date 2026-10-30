@@ -14,6 +14,7 @@ import 'package:open_builder/core/connection/connection_profile.dart';
 import 'package:open_builder/core/net/dio_factory.dart';
 import 'package:open_builder/core/session/conversation_store.dart';
 import 'package:open_builder/core/session/server_store.dart';
+import 'package:open_builder/core/sse/sse_client.dart';
 import 'package:open_builder/data/api/opencode_client.dart';
 import 'package:open_builder/domain/models.dart';
 
@@ -266,6 +267,125 @@ void main() {
     });
   });
 
+  group('bang completion dedup (2.2.1 dual carriers)', () {
+    test('synthetic wins over terminal ShellMessage; exactly two bg lines',
+        () {
+      final store = ConversationStore('p', _fakeClient());
+      store.addOptimisticUserMessage('!sleep 4; echo x');
+      // 完成 synthetic 经 inbox 事件物化（2.2.1 实测：steer 投递、payload
+      // 嵌套 metadata、REST 消息列表暂不含）
+      store.onInboxEnqueued(
+        'msg_syn_1',
+        {
+          'type': 'synthetic',
+          'payload': {
+            'text':
+                'The following shell command was executed by the user:\n<shell id="sh_20" state="completed" command="sleep 4; echo x">\nx\n</shell>',
+            'metadata': {
+              'source': 'shell',
+              'shellID': 'sh_20',
+              'state': 'completed',
+              'truncated': false,
+              'exit': 0,
+            },
+          },
+          'delivery': 'steer',
+        },
+        created: 404000,
+      );
+      // POST 返回对账带回终态 ShellMessage + 开始行重建
+      store.onSynthetic(ShellMessage(
+        id: 'msg_shell_1',
+        raw: const {},
+        created: 400000,
+        completed: 404000,
+        shellID: 'sh_20',
+        command: 'sleep 4; echo x',
+        status: 'exited',
+        exit: 0,
+      ));
+      store.rebuildShellNotices();
+
+      final renderable = store.renderableMessages;
+      final ids = renderable.map((m) => m.id).toList();
+      expect(ids, isNot(contains('msg_shell_1')),
+          reason: '完成行由 synthetic 承载，ShellMessage 换皮行去重防三行');
+      final bgOrder = renderable
+          .where((m) =>
+              m.id.startsWith('bg-shell-') ||
+              m.type == 'synthetic' ||
+              m.type == 'shell')
+          .map((m) => m.id)
+          .toList();
+      expect(bgOrder, ['msg_syn_1', 'bg-shell-start:sh_20'],
+          reason: 'renderableMessages 最新在前——开始 → 结束 两行（显示序'
+              '倒转后正确），synthetic（完成时刻）为唯一完成行');
+    });
+
+    test('SSE gap fallback: terminal ShellMessage renders when no synthetic',
+        () {
+      final store = ConversationStore('p', _fakeClient());
+      store.onSynthetic(ShellMessage(
+        id: 'msg_shell_2',
+        raw: const {},
+        created: 400000,
+        completed: 404000,
+        shellID: 'sh_21',
+        command: 'sleep 4; echo y',
+        status: 'exited',
+        exit: 0,
+      ));
+      store.rebuildShellNotices();
+      final bgOrder = store.renderableMessages
+          .where((m) =>
+              m.id.startsWith('bg-shell-') ||
+              m.type == 'synthetic' ||
+              m.type == 'shell')
+          .map((m) => m.id)
+          .toList();
+      expect(bgOrder, ['msg_shell_2', 'bg-shell-start:sh_21'],
+          reason: 'renderableMessages 最新在前——显示序开始 → 结束（同 created '
+              '下 noticeRank：shell 同层、id 序 bg- < msg-）');
+    });
+
+    test('running ShellMessage stays for render-layer shrink (no data dup)',
+        () {
+      // 运行中条目的「不渲染」由 _noticeMessage case 'shell' 的 shrink 承载
+      // （既有机制）；数据层仅去重终态双载体，不在此过滤。
+      final store = ConversationStore('p', _fakeClient());
+      store.onSynthetic(ShellMessage(
+        id: 'msg_shell_3',
+        raw: const {},
+        created: 400000,
+        shellID: 'sh_22',
+        command: 'sleep 4; echo z',
+        status: 'running',
+      ));
+      store.rebuildShellNotices();
+      expect(store.renderableMessages.map((m) => m.id),
+          contains('msg_shell_3'));
+      expect(store.renderableMessages.map((m) => m.id),
+          contains('bg-shell-start:sh_22'));
+    });
+  });
+
+  group('④ live shell.started event', () {
+    test('inserts start notice immediately', () {
+      final store = ConversationStore('p', _fakeClient());
+      store.onShellStarted(shellId: 'sh_30', command: 'npm test', created: 100);
+      final notice = store.messages
+          .where((m) => m.id == 'bg-shell-start:sh_30')
+          .single;
+      expect(notice.metadata?['kind'], 'background-started');
+      expect(notice.description, 'npm test');
+      // 幂等：重复事件不重复插
+      store.onShellStarted(shellId: 'sh_30', command: 'npm test', created: 100);
+      expect(
+          store.messages.where((m) => m.id == 'bg-shell-start:sh_30').length,
+          1);
+    });
+  });
+
   group('DisplayMessage shellID cache round-trip', () {
     test('shellID survives serialize/deserialize', () {
       final store = ConversationStore('p', _fakeClient());
@@ -455,6 +575,192 @@ void main() {
       expect(store.isDeletedShell('sh_d'), isTrue);
       expect(client.deleted, contains('sh_d'));
     });
+
+    test('completion synthetic via inbox payload metadata removes card (B-2 '
+        'regression: agent card stays and keeps counting)', () async {
+      final client = _FakeShellClient([
+        ShellInfo(
+          id: 'sh_e',
+          status: 'running',
+          command: 'npm run dev',
+          sessionID: 'par',
+        ),
+      ]);
+      final store = ServerStore()..client = client;
+      store.upsertSessionForTesting(SessionModel(
+        id: 'par',
+        projectID: 'p',
+        directory: '/repo',
+        title: 'main',
+        created: 1,
+        updated: 1,
+      ));
+      // ② 派发：bg-shell-start 通知落已知集（B-1 判据）
+      final conv = store.ensureConversation('par')!;
+      conv.onToolInputStarted('m1', 'c1', 'shell');
+      conv.onToolCalled('m1', 'c1', {
+        'command': 'npm run dev',
+        'background': true,
+      }, null);
+      conv.onToolSuccess('m1', 'c1', const [],
+          metadata: {'shellID': 'sh_e', 'status': 'running'});
+      expect(conv.onShellToolPartSettled('m1', 'c1', 100), isTrue);
+      await store.reconcileShellTasks('par');
+      expect(store.runningShellTasks('par').map((s) => s.id), ['sh_e']);
+
+      // 完成：命令结束（list 仅 running——不再含）+ 2.2.1 形状的
+      // session.inbox.enqueued（metadata 嵌在 item.payload.metadata）
+      client.shells.clear();
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'session.inbox.enqueued',
+        created: 200,
+        properties: {
+          'sessionID': 'par',
+          'inboxID': 'msg_syn_e',
+          'item': {
+            'type': 'synthetic',
+            'payload': {
+              'text': '<shell id="sh_e" state="completed"></shell>',
+              'metadata': {
+                'source': 'shell',
+                'shellID': 'sh_e',
+                'state': 'completed',
+                'exit': 0,
+              },
+            },
+            'delivery': 'steer',
+          },
+        },
+      ));
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(store.runningShellTasks('par'), isEmpty,
+          reason: '完成 synthetic（payload 嵌套）触发 list 对账移除任务卡');
+      expect(
+          conv.messages
+              .where((m) => m.id == 'msg_syn_e' && m.type == 'synthetic'),
+          isNotEmpty,
+          reason: '同一事件物化完成行入流');
+    });
+
+    test('shell.started event inserts start notice and reconciles card',
+        () async {
+      final client = _FakeShellClient([
+        ShellInfo(
+          id: 'sh_f',
+          status: 'running',
+          command: 'pytest -q',
+          sessionID: 'par',
+          background: true,
+        ),
+      ]);
+      final store = ServerStore()..client = client;
+      store.upsertSessionForTesting(SessionModel(
+        id: 'par',
+        projectID: 'p',
+        directory: '/repo',
+        title: 'main',
+        created: 1,
+        updated: 1,
+      ));
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'session.shell.started',
+        created: 300,
+        properties: {
+          'sessionID': 'par',
+          'shell': {
+            'id': 'sh_f',
+            'status': 'running',
+            'command': 'pytest -q',
+            'metadata': {'sessionID': 'par', 'background': true},
+          },
+        },
+      ));
+      await Future<void>.delayed(Duration.zero);
+      final conv = store.conversationForRead('par')!;
+      expect(
+          conv.messages.where((m) => m.id == 'bg-shell-start:sh_f').single,
+          isNotNull,
+          reason: '④ 开始行经事件即时插入（原等 POST 返回对账——开始时不显示）');
+      expect(store.runningShellTasks('par').map((s) => s.id), ['sh_f']);
+
+      // 非 background（防未来面）不插
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'session.shell.started',
+        created: 301,
+        properties: {
+          'sessionID': 'par',
+          'shell': {
+            'id': 'sh_fg',
+            'status': 'running',
+            'command': 'make build',
+            'metadata': {'sessionID': 'par'},
+          },
+        },
+      ));
+      await Future<void>.delayed(Duration.zero);
+      expect(conv.messages.where((m) => m.id == 'bg-shell-start:sh_fg'),
+          isEmpty);
+    });
+
+    test('shell.ended event reconciles messages and removes card', () async {
+      final client = _FakeShellClient([]);
+      client.page = MessagesPage([
+        ShellMessage(
+          id: 'msg_shell_g',
+          raw: const {},
+          created: 400,
+          completed: 500,
+          shellID: 'sh_g',
+          command: 'pytest -q',
+          status: 'exited',
+          exit: 0,
+        ),
+      ], null, null);
+      final store = ServerStore()..client = client;
+      store.upsertSessionForTesting(SessionModel(
+        id: 'par',
+        projectID: 'p',
+        directory: '/repo',
+        title: 'main',
+        created: 1,
+        updated: 1,
+      ));
+      final conv = store.ensureConversation('par')!;
+      // 运行中先入卡（ended 前置态）
+      client.shells.add(ShellInfo(
+        id: 'sh_g',
+        status: 'running',
+        command: 'pytest -q',
+        sessionID: 'par',
+        background: true,
+      ));
+      await store.reconcileShellTasks('par');
+      expect(store.runningShellTasks('par').map((s) => s.id), ['sh_g']);
+      // 完成：list 不再含 + ended 事件双对账
+      client.shells.clear();
+      store.onEventForTesting(const OpencodeEvent(
+        type: 'session.shell.ended',
+        created: 500,
+        properties: {
+          'sessionID': 'par',
+          'shell': {
+            'id': 'sh_g',
+            'status': 'exited',
+            'exit': 0,
+            'metadata': {'sessionID': 'par', 'background': true},
+          },
+        },
+      ));
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(store.runningShellTasks('par'), isEmpty,
+          reason: 'ended 触发 list 对账移除任务卡');
+      expect(conv.messages.map((m) => m.id),
+          allOf(contains('msg_shell_g'), contains('bg-shell-start:sh_g')),
+          reason: 'ended 触发消息对账：完成行 + 开始行落地');
+    });
   });
 }
 
@@ -466,7 +772,8 @@ void onToolCalledNullInput(ConversationStore store) {
 
 class _FakeShellClient extends OpencodeClient {
   _FakeShellClient(this.shells)
-      : super(dioFor(const ConnectionProfile(
+      : page = MessagesPage(const [], null, null),
+        super(dioFor(const ConnectionProfile(
           id: 't',
           name: 'test',
           address: 'http://127.0.0.1:9',
@@ -476,9 +783,15 @@ class _FakeShellClient extends OpencodeClient {
 
   final List<ShellInfo> shells;
   final List<String> deleted = [];
+  MessagesPage page;
 
   @override
   Future<List<ShellInfo>> listShells(String directory) async => shells;
+
+  @override
+  Future<MessagesPage> messagesPage(String sessionId,
+          {required int limit, String? cursor}) async =>
+      page;
 
   @override
   Future<void> deleteShell(String id, String directory) async {

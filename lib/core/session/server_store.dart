@@ -2550,7 +2550,11 @@ class ServerStore extends ChangeNotifier {
             _notifyPreviewChanged();
             _scheduleCacheSave();
             if (itemB['type'] == 'synthetic') {
-              final sm = itemB['metadata'];
+              // 2.2.1 活体：synthetic 的 metadata 嵌在 item.payload.metadata
+              // （steer 投递），外层 item.metadata 仅旧形状兜底。
+              final payloadB = itemB['payload'];
+              final sm = (payloadB is Map ? payloadB['metadata'] : null) ??
+                  itemB['metadata'];
               if (sm is Map && sm['source'] == 'shell') {
                 unawaited(reconcileShellTasks(sidB));
               }
@@ -2601,8 +2605,34 @@ class ServerStore extends ChangeNotifier {
       case 'session.compaction.ended':
       case 'session.compaction.failed':
       case 'session.compacted':
+        return;
       case 'session.shell.started':
+        // ④ `!` 命令启动（仅用户路径发，C9）：即时插开始行 + 任务卡对账
+        // （原显式忽略——开始行要等 POST 返回对账才落，实机反馈迟到）。
+        final sidSh = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidSh, ev.created);
+        final shellSh = ev.properties['shell'];
+        if (sidSh != null && shellSh is Map) {
+          final metaSh = shellSh['metadata'];
+          if (metaSh is Map && metaSh['background'] == true) {
+            ensureConversation(sidSh)?.onShellStarted(
+              shellId: shellSh['id']?.toString() ?? '',
+              command: shellSh['command']?.toString() ?? '',
+              created: ev.created ?? DateTime.now().millisecondsSinceEpoch,
+            );
+            unawaited(reconcileShellTasks(sidSh));
+          }
+        }
+        return;
       case 'session.shell.ended':
+        // ④ 完成：消息 + list 双对账（完成行落地 + 任务卡移除；agent 路径
+        // 不发本事件——② 终态收敛仍走 synthetic inbox 事件挂点）。
+        final sidSe = ev.properties['sessionID']?.toString();
+        _mirrorTimeUpdated(sidSe, ev.created);
+        if (sidSe != null) {
+          unawaited(reconcileConversation(sidSe));
+        }
+        return;
       case 'session.skill.activated':
         return;
       case 'session.revert.staged':

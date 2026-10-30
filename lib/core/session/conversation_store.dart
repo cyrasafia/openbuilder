@@ -328,12 +328,28 @@ class ConversationStore extends ChangeNotifier {
   List<DisplayMessage> get renderableMessages {
     if (_renderableVersion == _messagesVersion) return _renderableCache;
     final gated = _gated && _revealWatermark > 0;
+    // ④ 完成行双载体去重（2.2.1 活体：`!` 完成也发 synthetic 且滞留 inbox
+    // 经事件物化）：终态 ShellMessage 与完成 synthetic 同 shellID 时只渲染
+    // synthetic（created=完成时刻，排序在开始行之后）；ShellMessage 仅在无
+    // synthetic（SSE 缺口）时兜底渲染。
+    final syntheticShellIds = <String>{};
+    for (final m in _messages) {
+      if (m.type == 'synthetic' && m.metadata?['source'] == 'shell') {
+        final id = m.metadata?['shellID']?.toString() ?? '';
+        if (id.isNotEmpty) syntheticShellIds.add(id);
+      }
+    }
+    bool dupBySynthetic(DisplayMessage m) =>
+        m.type == 'shell' &&
+        (m.shellStatus ?? 'running') != 'running' &&
+        syntheticShellIds.contains(m.shellID ?? '');
     final List<DisplayMessage> result;
     if (_segments.isEmpty) {
       result = _messages.reversed
           .where((m) =>
               !_isEmptyUser(m) &&
               !_hiddenKinds.contains(m.type) &&
+              !dupBySynthetic(m) &&
               (!gated ||
                   m.optimistic ||
                   m.created <= _revealWatermark))
@@ -345,6 +361,7 @@ class ConversationStore extends ChangeNotifier {
         final m = _messages[i];
         if (!_isEmptyUser(m) &&
             !_hiddenKinds.contains(m.type) &&
+            !dupBySynthetic(m) &&
             (!gated || m.optimistic || m.created <= _revealWatermark)) {
           list.add(m);
         }
@@ -630,6 +647,22 @@ class ConversationStore extends ChangeNotifier {
       _commitShellNoticeChange();
     }
     return true;
+  }
+
+  /// ④ `!` 命令 `session.shell.started`（仅用户路径发，C9）：任务开始即插
+  /// 入列行（2.2.1 接入——原对账节拍下发消息要等 POST 返回，开始行迟到）。
+  void onShellStarted(
+      {required String shellId, required String command, required int created}) {
+    if (shellId.isEmpty) return;
+    if (_upsertShellStartNotice(
+      shellId: shellId,
+      label: command,
+      converted: false,
+      created: created,
+      authoritative: false,
+    )) {
+      _commitShellNoticeChange();
+    }
   }
 
   String? toolNameOf(String mid, String callId) {
@@ -2379,6 +2412,7 @@ class ConversationStore extends ChangeNotifier {
   static int _noticeRank(DisplayMessage m) {
     if (m.optimistic) return 2;
     if (m.type == 'synthetic' ||
+        m.type == 'shell' ||
         (m.metadata?['kind']?.toString() ?? '').startsWith('background-')) {
       return 1;
     }
