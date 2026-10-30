@@ -30,6 +30,14 @@ class ShellRunResult {
   const ShellRunResult(this.exit, this.output);
 }
 
+class ShellOutputPage {
+  final String output;
+  final int? cursor;
+  final int? size;
+  final bool truncated;
+  const ShellOutputPage(this.output, this.cursor, this.size, this.truncated);
+}
+
 class VcsBaseInfo {
   final String name;
   final String ref;
@@ -276,6 +284,64 @@ class OpencodeClient {
         .where((d) => d.isNotEmpty)
         .toSet();
   }
+
+  /// GET /api/shell?location[directory]= — 仅返回 running（design-shell-background C7）。
+  Future<List<ShellInfo>> listShells(String directory) async {
+    final r = await dio.get<dynamic>(
+      '/api/shell',
+      queryParameters: {'location[directory]': directory},
+    );
+    final data = _asMap(r.data)['data'];
+    if (data is! List) return const [];
+    return data
+        .whereType<Map>()
+        .map((e) => ShellInfo.fromJson(e.cast<String, dynamic>()))
+        .toList(growable: false);
+  }
+
+  /// GET /api/shell/{id}?location[directory]= — location-scoped（C7：缺 query
+  /// 静默回落默认 location，显式带是正确性前提）。
+  Future<ShellInfo> getShell(String id, String directory) async {
+    final r = await dio.get<dynamic>(
+      '/api/shell/$id',
+      queryParameters: {'location[directory]': directory},
+    );
+    return ShellInfo.fromJson(_shellInfoMap(r.data));
+  }
+
+  Future<ShellOutputPage> getShellOutput(
+    String id,
+    String directory, {
+    int? cursor,
+    int? limit,
+  }) async {
+    final params = <String, dynamic>{'location[directory]': directory};
+    if (cursor != null) params['cursor'] = cursor;
+    if (limit != null) params['limit'] = limit;
+    final r = await dio.get<dynamic>(
+      '/api/shell/$id/output',
+      queryParameters: params,
+    );
+    final data = _asMap(r.data)['data'];
+    final d = data is Map ? data : const {};
+    return ShellOutputPage(
+      (d['output'] ?? '').toString(),
+      _asInt(d['cursor']),
+      _asInt(d['size']),
+      d['truncated'] == true,
+    );
+  }
+
+  /// DELETE /api/shell/{id} — 杀进程 + 删记录 + 删输出文件（C7，破坏性）。
+  Future<void> deleteShell(String id, String directory) async {
+    await dio.delete<dynamic>(
+      '/api/shell/$id',
+      queryParameters: {'location[directory]': directory},
+    );
+  }
+
+  static int? _asInt(dynamic v) =>
+      v is int ? v : (v is num ? v.toInt() : (v is String ? int.tryParse(v) : null));
 
   /// POST /api/shell 执行一次性命令至终态（design-worktree-branch-sync 的
   /// 分支挂载/清理通道）。轮询 GET /api/shell/{id}（300ms）至非 running，
@@ -567,10 +633,12 @@ class OpencodeClient {
   Future<void> shell(
     String sessionId, {
     required String command,
+    Duration receiveTimeout = const Duration(minutes: 10),
   }) async {
     await dio.post(
       '/api/session/$sessionId/shell',
       data: {'command': command},
+      options: Options(receiveTimeout: receiveTimeout),
     );
   }
 

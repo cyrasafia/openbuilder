@@ -403,7 +403,11 @@ class ServerStore extends ChangeNotifier {
               : AgentPauseReason.choice,
           pendingCount: pendingCount);
     }
-    return switch (sessionActivity(sessionId).type) {
+    final activity = sessionActivity(sessionId);
+    if (activity.type == 'idle' && runningShellTasks(sessionId).isNotEmpty) {
+      return const AgentIndicatorState(AgentRunState.working);
+    }
+    return switch (activity.type) {
       'busy' => const AgentIndicatorState(AgentRunState.working),
       'retry' => const AgentIndicatorState(AgentRunState.retrying),
       'error' => const AgentIndicatorState(AgentRunState.failed),
@@ -1651,6 +1655,7 @@ class ServerStore extends ChangeNotifier {
     }
     await conv.reconcile();
     await _backfillPreview(sid, conv);
+    unawaited(reconcileShellTasks(sid));
   }
 
   Future<void> awaitReconcile(String sid) =>
@@ -2544,6 +2549,12 @@ class ServerStore extends ChangeNotifier {
             _livePreviewSids.add(sidB);
             _notifyPreviewChanged();
             _scheduleCacheSave();
+            if (itemB['type'] == 'synthetic') {
+              final sm = itemB['metadata'];
+              if (sm is Map && sm['source'] == 'shell') {
+                unawaited(reconcileShellTasks(sidB));
+              }
+            }
           }
         }
         return;
@@ -2580,6 +2591,9 @@ class ServerStore extends ChangeNotifier {
             text: ev.properties['text']?.toString() ?? '',
             description: ev.properties['description']?.toString(),
           ));
+          if (metaSyn is Map && metaSyn['source'] == 'shell') {
+            unawaited(reconcileShellTasks(sidSyn));
+          }
         }
         return;
       case 'session.compaction.started':
@@ -2773,7 +2787,15 @@ class ServerStore extends ChangeNotifier {
         conv.onToolProgress(
             mid, callId, meta is Map ? meta.cast<String, dynamic>() : null);
       case 'session.tool.success':
-        conv.onToolSuccess(mid, callId, _parseToolContent(ev.properties['content']));
+        final okMeta = ev.properties['metadata'];
+        conv.onToolSuccess(mid, callId, _parseToolContent(ev.properties['content']),
+            metadata:
+                okMeta is Map ? okMeta.cast<String, dynamic>() : null);
+        if (conv.onShellToolPartSettled(
+            mid, callId, ev.created ?? DateTime.now().millisecondsSinceEpoch) ||
+            conv.toolNameOf(mid, callId) == 'shell') {
+          unawaited(reconcileShellTasks(sid));
+        }
         final runningChildren = runningChildSessionsOf(sid);
         if (runningChildren.isNotEmpty) {
           conv.reconcileConvertedNotices(runningChildren);
@@ -3143,6 +3165,57 @@ class ServerStore extends ChangeNotifier {
           })
           .toList(growable: false);
 
+  final Map<String, List<ShellInfo>> _shellsByParent = {};
+  final Set<String> _deletedShellIds = {};
+  final Set<String> _shellReconcileInFlight = {};
+  bool _disposedFlag = false;
+
+  bool isDeletedShell(String shellId) => _deletedShellIds.contains(shellId);
+
+  List<ShellInfo> runningShellTasks(String parentId) =>
+      _shellsByParent[parentId] ?? const [];
+
+  Future<void> reconcileShellTasks(String sessionId) async {
+    final directory = sessionById(sessionId)?.directory ?? '';
+    if (directory.isEmpty) return;
+    if (!_shellReconcileInFlight.add(sessionId)) return;
+    try {
+      final shells = await client?.listShells(directory) ?? const <ShellInfo>[];
+      final conv = _conversations[sessionId];
+      final finished = conv?.finishedShellIds ?? const <String>{};
+      // 前台误入修复（B-1）：list 对 ②③ 与前台同形（仅 {sessionID}，
+      // 2.0.26 活体）——`!` 带 background:true（C12）；②③ 以已知集
+      // （bg-shell-* 通知收录 = part 判据/④ ShellMessage）交叉判别；
+      // 前台 shell 两判皆不命中（part 判据天然不收录前台）。
+      final knownBackground = conv?.backgroundShellIds ?? const <String>{};
+      _shellsByParent[sessionId] = [
+        for (final sh in shells)
+          if ((sh.sessionID ?? '') == sessionId &&
+              sh.status == 'running' &&
+              !finished.contains(sh.id) &&
+              (sh.background || knownBackground.contains(sh.id)))
+            sh,
+      ];
+      if (!_disposedFlag) notifyListeners();
+    } catch (_) {
+      // list 失败保持现状，下一拍对账再试。
+    } finally {
+      _shellReconcileInFlight.remove(sessionId);
+    }
+  }
+
+  Future<void> stopBackgroundShell(String shellId, String parentSessionId) async {
+    final directory = sessionById(parentSessionId)?.directory ?? '';
+    if (directory.isEmpty) return;
+    await client?.deleteShell(shellId, directory);
+    _deletedShellIds.add(shellId);
+    _shellsByParent[parentSessionId] = runningShellTasks(parentSessionId)
+        .where((e) => e.id != shellId)
+        .toList();
+    if (!_disposedFlag) notifyListeners();
+    unawaited(reconcileShellTasks(parentSessionId));
+  }
+
   String _cardHostSessionId(String sessionId) {
     var sid = sessionId;
     for (var depth = 0; depth < _kMaxChildSessions; depth++) {
@@ -3171,6 +3244,8 @@ class ServerStore extends ChangeNotifier {
     _contentWatermarks.remove(id);
     _livePreviewSids.remove(id);
     _staleSessionIds.remove(id);
+    _shellsByParent.remove(id);
+    _shellReconcileInFlight.remove(id);
     final cs = _cacheStore;
     if (cs != null) unawaited(cs.remove('conv/$id'));
     _scheduleCacheSave();
@@ -3187,6 +3262,8 @@ class ServerStore extends ChangeNotifier {
       conv.dispose();
     }
     _conversations.clear();
+    _shellsByParent.clear();
+    _deletedShellIds.clear();
     _previewNotifyTimer?.cancel();
     _previewNotifyTimer = null;
     _lastPreviewNotifyAt = null;
@@ -3231,6 +3308,9 @@ class ServerStore extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposedFlag = true;
+    _shellsByParent.clear();
+    _deletedShellIds.clear();
     _reconcileTimer?.cancel();
     _reconcileTimer = null;
     _stopHealthProbe();

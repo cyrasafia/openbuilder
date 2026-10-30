@@ -17,6 +17,7 @@ import 'package:flutter/rendering.dart'
         ScrollCacheExtent,
         SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
+import 'package:dio/dio.dart' show DioException, DioExceptionType;
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -31,6 +32,7 @@ import '../../core/platform/keepalive_controller.dart';
 import '../../core/nav/app_route_observer.dart';
 import '../../core/logging/perf_probe.dart';
 import '../../core/session/conversation_store.dart';
+import '../../data/api/opencode_client.dart';
 import '../../domain/models.dart';
 import '../../core/session/file_browsing_store.dart';
 import '../../ui/l10n_ext.dart';
@@ -866,6 +868,17 @@ class _ConversationScreenState extends State<ConversationScreen>
     return 'subagent';
   }
 
+  String _shellSyntheticLabel(DisplayMessage m) {
+    final desc = m.description;
+    if (desc != null && desc.trim().isNotEmpty) return desc.trim();
+    final fromText =
+        RegExp(r'command="([^"]*)"').firstMatch(m.text ?? '')?.group(1);
+    if (fromText != null && fromText.trim().isNotEmpty) return fromText.trim();
+    final id = m.metadata?['shellID']?.toString();
+    if (id != null && id.isNotEmpty) return id;
+    return '';
+  }
+
   /// 统一系统提示样式（design-subagent-background §D5）：低强调行式，承载
   /// 后台任务启停 / 切换模型 / 切换 Agent / 系统与技能通知。
   Widget _noticeMessage(DisplayMessage m) {
@@ -876,6 +889,33 @@ class _ConversationScreenState extends State<ConversationScreen>
     final String label;
     VoidCallback? onTap;
     switch (m.type) {
+      case 'synthetic' when m.metadata?['source'] == 'shell':
+        final shellId = m.metadata?['shellID']?.toString();
+        final name = _shellSyntheticLabel(m);
+        final timedOut = m.metadata?['timeout'] == true;
+        switch (m.metadata?['state']?.toString()) {
+          case 'completed' when timedOut:
+            icon = Icons.warning_amber_outlined;
+            label = loc.bgCmdTimedOut(name);
+          case 'completed':
+            icon = Icons.check_circle_outline;
+            label = loc.bgCmdCompleted(name);
+          case 'failed':
+          case 'error':
+            icon = Icons.error_outline;
+            color = const Color(0xFFF85149);
+            label = loc.bgCmdFailed(name);
+          case 'cancelled':
+          case 'interrupted':
+            icon = Icons.stop_circle_outlined;
+            label = loc.bgCmdCancelled(name);
+          default:
+            icon = Icons.circle_outlined;
+            label = loc.bgCmdCompleted(name);
+        }
+        if (shellId != null && shellId.isNotEmpty) {
+          onTap = () => _showShellOutput(shellId, name);
+        }
       case 'synthetic' when m.metadata?['source'] == 'subagent':
         final childId = m.metadata?['childID']?.toString();
         final name = _subagentSyntheticLabel(m);
@@ -901,18 +941,28 @@ class _ConversationScreenState extends State<ConversationScreen>
         }
       case 'system' when m.metadata?['kind'] == 'background-started':
         final childId = m.metadata?['childID']?.toString();
+        final shellId = m.metadata?['shellID']?.toString();
         final name = (m.metadata?['label'] ?? m.description ?? '').toString();
         icon = Icons.rocket_launch_outlined;
-        label = loc.bgTaskStarted(name);
-        if (childId != null && childId.isNotEmpty) {
+        label = shellId != null && shellId.isNotEmpty
+            ? loc.bgCmdStarted(name)
+            : loc.bgTaskStarted(name);
+        if (shellId != null && shellId.isNotEmpty) {
+          onTap = () => _showShellOutput(shellId, name);
+        } else if (childId != null && childId.isNotEmpty) {
           onTap = () => _showTaskDetail(childId, name);
         }
       case 'system' when m.metadata?['kind'] == 'background-converted':
         final childId = m.metadata?['childID']?.toString();
+        final shellId = m.metadata?['shellID']?.toString();
         final name = (m.metadata?['label'] ?? m.description ?? '').toString();
         icon = Icons.north_east;
-        label = loc.bgTaskConverted(name);
-        if (childId != null && childId.isNotEmpty) {
+        label = shellId != null && shellId.isNotEmpty
+            ? loc.bgCmdConverted(name)
+            : loc.bgTaskConverted(name);
+        if (shellId != null && shellId.isNotEmpty) {
+          onTap = () => _showShellOutput(shellId, name);
+        } else if (childId != null && childId.isNotEmpty) {
           onTap = () => _showTaskDetail(childId, name);
         }
       case 'model-switched':
@@ -922,8 +972,24 @@ class _ConversationScreenState extends State<ConversationScreen>
         icon = Icons.smart_toy_outlined;
         label = '${m.previousLabel ?? ''} → ${m.currentLabel ?? ''}';
       case 'shell':
-        icon = Icons.terminal;
-        label = '\$ ${m.shellCommand ?? ''}';
+        if (m.shellStatus == 'running') {
+          return const SizedBox.shrink();
+        }
+        final shellId = m.shellID ?? '';
+        final name = m.shellCommand ?? '';
+        final killed = m.shellStatus == 'killed';
+        final failed = killed || (m.shellExit != null && m.shellExit != 0);
+        if (failed) {
+          icon = Icons.error_outline;
+          color = const Color(0xFFF85149);
+          label = loc.bgCmdFailed(name);
+        } else {
+          icon = Icons.check_circle_outline;
+          label = loc.bgCmdCompleted(name);
+        }
+        if (shellId.isNotEmpty) {
+          onTap = () => _showShellOutput(shellId, name);
+        }
       case 'skill':
         icon = Icons.bolt_outlined;
         label = m.description ?? m.text ?? '';
@@ -1491,7 +1557,7 @@ class _ConversationScreenState extends State<ConversationScreen>
                     permissions: conv.permissions,
                     questions: conv.forms,
                     store: conv,
-                    onViewTask: _showTaskDetail,
+                    onViewTask: _onViewBackgroundTask,
                     onStopTask: _stopBackgroundTask,
                   ),
                 ),
@@ -1680,11 +1746,43 @@ class _ConversationScreenState extends State<ConversationScreen>
         if (command.isNotEmpty) {
           conv.addOptimisticUserMessage(displayText);
           serverStore.reflectPreviewFrom(widget.sessionId);
-          await client.shell(
-            widget.sessionId,
-            command: command,
-          );
-          conv.setStatus('busy');
+          conv.setDraft('', shell: false);
+          conv.persistDraft();
+          // POST 同步阻塞至命令完成（C11）——发送后延迟拉 list：shell 创建
+          // 毫秒级即在列（C12），运行期任务卡/停止入口即时可见（NB-1 修复：
+          // 发送前拉必然 miss，POST 尚未达服务端）。
+          unawaited(Future<void>.delayed(const Duration(milliseconds: 800))
+              .then((_) {
+            if (mounted) {
+              unawaited(serverStore.reconcileShellTasks(widget.sessionId));
+            }
+          }));
+          unawaited(client
+              .shell(widget.sessionId, command: command)
+              .then((_) {
+            if (mounted) {
+              unawaited(serverStore.reconcileConversation(widget.sessionId));
+            }
+          }).catchError((Object e) {
+            // 同步端点超时：命令仍在服务端跑（C11，>10min 场景）——不回滚
+            // 乐观消息（假「发送失败」），消息 + list 双对账收敛完成行/任务卡。
+            // connectionTimeout 不在此列：请求未发出、命令必然没跑——走回滚。
+            if (e is DioException &&
+                e.type == DioExceptionType.receiveTimeout) {
+              if (mounted) {
+                unawaited(
+                    serverStore.reconcileConversation(widget.sessionId));
+              }
+              return;
+            }
+            _rollbackFailedSend(
+              e,
+              fieldText: shellModeWas ? text : displayText,
+              shellMode: shellModeWas,
+              pending: pendingSnapshot,
+            );
+          }));
+          return;
         }
       } else {
         var isCommand = false;
@@ -1811,19 +1909,74 @@ class _ConversationScreenState extends State<ConversationScreen>
     _scheduleAutoScroll();
   }
 
-  Future<void> _stopBackgroundTask(String childId) async {
-    final client = serverStore.client;
-    if (client == null) return;
-    try {
-      await client.interrupt(childId);
-    } catch (e) {
-      if (!mounted) return;
+  void _rollbackFailedSend(
+    Object e, {
+    required String fieldText,
+    required bool shellMode,
+    required List<_PendingItem> pending,
+  }) {
+    final conv = serverStore.conversationForRead(widget.sessionId);
+    if (conv == null) return;
+    final hadOptimistic = conv.messages.any((m) => m.optimistic);
+    conv.removeOptimisticMessages();
+    serverStore.reflectPreviewFrom(widget.sessionId);
+    if (!hadOptimistic || !mounted) return;
+    _ctl.text = fieldText;
+    setState(() {
+      _shellMode = shellMode;
+      _cmdMode = false;
+      _pending
+        ..clear()
+        ..addAll(pending);
+    });
+    conv.setDraft(fieldText, shell: shellMode);
+    conv.persistDraft();
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text(l(context).abortFailed(friendlyMessage(l(context), e))),
+          content: Text(l(context).sendFailed(friendlyMessage(l(context), e))),
         ),
       );
+    }
+  }
+
+  void _onViewBackgroundTask(BackgroundTaskItem item, String label) {
+    switch (item) {
+      case SessionBackgroundTask():
+        _showTaskDetail(item.session.id, label);
+      case ShellBackgroundTask():
+        _showShellOutput(item.shell.id, label);
+    }
+  }
+
+  Future<void> _stopBackgroundTask(BackgroundTaskItem item) async {
+    switch (item) {
+      case SessionBackgroundTask(:final session):
+        final client = serverStore.client;
+        if (client == null) return;
+        try {
+          await client.interrupt(session.id);
+        } catch (e) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  l(context).abortFailed(friendlyMessage(l(context), e))),
+            ),
+          );
+        }
+      case ShellBackgroundTask(:final shell, :final parentSessionId):
+        try {
+          await serverStore.stopBackgroundShell(shell.id, parentSessionId);
+        } catch (e) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  l(context).abortFailed(friendlyMessage(l(context), e))),
+            ),
+          );
+        }
     }
   }
 
@@ -1854,6 +2007,22 @@ class _ConversationScreenState extends State<ConversationScreen>
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showShellOutput(String shellId, String label) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.sizeOf(ctx).height * 0.7,
+        child: _ShellOutputSheet(
+          shellId: shellId,
+          command: label,
+          parentSessionId: widget.sessionId,
         ),
       ),
     );
@@ -2225,8 +2394,8 @@ class _FooterPanel extends StatefulWidget {
   final List<Permission> permissions;
   final List<FormInfo> questions;
   final ConversationStore store;
-  final void Function(String childId, String label) onViewTask;
-  final Future<void> Function(String childId) onStopTask;
+  final void Function(BackgroundTaskItem item, String label) onViewTask;
+  final Future<void> Function(BackgroundTaskItem item) onStopTask;
   const _FooterPanel({
     required this.parentSessionId,
     required this.permissions,
@@ -2249,11 +2418,16 @@ class _FooterPanelState extends State<_FooterPanel> {
         final totalPending =
             widget.permissions.length + widget.questions.length;
         final children = <Widget>[];
-        final tasks = serverStore
-            .runningChildSessionsOf(widget.parentSessionId)
-            .where((c) =>
-                !widget.store.isActiveClaimedChild(c.id, childTitle: c.title))
-            .toList(growable: false);
+        final tasks = <BackgroundTaskItem>[
+          for (final c
+              in serverStore.runningChildSessionsOf(widget.parentSessionId))
+            if (!widget.store
+                .isActiveClaimedChild(c.id, childTitle: c.title))
+              SessionBackgroundTask(c),
+          for (final sh
+              in serverStore.runningShellTasks(widget.parentSessionId))
+            ShellBackgroundTask(sh, widget.parentSessionId),
+        ]..sort((a, b) => a.startedAt.compareTo(b.startedAt));
         if (tasks.isNotEmpty) {
           children.add(_BackgroundTaskCard(
             tasks: tasks,
@@ -3113,9 +3287,9 @@ class _SubagentPanelState extends State<_SubagentPanel>
 /// 常驻后台任务卡（design-subagent-background §D1）：与授权/问题卡同款折叠卡，
 /// 默认收起；展开体逐项整行点击查看、行尾停止。
 class _BackgroundTaskCard extends StatefulWidget {
-  final List<SessionModel> tasks;
-  final void Function(String childId, String label) onView;
-  final Future<void> Function(String childId) onStop;
+  final List<BackgroundTaskItem> tasks;
+  final void Function(BackgroundTaskItem item, String label) onView;
+  final Future<void> Function(BackgroundTaskItem item) onStop;
   const _BackgroundTaskCard({
     required this.tasks,
     required this.onView,
@@ -3173,6 +3347,27 @@ class _BackgroundTaskCardState extends State<_BackgroundTaskCard> {
     return '${sec}s';
   }
 
+  static String _idOf(BackgroundTaskItem t) => switch (t) {
+        SessionBackgroundTask(:final session) => session.id,
+        ShellBackgroundTask(:final shell) => shell.id,
+      };
+
+  static String _labelOf(BackgroundTaskItem t) => switch (t) {
+        SessionBackgroundTask(:final session) =>
+          session.title.isNotEmpty ? session.title : session.id,
+        ShellBackgroundTask(:final shell) =>
+          shell.command.isNotEmpty ? shell.command : shell.id,
+      };
+
+  String _subtitleOf(BackgroundTaskItem t) => switch (t) {
+        SessionBackgroundTask(:final session) => [
+              if ((session.agent ?? '').isNotEmpty) session.agent!,
+              _elapsed(session.created),
+            ].join(' · '),
+        ShellBackgroundTask(:final shell) =>
+          shell.started != null ? _elapsed(shell.started!) : '',
+      };
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -3226,8 +3421,7 @@ class _BackgroundTaskCardState extends State<_BackgroundTaskCard> {
                   for (final t in widget.tasks)
                     InkWell(
                       borderRadius: BorderRadius.circular(8),
-                      onTap: () => widget.onView(
-                          t.id, t.title.isNotEmpty ? t.title : t.id),
+                      onTap: () => widget.onView(t, _labelOf(t)),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 10, vertical: 6),
@@ -3238,17 +3432,14 @@ class _BackgroundTaskCardState extends State<_BackgroundTaskCard> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    t.title.isNotEmpty ? t.title : t.id,
+                                    _labelOf(t),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(fontSize: 13),
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    [
-                                      if ((t.agent ?? '').isNotEmpty) t.agent!,
-                                      _elapsed(t.created),
-                                    ].join(' · '),
+                                    _subtitleOf(t),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
@@ -3262,17 +3453,19 @@ class _BackgroundTaskCardState extends State<_BackgroundTaskCard> {
                             IconButton(
                               icon: const Icon(Icons.stop_circle_outlined,
                                   size: 18),
-                              tooltip: loc.bgTaskStop,
-                              onPressed: _stopping.contains(t.id)
+                              tooltip: t is ShellBackgroundTask
+                                  ? loc.bgCmdStopDiscardWarning
+                                  : loc.bgTaskStop,
+                              onPressed: _stopping.contains(_idOf(t))
                                   ? null
                                   : () async {
-                                      setState(() => _stopping.add(t.id));
+                                      setState(() => _stopping.add(_idOf(t)));
                                       try {
-                                        await widget.onStop(t.id);
+                                        await widget.onStop(t);
                                       } finally {
                                         if (mounted) {
                                           setState(
-                                              () => _stopping.remove(t.id));
+                                              () => _stopping.remove(_idOf(t)));
                                         }
                                       }
                                     },
@@ -3288,6 +3481,386 @@ class _BackgroundTaskCardState extends State<_BackgroundTaskCard> {
       ],
     );
   }
+}
+
+class _ShellOutputSheet extends StatefulWidget {
+  final String shellId;
+  final String command;
+  final String parentSessionId;
+  const _ShellOutputSheet({
+    required this.shellId,
+    required this.command,
+    required this.parentSessionId,
+  });
+
+  @override
+  State<_ShellOutputSheet> createState() => _ShellOutputSheetState();
+}
+
+class _ShellOutputSheetState extends State<_ShellOutputSheet> {
+  static const _kMaxBytes = 1024 * 1024;
+  String _text = '';
+  int _omitted = 0;
+  int _cursor = 0;
+  String _phase = 'loading';
+  int? _exit;
+  String? _signal;
+  bool _timedOut = false;
+  Timer? _timer;
+  final ScrollController _scroll = ScrollController();
+  bool _follow = true;
+  bool _fetching = false;
+  int _gen = 0;
+  void Function()? _convDetach;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+    final conv = serverStore.conversationForRead(widget.parentSessionId);
+    if (conv != null && !conv.isDisposed) {
+      void listener() => _onConvChanged(conv);
+      conv.addListener(listener);
+      _convDetach = () => conv.removeListener(listener);
+    }
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _convDetach?.call();
+    _timer?.cancel();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    final pos = _scroll.position;
+    _follow = pos.pixels >= pos.maxScrollExtent - 200;
+  }
+
+  void _onConvChanged(ConversationStore conv) {
+    if (_phase != 'running' && _phase != 'loading') return;
+    if (!conv.finishedShellIds.contains(widget.shellId)) return;
+    for (final m in conv.messages) {
+      if (m.type == 'synthetic' &&
+          m.metadata?['source'] == 'shell' &&
+          m.metadata?['shellID']?.toString() == widget.shellId) {
+        _finishFromMeta(m.metadata!);
+        return;
+      }
+      if (m.type == 'shell' &&
+          m.shellID == widget.shellId &&
+          m.shellStatus != 'running') {
+        _finish(exit: m.shellExit);
+        return;
+      }
+    }
+  }
+
+  Future<void> _load() async {
+    final client = serverStore.client;
+    final dir = serverStore.sessionById(widget.parentSessionId)?.directory ?? '';
+    if (client == null || dir.isEmpty) {
+      if (mounted) setState(() => _phase = 'gone');
+      return;
+    }
+    final gen = ++_gen;
+    try {
+      final first = await client.getShellOutput(widget.shellId, dir);
+      if (!mounted || gen != _gen) return;
+      final size = first.size ?? first.output.length;
+      if (size > _kMaxBytes) {
+        final tail = await client.getShellOutput(widget.shellId, dir,
+            cursor: size - _kMaxBytes, limit: _kMaxBytes);
+        if (!mounted || gen != _gen) return;
+        _applyOutput(tail, headOmitted: size - _kMaxBytes);
+      } else {
+        _applyOutput(first, headOmitted: 0);
+        var cursor = first.cursor ?? first.output.length;
+        while (true) {
+          final page =
+              await client.getShellOutput(widget.shellId, dir, cursor: cursor);
+          if (!mounted || gen != _gen) return;
+          final next = page.cursor ?? cursor;
+          if (page.output.isEmpty || next <= cursor) break;
+          _applyOutput(page, headOmitted: 0);
+          cursor = next;
+        }
+      }
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 404 || code == 400) {
+        if (mounted && gen == _gen) _enterEmpty();
+        return;
+      }
+      if (mounted) setState(() {});
+      return;
+    } catch (_) {
+      if (mounted) setState(() {});
+      return;
+    }
+    await _probeInfo();
+  }
+
+  void _applyOutput(ShellOutputPage page, {required int headOmitted}) {
+    final output = page.output;
+    var text = _text + output;
+    var omitted = _omitted + headOmitted;
+    if (text.length > _kMaxBytes) {
+      omitted += text.length - _kMaxBytes;
+      text = text.substring(text.length - _kMaxBytes);
+    }
+    final cursor = page.cursor ?? _cursor + output.length;
+    setState(() {
+      _text = text;
+      _omitted = omitted;
+      _cursor = cursor;
+    });
+    _scheduleJump();
+  }
+
+  Future<void> _probeInfo() async {
+    final client = serverStore.client;
+    final dir = serverStore.sessionById(widget.parentSessionId)?.directory ?? '';
+    if (client == null || dir.isEmpty) return;
+    final gen = _gen;
+    try {
+      final info = await client.getShell(widget.shellId, dir);
+      if (!mounted || gen != _gen) return;
+      if (info.status != 'running') {
+        _finish(exit: info.exit, signal: info.signal);
+      } else {
+        if (_phase == 'running' || _phase == 'loading') {
+          setState(() => _phase = 'running');
+        }
+        _startTimer();
+      }
+    } catch (_) {
+      if (mounted && gen == _gen && (_phase == 'running' || _phase == 'loading')) {
+        setState(() => _phase = 'running');
+      }
+      _startTimer();
+    }
+  }
+
+  void _startTimer() {
+    if (_timer != null) return;
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _tick());
+  }
+
+  Future<void> _tick() async {
+    if (_fetching || !mounted || _phase != 'running') return;
+    _fetching = true;
+    try {
+      final client = serverStore.client;
+      final dir =
+          serverStore.sessionById(widget.parentSessionId)?.directory ?? '';
+      if (client == null || dir.isEmpty) return;
+      try {
+        final page =
+            await client.getShellOutput(widget.shellId, dir, cursor: _cursor);
+        if (!mounted) return;
+        if (page.output.isNotEmpty) _applyOutput(page, headOmitted: 0);
+      } on DioException catch (e) {
+        final code = e.response?.statusCode;
+        if (mounted && (code == 404 || code == 400)) {
+          _timer?.cancel();
+          _timer = null;
+          _enterEmpty();
+          return;
+        }
+      } catch (_) {}
+      try {
+        final info = await client.getShell(widget.shellId, dir);
+        if (!mounted) return;
+        if (info.status != 'running') {
+          _finish(exit: info.exit, signal: info.signal);
+        }
+      } catch (_) {}
+    } finally {
+      _fetching = false;
+    }
+  }
+
+  void _finishFromMeta(Map<String, dynamic> metadata) {
+    _timer?.cancel();
+    _timer = null;
+    setState(() {
+      _phase = 'done';
+      _exit = metadata['exit'] is num ? (metadata['exit'] as num).toInt() : null;
+      _signal = metadata['signal']?.toString();
+      _timedOut = metadata['timeout'] == true;
+    });
+    unawaited(_pullTailOnce());
+  }
+
+  void _finish({int? exit, String? signal}) {
+    _timer?.cancel();
+    _timer = null;
+    setState(() {
+      _phase = 'done';
+      _exit = exit;
+      _signal = signal;
+    });
+    unawaited(_pullTailOnce());
+  }
+
+  Future<void> _pullTailOnce() async {
+    final client = serverStore.client;
+    final dir = serverStore.sessionById(widget.parentSessionId)?.directory ?? '';
+    if (client == null || dir.isEmpty) return;
+    try {
+      final page =
+          await client.getShellOutput(widget.shellId, dir, cursor: _cursor);
+      if (mounted && page.output.isNotEmpty) {
+        _applyOutput(page, headOmitted: 0);
+      }
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (mounted && (code == 404 || code == 400)) _enterEmpty();
+    } catch (_) {}
+  }
+
+  void _enterEmpty() {
+    if (serverStore.isDeletedShell(widget.shellId)) {
+      setState(() => _phase = 'discarded');
+      return;
+    }
+    final conv = serverStore.conversationForRead(widget.parentSessionId);
+    for (final m in conv?.messages ?? const <DisplayMessage>[]) {
+      if (m.type == 'shell' && m.shellID == widget.shellId) {
+        if (m.shellStatus == 'killed') {
+          setState(() => _phase = 'discarded');
+        } else {
+          setState(() {
+            _text = m.shellOutput ?? '';
+            _omitted = 0;
+            _exit = m.shellExit;
+            _phase = 'done';
+          });
+        }
+        return;
+      }
+    }
+    setState(() => _phase = 'gone');
+  }
+
+  void _scheduleJump() {
+    if (!_follow) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final pos = _scroll.position;
+      if (pos.maxScrollExtent > 0) {
+        _scroll.jumpTo(pos.maxScrollExtent);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final loc = l(context);
+    if (_phase == 'loading') {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_phase == 'discarded' || _phase == 'gone') {
+      return Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Text(
+            _phase == 'discarded'
+                ? loc.bgCmdOutputDiscarded
+                : loc.bgCmdOutputGone,
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12.5, color: scheme.outline),
+          ),
+        ),
+      );
+    }
+    final terminal = _phase == 'running'
+        ? ''
+        : _signal != null && _signal!.isNotEmpty
+            ? loc.bgCmdKilledBy(_signal!)
+            : _timedOut
+                ? loc.bgCmdTimedOutState
+                : _exit != null
+                    ? loc.bgCmdExitCode(_exit!)
+                    : '';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Text(
+            widget.command,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 12,
+              fontFamily: 'monospace',
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Row(
+            children: [
+              if (_phase == 'running') ...[
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 1.6),
+                ),
+                const SizedBox(width: 6),
+              ] else ...[
+                Icon(
+                  _failed ? Icons.error_outline : Icons.check_circle_outline,
+                  size: 14,
+                  color: _failed ? const Color(0xFFF85149) : scheme.primary,
+                ),
+                const SizedBox(width: 6),
+              ],
+              Text(
+                terminal,
+                style: TextStyle(fontSize: 11.5, color: scheme.outline),
+              ),
+            ],
+          ),
+        ),
+        if (_omitted > 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Text(
+              loc.bgCmdOutputTailOnly(_omitted),
+              style: TextStyle(fontSize: 11, color: scheme.outline),
+            ),
+          ),
+        Expanded(
+          child: SingleChildScrollView(
+            controller: _scroll,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+              child: SelectableText(
+                _text,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  height: 1.45,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  bool get _failed =>
+      _phase == 'done' &&
+      ((_exit != null && _exit != 0) ||
+          (_signal != null && _signal!.isNotEmpty));
 }
 
 class _SubagentBody extends StatelessWidget {

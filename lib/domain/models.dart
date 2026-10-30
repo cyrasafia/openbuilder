@@ -337,6 +337,65 @@ class SessionModel {
   };
 }
 
+class ShellInfo {
+  final String id;
+  final String status;
+  final String command;
+  final int? exit;
+  final String? signal;
+  final int? started;
+  final int? completed;
+  final String? sessionID;
+  final bool background;
+  const ShellInfo({
+    required this.id,
+    required this.status,
+    required this.command,
+    this.exit,
+    this.signal,
+    this.started,
+    this.completed,
+    this.sessionID,
+    this.background = false,
+  });
+
+  factory ShellInfo.fromJson(Map<String, dynamic> j) {
+    final time = (j['time'] as Map?) ?? const {};
+    final metadata = (j['metadata'] as Map?) ?? const {};
+    return ShellInfo(
+      id: (j['id'] ?? '').toString(),
+      status: (j['status'] ?? 'running').toString(),
+      command: (j['command'] ?? '').toString(),
+      exit: _ni(j['exit']),
+      signal: j['signal']?.toString(),
+      started: _ni(time['started']),
+      completed: _ni(time['completed']),
+      sessionID: metadata['sessionID']?.toString(),
+      background: metadata['background'] == true,
+    );
+  }
+}
+
+sealed class BackgroundTaskItem {
+  const BackgroundTaskItem();
+  int get startedAt;
+}
+
+class SessionBackgroundTask extends BackgroundTaskItem {
+  final SessionModel session;
+  const SessionBackgroundTask(this.session);
+  @override
+  int get startedAt => session.created;
+}
+
+class ShellBackgroundTask extends BackgroundTaskItem {
+  final ShellInfo shell;
+  final String parentSessionId;
+  const ShellBackgroundTask(this.shell, this.parentSessionId);
+  @override
+  int get startedAt => shell.started ?? 0;
+}
+
 class SessionStatusValue {
   final String type;
   final String? message;

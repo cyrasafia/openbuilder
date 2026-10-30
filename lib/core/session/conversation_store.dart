@@ -154,6 +154,7 @@ class DisplayMessage {
   String? shellStatus;
   String? shellOutput;
   int? shellExit;
+  String? shellID;
   String? outcome;
   String? compactionStatus;
   String? previousLabel;
@@ -178,6 +179,7 @@ class DisplayMessage {
     this.shellStatus,
     this.shellOutput,
     this.shellExit,
+    this.shellID,
     this.outcome,
     this.compactionStatus,
     this.previousLabel,
@@ -261,6 +263,12 @@ class ConversationStore extends ChangeNotifier {
   Timer? _loadRetryTimer;
   int _loadRetryAttempt = 0;
   bool _disposed = false;
+  bool get isDisposed => _disposed;
+
+  @visibleForTesting
+  Map<String, dynamic> messageToJsonForTesting(DisplayMessage m) =>
+      _messageToJson(m);
+
   Future<void> Function()? _backfillCallback;
 
   String _draftText = '';
@@ -457,6 +465,55 @@ class ConversationStore extends ChangeNotifier {
     return _hasStartNoticeCache;
   }
 
+  int _finishedShellIdsVersion = -1;
+  Set<String> _finishedShellIdsCache = const {};
+
+  /// 已终态后台命令的 shellID 集（任务卡排除判据）：synthetic
+  /// `source:shell`（agent 路径完成回执）+ 终态 `type:shell` 条目（④）。
+  Set<String> get finishedShellIds {
+    if (_finishedShellIdsVersion == _messagesVersion) {
+      return _finishedShellIdsCache;
+    }
+    final out = <String>{};
+    for (final m in _messages) {
+      if (m.type == 'synthetic' && m.metadata?['source'] == 'shell') {
+        final id = m.metadata?['shellID']?.toString() ?? '';
+        if (id.isNotEmpty) out.add(id);
+      } else if (m.type == 'shell' && m.shellStatus != 'running') {
+        final id = m.shellID ?? '';
+        if (id.isNotEmpty) out.add(id);
+      }
+    }
+    _finishedShellIdsCache = out;
+    _finishedShellIdsVersion = _messagesVersion;
+    return out;
+  }
+
+  int _backgroundShellIdsVersion = -1;
+  Set<String> _backgroundShellIdsCache = const {};
+
+  /// 已知**后台**派发的 shellID 集（B-1 前台误入修复）：list 端点对 ②③
+  /// 与前台同形（metadata 仅 `{sessionID}`，2.0.26 活体）——服务端无判别
+  /// 面，客户端以通知收录（part 判据/④ ShellMessage → `bg-shell-*` 通知）
+  /// 交叉判据过滤；前台 shell 永不进集（part running 态 metadata `{}`、
+  /// 完成态无 shellID，判据不命中）。
+  Set<String> get backgroundShellIds {
+    if (_backgroundShellIdsVersion == _messagesVersion) {
+      return _backgroundShellIdsCache;
+    }
+    final out = <String>{};
+    for (final m in _messages) {
+      final kind = m.metadata?['kind']?.toString() ?? '';
+      if ((kind == 'background-started' || kind == 'background-converted')) {
+        final id = m.metadata?['shellID']?.toString() ?? '';
+        if (id.isNotEmpty) out.add(id);
+      }
+    }
+    _backgroundShellIdsCache = out;
+    _backgroundShellIdsVersion = _messagesVersion;
+    return out;
+  }
+
   void _reconcileStartNotices() {
     if (!_hasStartNotice) return;
     final remove = <String>[];
@@ -558,6 +615,132 @@ class ConversationStore extends ChangeNotifier {
     _reconcileStartNotices();
     rebuildStartNotices(children);
     reconcileConvertedNotices(runningChildren);
+  }
+
+  bool onShellToolPartSettled(String mid, String callId, int eventTime) {
+    final dispatch = _shellDispatchOfPart(mid, callId);
+    if (dispatch == null) return false;
+    if (_upsertShellStartNotice(
+      shellId: dispatch.$1,
+      label: dispatch.$2,
+      converted: dispatch.$3,
+      created: eventTime,
+      authoritative: false,
+    )) {
+      _commitShellNoticeChange();
+    }
+    return true;
+  }
+
+  String? toolNameOf(String mid, String callId) {
+    final msg = _findMessage(mid);
+    if (msg == null) return null;
+    final idx =
+        msg.parts.indexWhere((x) => x.id == _toolPartId(mid, callId));
+    if (idx == -1) return null;
+    return msg.parts[idx].tool;
+  }
+
+  (String, String, bool)? _shellDispatchOfPart(String mid, String callId) {
+    final msg = _findMessage(mid);
+    if (msg == null) return null;
+    final idx =
+        msg.parts.indexWhere((x) => x.id == _toolPartId(mid, callId));
+    if (idx == -1) return null;
+    return _shellDispatchFromPart(msg.parts[idx]);
+  }
+
+  (String, String, bool)? _shellDispatchFromPart(DisplayPart p) {
+    if (p.type != 'tool' || p.tool != 'shell') return null;
+    if (p.toolStatus != 'completed') return null;
+    final md = p.toolMetadata;
+    final shellId = md?['shellID']?.toString() ?? '';
+    if (shellId.isEmpty || md?['status']?.toString() != 'running') return null;
+    final input = p.toolInput;
+    if (input == null) return null;
+    final command = input['command']?.toString() ?? '';
+    return (shellId, command, input['background'] != true);
+  }
+
+  bool _upsertShellStartNotice({
+    required String shellId,
+    required String label,
+    required bool converted,
+    required int created,
+    required bool authoritative,
+  }) {
+    final id = converted
+        ? 'bg-shell-convert:$shellId'
+        : 'bg-shell-start:$shellId';
+    final text = label.isNotEmpty ? label : shellId;
+    final existing = _findMessage(id);
+    if (existing != null) {
+      if (!authoritative) return false;
+      if (existing.created == created && existing.description == text) {
+        return false;
+      }
+      existing
+        ..created = created
+        ..description = text
+        ..metadata = {...?existing.metadata, 'label': text};
+    } else {
+      var c = created;
+      if (!authoritative) {
+        final lastCreated =
+            _messages.isEmpty ? 0 : _messages.last.created;
+        if (c <= lastCreated) c = lastCreated + 1;
+      }
+      _upsertEntries([
+        SystemMessage(
+          id: id,
+          raw: {'id': id, 'type': 'system'},
+          metadata: {
+            'kind': converted ? 'background-converted' : 'background-started',
+            'shellID': shellId,
+            'label': text,
+          },
+          created: c,
+          text: '',
+          description: text,
+        ),
+      ]);
+    }
+    _sort(const <String>{});
+    return true;
+  }
+
+  void _commitShellNoticeChange() {
+    unawaited(_saveCache());
+    if (!_disposed) notifyListeners();
+  }
+
+  void rebuildShellNotices() {
+    if (_messages.isEmpty) return;
+    var changed = false;
+    for (final m in List.of(_messages)) {
+      if (m.type == 'assistant') {
+        for (final p in m.parts) {
+          final d = _shellDispatchFromPart(p);
+          if (d == null) continue;
+          changed |= _upsertShellStartNotice(
+            shellId: d.$1,
+            label: d.$2,
+            converted: d.$3,
+            created: m.created,
+            authoritative: true,
+          );
+        }
+      } else if (m.type == 'shell' && (m.shellID ?? '').isNotEmpty) {
+        changed |= _upsertShellStartNotice(
+          shellId: m.shellID!,
+          label: m.shellCommand ?? '',
+          converted: false,
+          created: m.created,
+          authoritative: true,
+        );
+      }
+    }
+    if (changed) _commitShellNoticeChange();
   }
 
   bool get hasMore => _segments.firstOrNull?.cursor != null;
@@ -839,7 +1022,6 @@ class ConversationStore extends ChangeNotifier {
     reconcileBackgroundNotices(
         children: src.children, runningChildren: src.runningChildren);
   }
-
   Future<void> reconcile() async {
     if (_reconciling) return;
     _reconciling = true;
@@ -893,6 +1075,7 @@ class ConversationStore extends ChangeNotifier {
       onContentSynced?.call(sessionId, target, fromReconcile: true);
       unawaited(_saveCache());
       _reconcileBackgroundNoticesFromSource();
+      rebuildShellNotices();
     } catch (e) {
       AppLogger.I.e(_tag, 'reconcile failed $sessionId: $e');
       error = e;
@@ -972,6 +1155,7 @@ class ConversationStore extends ChangeNotifier {
       _sort(const <String>{});
       unawaited(_saveCache());
       _reconcileBackgroundNoticesFromSource();
+      rebuildShellNotices();
       return true;
     } catch (e) {
       AppLogger.I.e(_tag, 'loadOnePage failed $sessionId: $e');
@@ -1121,7 +1305,12 @@ class ConversationStore extends ChangeNotifier {
         if (sp.toolOutput != null) merged.toolOutput = sp.toolOutput;
         if (sp.toolError != null) merged.toolError = sp.toolError;
         if (sp.toolInput != null) merged.toolInput = sp.toolInput;
-        if (sp.toolMetadata != null) merged.toolMetadata = sp.toolMetadata;
+        if (sp.toolMetadata != null) {
+          merged.toolMetadata = {
+            ...?merged.toolMetadata,
+            ...?sp.toolMetadata,
+          };
+        }
         result.add(merged);
       } else {
         result.add(rp);
@@ -1234,7 +1423,7 @@ class ConversationStore extends ChangeNotifier {
         if (m.error != null) raw['error'] = m.error;
         break;
       case 'shell':
-        raw['shellID'] = '';
+        raw['shellID'] = m.shellID ?? '';
         raw['command'] = m.shellCommand ?? '';
         raw['status'] = m.shellStatus ?? 'running';
         if (m.shellExit != null) raw['exit'] = m.shellExit;
@@ -1508,6 +1697,7 @@ class ConversationStore extends ChangeNotifier {
           shellStatus: e.status,
           shellExit: e.exit,
           shellOutput: e.output,
+          shellID: e.shellID,
         );
       case SyntheticMessage():
         if (_isHiddenConversionSynthetic(e.text, e.metadata)) return null;
@@ -1817,25 +2007,23 @@ class ConversationStore extends ChangeNotifier {
     _reconcileStartNotices();
   }
 
-  void onToolSuccess(String mid, String callId, List<ToolContentItem> content) {
-    _setToolCompleted(mid, callId, 'completed', output: _toolContentText(content));
+  void onToolSuccess(String mid, String callId, List<ToolContentItem> content,
+      {Map<String, dynamic>? metadata}) {
+    _setToolCompleted(mid, callId, 'completed',
+        output: _toolContentText(content), metadata: metadata);
   }
 
   void onToolFailed(String mid, String callId, Map<String, dynamic> error,
       {List<ToolContentItem>? content, Map<String, dynamic>? metadata}) {
-    if (metadata != null && metadata.isNotEmpty) {
-      final msg = _findMessage(mid);
-      final idx = msg?.parts.indexWhere((x) => x.id == _toolPartId(mid, callId)) ?? -1;
-      if (idx >= 0) msg!.parts[idx].toolMetadata = metadata;
-    }
     final msg = error['message']?.toString() ?? error.toString();
     _setToolCompleted(mid, callId, 'error',
         output: content == null ? null : _toolContentText(content),
-        error: msg);
+        error: msg,
+        metadata: metadata);
   }
 
   void _setToolCompleted(String mid, String callId, String status,
-      {String? output, String? error}) {
+      {String? output, String? error, Map<String, dynamic>? metadata}) {
     final partId = _toolPartId(mid, callId);
     final msg = _findMessage(mid);
     if (msg == null) return;
@@ -1845,6 +2033,9 @@ class ConversationStore extends ChangeNotifier {
     dp.toolStatus = status;
     if (output != null && output.isNotEmpty) dp.toolOutput = output;
     if (error != null && error.isNotEmpty) dp.toolError = error;
+    if (metadata != null && metadata.isNotEmpty) {
+      dp.toolMetadata = {...?dp.toolMetadata, ...metadata};
+    }
     _previewableTouch(msg);
     notifyListeners();
   }

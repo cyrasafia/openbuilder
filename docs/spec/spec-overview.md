@@ -129,7 +129,8 @@ FileDiff  = { file, patch, additions, deletions, status }
 | 消息分页 | `GET /api/session/:id/message?limit=&order=&cursor=&type=` | `{data, cursor}`；desc 下 `cursor.next` 向更老翻页 |
 | **发消息** | `POST /api/session/:id/prompt` | 200 + `{data: SessionInbox.User}`；body `{text, files?, agents?, skills?, metadata?, delivery?}` |
 | 斜杠命令 | `GET /api/command` + `POST /api/session/:id/command` | body `{name, text, files?}`；skills 由 `/api/skill` 合并，skill 执行走 experimental 端点 |
-| Shell | `POST /api/session/:id/shell` | body `{command}` |
+| Shell | `POST /api/session/:id/shell` | body `{command}`；同步阻塞至完成（204） |
+| Shell 资源面 | `GET /api/shell?location[directory]=` · `GET/DELETE /api/shell/:id?location[directory]=` · `GET /api/shell/:id/output?cursor=&limit=` | 全部 location-scoped（缺 query 静默回落默认 location）；list 仅返回 running；output 按 byte cursor 分页（默认 64KB）；DELETE 杀进程+删记录+删输出 |
 | 中止 | `POST /api/session/:id/interrupt` | |
 | Worktree 组 | `GET/POST/DELETE /api/worktree` + `POST /api/worktree/refresh` | 按 projectID；列表含主 checkout；create 执行 `commands.start` |
 | **Diff** | `GET /api/session/:id/diff?from=&to=&context=` · `GET /api/vcs/diff?mode=working\|branch\|committed` | mode 取代 v1 `git/branch` |
