@@ -117,7 +117,7 @@ class AuthProbe {
       if (status == 200) return _metaFromJson(resp.data);
       if (status >= 300 && status < 400) {
         final origin = _originOf(resp.headers.value('location'), baseUrl);
-        if (origin != null) return _metadataFromWellKnown(origin);
+        if (origin != null) return await _metadataFromWellKnown(origin);
       }
       return null;
     } on DioException {

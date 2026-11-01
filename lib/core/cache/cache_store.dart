@@ -50,7 +50,7 @@ class FileCacheStore implements CacheStore {
     final f = await _fileFor(key);
     if (!f.existsSync()) return null;
     try {
-      return f.readAsString();
+      return await f.readAsString();
     } catch (e) {
       AppLogger.I.w(_tag, 'read $key failed: $e');
       return null;

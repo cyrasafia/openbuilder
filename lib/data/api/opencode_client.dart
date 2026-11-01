@@ -777,7 +777,7 @@ class OpencodeClient {
       if (body.length < kInlineParseLimit) {
         return parseStreamedFile((body, mime));
       }
-      return compute(parseStreamedFile, (body, mime));
+      return await compute(parseStreamedFile, (body, mime));
     } finally {
       raw.close(force: true);
     }
