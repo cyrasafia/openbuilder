@@ -1,8 +1,8 @@
 # design-message-autolink — 会话消息链接自动识别（URI + 项目内文件路径）
 
-> 状态：URI 识别已实现（`41e1b68` feat + `20f5ea5` / `668c68e` / `b1923e2` 三轮评审修复）；项目文件路径识别已实现（v2 扩展，MA/MB/MC 三轮评审修复）；URI 主体 ASCII 收紧修复全角标点吞字（MF-1）；`_trimTrailing` 追加 `*` 剥离修复强调标记吞入链接（MF-2）
+> 状态：URI 识别已实现（`41e1b68` feat + `20f5ea5` / `668c68e` / `b1923e2` 三轮评审修复）；项目文件路径识别已实现（v2 扩展，MA/MB/MC 三轮评审修复）；URI 主体 ASCII 收紧修复全角标点吞字（MF-1）；`_trimTrailing` 追加 `*` 剥离修复强调标记吞入链接（MF-2）；显式 Markdown 文件 destination 点击分流修复已实现（MG-1）
 > 代码：`lib/features/conversation/message_autolink.dart`（原 `uri_autolink.dart` 改名扩展）、`conversation_screen.dart` `_markdownPart` / `_onMdLink` / `_openLinkedFile`
-> 测试：`test/message_autolink_test.dart`（60 例，原 `uri_autolink_test.dart` 改名扩展）
+> 测试：`test/message_autolink_test.dart`（65 例，原 `uri_autolink_test.dart` 改名扩展）+ `test/explicit_markdown_file_link_test.dart`（4 例 widget 点击回归）
 
 ## 问题
 
@@ -36,9 +36,10 @@
    「单一链接目标」判定（URI 或路径）。
 2. **链接目标**：文件路径不是 URI，用自定义 scheme `ob-file:` 承载 href——
    `ob-file:///<path>?line=N`（path 中 `/` 不编码保可读性，空格等 percent-encode）。
-   `onTapLink` 单点分流：`ob-file` → `_openLinkedFile`（文件容器）；其余 →
-   `_openExternalLink`（外部浏览器）。不用 `file://`，避免与真实 file URL 及
-   url_launcher 语义混淆。
+   `onTapLink` 单点三分流：`ob-file` → `_openLinkedFile`（文件容器）；
+   `parseFileDestination` 识别的显式文件 destination → 先 `fileHref` 归一再
+   `_openLinkedFile`；其余 → `_openExternalLink`（外部浏览器）。不用 `file://`，
+   避免与真实 file URL 及 url_launcher 语义混淆。
 
 性能模型不变：**同步 + 按原文 memoize**。识别是纯函数、不依赖会话上下文
 （项目归属校验推迟到点击时，见决策 2），content-keyed 缓存语义原样成立。
@@ -50,7 +51,7 @@
 | `autolinkMarkdownLinks` | `message_autolink.dart` | 纯函数：围栏感知的 URI + 文件路径改写。无 Flutter 依赖，可单测 |
 | `_markdownPart` | `conversation_screen.dart:1424` | 接入点：缓存查找 → 喂给 `MarkdownBody` |
 | `_autolinkCache` | `conversation_screen.dart:126` | content-keyed memoize 缓存（原 `_uriAutolinkCache` 改名），随屏幕 State 存活 |
-| `_onMdLink` | `conversation_screen.dart`（原 `onTapLink` 回调） | 分流：`ob-file:` → `_openLinkedFile`；其余 → `_openExternalLink` |
+| `_onMdLink` | `conversation_screen.dart`（原 `onTapLink` 回调） | 分流：`ob-file:` → `_openLinkedFile`；显式文件 destination → `fileHref` 归一后 `_openLinkedFile`；其余 → `_openExternalLink` |
 | `_openLinkedFile` | `conversation_screen.dart` | 项目归属校验 → 构建 peek 快照 → push 文件容器 |
 
 ### 识别规则
@@ -108,6 +109,15 @@ URI，路径段不被拆出）：
 | 自由文本裸路径 | 转链为 `[path](ob-file:///path?line=N)`，`:N(:M)?` 行号剥出进 query（路径正则的字符集与末段边界天然不吃尾部 `.,;:!?)`，无需 `_trimTrailing`——实现注记） |
 
 ### 点击与导航（文件容器）
+
+点击入口三分流（主列表 `_onMdLink` 与子会话 `_onLink` 同规则）：
+
+1. `ob-file:///` 前缀：直接进入 `_openLinkedFile`。
+2. `parseFileDestination` 识别的显式文件 destination（`[报告](reports/foo.md)` 类，
+   识别层按「已有 md 链接不二次处理」原样保留）：剥行号后经 `fileHref` 归一为
+   `ob-file:` href，再进入 `_openLinkedFile`——项目外绝对路径与 `../` 逃逸同样被
+   归属校验拦截，不交给 url_launcher。
+3. 其余 href：保持 `_openExternalLink` 外部打开。
 
 `_openLinkedFile(String href, …)`：
 
@@ -181,6 +191,9 @@ URI，路径段不被拆出）：
   `replaceAllMapped`，按首字符分派。
 - `_parseFilePath(s)` → `(path, line)?`：剥 `:N(:M)?` 后缀，剩余部分对锚定路径
   正则 `_singleFilePath` 整串校验（无空白）；行内代码与自由文本共用此判定。
+- `parseFileDestination(destination)` → `(path, line)?`（public，纯函数）：
+  `_parseFilePath` + `_isBareDomain` 的单点封装，供点击层识别显式 md 链接的
+  文件 destination（MG-1）。
 - `_isBareDomain(path)`：相对候选首段 TLD 后缀判定（MA-2），行内/自由文本均适用。
 - `fileHref(path, line)`（public）：`ob-file:///` + 逐段 `Uri.encodeComponent`
   （保留 `/`）+ `?line=N`。
@@ -209,9 +222,13 @@ URI，路径段不被拆出）：
 - 防呆：已有 md 链接与角标不二次处理；`lib/foo.dart:123,` 尾标点留在链外；
   `（lib/foo.dart）` 括号配平；无 `/` 快退。
 
-点击层（纯函数单测，`decodeFileHref` / `resolveProjectPath`；widget 测试未补——
-`_openLinkedFile` 仅为两纯函数的组装 + push，逻辑面已被覆盖）：
+点击层（纯函数单测 `decodeFileHref` / `resolveProjectPath` / `parseFileDestination`；
+widget 点击回归 `explicit_markdown_file_link_test.dart`——user / settled assistant /
+streaming assistant / 项目外绝对路径四路径直击真实 `onTapLink`）：
 
+- 显式文件 destination（`[报告](reports/foo.md)`、`[源码](./src/a.ts:42)`）→
+  不经 autolink 改写，点击入口识别后同样 push peek 快照；user 与 settled /
+  streaming assistant 共用入口，行为一致（MG-1）。
 - 相对路径链接 → push `/session/:id/files` + peek 快照（`openFiles=[path]`、
   无行号时 `mdShowSource=false`）。
 - 带行号 → `initialLine` 正确且 `mdShowSource=true`（预览模式丢弃行号，MA-1）。
@@ -227,9 +244,9 @@ URI，路径段不被拆出）：
 ## 关键设计决策
 
 1. **预改写文本 + 自定义 scheme `ob-file:` 承载文件链接**。markdown 链接 href 必须
-   是 URI，文件路径不是 URI；自定义 scheme 使 `onTapLink` 单点分流（`ob-file` →
-   容器，其余 → 外部），渲染层与 URI 链路零改动。不用 `file://`——与真实 file URL
-   及 url_launcher 语义混淆，且可能被系统拦截。
+   是 URI，文件路径不是 URI；自定义 scheme 使 `onTapLink` 单点分流（`ob-file` 与
+   显式文件 destination → 容器，其余 → 外部），渲染层与 URI 链路零改动。不用
+   `file://`——与真实 file URL 及 url_launcher 语义混淆，且可能被系统拦截。
 2. **识别保持纯函数、项目归属校验推迟到点击时**。识别层不知道 `session.directory`
    → content-keyed 缓存语义原样成立（无需扩 key）；项目外绝对路径（`/etc/hosts`）
    仍转链但点击时拦截提示，代价是一次无效点击，换来识别层零上下文依赖。
@@ -250,6 +267,9 @@ URI，路径段不被拆出）：
   目录路径（尾 `/`）不识别——误报控制取舍。
 - 含空格路径不识别（自由文本与行内代码一致）——实现时发现「行内代码允许空格」
   与「`` `open lib/foo.dart` `` 排除」不可兼得，收严为无空白规则。
+- 显式 destination 的 percent-encoding 形态不识别（`reports/my%20report.md`）——
+  `%` 不在路径段 ASCII 字符集，`parseFileDestination` 拒绝后走外部打开；解码会
+  绕过「路径不含空格」既有约束，聊天场景极边缘，不做（MG-2）。
 - 匹配末尾的部分切分不防护（`foo/1.0/bar` 只转链 `foo/1.0`）——末段扩展名锚定
   无法兼顾「更早的段恰好带扩展名」的歧义，出现频率低，接受误转链走加载失败 UI
   （MD-2，已知取舍）。
@@ -457,3 +477,21 @@ URI，路径段不被拆出）：
 | 编号 | 状态 | 说明 |
 |------|------|------|
 | MF-2 | ✅ | `_trimTrailing` 标点剥离集追加 `*`；补「强调包裹裸链接」「URL 尾随 `**`」「单 `*` 强调」「内部 `*` 保留」「尾随通配 `*` 剥离取舍」5 例；全量 63 测试通过、`analyze` 无 issue |
+
+### 11次评审意见（线上缺陷修复·三）
+
+| 编号 | 优先级 | 问题 | 修复建议 |
+|------|--------|------|----------|
+| MG-1 | 🟡 | 线上缺陷：显式 Markdown 文件链接 `[报告](reports/foo.md)` 未转 `ob-file:`，点击入口两分流把它交给 `launchUrl`，Android 报 `ACTIVITY_NOT_FOUND`；同时设计文档仍记载两分流，未覆盖修复后的显式 destination 分支 | 暴露 `parseFileDestination` 复用既有路径判据；点击入口改三分流（`ob-file:` / 显式文件 destination / 外部），主列表与子会话同规则；设计文档同步补记 |
+| MG-2 | 🟢 | percent-encode 的显式 destination（`reports/my%20report.md`）按现行规则不识别——评审建议 parse 前 decode；核实 `%` 不在段字符集，实际不会误入文件页，仅走外部打开 | 维持不解码：解码会绕过「路径不含空格」约束；作为已知取舍记录，并以单测锁定拒绝行为 |
+| MG-3 | 🟢 | 子会话 `_onLink` 用「先 parse 再归一」写法，与主入口「先查前缀再 parse」的 guard 顺序相反，可读性略差；功能等价 | 不改：子会话打开逻辑内联在既有路由体内，重排会复制整段 push 代码；评审裁定可忽略 |
+
+评审验证通过项：带 scheme destination（`https:` / `ftp:` / `custom:` / `mailto:`）因 `:` 不在 `_segment` 字符集被整串拒绝，仍走外部；`www.` 与已知 TLD bare domain 被 `_isBareDomain` 排除；protocol-relative `//host/…` 因空段不匹配被拒绝；`ob-file:` href 在两个入口均无路径穿透；`./src/a.ts:42` → `src/a.ts` + line 42 roundtrip 有 widget 断言。
+
+#### 修复复审
+
+| 编号 | 状态 | 说明 |
+|------|------|------|
+| MG-1 | ✅ | 新增 `parseFileDestination` + 主列表 / 子会话点击三分流；`explicit_markdown_file_link_test.dart` 覆盖 user、settled assistant（行号）、streaming assistant、项目外绝对路径；核心思路 / 角色职责 / 点击导航 / 方法拆分 / 场景验证 / 决策 1 同步更新 |
+| MG-2 | ✅ | 「不做的事」补 percent-encoding 显式 destination 不识别取舍；`parseFileDestination` 单测锁定 `reports/my%20report.md` 拒绝 |
+| MG-3 | ✅ | 记录不改理由；功能等价已由评审验证 |

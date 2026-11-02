@@ -2346,6 +2346,11 @@ class _ConversationScreenState extends State<ConversationScreen>
       _openLinkedFile(href);
       return;
     }
+    final file = parseFileDestination(href);
+    if (file != null) {
+      _openLinkedFile(fileHref(file.$1, file.$2));
+      return;
+    }
     _openExternalLink(href);
   }
 
@@ -4194,8 +4199,12 @@ class _SubagentMessageState extends State<_SubagentMessage> {
 
   void _onLink(BuildContext context, String? href) {
     if (href == null || href.isEmpty) return;
-    if (href.startsWith('ob-file:///')) {
-      final decoded = decodeFileHref(href);
+    final file = parseFileDestination(href);
+    final effectiveHref = href.startsWith('ob-file:///') || file == null
+        ? href
+        : fileHref(file.$1, file.$2);
+    if (effectiveHref.startsWith('ob-file:///')) {
+      final decoded = decodeFileHref(effectiveHref);
       if (decoded == null) return;
       final (raw, line) = decoded;
       final directory =

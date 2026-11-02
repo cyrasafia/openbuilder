@@ -398,6 +398,27 @@ after http://free.example.com''';
     });
   });
 
+  group('parseFileDestination', () {
+    test('parses explicit markdown file destinations', () {
+      expect(parseFileDestination('reports/foo.md'), ('reports/foo.md', null));
+      expect(parseFileDestination('./src/a.ts'), ('./src/a.ts', null));
+      expect(parseFileDestination('../x/y.md'), ('../x/y.md', null));
+      expect(parseFileDestination('/home/u/proj/lib/foo.dart:42:10'), (
+        '/home/u/proj/lib/foo.dart',
+        42,
+      ));
+    });
+
+    test('rejects external URIs and non-file relative destinations', () {
+      expect(parseFileDestination('https://example.com/a/b.dart'), isNull);
+      expect(parseFileDestination('ftp://example.com/a/b.dart'), isNull);
+      expect(parseFileDestination('custom://example/a/b.dart'), isNull);
+      expect(parseFileDestination('github.com/org/repo/foo.dart'), isNull);
+      expect(parseFileDestination('docs/guide'), isNull);
+      expect(parseFileDestination('reports/my%20report.md'), isNull);
+    });
+  });
+
   group('decodeFileHref', () {
     test('decodes relative path and line', () {
       expect(decodeFileHref('ob-file:///lib/foo.dart?line=42'), (

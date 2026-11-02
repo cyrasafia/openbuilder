@@ -12,8 +12,9 @@
 /// in assistant output.
 ///
 /// File paths are rewritten to `ob-file:///<path>?line=N` hrefs; the tap
-/// handler routes `ob-file:` to the file browsing container and everything
-/// else to the external browser. Paths must contain `/`, must not contain
+/// handler routes `ob-file:` and recognized explicit file destinations to the
+/// file browsing container and everything else to the external browser. Paths
+/// must contain `/`, must not contain
 /// spaces, and the final segment must carry an extension (`name.ext`) or be
 /// a dotfile (`.gitignore`) — single-segment names, directories and
 /// extension-less files (`Makefile`) are not recognized, to keep false
@@ -146,6 +147,12 @@ bool _isSingleUri(String s) {
   final line = lm == null ? null : int.tryParse(lm.group(1)!);
   if (!_singleFilePath.hasMatch(path)) return null;
   return (path, line);
+}
+
+(String, int?)? parseFileDestination(String destination) {
+  final file = _parseFilePath(destination);
+  if (file == null || _isBareDomain(file.$1)) return null;
+  return file;
 }
 
 bool _isBareDomain(String path) {
