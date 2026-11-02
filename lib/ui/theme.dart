@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../core/net/system_font_weight.dart';
 
@@ -36,6 +37,9 @@ class AppTheme {
   static ThemeData _base(ColorScheme scheme, Color scaffold) {
     final variations = _weightVariations;
     final hasVariations = variations != null && variations.isNotEmpty;
+    final colors = scheme.brightness == Brightness.dark
+        ? AppColors.dark
+        : AppColors.light;
 
     // Only set a custom textTheme when we have font variations to inject.
     // Otherwise, let ThemeData auto-derive colors from colorScheme (correct
@@ -74,9 +78,11 @@ class AppTheme {
       scaffoldBackgroundColor: scaffold,
       textTheme: textTheme,
       extensions: [
-        scheme.brightness == Brightness.dark
-            ? AppColors.dark
-            : AppColors.light,
+        colors,
+        _buildGptMarkdownTheme(
+          scheme: scheme,
+          colors: colors,
+        ),
       ],
       appBarTheme: AppBarTheme(
         backgroundColor: scaffold,
@@ -112,6 +118,101 @@ class AppTheme {
       ),
     );
   }
+
+  static GptMarkdownThemeData _buildGptMarkdownTheme({
+    required ColorScheme scheme,
+    required AppColors colors,
+  }) {
+    return GptMarkdownThemeData(
+      brightness: scheme.brightness,
+      autoAddDividerLineAfterH1: false,
+      styleSheet: buildConversationGptStyle(
+        scheme: scheme,
+        colors: colors,
+      ),
+    );
+  }
+}
+
+GptMarkdownStyleSheet buildConversationGptStyle({
+  required ColorScheme scheme,
+  required AppColors colors,
+}) {
+  return GptMarkdownStyleSheet(
+    blockSpacing: 6,
+    blockQuote: BlockQuoteStyle(
+      barWidth: 3,
+      barColor: colors.quoteBar,
+      padding: const EdgeInsets.only(left: 12),
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      textStyle: TextStyle(
+        color: scheme.onSurface,
+        fontStyle: FontStyle.italic,
+      ),
+    ),
+    heading: HeadingStyle(
+      padding: EdgeInsets.zero,
+      showDivider: false,
+      textStyle: TextStyle(
+        color: scheme.onSurface,
+        fontWeight: FontWeight.w600,
+        height: 1.45,
+      ),
+    ),
+    link: LinkStyle(
+      color: colors.link,
+      decoration: TextDecoration.none,
+    ),
+    inlineCode: InlineCodeStyle(
+      fontFamily: 'monospace',
+      fontSizeFactor: 13 / 14,
+      color: colors.code,
+      backgroundColor: Colors.transparent,
+      borderColor: Colors.transparent,
+      borderWidth: 0,
+      padding: EdgeInsets.zero,
+    ),
+    list: ListStyle(
+      bulletColor: scheme.onSurface,
+      markerTextStyle: TextStyle(
+        color: scheme.onSurface,
+        fontWeight: FontWeight.w400,
+      ),
+      indent: 24,
+      gapAfterMarker: 4,
+    ),
+    codeBlock: CodeBlockStyle(
+      backgroundColor: colors.codeBackground,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: const Radius.circular(8),
+      padding: const EdgeInsets.all(12),
+      fontFamily: 'monospace',
+      fontSize: 13,
+      textColor: colors.code,
+      showLanguageLabel: false,
+      showCopyButton: false,
+      highlightWhileStreaming: false,
+    ),
+    table: TableStyle(
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: Radius.zero,
+      cellPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      headerBackground: Colors.transparent,
+      headerTextStyle: TextStyle(
+        color: scheme.onSurface,
+        fontWeight: FontWeight.w600,
+      ),
+      columnWidth: const IntrinsicColumnWidth(),
+      overflow: TableOverflow.scroll,
+    ),
+    hr: HrStyle(
+      thickness: 1,
+      color: colors.border,
+      padding: EdgeInsets.zero,
+    ),
+  );
 }
 
 class AppColors extends ThemeExtension<AppColors> {

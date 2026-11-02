@@ -43,6 +43,7 @@ import '../files/image_view.dart';
 import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 
 import 'message_autolink.dart';
 
@@ -2251,30 +2252,39 @@ class _ConversationScreenState extends State<ConversationScreen>
     String? cacheKey,
     VoidCallback? onTextTap,
   }) {
+    final overLimit = data.length > _kMarkdownMaxChars;
+    final effective =
+        overLimit ? _truncatedText(data, _kMarkdownMaxChars) : data;
     if (!settled) {
-      if (data.isEmpty) return const SizedBox.shrink();
-      final overLimit = data.length > _kMarkdownMaxChars;
-      final effective =
-          overLimit ? _truncatedText(data, _kMarkdownMaxChars) : data;
+      if (effective.isEmpty) return const SizedBox.shrink();
+      if (user) {
+        return Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            effective,
+            style: _streamingTextStyle(user),
+          ),
+        );
+      }
       return Padding(
         padding: const EdgeInsets.only(top: 4),
-        child: Text(
-          effective,
-          style: _streamingTextStyle(user),
+        child: _GptMarkdownView(
+          data: effective,
+          settled: false,
+          onLinkTap: (url, title) => _onMdLink(url),
         ),
       );
     }
     final sheet = user ? _mdStyleUser : _mdStyleAssistant;
-    final overLimit = data.length > _kMarkdownMaxChars;
-    final effective =
-        overLimit ? _truncatedText(data, _kMarkdownMaxChars) : data;
     final sig = '$user\x1f$effective';
     if (cacheKey != null) {
       final cached = _partWidgetCache.lookup(cacheKey, sig);
       if (cached != null) return cached;
     }
-    final linkified =
-        _autolinkCache.putIfAbsent(effective, () => autolinkMarkdownLinks(effective));
+    final linkified = user
+        ? _autolinkCache.putIfAbsent(
+            effective, () => autolinkMarkdownLinks(effective))
+        : null;
     if (_autolinkCache.length >= _kAutolinkCacheMax) {
       _autolinkCache.remove(_autolinkCache.keys.first);
     }
@@ -2284,14 +2294,22 @@ class _ConversationScreenState extends State<ConversationScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          MarkdownBody(
-            data: linkified,
-            selectable: !overLimit,
-            softLineBreak: user,
-            onTapLink: (text, href, title) => _onMdLink(href),
-            onTapText: onTextTap,
-            styleSheet: sheet ?? _buildMdStyle(user: user),
-          ),
+          if (user)
+            MarkdownBody(
+              data: linkified ?? effective,
+              selectable: !overLimit,
+              softLineBreak: true,
+              onTapLink: (text, href, title) => _onMdLink(href),
+              onTapText: onTextTap,
+              styleSheet: sheet ?? _buildMdStyle(user: user),
+            )
+          else
+            _GptMarkdownView(
+              data: effective,
+              settled: true,
+              selectable: !overLimit,
+              onLinkTap: (url, title) => _onMdLink(url),
+            ),
           if (overLimit)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -2364,6 +2382,159 @@ class _ConversationScreenState extends State<ConversationScreen>
 
   Future<void> _openExternalLink(String? href) =>
       openExternalLink(context, href);
+}
+
+int _leadingFenceLength(String line, String char) {
+  var n = 0;
+  while (n < line.length && line[n] == char) {
+    n++;
+  }
+  return n;
+}
+
+String _stripUpToThreeLeadingSpaces(String line) {
+  var stripped = line;
+  var removed = 0;
+  while (removed < 3 && stripped.startsWith(' ')) {
+    stripped = stripped.substring(1);
+    removed++;
+  }
+  return stripped;
+}
+
+@visibleForTesting
+String closeUnmatchedFence(String src) {
+  var openChar = '';
+  var openLen = 0;
+  for (final rawLine in src.split('\n')) {
+    final line = _stripUpToThreeLeadingSpaces(rawLine);
+    if (openChar.isEmpty) {
+      for (final ch in const ['`', '~']) {
+        final n = _leadingFenceLength(line, ch);
+        if (n < 3) continue;
+        final info = line.substring(n).trimLeft();
+        final opens = !(ch == '`' && info.contains('`'));
+        if (opens) {
+          openChar = ch;
+          openLen = n;
+        }
+        break;
+      }
+    } else {
+      final n = _leadingFenceLength(line, openChar);
+      if (n >= openLen && line.substring(n).trimRight().isEmpty) {
+        openChar = '';
+        openLen = 0;
+      }
+    }
+  }
+  if (openChar.isEmpty) return src;
+  final separator = src.endsWith('\n') ? '' : '\n';
+  return '$src$separator${openChar * openLen}\n';
+}
+
+@visibleForTesting
+String buildMarkdownSource(String raw, bool settled) {
+  if (raw.isEmpty) return '';
+  if (settled) return autolinkMarkdownLinks(raw);
+  final cut = raw.lastIndexOf('\n');
+  if (cut < 0) return '';
+  final visible = raw.substring(0, cut + 1);
+  return autolinkMarkdownLinks(closeUnmatchedFence(visible));
+}
+
+class _GptMarkdownView extends StatefulWidget {
+  final String data;
+  final bool settled;
+  final bool selectable;
+  final void Function(String url, String title)? onLinkTap;
+
+  const _GptMarkdownView({
+    required this.data,
+    required this.settled,
+    this.selectable = false,
+    this.onLinkTap,
+  });
+
+  @override
+  State<_GptMarkdownView> createState() => _GptMarkdownViewState();
+}
+
+class _GptMarkdownViewState extends State<_GptMarkdownView> {
+  String? _source;
+
+  void _updateSource() {
+    final next = buildMarkdownSource(widget.data, widget.settled);
+    if (next == _source) return;
+    setState(() {
+      _source = next;
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _updateSource();
+  }
+
+  @override
+  void didUpdateWidget(_GptMarkdownView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.data != oldWidget.data ||
+        widget.settled != oldWidget.settled) {
+      _updateSource();
+    }
+  }
+
+  Widget _codeBuilder(
+    BuildContext context,
+    String name,
+    String code,
+    bool closed,
+  ) {
+    final p = _messagePalette(context, false);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: p.codeBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: p.border),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Text(
+          code,
+          style: TextStyle(
+            fontSize: 13,
+            fontFamily: 'monospace',
+            color: p.code,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final source = _source;
+    if (source == null || source.isEmpty) return const SizedBox.shrink();
+    final p = _messagePalette(context, false);
+    final md = GptMarkdown(
+      source,
+      style: TextStyle(fontSize: 14, height: 1.45, color: p.text),
+      textDirection: Directionality.of(context),
+      isStreaming: !widget.settled,
+      animation: GptMarkdownAnimation.none,
+      blockAnimation: GptMarkdownBlockAnimation.none,
+      autolink: false,
+      onLinkTap: widget.onLinkTap,
+      codeBuilder: _codeBuilder,
+    );
+    return widget.settled && widget.selectable
+        ? SelectionArea(child: md)
+        : md;
+  }
 }
 
 Future<void> openExternalLink(BuildContext context, String? href) async {

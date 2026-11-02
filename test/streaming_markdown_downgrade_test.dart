@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_builder/app_state.dart';
 import 'package:open_builder/core/sse/sse_client.dart';
@@ -12,10 +13,12 @@ import 'package:open_builder/l10n/gen/app_localizations.dart';
 import 'package:open_builder/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'v2_test_fixtures.dart';
+
 /// Per-part streaming render: an unfinished assistant message (finish == null)
-/// renders each part as it arrives — a part still receiving deltas downgrades
-/// to plain Text (no full-document markdown re-parse per token, JANK-4), while
-/// a part whose text.ended arrived (DisplayPart.settled) switches to MarkdownBody
+/// renders each part as it arrives — a part still receiving deltas renders the
+/// line-prefix markdown through GptMarkdown, while a part whose text.ended
+/// arrived (DisplayPart.settled) switches to the final markdown view
 /// immediately even though the message keeps streaming. Message settle
 /// (step.ended carries finish) keeps the markdown render via the cache path.
 class _MockClient extends OpencodeClient {
@@ -80,7 +83,7 @@ Future<void> _settle(WidgetTester tester, bool Function() probe) async {
 }
 
 void main() {
-  testWidgets('streaming renders per part: delta plain, ended markdown',
+  testWidgets('streaming renders per part: delta markdown, ended markdown',
       (tester) async {
     const sid = 'jank4';
     await _pumpConversation(tester, sessionId: sid);
@@ -107,19 +110,23 @@ void main() {
         'sessionID': sid,
         'assistantMessageID': 'a1',
         'ordinal': 0,
-        'delta': 'streaming **bold** body',
+        'delta': 'streaming **bold** body\n',
       },
     ));
     await tester.pump();
 
-    // In-flight part → plain-Text downgrade: visible immediately, no markdown
-    // re-parse, no SelectableText registrar overhead.
+    // In-flight part → line-prefix markdown: no SelectableText registrar
+    // overhead, and the raw markdown markers are not shown as literal text.
     expect(find.byType(SelectableText), findsNothing);
     expect(find.byType(MarkdownBody), findsNothing);
-    expect(find.text('streaming **bold** body'), findsOneWidget);
+    expect(find.byType(GptMarkdown), findsOneWidget);
+    expect(
+      find.textContaining('**bold**', findRichText: true),
+      findsNothing,
+    );
 
     // Part settles (text.ended) while the message is STILL streaming
-    // (finish == null): the completed part switches to markdown at once.
+    // (finish == null): the completed part switches to the final markdown view.
     serverStore.onEventForTesting(OpencodeEvent(
       type: 'session.text.ended',
       properties: {
@@ -130,19 +137,18 @@ void main() {
       },
     ));
     await tester.pumpAndSettle();
-    expect(find.byType(MarkdownBody), findsOneWidget);
+    expect(find.byType(GptMarkdown), findsOneWidget);
     expect(
       find.textContaining('streaming', findRichText: true),
       findsOneWidget,
     );
-    // Markdown-rendered: the raw ** markers must not survive as literal text.
     expect(
       find.textContaining('**bold**', findRichText: true),
       findsNothing,
     );
 
-    // A second part starts streaming: it renders as plain text downgrade while
-    // the first part stays markdown (not duplicated, not downgraded).
+    // A second part starts streaming: its first unfinished line is hidden, so
+    // only the first part remains visible while the message keeps streaming.
     serverStore.onEventForTesting(OpencodeEvent(
       type: 'session.text.started',
       properties: {
@@ -162,16 +168,14 @@ void main() {
       },
     ));
     await tester.pump();
-    expect(find.byType(MarkdownBody), findsOneWidget);
-    expect(find.text('part two'), findsOneWidget);
+    expect(find.byType(GptMarkdown), findsOneWidget);
     expect(
       find.textContaining('streaming', findRichText: true),
       findsOneWidget,
     );
 
-    // Message settle: step.ended carries finish → every part goes markdown via
-    // the message cache path; the plain-Text downgrade disappears (exactly one
-    // rendered copy of the second part remains — the markdown paragraph).
+    // Message settle: step.ended carries finish → every part goes to the final
+    // markdown view via the cache path; exactly one copy of each part remains.
     serverStore.onEventForTesting(OpencodeEvent(
       type: 'session.step.ended',
       properties: {
@@ -181,14 +185,27 @@ void main() {
       },
     ));
     await tester.pumpAndSettle();
-    // Flush the streaming-preview throttle timer (120ms trailing edge) armed
-    // by the last delta so no Timer is pending at test end.
     await tester.pump(const Duration(milliseconds: 500));
-    expect(find.byType(MarkdownBody), findsNWidgets(2));
+    expect(find.byType(GptMarkdown), findsNWidgets(2));
     expect(find.textContaining('part two'), findsOneWidget);
     expect(
       find.textContaining('streaming', findRichText: true),
       findsOneWidget,
     );
+  });
+
+  testWidgets('user messages stay on flutter_markdown_plus', (tester) async {
+    const sid = 'jank4-user';
+    await _pumpConversation(tester, sessionId: sid);
+    await _settle(
+        tester, () => serverStore.conversationForRead(sid)?.loaded ?? false);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    serverStore.conversationForRead(sid)!
+        .debugInsertForTest(userMsg(id: 'u1', text: 'plain user text'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    expect(find.byType(GptMarkdown), findsNothing);
   });
 }
