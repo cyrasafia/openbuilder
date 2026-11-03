@@ -232,6 +232,20 @@ class ProjectDetailScreen extends StatelessWidget {
   }
 
   Future<void> _createSession(BuildContext context, String directory) async {
+    // 空壳闸门（design-worktree-shell-rescue §2.2）：必须先于
+    // fetchAgentsAndModels——agent/model 两发 location GET 与 POST /session
+    // body location 同为建档燃料，入口拦截一次省下全部三发。
+    final broken = await serverStore.detectBrokenWorktree(directory);
+    if (broken != null) {
+      if (context.mounted) {
+        _showBrokenWorktreeDialog(
+          context,
+          broken.project.canonical,
+          broken.directory,
+        );
+      }
+      return;
+    }
     try {
       String? targetAgent;
       ModelRef? targetModel;
@@ -398,6 +412,39 @@ class ProjectDetailScreen extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// 空壳工作区阻断弹框（design-worktree-shell-rescue §2.3）：创建被拦后引导
+  /// 删除；「删除工作区」直达既有删除确认（两级确认，破坏性意图表达完整）。
+  void _showBrokenWorktreeDialog(
+    BuildContext context,
+    String projectCanonical,
+    String worktreeDir,
+  ) {
+    final wtName = worktreeDir.split('/').last;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l(ctx).worktreeBrokenTitle),
+        content: Text(l(ctx).worktreeBrokenBody(wtName)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l(ctx).cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _confirmRemoveWorktree(context, projectCanonical, worktreeDir);
+            },
+            child: Text(l(ctx).projectDeleteWorkspace),
+          ),
+        ],
       ),
     );
   }

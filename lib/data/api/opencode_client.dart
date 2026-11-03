@@ -30,6 +30,25 @@ class ShellRunResult {
   const ShellRunResult(this.exit, this.output);
 }
 
+/// worktree 健康探测三态（design-worktree-shell-rescue §1.2）。
+enum WorktreeHealth { ok, broken, unknown }
+
+/// DELETE /api/worktree 的空壳/目录消失错误判别（design-worktree-shell-rescue
+/// §3.1）：`_tag`（旧形状读 `name`，双读兼容）+ message 前缀双条件。两型错误体
+/// 同型；网络错/其他 400（含脏检 forceRequired 形状）不命中——连探测也不发。
+bool isWorktreeUnavailableError(Object e) {
+  if (e is OperationException) e = e.cause;
+  if (e is! DioException) return false;
+  final data = e.response?.data;
+  if (data is! Map) return false;
+  final tag = (data['_tag'] ?? data['name'])?.toString();
+  if (tag != 'WorktreeError') return false;
+  final inner = data['data'];
+  final message = inner is Map ? inner['message']?.toString() : null;
+  return message != null &&
+      message.startsWith('Worktree directory unavailable:');
+}
+
 class ShellOutputPage {
   final String output;
   final int? cursor;
@@ -264,6 +283,13 @@ class OpencodeClient {
     });
   }
 
+  /// POST /api/worktree/refresh — 跨已知 checkout 根发现 + reconcile（清
+  /// 「目录已消失」的库存死行，design-worktree-shell-rescue §3.2 收敛判据）。
+  Future<void> refreshWorktrees(String projectID) async {
+    await dio.post<dynamic>('/api/worktree/refresh',
+        data: {'projectID': projectID});
+  }
+
   /// DELETE /api/debug/location — evict 一个 warm location（204）。
   /// 端点在 pin spec 内（debug.location.evict，deepObject query）；server 升 pin
   /// 需 spec diff 回归（design-worktree-delete-location-evict §2）。directory
@@ -386,6 +412,23 @@ class OpencodeClient {
       info['exit'] is num ? (info['exit'] as num).toInt() : null,
       output,
     );
+  }
+
+  /// worktree 健康探测（design-worktree-shell-rescue §1.2）：只允许走 runShell
+  /// 通道（POST /api/shell 不带 location——红线：location 请求对死/空壳目录是
+  /// 建档燃料，一发一行）。exit 0 → ok（.git 在，文件/目录形态皆可）；exit ≠ 0
+  /// → broken（shell 能起 = 目录在，test 失败 = .git 失——空壳确证，不可能
+  /// 误报）；请求失败/超时/exit null → unknown（目录消失时 server 无法 spawn
+  /// 返 500，与端点故障同状不可区分——消费方不得据此执行破坏性处置）。
+  Future<WorktreeHealth> probeWorktreeHealth(String directory) async {
+    try {
+      final r = await runShell('test -e .git', cwd: directory, timeoutMs: 5000);
+      if (r.exit == 0) return WorktreeHealth.ok;
+      if (r.exit != null) return WorktreeHealth.broken;
+      return WorktreeHealth.unknown;
+    } catch (_) {
+      return WorktreeHealth.unknown;
+    }
   }
 
   Map<String, dynamic> _shellInfoMap(dynamic raw) {

@@ -507,7 +507,7 @@ class ServerStore extends ChangeNotifier {
           }),
         ),
       );
-      await c.removeWorktree(project.id, worktreeDir);
+      await _removeWorktreeWithRescue(c, project, worktreeDir);
       final dirs = _worktreeDirs[project.id];
       if (dirs != null && dirs.contains(worktreeDir)) {
         _worktreeDirs[project.id] =
@@ -548,6 +548,76 @@ class ServerStore extends ChangeNotifier {
 
   bool isWorktreeDeleting(String worktreeDir) =>
       _deletingWorktrees.contains(worktreeDir);
+
+  /// 创建闸门探测（design-worktree-shell-rescue §2.2）：仅对库存 worktree 行
+  /// 目录探测（canonical 排除——库存含主 checkout；global/未知目录是合法
+  /// location 不拦）。broken 返回所属项目供删除引导；ok/unknown/非库存返回
+  /// null 放行（fail-open——探测是增强，不是闸门）。
+  Future<({ProjectModel project, String directory})?> detectBrokenWorktree(
+      String directory) async {
+    if (_deletingWorktrees.contains(directory)) return null;
+    final c = client;
+    if (c == null) return null;
+    ProjectModel? owner;
+    for (final p in _projects) {
+      if (p.canonical == directory) continue;
+      final dirs = _worktreeDirs[p.id];
+      if (dirs != null && dirs.contains(directory)) {
+        owner = p;
+        break;
+      }
+    }
+    if (owner == null) return null;
+    if (await c.probeWorktreeHealth(directory) != WorktreeHealth.broken) {
+      return null;
+    }
+    return (project: owner, directory: directory);
+  }
+
+  /// DELETE 失败的空壳/死目录兜底（design-worktree-shell-rescue §3.2）：双判别
+  /// 前置——非 WorktreeError(unavailable)（网络错/脏检 forceRequired 等）连
+  /// 探测也不发，原样上抛。probe 三态分流：broken → rm（cwd 落点，$PWD 由
+  /// shell 自展开，注入面归零）+ refresh 收敛；unknown → 仅 refresh 收敛（无
+  /// 「目录死」确证不 rm）；收敛 = refresh 后重拉库存行已消，行仍在/重拉失败/
+  /// refresh 失败均原样抛出**原 DELETE 错误**（诚实失败可重试；rm 幂等，重试
+  /// 走 unknown → refresh → 行消即成功）。救援链全程零 location 请求。
+  Future<void> _removeWorktreeWithRescue(
+    OpencodeClient c,
+    ProjectModel project,
+    String worktreeDir,
+  ) async {
+    Object deleteError;
+    try {
+      await c.removeWorktree(project.id, worktreeDir);
+      return;
+    } catch (e) {
+      deleteError = e;
+    }
+    if (!isWorktreeUnavailableError(deleteError)) throw deleteError;
+    final health = await c.probeWorktreeHealth(worktreeDir);
+    if (health == WorktreeHealth.ok) throw deleteError;
+    if (health == WorktreeHealth.broken) {
+      int? rmExit;
+      try {
+        rmExit = (await c.runShell('rm -rf "\$PWD"',
+                cwd: worktreeDir, timeoutMs: 15000))
+            .exit;
+      } catch (_) {
+        rmExit = null;
+      }
+      if (rmExit != 0) throw deleteError;
+    }
+    var converged = false;
+    try {
+      await c.refreshWorktrees(project.id);
+      final wts =
+          await c.worktrees(project.id).timeout(const Duration(seconds: 3));
+      converged = !wts.any((w) => w.directory == worktreeDir);
+    } catch (_) {
+      converged = false;
+    }
+    if (!converged) throw deleteError;
+  }
 
   Future<void> reconcileProjectWorktrees(String projectId) async {
     final c = client;
@@ -783,11 +853,15 @@ class ServerStore extends ChangeNotifier {
 
   /// 删除后分支清理（design-worktree-branch-sync §2.2 / §8 修订）：v2 DELETE
   /// 不清分支。在项目 canonical 下操作（worktree 目录已消失，不能 -C 进去）。
-  /// show-ref 探存在 → `branch -D` 总是删除——不判已并入：squash merge 把
-  /// 分支提交压成新 hash，`--contains` 恒判未并入，检测失效。-D 失败（如
-  /// 同名分支恰被另一 worktree 检出）→ 返回分支名（调用方提示保留）。
-  /// shell 通道异常 → 返回 null（不误报保留）。两个 shell 各 5s 超时
-  /// （清理串行在 deleting 态内，最坏 10s 收口；超时走「宁残留不提示」降级）。
+  /// 前置 `git worktree prune`（design-worktree-shell-rescue §3.3 增补）：空壳/
+  /// 外部 rm 场景 canonical 侧元数据残留为 prunable，分支被死元数据标记检出 →
+  /// `branch -D` 必被 git 拒（误报 branchNotice）；prune 只清 gitdir 失效死条目，
+  /// 幂等无害——正常删除路径 no-op，失败 best-effort 不阻断。show-ref 探存在 →
+  /// `branch -D` 总是删除——不判已并入：squash merge 把分支提交压成新 hash，
+  /// `--contains` 恒判未并入，检测失效。-D 失败（如同名分支恰被另一 worktree
+  /// 检出）→ 返回分支名（调用方提示保留）。shell 通道异常 → 返回 null（不误报
+  /// 保留）。三个 shell 各 5s 超时（清理串行在 deleting 态内，最坏 15s 收口；
+  /// 超时走「宁残留不提示」降级）。
   Future<String?> _cleanupWorktreeBranch(
     OpencodeClient c,
     ProjectModel project,
@@ -797,6 +871,10 @@ class ServerStore extends ChangeNotifier {
     if (base == null || project.canonical.isEmpty) return null;
     final branch = 'opencode/$base';
     try {
+      try {
+        await c.runShell('git worktree prune',
+            cwd: project.canonical, timeoutMs: 5000);
+      } catch (_) {}
       final exists = await c.runShell(
           'git show-ref --verify --quiet refs/heads/$branch',
           cwd: project.canonical,

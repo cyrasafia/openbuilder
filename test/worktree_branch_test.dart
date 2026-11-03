@@ -381,8 +381,13 @@ void main() {
       final kept = await store.removeWorktree(_mainDir, worktreeDir: worktreeDir);
 
       expect(kept, isNull);
-      expect(client.shellCalls.length, 1);
-      expect(client.shellCalls.single.command, contains('show-ref'));
+      // prune 前置（design-worktree-shell-rescue §3.3）+ 单次存在探测
+      expect(client.shellCalls.length, 2);
+      expect(client.shellCalls.first.command, 'git worktree prune');
+      expect(
+        client.shellCalls.where((c) => c.command.contains('show-ref')),
+        hasLength(1),
+      );
     });
 
     test('branch -D failure falls back to keep + notice', () async {
