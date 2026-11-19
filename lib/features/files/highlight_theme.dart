@@ -45,13 +45,18 @@ String? languageForPath(String path) {
   return extensionLanguageMap[path.substring(dot).toLowerCase()];
 }
 
-Map<String, TextStyle> _themeFor(Brightness brightness) {
-  final raw =
-      brightness == Brightness.dark ? hl.githubDarkTheme : hl.githubTheme;
-  return {
-    for (final e in raw.entries) e.key: _normalizeWeight(e.value),
-  };
-}
+final _themeCache = <Brightness, Map<String, TextStyle>>{};
+
+Map<String, TextStyle> _themeFor(Brightness brightness) => _themeCache.putIfAbsent(
+  brightness,
+  () {
+    final raw =
+        brightness == Brightness.dark ? hl.githubDarkTheme : hl.githubTheme;
+    return {
+      for (final e in raw.entries) e.key: _normalizeWeight(e.value),
+    };
+  },
+);
 
 TextStyle _normalizeWeight(TextStyle s) {
   if (s.fontWeight == FontWeight.bold) {
@@ -59,6 +64,13 @@ TextStyle _normalizeWeight(TextStyle s) {
   }
   return s;
 }
+
+/// Token style for a highlight.js scope (e.g. `attr` / `string` / `number` /
+/// `literal`) under the GitHub light/dark theme, bold normalized to w600.
+/// Used by the JSON tree preview so token colors match source highlighting.
+/// Unknown scopes return null (caller falls back to the base style).
+TextStyle? highlightTokenStyle(String scope, Brightness brightness) =>
+    _themeFor(brightness)[scope];
 
 final class HighlightPainter {
   HighlightPainter._();

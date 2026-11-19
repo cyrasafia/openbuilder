@@ -24,6 +24,7 @@ import 'highlight_theme.dart';
 import 'html_preview.dart';
 import 'html_view.dart';
 import 'image_view.dart';
+import 'json_preview.dart';
 import 'markdown_html.dart';
 import 'markdown_view.dart';
 
@@ -82,6 +83,16 @@ class _FileViewScreenState extends State<FileViewScreen> {
   String? _mdHtml;
   (Brightness, Color, Color, AppColors)? _mdHtmlTheme;
   int _mdHtmlGen = 0;
+
+  // JSON tree preview, parsed off the UI isolate while the loading UI is up
+  // (download / route transition). Same gating role as _mdHtml, but the
+  // result is theme-independent (tree colors read Theme at build time), so
+  // there is no theme invalidation. The controller owns the expand/collapse
+  // state and survives preview/source round trips; content replacement
+  // (re-download) disposes and rebuilds it.
+  JsonParseResult? _jsonTree;
+  JsonTreeController? _jsonTreeController;
+  int _jsonGen = 0;
 
   // Highlight spans for code files, built off the UI isolate during the
   // loading phase — the same pattern as _mdHtml. Gates the CodeView mount so
@@ -170,6 +181,9 @@ class _FileViewScreenState extends State<FileViewScreen> {
     _cancelWebViewRenderFallback();
     _mdHtmlGen++;
     _codeSpansGen++;
+    _jsonGen++;
+    _jsonTreeController?.dispose();
+    _jsonTreeController = null;
     _cancelToken?.cancel();
     _scrollCtl.dispose();
     super.dispose();
@@ -226,7 +240,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
 
   OpenFileEntry _currentEntry() => OpenFileEntry(
     path: widget.path,
-    scrollOffset: _isPreviewMode
+    scrollOffset: _isPreviewMode && !_isJson
         ? _mdScrollOffset
         : (_scrollCtl.hasClients
               ? _scrollCtl.position.pixels
@@ -329,7 +343,51 @@ class _FileViewScreenState extends State<FileViewScreen> {
   /// initState never reads Theme before the state is ready.
   void _maybePreparePreviewHtml() {
     if (!_isPreviewable || _showSource) return;
-    Future<void>.microtask(_isHtml ? _prepareHtmlDoc : _prepareMarkdownHtml);
+    Future<void>.microtask(
+      _isJson
+          ? _prepareJsonTree
+          : (_isHtml ? _prepareHtmlDoc : _prepareMarkdownHtml),
+    );
+  }
+
+  /// JSON counterpart of [_prepareMarkdownHtml]. The parse is pure and runs
+  /// off the UI isolate (jsonDecode + tree conversion); the result is
+  /// theme-independent so it never invalidates. A parse failure (invalid
+  /// JSON, JSONC comments) degrades to source mode — the gate must never
+  /// strand the loading UI.
+  void _prepareJsonTree() {
+    if (!mounted || !_isJson || _showSource || _jsonTree != null) return;
+    final gen = ++_jsonGen;
+    final task = (_file!.text!, extensionOf(widget.path) == '.jsonl');
+    () async {
+      JsonParseResult result;
+      try {
+        result = await compute(parseJsonTreeOffIsolate, task);
+      } catch (_) {
+        // Isolate failure must not strand the gate; fall back to a
+        // synchronous parse on the UI isolate.
+        try {
+          result = parseJsonTreeOffIsolate(task);
+        } catch (_) {
+          if (!mounted || gen != _jsonGen) return;
+          setState(() => _showSource = true);
+          return;
+        }
+      }
+      if (!mounted || gen != _jsonGen) return;
+      if (!result.ok) {
+        setState(() => _showSource = true);
+        return;
+      }
+      setState(() {
+        _jsonTree = result;
+        _jsonTreeController?.dispose();
+        _jsonTreeController = JsonTreeController(
+          roots: result.roots,
+          expandAll: result.nodeCount <= jsonExpandAllNodeCap,
+        );
+      });
+    }();
   }
 
   (Brightness, Color, Color, AppColors) _themeSignature() {
@@ -429,7 +487,9 @@ class _FileViewScreenState extends State<FileViewScreen> {
   /// pre-built during the loading phase (see [_maybePrepareCodeSpans]).
   bool get _isCodeFile {
     final f = _file;
-    if (f == null || f.isBinary || _isMarkdown || _isHtml) return false;
+    if (f == null || f.isBinary || _isMarkdown || _isHtml || _isJson) {
+      return false;
+    }
     return languageForPath(widget.path) != null;
   }
 
@@ -519,6 +579,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
       _mdHtml = null;
       _mdHtmlTheme = null;
       _mdHtmlGen++;
+      _jsonTree = null;
+      _jsonTreeController?.dispose();
+      _jsonTreeController = null;
+      _jsonGen++;
       _webviewRendered = false;
     });
     try {
@@ -721,7 +785,8 @@ class _FileViewScreenState extends State<FileViewScreen> {
           // Returning to preview after a theme flip (source-mode round
           // trip): invalidate the stale document synchronously so the gate
           // holds the loading UI from this frame, not one frame later.
-          // Markdown only — the HTML document is theme-independent.
+          // Markdown only — the HTML document is theme-independent, and so
+          // is the JSON tree.
           if (!_showSource &&
               _isMarkdown &&
               _mdHtml != null &&
@@ -742,6 +807,10 @@ class _FileViewScreenState extends State<FileViewScreen> {
         if (!_showSource) _maybePreparePreviewHtml();
       case _MenuAction.wrap:
         setState(() => _wrap = !_wrap);
+      case _MenuAction.jsonExpandAll:
+        _jsonTreeController?.expandAll();
+      case _MenuAction.jsonCollapseAll:
+        _jsonTreeController?.collapseAll();
       case _MenuAction.saveToDevice:
         _onSaveToDevice();
       case _MenuAction.share:
@@ -786,6 +855,16 @@ class _FileViewScreenState extends State<FileViewScreen> {
                         : l(context).fileSource,
                   ),
                 ),
+              if (_isJsonPreviewMode && _jsonTree != null) ...[
+                PopupMenuItem(
+                  value: _MenuAction.jsonExpandAll,
+                  child: Text(l(context).fileJsonExpandAll),
+                ),
+                PopupMenuItem(
+                  value: _MenuAction.jsonCollapseAll,
+                  child: Text(l(context).fileJsonCollapseAll),
+                ),
+              ],
               if (_isTextLike && !_isPreviewMode)
                 PopupMenuItem(
                   value: _MenuAction.wrap,
@@ -828,7 +907,7 @@ class _FileViewScreenState extends State<FileViewScreen> {
       if (!_routeTransitionDone || !_containerTransitionDone) {
         return const Center(child: CircularProgressIndicator());
       }
-      if (_isPreviewMode && _mdHtml == null) {
+      if (_isPreviewMode && !_previewDocReady) {
         return const Center(child: CircularProgressIndicator());
       }
       if (_isCodeFile && !_codeSpansReady) {
@@ -976,6 +1055,20 @@ class _FileViewScreenState extends State<FileViewScreen> {
       if (!_showSource) return _previewWithOverlay(view);
       return view;
     }
+    if (_isJson) {
+      if (!_showSource) {
+        return JsonTreeView(
+          controller: _jsonTreeController!,
+          scrollController: _scrollCtl,
+        );
+      }
+      return CodeView(
+        content: f.text!,
+        language: 'json',
+        wrap: _wrap,
+        scrollController: _scrollCtl,
+      );
+    }
     if (!f.isBinary) {
       return CodeView(
         content: f.text!,
@@ -1009,14 +1102,29 @@ class _FileViewScreenState extends State<FileViewScreen> {
     return ext == '.html' || ext == '.htm';
   }
 
-  bool get _isPreviewable => _isMarkdown || _isHtml;
+  bool get _isJson {
+    if (_downloading || _error != null || _file == null || _file!.isBinary) {
+      return false;
+    }
+    final ext = extensionOf(widget.path);
+    return ext == '.json' || ext == '.jsonc' || ext == '.jsonl';
+  }
+
+  bool get _isPreviewable => _isMarkdown || _isHtml || _isJson;
 
   bool get _isPreviewMode => _isPreviewable && !_showSource;
+
+  bool get _isJsonPreviewMode => _isJson && !_showSource;
+
+  /// Whether the preview document for the current mode is ready to mount:
+  /// the WebView document for markdown/HTML, the parsed tree for JSON.
+  bool get _previewDocReady => _isJson ? _jsonTree != null : _mdHtml != null;
 
   /// Whether the mounted content drives [_scrollCtl]. Mirrors the dispatch in
   /// [_contentDispatch]: CodeView and markdown/HTML source mode attach it;
   /// image/SVG/binary views and the markdown/HTML preview (WebView scrolls
-  /// itself) do not.
+  /// itself) do not. The JSON tree preview is a native list and does attach
+  /// it — collapse/restore keeps its scroll offset like any CodeView.
   bool get _isScrollCtlContent {
     final f = _file;
     if (f == null) return false;
@@ -1027,10 +1135,17 @@ class _FileViewScreenState extends State<FileViewScreen> {
       return false;
     }
     if (!f.isBinary && extensionOf(widget.path) == '.svg') return false;
-    if (_isPreviewMode) return false;
+    if (_isPreviewMode && !_isJson) return false;
     if (f.isBinary) return false;
     return true;
   }
 }
 
-enum _MenuAction { showSource, wrap, saveToDevice, share }
+enum _MenuAction {
+  showSource,
+  wrap,
+  jsonExpandAll,
+  jsonCollapseAll,
+  saveToDevice,
+  share,
+}

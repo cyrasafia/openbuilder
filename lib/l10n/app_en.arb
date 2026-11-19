@@ -159,6 +159,8 @@
   "fileWrapOn": "Enable wrap",
   "fileSource": "Source",
   "filePreview": "Preview",
+  "fileJsonExpandAll": "Expand all",
+  "fileJsonCollapseAll": "Collapse all",
   "fileMentionInConversation": "Mention in conversation",
   "fileCopyPath": "Copy path",
   "fileSaveToDevice": "Save to device",

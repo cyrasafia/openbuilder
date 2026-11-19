@@ -159,6 +159,8 @@
   "fileWrapOn": "开启换行",
   "fileSource": "源码",
   "filePreview": "预览",
+  "fileJsonExpandAll": "全部展开",
+  "fileJsonCollapseAll": "全部折叠",
   "fileMentionInConversation": "在会话中提及",
   "fileCopyPath": "复制路径",
   "fileSaveToDevice": "保存到设备",
