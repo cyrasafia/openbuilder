@@ -44,8 +44,8 @@ import '../../ui/theme.dart';
 import '../../ui/widgets.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
-
 import 'message_autolink.dart';
+import 'agent_inline_image.dart';
 
 /// Max height of a footer card's scrollable content, as a fraction of the
 /// screen height. Footer cards (permission / question / background task)
@@ -2255,6 +2255,9 @@ class _ConversationScreenState extends State<ConversationScreen>
     final overLimit = data.length > _kMarkdownMaxChars;
     final effective =
         overLimit ? _truncatedText(data, _kMarkdownMaxChars) : data;
+    final directory = user
+        ? null
+        : serverStore.sessionById(widget.sessionId)?.directory;
     if (!settled) {
       if (effective.isEmpty) return const SizedBox.shrink();
       if (user) {
@@ -2271,6 +2274,7 @@ class _ConversationScreenState extends State<ConversationScreen>
         child: _GptMarkdownView(
           data: effective,
           settled: false,
+          directory: directory,
           onLinkTap: (url, title) => _onMdLink(url),
         ),
       );
@@ -2308,6 +2312,7 @@ class _ConversationScreenState extends State<ConversationScreen>
               data: effective,
               settled: true,
               selectable: !overLimit,
+              directory: directory,
               onLinkTap: (url, title) => _onMdLink(url),
             ),
           if (overLimit)
@@ -2452,12 +2457,14 @@ class _GptMarkdownView extends StatefulWidget {
   final String data;
   final bool settled;
   final bool selectable;
+  final String? directory;
   final void Function(String url, String title)? onLinkTap;
 
   const _GptMarkdownView({
     required this.data,
     required this.settled,
     this.selectable = false,
+    this.directory,
     this.onLinkTap,
   });
 
@@ -2525,6 +2532,22 @@ class _GptMarkdownViewState extends State<_GptMarkdownView> {
     final source = _source;
     if (source == null || source.isEmpty) return const SizedBox.shrink();
     final p = _messagePalette(context, false);
+    final dir = widget.directory;
+    final patterns =
+        (dir != null && textMayContainLocalImage(source))
+            ? [
+                InlinePattern(
+                  pattern: localImagePattern,
+                  builder: (ctx, match, style) => buildInlineImageSpan(
+                    ctx,
+                    match,
+                    style,
+                    dir,
+                    onOpenFile: (href) => widget.onLinkTap?.call(href, ''),
+                  ),
+                ),
+              ]
+            : null;
     final md = GptMarkdown(
       source,
       style: TextStyle(fontSize: 14, height: 1.45, color: p.text),
@@ -2535,6 +2558,7 @@ class _GptMarkdownViewState extends State<_GptMarkdownView> {
       autolink: false,
       onLinkTap: widget.onLinkTap,
       codeBuilder: _codeBuilder,
+      inlinePatterns: patterns,
     );
     return widget.settled && widget.selectable
         ? SelectionArea(child: md)
