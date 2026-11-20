@@ -5,4 +5,9 @@
         <item quantity="one">%d background task running</item>
         <item quantity="other">%d background tasks running</item>
     </plurals>
+    <plurals name="keepalive_chip_tasks">
+        <item quantity="one">%d task</item>
+        <item quantity="other">%d tasks</item>
+    </plurals>
+    <string name="keepalive_action_stop_notifications">Stop notifications</string>
 </resources>

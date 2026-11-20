@@ -48,4 +48,16 @@ class AndroidKeepalive {
       AppLogger.I.w(_tag, 'fgs channel missing');
     }
   }
+
+  static void setUnpinHandler(void Function()? onUnpin) {
+    if (!_supported) return;
+    _channel.setMethodCallHandler(
+      onUnpin == null
+          ? null
+          : (call) async {
+              if (call.method == 'onUnpinFromNotification') onUnpin();
+              return null;
+            },
+    );
+  }
 }

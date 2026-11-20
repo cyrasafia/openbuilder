@@ -20,6 +20,9 @@ class KeepaliveBackend {
 
   Future<bool> notificationsEnabled() =>
       NotificationService.notificationsEnabled();
+
+  void setUnpinHandler(void Function()? onUnpin) =>
+      AndroidKeepalive.setUnpinHandler(onUnpin);
 }
 
 class KeepaliveController with WidgetsBindingObserver {
@@ -53,6 +56,7 @@ class KeepaliveController with WidgetsBindingObserver {
     if (!supported) return;
     _store = store;
     _backend = backend ?? KeepaliveBackend();
+    _backend!.setUnpinHandler(_onUnpinFromNotification);
     WidgetsBinding.instance.addObserver(this);
     _activeStore.addListener(_onStoreChanged);
     _toggleOn = taskCompleteNotify.value;
@@ -69,6 +73,15 @@ class KeepaliveController with WidgetsBindingObserver {
   /// Card-answer hook: answering a blocking permission / question card resumes
   /// the run, so it shares the send-action arming (D26, D33). Same no-op rules.
   void armOnCardReplied() => _armAndStart();
+
+  /// Notification Unpin action (design-live-updates LU-D4): turning the
+  /// master toggle off shares the settings-switch contract — off = no
+  /// notifications = unconditional pause. Persistence and the FGS stop ride
+  /// the existing [_onToggleChanged] path.
+  void _onUnpinFromNotification() {
+    AppLogger.I.i(_tag, 'unpin tapped on watcher notification');
+    taskCompleteNotify.value = false;
+  }
 
   void _armAndStart() {
     final backend = _backend;
@@ -194,6 +207,7 @@ class KeepaliveController with WidgetsBindingObserver {
   void disposeForTesting() {
     _activeStore.removeListener(_onStoreChanged);
     taskCompleteNotify.removeListener(_onToggleChanged);
+    _backend?.setUnpinHandler(null);
     WidgetsBinding.instance.removeObserver(this);
     _armTimer?.cancel();
     _armTimer = null;

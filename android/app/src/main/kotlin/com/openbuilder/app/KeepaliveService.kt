@@ -53,6 +53,7 @@ class KeepaliveService : Service() {
         val count = intent?.getIntExtra(EXTRA_COUNT, -1) ?: -1
         if (count > 0) {
             lastCount = count
+            if (runStartedAt == 0L) runStartedAt = System.currentTimeMillis()
         }
         // start deliveries (startForegroundService) must call startForeground
         // within 5s; updateCount deliveries call it anyway to refresh the
@@ -80,6 +81,8 @@ class KeepaliveService : Service() {
     }
 
     override fun onDestroy() {
+        promotedSuppressed = false
+        runStartedAt = 0L
         application.unregisterActivityLifecycleCallbacks(lifecycleCallbacks)
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
@@ -107,7 +110,7 @@ class KeepaliveService : Service() {
     private fun buildNotification(count: Int): Notification {
         val text =
             resources.getQuantityString(R.plurals.keepalive_running_tasks, count, count)
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Open Builder")
             .setContentText(text)
@@ -116,7 +119,56 @@ class KeepaliveService : Service() {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build()
+            .setDeleteIntent(receiverPendingIntent(UnpinReceiver.ACTION_DISMISSED, 2))
+            .addAction(unpinAction())
+        // design-live-updates LU-D5: a user dismissal drops the promotion
+        // request for the rest of this FGS cycle — the notification re-posts
+        // as the plain LOW entry while the startForeground obligation (and
+        // observation) stays intact. Reset on the next FGS cycle (onDestroy).
+        if (!promotedSuppressed) {
+            builder
+                .setRequestPromotedOngoing(true)
+                .setShortCriticalText(
+                    resources.getQuantityString(
+                        R.plurals.keepalive_chip_tasks, count, count))
+                .setStyle(
+                    NotificationCompat.ProgressStyle()
+                        .setProgressIndeterminate(true)
+                        .addProgressSegment(
+                            NotificationCompat.ProgressStyle.Segment(100)
+                                .setColor(SEGMENT_COLOR)
+                        )
+                )
+            // Chronometer drives the chip's ticking elapsed time; systems that
+            // skip it fall back to the shortCriticalText count above.
+            // setShowWhen(true): HyperOS gates the chip chronometer behind the
+            // card's when visibility — with the global false it never ticks.
+            if (runStartedAt > 0L) {
+                builder
+                    .setWhen(runStartedAt)
+                    .setShowWhen(true)
+                    .setUsesChronometer(true)
+                    .setChronometerCountDown(false)
+            }
+        }
+        return builder.build()
+    }
+
+    private fun unpinAction(): NotificationCompat.Action =
+        NotificationCompat.Action.Builder(
+            0,
+            getString(R.string.keepalive_action_stop_notifications),
+            receiverPendingIntent(UnpinReceiver.ACTION_UNPIN, 1)
+        ).build()
+
+    private fun receiverPendingIntent(action: String, requestCode: Int): PendingIntent {
+        val intent = Intent(this, UnpinReceiver::class.java).setAction(action)
+        return PendingIntent.getBroadcast(
+            this,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     /// Direct PendingIntent to the activity: not a notification trampoline, so
@@ -140,5 +192,15 @@ class KeepaliveService : Service() {
         const val NOTIF_ID = -100
         const val EXTRA_COUNT = "count"
         private var lastCount = 1
+        private const val SEGMENT_COLOR = 0xFF16A34A.toInt()
+
+        /// Written by UnpinReceiver on user dismissal; consumed by
+        /// buildNotification and cleared per FGS cycle in onDestroy.
+        var promotedSuppressed = false
+
+        /// Elapsed-time anchor for the promoted chip chronometer; set on the
+        /// first positive-count delivery of an FGS cycle, cleared in
+        /// onDestroy.
+        var runStartedAt = 0L
     }
 }

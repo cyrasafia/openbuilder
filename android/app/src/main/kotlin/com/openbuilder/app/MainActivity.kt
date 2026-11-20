@@ -110,44 +110,45 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, keepaliveChannel)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "start" -> {
-                        val count = call.argument<Int>("count") ?: 1
-                        try {
-                            startForegroundService(
-                                Intent(this, KeepaliveService::class.java)
-                                    .putExtra(KeepaliveService.EXTRA_COUNT, count)
-                            )
-                            result.success(null)
-                        } catch (e: Exception) {
-                            result.error("start_failed", e.message, null)
-                        }
+        val keepalive = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, keepaliveChannel)
+        keepalive.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    val count = call.argument<Int>("count") ?: 1
+                    try {
+                        startForegroundService(
+                            Intent(this, KeepaliveService::class.java)
+                                .putExtra(KeepaliveService.EXTRA_COUNT, count)
+                        )
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("start_failed", e.message, null)
                     }
-                    "updateCount" -> {
-                        val count = call.argument<Int>("count") ?: 1
-                        try {
-                            startService(
-                                Intent(this, KeepaliveService::class.java)
-                                    .putExtra(KeepaliveService.EXTRA_COUNT, count)
-                            )
-                            result.success(null)
-                        } catch (e: Exception) {
-                            result.error("update_failed", e.message, null)
-                        }
-                    }
-                    "stop" -> {
-                        try {
-                            stopService(Intent(this, KeepaliveService::class.java))
-                            result.success(null)
-                        } catch (e: Exception) {
-                            result.error("stop_failed", e.message, null)
-                        }
-                    }
-                    else -> result.notImplemented()
                 }
+                "updateCount" -> {
+                    val count = call.argument<Int>("count") ?: 1
+                    try {
+                        startService(
+                            Intent(this, KeepaliveService::class.java)
+                                .putExtra(KeepaliveService.EXTRA_COUNT, count)
+                        )
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("update_failed", e.message, null)
+                    }
+                }
+                "stop" -> {
+                    try {
+                        stopService(Intent(this, KeepaliveService::class.java))
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("stop_failed", e.message, null)
+                    }
+                }
+                else -> result.notImplemented()
             }
+        }
+        KeepaliveChannels.attach(keepalive)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, settingsChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -167,6 +168,11 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        KeepaliveChannels.detach()
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     /// Enables WebAuthn (passkeys) for every WebView currently attached to this

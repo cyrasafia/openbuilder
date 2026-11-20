@@ -4,4 +4,8 @@
     <plurals name="keepalive_running_tasks">
         <item quantity="other">%d 个后台任务运行中</item>
     </plurals>
+    <plurals name="keepalive_chip_tasks">
+        <item quantity="other">%d任务</item>
+    </plurals>
+    <string name="keepalive_action_stop_notifications">停止通知</string>
 </resources>
